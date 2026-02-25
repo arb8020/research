@@ -32,6 +32,9 @@ class Command(IntEnum):
     TRAIN_STEP = 1
     SYNC_WEIGHTS = 2
     SAVE_CHECKPOINT = 3
+    INIT_NCCL_WEIGHT_SYNC = 4
+    SYNC_WEIGHTS_NCCL = 5
+    CLEANUP_NCCL_WEIGHT_SYNC = 6
 
 
 def train(handle: Worker) -> None:
@@ -193,6 +196,9 @@ def _training_loop(
         "shutdown": Command.SHUTDOWN,
         "train_step": Command.TRAIN_STEP,
         "sync_weights": Command.SYNC_WEIGHTS,
+        "init_nccl_weight_sync": Command.INIT_NCCL_WEIGHT_SYNC,
+        "sync_weights_nccl": Command.SYNC_WEIGHTS_NCCL,
+        "cleanup_nccl_weight_sync": Command.CLEANUP_NCCL_WEIGHT_SYNC,
         "save_checkpoint": Command.SAVE_CHECKPOINT,
     }
 
@@ -240,6 +246,37 @@ def _training_loop(
             _do_sync_weights(backend, config.get("inference_endpoints", []) if rank == 0 else [])
             if rank == 0:
                 handle.send({"status": "synced"})
+        elif cmd_id == Command.INIT_NCCL_WEIGHT_SYNC:
+            if rank == 0:
+                _init_nccl_weight_sync(
+                    backend,
+                    inference_endpoints=config.get("inference_endpoints", []),
+                    model_name=config.get("model_name", ""),
+                    master_addr=config.get("master_addr"),
+                    master_port=config.get("master_port", 29500),
+                )
+                handle.send({"status": "nccl_initialized"})
+            else:
+                _init_nccl_weight_sync(backend, inference_endpoints=[], model_name="")
+
+        elif cmd_id == Command.SYNC_WEIGHTS_NCCL:
+            _do_sync_weights_nccl(
+                backend,
+                model_name=config.get("model_name", ""),
+                inference_endpoints=config.get("inference_endpoints", []) if rank == 0 else [],
+            )
+            if rank == 0:
+                handle.send({"status": "nccl_synced"})
+
+        elif cmd_id == Command.CLEANUP_NCCL_WEIGHT_SYNC:
+            if rank == 0:
+                _cleanup_nccl_weight_sync(
+                    backend,
+                    config.get("inference_endpoints", []),
+                )
+                handle.send({"status": "nccl_cleanup"})
+            else:
+                _cleanup_nccl_weight_sync(backend, [])
 
         # Handle save_checkpoint
         elif cmd_id == Command.SAVE_CHECKPOINT:
@@ -376,3 +413,283 @@ def _do_sync_weights(backend: Any, inference_endpoints: list[str]) -> None:
     logger.info(
         "Weight sync: %d parameters to %d endpoints", len(weights), len(inference_endpoints)
     )
+
+
+def _init_nccl_weight_sync(
+    backend: Any,
+    inference_endpoints: list[str],
+    model_name: str,
+    master_addr: str | None = None,
+    master_port: int = 29500,
+) -> None:
+    """Initialize NCCL sender and connect inference engines."""
+    if hasattr(backend, "_nccl_weight_sender") and backend._nccl_weight_sender is not None:
+        return
+
+    backend._nccl_weight_sender = None
+    backend._nccl_model_name = model_name
+
+    if not inference_endpoints:
+        logger.info("NCCL weight sync skipped (no inference endpoints)")
+        return
+
+    import socket
+
+    if master_addr is None:
+        master_addr = "127.0.0.1"
+
+    # Find an available port.
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("", master_port))
+        master_port = sock.getsockname()[1]
+
+    group_name = "weight_sync"
+    world_size = 1 + len(inference_endpoints)
+
+    from rollouts.inference.weight_sync import WeightSyncSender
+
+    sender_holder: dict[str, Any] = {}
+    errors: list[tuple[str, str]] = []
+
+    async def register_inference_endpoint(
+        endpoint: str,
+        rank: int,
+    ) -> None:
+        import httpx
+
+        async with httpx.AsyncClient(timeout=300.0) as client:
+            try:
+                response = await client.post(
+                    f"{endpoint}/init_weights_update_group",
+                    json={
+                        "master_address": master_addr,
+                        "master_port": master_port,
+                        "rank_offset": rank,
+                        "world_size": world_size,
+                        "group_name": group_name,
+                        "backend": "nccl",
+                    },
+                )
+                response.raise_for_status()
+            except Exception as e:
+                errors.append((endpoint, str(e)))
+
+    async def trainer_join() -> None:
+        def _join() -> None:
+            import os
+
+            os.environ.setdefault("NCCL_SHM_DISABLE", "1")
+            os.environ.setdefault("NCCL_CUMEM_ENABLE", "0")
+            sender = WeightSyncSender(
+                master_addr=master_addr,
+                master_port=master_port,
+                inference_world_size=len(inference_endpoints),
+                group_name=group_name,
+            )
+            sender.init_group()
+            sender_holder["sender"] = sender
+
+        import trio
+
+        await trio.to_thread.run_sync(_join)
+
+    import trio
+
+    async def _setup() -> None:
+        async with trio.open_nursery() as nursery:
+            for i, endpoint in enumerate(inference_endpoints):
+                inference_rank = i + 1
+                nursery.start_soon(register_inference_endpoint, endpoint, inference_rank)
+            nursery.start_soon(trainer_join)
+
+    trio.run(_setup)
+
+    if errors:
+        raise RuntimeError(f"Failed to register inference endpoints for NCCL: {errors}")
+
+    sender = sender_holder.get("sender")
+    if sender is None:
+        raise RuntimeError("Failed to initialize NCCL weight sync sender")
+
+    backend._nccl_weight_sender = sender
+    backend._nccl_master_addr = master_addr
+    backend._nccl_master_port = master_port
+    logger.info("Initialized NCCL weight sync: world_size=%d", world_size)
+
+
+def _do_sync_weights_nccl(
+    backend: Any,
+    model_name: str,
+    inference_endpoints: list[str],
+) -> None:
+    """NCCL sync path for inference updates."""
+    if not inference_endpoints:
+        return
+
+    sender = getattr(backend, "_nccl_weight_sender", None)
+    if sender is None:
+        raise RuntimeError("NCCL sender not initialized. Call init_nccl_weight_sync first.")
+
+    import concurrent.futures
+
+    import requests
+    import torch
+
+    # Gather weights (rank 0 only has full state).
+    weights_future = backend.get_weights()
+    weights = weights_future.result()
+    if not weights:
+        return
+
+    state_dict = _convert_megatron_state_dict(model_name, weights)
+    if not state_dict:
+        raise RuntimeError("No weights produced for NCCL sync")
+
+    # Inform inference engines and broadcast in the same order.
+    param_info = [
+        {
+            "name": name,
+            "shape": list(p.shape),
+            "dtype": str(p.dtype).replace("torch.", ""),
+        }
+        for name, p in state_dict.items()
+    ]
+
+    executor = concurrent.futures.ThreadPoolExecutor(max_workers=max(1, len(inference_endpoints)))
+    futures = []
+    for endpoint in inference_endpoints:
+        futures.append(
+            executor.submit(
+                requests.post,
+                f"{endpoint}/update_weights_from_distributed",
+                json={
+                    "names": [item["name"] for item in param_info],
+                    "shapes": [item["shape"] for item in param_info],
+                    "dtypes": [item["dtype"] for item in param_info],
+                    "group_name": "weight_sync",
+                    "weight_version": str(sender.weight_version + 1),
+                },
+                timeout=300.0,
+            )
+        )
+
+    handles = sender.broadcast_weights(state_dict, async_op=True)
+
+    for handle in handles:
+        handle.wait()
+
+    for future in futures:
+        response = future.result()
+        response.raise_for_status()
+
+    executor.shutdown(wait=False)
+    torch.cuda.empty_cache()
+
+
+def _cleanup_nccl_weight_sync(
+    backend: Any,
+    inference_endpoints: list[str],
+) -> None:
+    """Best-effort NCCL cleanup for Megatron worker."""
+    sender = getattr(backend, "_nccl_weight_sender", None)
+    if sender is not None:
+        try:
+            sender.cleanup()
+        except Exception:
+            pass
+
+    if inference_endpoints:
+        import concurrent.futures
+
+        import requests
+
+        executor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=max(1, len(inference_endpoints))
+        )
+        futures = []
+        for endpoint in inference_endpoints:
+            futures.append(
+                executor.submit(
+                    requests.post,
+                    f"{endpoint}/destroy_weights_update_group",
+                    json={"group_name": "weight_sync"},
+                    timeout=10.0,
+                )
+            )
+        for future in futures:
+            try:
+                future.result()
+            except Exception:
+                pass
+        executor.shutdown(wait=False)
+
+    backend._nccl_weight_sender = None
+
+
+def _convert_megatron_state_dict(model_name: str, state_dict: dict[str, Any]) -> dict[str, Any]:
+    """Convert Megatron shard names to HuggingFace names (best effort)."""
+    import logging
+
+    from transformers import AutoConfig
+
+    from rollouts.training.backends.megatron.weight_conversion import (
+        convert_megatron_to_hf,
+        remove_padding,
+    )
+
+    logger = logging.getLogger(__name__)
+
+    if not model_name:
+        return state_dict
+
+    try:
+        hf_config = AutoConfig.from_pretrained(model_name)
+        num_layers = getattr(hf_config, "num_hidden_layers", 0) or getattr(hf_config, "n_layers", 0)
+        if not num_layers:
+            raise ValueError("Unable to infer num_layers")
+        vocab_size = int(getattr(hf_config, "vocab_size", 0))
+        num_attention_heads = int(getattr(hf_config, "num_attention_heads", 0))
+        hidden_size = int(getattr(hf_config, "hidden_size", 0))
+        num_query_groups = getattr(hf_config, "num_query_groups", num_attention_heads)
+        kv_channels = getattr(hf_config, "kv_channels", None)
+        q_lora_rank = getattr(hf_config, "q_lora_rank", None)
+    except Exception as exc:
+        logger.warning("Failed to load HF config for Megatron->HF conversion: %s", exc)
+        return {_strip_chunk_prefix(name): value for name, value in state_dict.items()}
+
+    output: dict[str, Any] = {}
+    conversion_attempted = False
+
+    for name, param in state_dict.items():
+        clean_name = _strip_chunk_prefix(name)
+        try:
+            for hf_name, hf_param in convert_megatron_to_hf(
+                model_name=model_name,
+                name=clean_name,
+                param=param,
+                vocab_size=vocab_size,
+                num_layers=num_layers,
+                num_attention_heads=num_attention_heads,
+                hidden_size=hidden_size,
+                num_query_groups=num_query_groups,
+                kv_channels=kv_channels,
+                q_lora_rank=q_lora_rank,
+            ):
+                output[_strip_chunk_prefix(hf_name)] = remove_padding(hf_name, hf_param, vocab_size)
+            conversion_attempted = True
+        except Exception:
+            # Keep raw names if conversion fails for this param.
+            output[clean_name] = param
+
+    if not conversion_attempted:
+        logger.warning("Megatron->HF conversion not applied for any tensors; using raw keys.")
+
+    return output
+
+
+def _strip_chunk_prefix(name: str) -> str:
+    """Drop `chunk_<N>.` prefix from chunked Megatron parameter names."""
+    prefix, separator, remainder = name.partition(".")
+    if prefix.startswith("chunk_") and separator and prefix[6:].isdigit():
+        return remainder
+    return name

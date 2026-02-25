@@ -78,6 +78,8 @@ class MegatronRemoteBackend:
     workers: list[Worker]
     config: MegatronRemoteConfig
     checkpoint_dir: Path = field(default_factory=lambda: Path("./checkpoints"))
+    _nccl_inference_endpoints: list[str] = field(default_factory=list, init=False)
+    _nccl_initialized: bool = field(default=False, init=False)
     weight_version: int = 0
 
     _step: int = field(default=0, init=False)
@@ -190,21 +192,41 @@ class MegatronRemoteBackend:
         master_addr: str | None = None,
         master_port: int = 29500,
     ) -> None:
-        """No-op stub for now (remote setup uses disk sync path)."""
-        logger.debug(
-            "Skipping NCCL init for remote Megatron backend (using worker-based weight sync path)."
-        )
-        del inference_endpoints
-        del master_addr
-        del master_port
+        """Initialize NCCL weight sync inside rank-0 worker."""
+        self.workers[0].send({
+            "cmd": "init_nccl_weight_sync",
+            "inference_endpoints": inference_endpoints,
+            "master_addr": master_addr,
+            "master_port": master_port,
+        })
+        response = self.workers[0].recv(max_size=1024)
+        assert response["status"] == "nccl_initialized", f"NCCL init failed: {response}"
+        self._nccl_inference_endpoints = list(inference_endpoints)
+        self._nccl_initialized = True
         return None
 
     async def sync_weights_nccl(self) -> None:
-        """NCCL weight sync not supported - use disk sync mode instead."""
-        raise NotImplementedError(
-            "MegatronRemoteBackend does not support NCCL weight sync. "
-            "Use weight_sync_mode='disk' in config."
-        )
+        """NCCL sync to inference engines."""
+        assert self._initialized, "Call initialize() first"
+        self.workers[0].send({"cmd": "sync_weights_nccl"})
+        response = self.workers[0].recv(max_size=1024)
+        assert response["status"] == "nccl_synced", f"NCCL weight sync failed: {response}"
+        self.weight_version += 1
+
+    async def cleanup_nccl_weight_sync(self) -> None:
+        """Best effort cleanup for remote NCCL resources."""
+        if not self._nccl_initialized:
+            return
+        try:
+            self.workers[0].send({
+                "cmd": "cleanup_nccl_weight_sync",
+                "inference_endpoints": self._nccl_inference_endpoints,
+            })
+            _ = self.workers[0].recv(max_size=1024)
+        except Exception:
+            pass
+        self._nccl_initialized = False
+        self._nccl_inference_endpoints = []
 
     def load_checkpoint(self, checkpoint_path: Path) -> TrainFuture[None]:
         """Checkpoint restore is handled inside remote workers; stub for interface."""
