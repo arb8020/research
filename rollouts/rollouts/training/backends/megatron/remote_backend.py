@@ -60,6 +60,10 @@ class MegatronRemoteConfig:
     # Inference endpoints for weight sync
     inference_endpoints: list[str] = field(default_factory=list)
 
+    # GPU assignment (which physical GPUs to use for each rank)
+    # If None, workers use rank as GPU index (rank 0 -> GPU 0, etc.)
+    cuda_device_ids: tuple[int, ...] | None = None
+
 
 @dataclass
 class MegatronRemoteBackend:
@@ -115,6 +119,7 @@ class MegatronRemoteBackend:
                     "master_addr": self.config.master_addr,
                     "master_port": self.config.master_port,
                     "inference_endpoints": self.config.inference_endpoints,
+                    "cuda_device_ids": self.config.cuda_device_ids,
                 },
             })
 

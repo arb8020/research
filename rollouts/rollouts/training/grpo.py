@@ -539,6 +539,7 @@ def _setup_training_backend(
             seq_length=config.trainer.seq_length,
             master_port=config.checkpoint.nccl_master_port,
             inference_endpoints=[f"http://localhost:{config.inference.port}"],
+            cuda_device_ids=config.trainer.cuda_device_ids,
         )
 
         backend = MegatronRemoteBackend(
@@ -1097,6 +1098,7 @@ async def _grpo_train_async(
             seq_length=config.trainer.seq_length,
             master_port=config.checkpoint.nccl_master_port,
             inference_endpoints=[f"http://localhost:{config.inference.port}"],
+            cuda_device_ids=config.trainer.cuda_device_ids,
         )
 
         megatron_workers = spawn_megatron_workers(
