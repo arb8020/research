@@ -183,21 +183,37 @@ async def _create_sandbox(
 
 
 def _exec_sync(sandbox: Any, command: str, timeout: int = 300) -> tuple[str, str, int]:
-    """Execute command in sandbox. Blocking.
+    """Execute command in sandbox with interleaved stdout/stderr streaming.
+
+    Uses threads to read stdout and stderr concurrently so output is displayed
+    as it arrives instead of waiting for command completion.
 
     Returns (stdout, stderr, exit_code).
     """
+    import threading
+
     proc = sandbox.exec("bash", "-c", command, timeout=timeout)
 
-    stdout_lines = []
-    for line in proc.stdout:
-        stdout_lines.append(line)
-        logger.info(f"[sandbox] {line.rstrip()}")
+    stdout_lines: list[str] = []
+    stderr_lines: list[str] = []
 
-    stderr_lines = []
-    for line in proc.stderr:
-        stderr_lines.append(line)
-        logger.warning(f"[sandbox stderr] {line.rstrip()}")
+    def read_stdout() -> None:
+        for line in proc.stdout:
+            stdout_lines.append(line)
+            logger.info(f"[sandbox] {line.rstrip()}")
+
+    def read_stderr() -> None:
+        for line in proc.stderr:
+            stderr_lines.append(line)
+            logger.warning(f"[sandbox stderr] {line.rstrip()}")
+
+    # Read both streams concurrently
+    stdout_thread = threading.Thread(target=read_stdout)
+    stderr_thread = threading.Thread(target=read_stderr)
+    stdout_thread.start()
+    stderr_thread.start()
+    stdout_thread.join()
+    stderr_thread.join()
 
     proc.wait()
 
