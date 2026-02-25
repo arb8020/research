@@ -484,9 +484,13 @@ async def _run_training_in_sandbox(
     # Run training with PYTHONPATH set to include our code
     logger.info(f"Starting training: {config_rel}")
 
+    # PYTHONPATH includes:
+    # - {workspace} for rollouts imports
+    # - /workspace/research for miniray (sibling workspace package)
+    # - /root/Megatron-LM for megatron.core imports
     env_vars = (
         f"PYTHONUNBUFFERED=1 "
-        f"PYTHONPATH={workspace} "
+        f"PYTHONPATH={workspace}:/workspace/research:/root/Megatron-LM:/root "
         f"ROLLOUTS_RUN_NAME={run_name} "
         f"ROLLOUTS_OUTPUT_DIR=results/rl/{run_name} "
     )

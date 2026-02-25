@@ -347,9 +347,20 @@ def _make_loss_fn(
 
 
 def _setup_training_backend(
-    config: GRPOConfig, output_dir: Path, inference_engine: Any
+    config: GRPOConfig,
+    output_dir: Path,
+    inference_engine: Any,
+    megatron_workers: list[Any] | None = None,
 ) -> tuple[Any, Any, Any, Callable[[], None] | None]:  # (backend, tokenizer, endpoint, cleanup)
     """Setup training backend, tokenizer, and endpoint.
+
+    Args:
+        config: GRPO training configuration.
+        output_dir: Output directory for checkpoints.
+        inference_engine: Inference engine for weight sync.
+        megatron_workers: Pre-spawned megatron workers (fork before CUDA init).
+            Required for megatron backend - workers must be forked before any
+            CUDA context is created (e.g., before SGLang starts).
 
     Returns:
         Tuple of (backend, tokenizer, endpoint, cleanup).
@@ -497,13 +508,23 @@ def _setup_training_backend(
     elif backend_name == "megatron":
         # Megatron backend using miniray for multi-process orchestration.
         # Workers run megatron_worker.py and communicate via miniray IPC.
+        #
+        # IMPORTANT: Workers must be pre-spawned (forked) BEFORE any CUDA context
+        # is created (e.g., before SGLang starts). This is because CUDA contexts
+        # don't survive fork() - the child inherits a broken context.
+        # See: docs/code_style/archive/domain/multiprocessing_heinrich.md
         from ..training.backends.megatron.remote_backend import (
             MegatronRemoteBackend,
             MegatronRemoteConfig,
-            spawn_megatron_workers,
         )
 
-        num_trainer_gpus = len(config.trainer.cuda_device_ids)
+        if megatron_workers is None:
+            raise ValueError(
+                "megatron backend requires pre-spawned workers. "
+                "Workers must be forked before CUDA initialization (before SGLang starts). "
+                "Pass megatron_workers parameter from _grpo_train_async."
+            )
+
         megatron_config = MegatronRemoteConfig(
             model_name=config.model.name,
             dtype=config.model.dtype,
@@ -520,13 +541,8 @@ def _setup_training_backend(
             inference_endpoints=[f"http://localhost:{config.inference.port}"],
         )
 
-        workers = spawn_megatron_workers(
-            num_gpus=num_trainer_gpus,
-            config=megatron_config,
-        )
-
         backend = MegatronRemoteBackend(
-            workers=workers,
+            workers=megatron_workers,
             config=megatron_config,
             checkpoint_dir=output_dir,
         )
@@ -1027,7 +1043,47 @@ async def _grpo_train_async(
     config.save(output_dir / "config.json")
     metrics_logger = JSONLLogger(output_dir)
 
+    # =========================================================================
+    # CRITICAL: Spawn megatron workers BEFORE any CUDA initialization
+    # =========================================================================
+    # Workers must be forked before CUDA context is created (e.g., before SGLang
+    # starts). CUDA contexts don't survive fork() - children inherit broken state.
+    # See: docs/code_style/archive/domain/multiprocessing_heinrich.md
+    megatron_workers: list[Any] | None = None
+    if backend_name == "megatron":
+        from .backends.megatron.remote_backend import (
+            MegatronRemoteConfig,
+            spawn_megatron_workers,
+        )
+
+        num_trainer_gpus = len(config.trainer.cuda_device_ids)
+        logger.info(f"Spawning {num_trainer_gpus} megatron workers (before CUDA init)...")
+
+        # Create config for worker spawning (full config passed at init time)
+        megatron_config = MegatronRemoteConfig(
+            model_name=config.model.name,
+            dtype=config.model.dtype,
+            tensor_parallel_size=config.trainer.tensor_parallel_size,
+            pipeline_parallel_size=config.trainer.pipeline_parallel_size,
+            expert_parallel_size=config.trainer.expert_parallel_size,
+            lr=config.trainer.lr,
+            weight_decay=config.trainer.weight_decay,
+            max_grad_norm=config.trainer.max_grad_norm,
+            micro_batch_size=config.trainer.micro_batch_size or 1,
+            global_batch_size=config.rollout.batch_size,
+            seq_length=config.trainer.seq_length,
+            master_port=config.checkpoint.nccl_master_port,
+            inference_endpoints=[f"http://localhost:{config.inference.port}"],
+        )
+
+        megatron_workers = spawn_megatron_workers(
+            num_gpus=num_trainer_gpus,
+            config=megatron_config,
+        )
+        logger.info(f"Spawned {len(megatron_workers)} megatron workers")
+
     # Launch inference engine(s) - multi-engine for higher throughput
+    # NOTE: This is when CUDA gets initialized (SGLang loads model on GPU 0)
     inference_engines = _create_inference_engines(config, output_dir)
     num_engines = len(inference_engines)
     run_context = _build_grpo_run_context(
@@ -1079,9 +1135,9 @@ async def _grpo_train_async(
         if teacher_engine is not None:
             logger.info("Teacher engine ready")
 
-        # Setup training backend
+        # Setup training backend (pass pre-spawned workers for megatron)
         backend, tokenizer, endpoint, backend_cleanup = _setup_training_backend(
-            config, output_dir, inference_engine
+            config, output_dir, inference_engine, megatron_workers=megatron_workers
         )
         device = f"cuda:{config.trainer.cuda_device_ids[0]}"
 

@@ -46,7 +46,6 @@ GLM_DEPS = DepsConfig(
         "peft>=0.7.0",
         # Megatron deps
         "einops",
-        "miniray",
         # Utils
         "openai",
         "anthropic",

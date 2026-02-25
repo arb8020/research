@@ -218,9 +218,22 @@ def spawn_megatron_workers(
     def _work_fn(handle: Worker) -> None:
         """Wrapper that imports and calls the actual work function."""
         import importlib
+        import sys
+        import traceback
 
-        module = importlib.import_module(work_fn_module)
-        module.train(handle)
+        try:
+            module = importlib.import_module(work_fn_module)
+            module.train(handle)
+        except Exception as e:
+            # Print to stderr so we can see the error
+            tb = traceback.format_exc()
+            print(
+                f"[WORKER ERROR] Failed to import/run {work_fn_module}: {e}",
+                file=sys.stderr,
+                flush=True,
+            )
+            print(tb, file=sys.stderr, flush=True)
+            raise
 
     workers = [Worker(_work_fn) for _ in range(num_gpus)]
     logger.info("Spawned %d Megatron workers", num_gpus)

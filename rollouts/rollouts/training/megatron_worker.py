@@ -52,6 +52,9 @@ def train(handle: Worker) -> None:
 
     Only rank 0 sends responses back to coordinator.
     """
+    import sys
+    import traceback
+
     # Phase 1: Wait for init message
     init_msg = handle.recv(max_size=10 * 1024 * 1024)  # 10MB for config
     assert init_msg["cmd"] == "init", f"Expected init, got {init_msg['cmd']}"
@@ -64,72 +67,108 @@ def train(handle: Worker) -> None:
     logging.basicConfig(
         level=logging.INFO,
         format=f"[rank {rank}] %(levelname)s %(name)s: %(message)s",
+        force=True,  # Override any existing config
     )
     logger.info("Worker starting: rank=%d/%d", rank, world_size)
 
-    # Set CUDA device
+    # Set CUDA device BEFORE importing torch
     local_rank = rank % 8  # Assume max 8 GPUs per node
-    os.environ["CUDA_VISIBLE_DEVICES"] = str(local_rank)
-
-    # Phase 2: Initialize Megatron
-    from rollouts.training.backends.megatron import init_megatron, setup_megatron_model
-    from rollouts.training.backends.megatron.initialize import MegatronParallelismConfig
-    from rollouts.training.backends.megatron.model import MegatronModelConfig
-    from rollouts.training.backends.megatron_backend import MegatronConfig, MegatronTrainingBackend
-
-    parallelism_config = MegatronParallelismConfig(
-        tensor_parallel_size=config.get("tensor_parallel_size", 1),
-        pipeline_parallel_size=config.get("pipeline_parallel_size", 1),
-        expert_parallel_size=config.get("expert_parallel_size", 1),
+    # Note: For training GPUs 1-7, local_rank maps to actual GPU
+    cuda_device = (
+        config.get("cuda_device_ids", list(range(8)))[rank]
+        if rank < len(config.get("cuda_device_ids", []))
+        else local_rank + 1
     )
+    os.environ["CUDA_VISIBLE_DEVICES"] = str(cuda_device)
+    logger.info("Worker rank %d using CUDA_VISIBLE_DEVICES=%s", rank, cuda_device)
 
-    init_megatron(
-        rank=rank,
-        world_size=world_size,
-        config=parallelism_config,
-        master_addr=config.get("master_addr"),
-        master_port=config.get("master_port"),
-    )
+    try:
+        # Phase 2: Initialize Megatron
+        logger.info("Importing Megatron modules...")
+        from rollouts.training.backends.megatron import init_megatron, setup_megatron_model
+        from rollouts.training.backends.megatron.initialize import MegatronParallelismConfig
+        from rollouts.training.backends.megatron.model import MegatronModelConfig
+        from rollouts.training.backends.megatron_backend import (
+            MegatronConfig,
+            MegatronTrainingBackend,
+        )
 
-    # Phase 3: Create model
-    model_config = MegatronModelConfig(
-        model_name=config["model_name"],
-        lr=config.get("lr", 1e-6),
-        bf16=config.get("bf16", True),
-        micro_batch_size=config.get("micro_batch_size", 1),
-        global_batch_size=config.get("global_batch_size", 8),
-        seq_length=config.get("seq_length", 4096),
-    )
+        logger.info("Megatron imports successful")
 
-    model, optimizer, scheduler = setup_megatron_model(model_config)
+        parallelism_config = MegatronParallelismConfig(
+            tensor_parallel_size=config.get("tensor_parallel_size", 1),
+            pipeline_parallel_size=config.get("pipeline_parallel_size", 1),
+            expert_parallel_size=config.get("expert_parallel_size", 1),
+        )
 
-    # Create backend
-    backend_config = MegatronConfig(
-        tensor_model_parallel_size=parallelism_config.tensor_parallel_size,
-        pipeline_model_parallel_size=parallelism_config.pipeline_parallel_size,
-        expert_model_parallel_size=parallelism_config.expert_parallel_size,
-        micro_batch_size=model_config.micro_batch_size,
-        global_batch_size=model_config.global_batch_size,
-        seq_length=model_config.seq_length,
-        clip_grad=config.get("clip_grad", 1.0),
-        bf16=model_config.bf16,
-    )
+        logger.info("Calling init_megatron...")
+        init_megatron(
+            rank=rank,
+            world_size=world_size,
+            config=parallelism_config,
+            master_addr=config.get("master_addr"),
+            master_port=config.get("master_port"),
+        )
+        logger.info("init_megatron complete")
 
-    backend = MegatronTrainingBackend(
-        model=model,
-        optimizer=optimizer,
-        opt_param_scheduler=scheduler,
-        config=backend_config,
-    )
+        # Phase 3: Create model
+        logger.info("Creating model config...")
+        model_config = MegatronModelConfig(
+            model_name=config["model_name"],
+            lr=config.get("lr", 1e-6),
+            bf16=config.get("bf16", True),
+            micro_batch_size=config.get("micro_batch_size", 1),
+            global_batch_size=config.get("global_batch_size", 8),
+            seq_length=config.get("seq_length", 4096),
+        )
 
-    logger.info("Model initialized, entering training loop")
+        logger.info("Setting up Megatron model...")
+        model, optimizer, scheduler = setup_megatron_model(model_config)
+        logger.info("Model setup complete")
 
-    # Rank 0 confirms init complete
-    if rank == 0:
-        handle.send({"status": "initialized"})
+        # Create backend
+        backend_config = MegatronConfig(
+            tensor_model_parallel_size=parallelism_config.tensor_parallel_size,
+            pipeline_model_parallel_size=parallelism_config.pipeline_parallel_size,
+            expert_model_parallel_size=parallelism_config.expert_parallel_size,
+            micro_batch_size=model_config.micro_batch_size,
+            global_batch_size=model_config.global_batch_size,
+            seq_length=model_config.seq_length,
+            clip_grad=config.get("clip_grad", 1.0),
+            bf16=model_config.bf16,
+        )
 
-    # Phase 4: Training loop
-    _training_loop(handle, backend, rank, config)
+        backend = MegatronTrainingBackend(
+            model=model,
+            optimizer=optimizer,
+            opt_param_scheduler=scheduler,
+            config=backend_config,
+        )
+
+        logger.info("Model initialized, entering training loop")
+
+        # Rank 0 confirms init complete
+        if rank == 0:
+            handle.send({"status": "initialized"})
+
+        # Phase 4: Training loop
+        _training_loop(handle, backend, rank, config)
+
+    except Exception as e:
+        # Capture full traceback and send to coordinator
+        tb = traceback.format_exc()
+        error_msg = f"Worker rank {rank} failed: {e}\n{tb}"
+        logger.exception(error_msg)
+        print(error_msg, file=sys.stderr, flush=True)
+
+        # Try to send error to coordinator (rank 0 only)
+        if rank == 0:
+            try:
+                handle.send({"status": "error", "error": str(e), "traceback": tb})
+            except Exception:
+                pass  # Socket might be closed
+
+        raise  # Re-raise to trigger worker exit
 
 
 def _training_loop(
