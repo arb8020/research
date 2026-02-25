@@ -44,8 +44,9 @@ GLM_DEPS = DepsConfig(
         "datasets>=4.4.1",
         "accelerate>=0.20.0",
         "peft>=0.7.0",
-        # Megatron deps (apex removed - requires compilation)
+        # Megatron deps
         "einops",
+        "miniray",
         # Utils
         "openai",
         "anthropic",
