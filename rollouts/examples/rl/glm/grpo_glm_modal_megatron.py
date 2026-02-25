@@ -74,7 +74,7 @@ hardware = HardwareConfig(
     gpu_count=8,
     provider="modal",
     deps=GLM_DEPS,
-    use_torchrun=True,  # Megatron uses torchrun for DDP
+    use_torchrun=False,  # Training script handles DDP internally
 )
 
 # =============================================================================
