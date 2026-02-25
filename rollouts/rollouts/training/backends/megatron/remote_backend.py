@@ -199,6 +199,13 @@ class MegatronRemoteBackend:
         del master_port
         return None
 
+    async def sync_weights_nccl(self) -> None:
+        """NCCL weight sync not supported - use disk sync mode instead."""
+        raise NotImplementedError(
+            "MegatronRemoteBackend does not support NCCL weight sync. "
+            "Use weight_sync_mode='disk' in config."
+        )
+
     def load_checkpoint(self, checkpoint_path: Path) -> TrainFuture[None]:
         """Checkpoint restore is handled inside remote workers; stub for interface."""
         del checkpoint_path
