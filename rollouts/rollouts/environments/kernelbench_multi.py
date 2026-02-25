@@ -326,7 +326,9 @@ class KernelBenchMultiTurnEnvironment:
 
         # Extract kernel code
         kernel_code = self._extract_kernel_code(response_text)
-        logger.info(f"[KernelBench] Extracted kernel_code: {kernel_code is not None}, len={len(kernel_code) if kernel_code else 0}")
+        logger.info(
+            f"[KernelBench] Extracted kernel_code: {kernel_code is not None}, len={len(kernel_code) if kernel_code else 0}"
+        )
 
         # Get current trajectory metadata
         current_metadata = dict(state.actor.trajectory.metadata)

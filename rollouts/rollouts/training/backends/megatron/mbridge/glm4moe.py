@@ -131,7 +131,8 @@ def _register() -> bool:
                 moe_router_enable_expert_bias=True,
                 moe_router_pre_softmax=True,
                 # Other optimizations
-                persist_layer_norm=True,
+                # persist_layer_norm requires Transformer Engine; disable for torch LayerNorm
+                persist_layer_norm=False,
                 bias_activation_fusion=True,
                 bias_dropout_fusion=True,
                 # GLM specific

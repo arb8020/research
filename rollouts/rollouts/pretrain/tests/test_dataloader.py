@@ -16,7 +16,6 @@ import torch
 
 from rollouts.pretrain.dataloader import (
     Cursor,
-    DeterministicLoader,
     ShardedDataset,
     build_loader,
 )

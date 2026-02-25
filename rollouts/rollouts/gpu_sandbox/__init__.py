@@ -53,20 +53,20 @@ For local scoring (no remote sandboxes):
 """
 
 from rollouts.gpu_sandbox.config import (
-    SandboxConfig,
     BrokerSandboxConfig,
     ExistingInstanceConfig,
     LocalSandboxConfig,
     # Legacy aliases
     ModalSandboxConfig,
     RunPodSandboxConfig,
+    SandboxConfig,
     SSHSandboxConfig,
 )
 from rollouts.gpu_sandbox.pool import SandboxPool
 from rollouts.gpu_sandbox.worker import (
-    SandboxWorker,
-    LocalSandboxWorker,
     BrokerSandboxWorker,
+    LocalSandboxWorker,
+    SandboxWorker,
 )
 
 __all__ = [

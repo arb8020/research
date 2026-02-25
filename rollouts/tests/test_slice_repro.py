@@ -10,18 +10,16 @@ This script:
 Usage:
     # Start tmux first
     tmux new-session -d -s test_slice
-    
+
     # Run this script
     python tests/test_slice_repro.py
-    
+
     # Watch what's happening
     tmux attach -t test_slice
 """
 
 import json
-import os
 import subprocess
-import sys
 import time
 from pathlib import Path
 
@@ -62,11 +60,11 @@ def get_latest_session() -> dict | None:
     """Get the most recently created session."""
     if not SESSIONS_DIR.exists():
         return None
-    
+
     sessions = sorted(SESSIONS_DIR.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True)
     if not sessions:
         return None
-    
+
     session_dir = sessions[0]
     session_json = session_dir / "session.json"
     if session_json.exists():
@@ -88,7 +86,7 @@ def get_session_messages(session_id: str) -> list[dict]:
     messages_file = SESSIONS_DIR / session_id / "messages.jsonl"
     if not messages_file.exists():
         return []
-    
+
     messages = []
     for line in messages_file.read_text().strip().split("\n"):
         if line:
@@ -106,32 +104,31 @@ def check_message_alternation(messages: list[dict]) -> list[str]:
             continue  # System messages can be anywhere
         if role == "tool":
             continue  # Tool messages follow assistant
-        
+
         if role == "assistant" and prev_role == "assistant":
-            errors.append(f"Consecutive assistant messages at {i-1} and {i}")
-        
+            errors.append(f"Consecutive assistant messages at {i - 1} and {i}")
+
         if role in ("user", "assistant"):
             prev_role = role
-    
+
     return errors
 
 
 def start_rollouts() -> None:
     """Start rollouts in tmux session."""
     # Kill any existing session
-    subprocess.run(["tmux", "kill-session", "-t", TMUX_SESSION], 
-                   capture_output=True)
-    
+    subprocess.run(["tmux", "kill-session", "-t", TMUX_SESSION], capture_output=True)
+
     # Create new session
-    subprocess.run([
-        "tmux", "new-session", "-d", "-s", TMUX_SESSION,
-        "-c", str(Path(__file__).parent.parent)
-    ], check=True)
-    
+    subprocess.run(
+        ["tmux", "new-session", "-d", "-s", TMUX_SESSION, "-c", str(Path(__file__).parent.parent)],
+        check=True,
+    )
+
     # Start rollouts
     tmux_send("python -m rollouts --env coding", literal=True)
     tmux_send_enter()
-    
+
     # Wait for TUI to start
     wait(3)
 
@@ -140,16 +137,16 @@ def run_repro():
     """Run the reproduction steps."""
     print("Starting rollouts...")
     start_rollouts()
-    
+
     # Step 1: Send initial message
     print("\n=== Step 1: Send 'hi' ===")
     tmux_send("hi", literal=True)
     tmux_send_enter()
     wait(5)  # Wait for response
-    
+
     session1 = get_latest_session()
     print(f"Session after 'hi': {session1['session_id'] if session1 else 'None'}")
-    
+
     # Step 2: Interrupt with Escape while responding
     print("\n=== Step 2: Send message and interrupt ===")
     tmux_send("tell me a long story", literal=True)
@@ -157,10 +154,10 @@ def run_repro():
     wait(1)  # Let it start responding
     tmux_send_escape()  # Interrupt
     wait(2)
-    
+
     session2 = get_latest_session()
     print(f"Session after interrupt: {session2['session_id'] if session2 else 'None'}")
-    
+
     # Check for consecutive assistant messages
     if session2:
         messages = get_session_messages(session2["session_id"])
@@ -169,34 +166,34 @@ def run_repro():
             print(f"⚠️  Message alternation errors: {errors}")
         else:
             print("✓ Message alternation OK")
-    
+
     # Step 3: Run /slice
     print("\n=== Step 3: Run /slice ===")
     tmux_send("/slice", literal=True)
     tmux_send_enter()
     wait(2)
-    
+
     session3 = get_latest_session()
     print(f"Session after /slice: {session3['session_id'] if session3 else 'None'}")
-    
+
     # Step 4: Run /slice with spec
     print("\n=== Step 4: Run /slice 0:5 ===")
     tmux_send("/slice 0:5", literal=True)
     tmux_send_enter()
     wait(2)
-    
+
     session4 = get_latest_session()
     if session4:
         print(f"Session after /slice 0:5: {session4['session_id']}")
         print(f"  Parent: {session4.get('parent_id')}")
         print(f"  Branch point: {session4.get('branch_point')}")
-    
+
     # Step 5: Send another message to verify context
     print("\n=== Step 5: Send 'what was my first message?' ===")
     tmux_send("what was my first message?", literal=True)
     tmux_send_enter()
     wait(5)
-    
+
     # Final check
     print("\n=== Final State ===")
     final_session = get_latest_session()
@@ -209,7 +206,7 @@ def run_repro():
             print(f"⚠️  Errors: {errors}")
         else:
             print("✓ All checks passed")
-        
+
         # Print last few messages
         print("\nLast 5 messages:")
         for msg in messages[-5:]:
@@ -220,7 +217,7 @@ def run_repro():
             else:
                 content = str(content)[:60]
             print(f"  {role}: {content}")
-    
+
     print("\n=== Done ===")
     print(f"Attach to see TUI: tmux attach -t {TMUX_SESSION}")
     print(f"Kill session: tmux kill-session -t {TMUX_SESSION}")

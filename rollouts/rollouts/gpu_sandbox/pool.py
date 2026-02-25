@@ -17,7 +17,6 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from broker.types import GPUInstance
     from rollouts.gpu_sandbox.config import AnySandboxConfig
     from rollouts.gpu_sandbox.worker import SandboxWorker
 
@@ -54,9 +53,7 @@ class SandboxPool:
         """True if pool has no remote sandboxes (uses local subprocess)."""
         from rollouts.gpu_sandbox.config import LocalSandboxConfig
 
-        return not self.configs or all(
-            isinstance(c, LocalSandboxConfig) for c in self.configs
-        )
+        return not self.configs or all(isinstance(c, LocalSandboxConfig) for c in self.configs)
 
     @property
     def num_workers(self) -> int:
@@ -76,8 +73,7 @@ class SandboxPool:
             self._workers = [self._create_local_worker()]
         else:
             logger.info(
-                f"SandboxPool: starting {self.num_workers} workers "
-                f"from {len(self.configs)} configs"
+                f"SandboxPool: starting {self.num_workers} workers from {len(self.configs)} configs"
             )
             self._workers = await self._provision_all()
 
@@ -203,13 +199,10 @@ class SandboxPool:
 
         return LocalSandboxWorker()
 
-    async def _provision_broker(
-        self, config: BrokerSandboxConfig
-    ) -> list[SandboxWorker]:
+    async def _provision_broker(self, config: BrokerSandboxConfig) -> list[SandboxWorker]:
         """Provision sandboxes via broker."""
         from broker.client import GPUClient
         from broker.credentials import get_credentials
-
         from rollouts.gpu_sandbox.worker import BrokerSandboxWorker
 
         client = GPUClient(credentials=get_credentials())
@@ -256,9 +249,7 @@ class SandboxPool:
 
         return workers
 
-    async def _connect_existing(
-        self, config: ExistingInstanceConfig
-    ) -> list[SandboxWorker]:
+    async def _connect_existing(self, config: ExistingInstanceConfig) -> list[SandboxWorker]:
         """Connect to existing broker instances."""
         from rollouts.gpu_sandbox.worker import BrokerSandboxWorker
 

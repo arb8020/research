@@ -112,9 +112,7 @@ class AssistantMessage(Component):
         self._thinking_spacer = None
 
         # Check if we're in compact mode
-        is_compact = (
-            hasattr(self._theme, "tool_display") and self._theme.tool_display == "compact"
-        )
+        is_compact = hasattr(self._theme, "tool_display") and self._theme.tool_display == "compact"
 
         # Note: We don't add a spacer here - the previous component (UserMessage)
         # already has padding_y=1 which provides spacing. Adding a spacer here

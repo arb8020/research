@@ -14,7 +14,6 @@ Run with:
 from dataclasses import replace
 
 from examples.rl.reverse_text.grpo_01_01 import config as base_config
-from rollouts.training.grpo import CheckpointConfig
 
 # Enable NCCL in-flight weight sync (PipelineRL-style)
 config = replace(

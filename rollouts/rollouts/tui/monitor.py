@@ -369,7 +369,18 @@ class TrainingMonitor:
 
             # Check if this is an eval event (logging format: "message" field)
             event_type = data.get("message", "")
-            if event_type in ("eval_start", "eval_end", "sample_start", "sample_end", "modal_progress", "turn", "gepa_start", "gepa_iteration", "gepa_accepted", "gepa_rejected"):
+            if event_type in (
+                "eval_start",
+                "eval_end",
+                "sample_start",
+                "sample_end",
+                "modal_progress",
+                "turn",
+                "gepa_start",
+                "gepa_iteration",
+                "gepa_accepted",
+                "gepa_rejected",
+            ):
                 self._handle_eval_event(event_type, data)
                 # Also create a log line for the pane
                 if event_type in ("sample_start", "sample_end", "modal_progress", "turn"):

@@ -149,7 +149,7 @@ class CodexEnvironment:
 
     # ── Environment Protocol ──────────────────────────────────────────────────
 
-    def get_tools(self) -> list["Tool"]:
+    def get_tools(self) -> list[Tool]:
         """Return the single 'run_agent' tool."""
         from ..dtypes import Tool, ToolFunction, ToolFunctionParameter
 
@@ -173,11 +173,11 @@ class CodexEnvironment:
 
     async def exec_tool(
         self,
-        tool_call: "ToolCall",
-        current_state: "AgentState",
-        run_config: "RunConfig",
-        cancel_scope: "trio.CancelScope | None" = None,
-    ) -> "ToolResult":
+        tool_call: ToolCall,
+        current_state: AgentState,
+        run_config: RunConfig,
+        cancel_scope: trio.CancelScope | None = None,
+    ) -> ToolResult:
         """Execute a tool call - runs Codex on the task."""
         from ..dtypes import ToolResult
 
@@ -232,7 +232,7 @@ class CodexEnvironment:
                 content="",
             )
 
-    def requires_confirmation(self, tool_call: "ToolCall") -> bool:
+    def requires_confirmation(self, tool_call: ToolCall) -> bool:
         """No confirmation needed - this is for evals."""
         return False
 
@@ -263,7 +263,7 @@ class CodexEnvironment:
         }
 
     @classmethod
-    async def deserialize(cls, data: dict[str, Any]) -> "CodexEnvironment":
+    async def deserialize(cls, data: dict[str, Any]) -> CodexEnvironment:
         """Deserialize environment state."""
         return cls(
             working_dir=Path(data["working_dir"]),
@@ -303,8 +303,10 @@ class CodexEnvironment:
             codex_bin,
             "exec",
             "--json",  # JSONL output
-            "--model", self.model,
-            "--cd", str(self.working_dir),
+            "--model",
+            self.model,
+            "--cd",
+            str(self.working_dir),
         ]
 
         if self.bypass_approvals:
@@ -438,6 +440,7 @@ class CodexEnvironment:
 
 
 # ── Convenience functions for evals ───────────────────────────────────────────
+
 
 async def run_codex(
     task: str,

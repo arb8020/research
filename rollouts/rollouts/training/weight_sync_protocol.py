@@ -50,6 +50,7 @@ class DiskWeightSyncConfig:
     Uses SGLang/vLLM's update_weights_from_disk endpoint.
     Requires shared filesystem between trainer and inference server.
     """
+
     sync_dir: Path = field(default_factory=lambda: Path("/dev/shm/rollouts_weight_sync"))
     timeout_seconds: float = 300.0
 
@@ -63,6 +64,7 @@ class ModalVolumeWeightSyncConfig:
 
     Trainer writes checkpoint to volume, inference server reads from mount path.
     """
+
     volume_name: str = "rollouts-weight-sync"
     mount_path: str = "/vol/weights"  # Where volume is mounted in inference sandbox
     timeout_seconds: float = 300.0
@@ -75,6 +77,7 @@ class R2WeightSyncConfig:
     S3-compatible API with free egress. Good for remote inference.
     Requires R2 bucket + API credentials.
     """
+
     account_id: str = ""
     bucket: str = ""
     access_key_id: str = ""
@@ -90,6 +93,7 @@ class NCCLWeightSyncConfig:
     Direct GPU-to-GPU broadcast via NCCL.
     Highest performance, requires network connectivity and NCCL setup.
     """
+
     master_addr: str = ""
     master_port: int = 29500
     timeout_seconds: float = 300.0
@@ -103,6 +107,7 @@ class NCCLWeightSyncConfig:
 @dataclass
 class DiskWeightSync:
     """Disk-based weight sync state."""
+
     config: DiskWeightSyncConfig
     endpoints: list[str] = field(default_factory=list)
     backend: str = "sglang"  # "sglang" or "vllm"
@@ -111,6 +116,7 @@ class DiskWeightSync:
 @dataclass
 class ModalVolumeWeightSync:
     """Modal Volume-based weight sync state."""
+
     config: ModalVolumeWeightSyncConfig
     endpoints: list[str] = field(default_factory=list)
     backend: str = "sglang"
@@ -120,6 +126,7 @@ class ModalVolumeWeightSync:
 @dataclass
 class R2WeightSync:
     """Cloudflare R2-based weight sync state."""
+
     config: R2WeightSyncConfig
     endpoints: list[str] = field(default_factory=list)
     backend: str = "sglang"
@@ -129,6 +136,7 @@ class R2WeightSync:
 @dataclass
 class NCCLWeightSync:
     """NCCL-based weight sync state."""
+
     config: NCCLWeightSyncConfig
     endpoints: list[str] = field(default_factory=list)
     backend: str = "sglang"
@@ -154,7 +162,9 @@ def connect_disk(sync: DiskWeightSync, endpoints: list[str], backend: str = "sgl
     sync.backend = backend
     sync.config.sync_dir.mkdir(parents=True, exist_ok=True)
 
-    logger.info(f"DiskWeightSync connected to {len(endpoints)} endpoints, sync_dir={sync.config.sync_dir}")
+    logger.info(
+        f"DiskWeightSync connected to {len(endpoints)} endpoints, sync_dir={sync.config.sync_dir}"
+    )
 
 
 async def sync_weights_disk(
@@ -189,6 +199,7 @@ async def sync_weights_disk(
 
     # Sync to all endpoints in parallel
     async with trio.open_nursery() as nursery:
+
         async def sync_and_collect(endpoint: str) -> None:
             result = await sync_one(endpoint)
             results.append(result)
@@ -263,7 +274,6 @@ async def sync_weights_modal_volume(
 
     # Upload checkpoint files to volume
     # Modal volume.put_directory is sync, run in thread
-    import modal
 
     def _upload() -> None:
         # Reload volume to ensure we have latest state
@@ -299,6 +309,7 @@ async def sync_weights_modal_volume(
             )
 
     async with trio.open_nursery() as nursery:
+
         async def sync_and_collect(endpoint: str) -> None:
             result = await sync_one(endpoint)
             results.append(result)
@@ -412,6 +423,7 @@ async def sync_weights_r2(
             )
 
     async with trio.open_nursery() as nursery:
+
         async def sync_and_collect(endpoint: str) -> None:
             result = await sync_one(endpoint)
             results.append(result)

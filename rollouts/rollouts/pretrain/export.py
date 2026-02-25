@@ -108,8 +108,6 @@ def load_and_export(
     weights = ckpt["weights"]
 
     if config is None:
-        raise ValueError(
-            "config is required. Future: load from checkpoint metadata or config.json"
-        )
+        raise ValueError("config is required. Future: load from checkpoint metadata or config.json")
 
     return export_to_hf(weights, config, output_dir)

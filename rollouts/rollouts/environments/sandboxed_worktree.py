@@ -16,9 +16,6 @@ from pathlib import Path
 import trio
 
 from ..dtypes import (
-    AgentState,
-    RunConfig,
-    Tool,
     ToolCall,
     ToolResult,
 )

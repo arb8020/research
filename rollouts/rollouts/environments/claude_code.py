@@ -67,7 +67,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     import trio
 
-    from ..dtypes import AgentState, Message, RunConfig, Tool, ToolCall, ToolResult
+    from ..dtypes import AgentState, RunConfig, Tool, ToolCall, ToolResult
 
 logger = logging.getLogger(__name__)
 
@@ -153,7 +153,7 @@ class ClaudeCodeEnvironment:
 
     # ── Environment Protocol ──────────────────────────────────────────────────
 
-    def get_tools(self) -> list["Tool"]:
+    def get_tools(self) -> list[Tool]:
         """Return the single 'run_agent' tool."""
         from ..dtypes import Tool, ToolFunction, ToolFunctionParameter
 
@@ -177,11 +177,11 @@ class ClaudeCodeEnvironment:
 
     async def exec_tool(
         self,
-        tool_call: "ToolCall",
-        current_state: "AgentState",
-        run_config: "RunConfig",
-        cancel_scope: "trio.CancelScope | None" = None,
-    ) -> "ToolResult":
+        tool_call: ToolCall,
+        current_state: AgentState,
+        run_config: RunConfig,
+        cancel_scope: trio.CancelScope | None = None,
+    ) -> ToolResult:
         """Execute a tool call - runs Claude Code on the task."""
         from ..dtypes import ToolResult
 
@@ -235,7 +235,7 @@ class ClaudeCodeEnvironment:
                 content="",
             )
 
-    def requires_confirmation(self, tool_call: "ToolCall") -> bool:
+    def requires_confirmation(self, tool_call: ToolCall) -> bool:
         """No confirmation needed - this is for evals."""
         return False
 
@@ -267,7 +267,7 @@ class ClaudeCodeEnvironment:
         }
 
     @classmethod
-    async def deserialize(cls, data: dict[str, Any]) -> "ClaudeCodeEnvironment":
+    async def deserialize(cls, data: dict[str, Any]) -> ClaudeCodeEnvironment:
         """Deserialize environment state."""
         return cls(
             working_dir=Path(data["working_dir"]),
@@ -301,7 +301,9 @@ class ClaudeCodeEnvironment:
         # Find claude binary
         claude_bin = shutil.which("claude")
         if claude_bin is None:
-            raise RuntimeError("Claude Code CLI not found. Install with: npm install -g @anthropic-ai/claude-code")
+            raise RuntimeError(
+                "Claude Code CLI not found. Install with: npm install -g @anthropic-ai/claude-code"
+            )
 
         # Build command
         # Note: Claude Code CLI uses --print for non-interactive mode
@@ -310,8 +312,10 @@ class ClaudeCodeEnvironment:
             claude_bin,
             "--print",  # Non-interactive mode
             "--verbose",  # Required for stream-json
-            "--output-format", "stream-json",
-            "--model", self.model,
+            "--output-format",
+            "stream-json",
+            "--model",
+            self.model,
         ]
 
         if self.system_prompt:
@@ -434,6 +438,7 @@ class ClaudeCodeEnvironment:
 
 
 # ── Convenience functions for evals ───────────────────────────────────────────
+
 
 async def run_claude_code(
     task: str,

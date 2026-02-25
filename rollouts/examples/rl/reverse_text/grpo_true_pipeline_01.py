@@ -33,10 +33,10 @@ config = replace(
     base_config,
     checkpoint=replace(
         base_config.checkpoint,
-        weight_sync_mode="nccl",       # GPU-to-GPU weight broadcast
-        pipeline_mode="true_pipeline", # Both sampling AND sync non-blocking
-        max_lag=2,                     # Allow samples up to 2 versions behind
-        pipeline_queue_size=512,       # Buffer size for samples
+        weight_sync_mode="nccl",  # GPU-to-GPU weight broadcast
+        pipeline_mode="true_pipeline",  # Both sampling AND sync non-blocking
+        max_lag=2,  # Allow samples up to 2 versions behind
+        pipeline_queue_size=512,  # Buffer size for samples
     ),
 )
 

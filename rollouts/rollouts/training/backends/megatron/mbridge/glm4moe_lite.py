@@ -110,7 +110,8 @@ def _register() -> bool:
                 "moe_router_dtype": "fp32",
                 "disable_bf16_reduced_precision_matmul": True,
                 # Other
-                "persist_layer_norm": True,
+                # persist_layer_norm requires Transformer Engine; disable for torch LayerNorm
+                "persist_layer_norm": False,
                 "bias_activation_fusion": True,
                 "bias_dropout_fusion": True,
             }

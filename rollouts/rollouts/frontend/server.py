@@ -1692,9 +1692,7 @@ def prepare_messages(sample_data: Dict[str, Any]) -> List[Message]:
                             f"Event must be dict, got {type(event_obj)}: {event_obj}"
                         )
                         event_type = event_obj.get("message")
-                        assert event_type is not None, (
-                            f"Event missing 'message' field: {event_obj}"
-                        )
+                        assert event_type is not None, f"Event missing 'message' field: {event_obj}"
                         assert "timestamp" in event_obj, (
                             f"Event missing 'timestamp' field: {event_obj}"
                         )

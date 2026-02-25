@@ -140,7 +140,9 @@ class ToolExecution(Container):
                 else:
                     gutter = self._theme.tool_success_gutter  # Pending state uses success gutter
                 padding_x = 2
-                padding_y = self._theme.tool_padding_y if hasattr(self._theme, "tool_padding_y") else 0
+                padding_y = (
+                    self._theme.tool_padding_y if hasattr(self._theme, "tool_padding_y") else 0
+                )
         else:
             # Fallback if no theme provided
             gutter = "☹ " if (self._result and self._result.get("isError")) else "☺ "

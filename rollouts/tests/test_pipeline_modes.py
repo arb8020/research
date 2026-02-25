@@ -23,7 +23,6 @@ import json
 import subprocess
 import sys
 import tempfile
-from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -94,16 +93,19 @@ from examples.rl.reverse_text.base_config import train
 
     # Run training
     cmd = [
-        sys.executable, "-m", "rollouts.run",
-        "--config", str(config_file),
+        sys.executable,
+        "-m",
+        "rollouts.run",
+        "--config",
+        str(config_file),
     ]
     if use_modal:
         cmd.append("--modal")
 
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print(f"Running pipeline_mode={pipeline_mode}")
     print(f"Command: {' '.join(cmd)}")
-    print(f"{'='*60}\n")
+    print(f"{'=' * 60}\n")
 
     result = subprocess.run(
         cmd,
@@ -128,8 +130,8 @@ def assert_reward_improves(rewards: list[float], mode: str, min_improvement: flo
 
     # Compare first 10% vs last 10% of rewards
     n = len(rewards)
-    early_rewards = rewards[:max(1, n // 10)]
-    late_rewards = rewards[-max(1, n // 10):]
+    early_rewards = rewards[: max(1, n // 10)]
+    late_rewards = rewards[-max(1, n // 10) :]
 
     early_mean = sum(early_rewards) / len(early_rewards)
     late_mean = sum(late_rewards) / len(late_rewards)
@@ -205,8 +207,8 @@ def main():
 
                 # Check improvement
                 n = len(rewards)
-                early = rewards[:max(1, n // 10)]
-                late = rewards[-max(1, n // 10):]
+                early = rewards[: max(1, n // 10)]
+                late = rewards[-max(1, n // 10) :]
                 early_mean = sum(early) / len(early)
                 late_mean = sum(late) / len(late)
                 improvement = late_mean - early_mean

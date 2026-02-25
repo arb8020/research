@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any
 from ..tui import Component
 
 if TYPE_CHECKING:
-    from ..theme import Theme
+    pass
 
 
 class Spacer(Component):

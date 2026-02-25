@@ -40,6 +40,15 @@ Task: {one-liner}
 
 ## Don't Change
 {explicit boundaries - files/functions to leave alone}
+
+## Guards
+- If anything doesn't match the assumptions above, STOP and report what's different
+- If you're unsure about an ambiguous case, ask before proceeding
+
+## After Completion
+1. Summarize what you changed
+2. Note any assumptions you made that weren't explicit
+3. Suggest how this prompt could be clearer for next time
 ```
 
 ## Common Pitfalls

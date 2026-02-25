@@ -14,9 +14,9 @@ import gc
 import json
 import logging
 import time
+from collections.abc import Callable
 from dataclasses import asdict
 from pathlib import Path
-from typing import Callable
 
 import torch
 import torch.nn.functional as F
@@ -98,7 +98,9 @@ def train_step(
     input_ids: torch.Tensor,
     labels: torch.Tensor,
     weights: dict[str, torch.Tensor],
-    forward_and_loss_fn: Callable[[torch.Tensor, torch.Tensor, dict[str, torch.Tensor]], torch.Tensor],
+    forward_and_loss_fn: Callable[
+        [torch.Tensor, torch.Tensor, dict[str, torch.Tensor]], torch.Tensor
+    ],
     autocast_ctx: torch.amp.autocast | None = None,
 ) -> torch.Tensor:
     """Single training step: forward, loss, backward.
@@ -469,7 +471,9 @@ def train(config: TrainConfig, use_real_data: bool = False, resume: bool = False
             and step > 0
             and step % config.checkpoint_every == 0
         ):
-            save_checkpoint(weights, muon_optimizer, adamw_optimizer, step, config, output_dir, train_loader)
+            save_checkpoint(
+                weights, muon_optimizer, adamw_optimizer, step, config, output_dir, train_loader
+            )
 
     # Final validation and checkpoint (rank 0 only)
     if runtime.is_main():
@@ -477,7 +481,9 @@ def train(config: TrainConfig, use_real_data: bool = False, resume: bool = False
             val_loss = eval_loss(val_loader, weights, config.model, val_batches)
             logger.info(f"final val_loss={val_loss:.4f}")
 
-        save_checkpoint(weights, muon_optimizer, adamw_optimizer, config.steps, config, output_dir, train_loader)
+        save_checkpoint(
+            weights, muon_optimizer, adamw_optimizer, config.steps, config, output_dir, train_loader
+        )
 
         total_time = time.time() - start_time
         logger.info(f"training complete in {total_time:.1f}s")

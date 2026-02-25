@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from ..dtypes import DetailLevel, ToolRenderConfig
-    from ..frontends.tui.theme import Theme, ToolDisplayMode
+    from ..frontends.tui.theme import Theme
 
 
 def get_text_output(result: dict[str, Any] | None) -> str:

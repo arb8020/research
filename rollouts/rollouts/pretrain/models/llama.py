@@ -6,14 +6,14 @@ Based on rollouts/tools/functional_extractor/llama_functional.py.
 
 from __future__ import annotations
 
-from typing import Callable
+from collections.abc import Callable
 
 import torch
 import torch.nn.functional as F
 from torch import Tensor
 
-from ..config import ModelConfig
 from ...layers import apply_rotary_pos_emb, compute_rope_embeddings, rms_norm
+from ..config import ModelConfig
 
 # Type alias for linear function (F.linear or fp8_linear)
 LinearFn = Callable[[Tensor, Tensor], Tensor]
