@@ -17,6 +17,7 @@ if TYPE_CHECKING:
     import torch
 
 _BRIDGE_REGISTERED = False
+_REGISTERED_BRIDGE: type[Any] | None = None
 
 
 def _register() -> bool:
@@ -191,6 +192,8 @@ def _register() -> bool:
                     return hf_names, [mcore_weights] * len(hf_names)
             return super()._weight_to_hf_format(mcore_weights_name, mcore_weights)
 
+    global _REGISTERED_BRIDGE
+    _REGISTERED_BRIDGE = GLM4MoELiteBridge
     _BRIDGE_REGISTERED = True
     return True
 

@@ -294,7 +294,7 @@ def _build_model_provider(config: MegatronModelConfig, bridge: Any) -> Any:
         vp_stage: int | None = None,
     ) -> GPTModel:
         if num_experts:
-            kwargs = {"use_transformer_engine": use_te}
+            kwargs: dict[str, bool | int] = {"use_transformer_engine": use_te}
             if vp_stage is not None:
                 kwargs["vp_stage"] = vp_stage
             transformer_layer_spec = get_gpt_decoder_block_spec(transformer_config, **kwargs)
