@@ -24,6 +24,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from ...types import ImmediateTrainFuture, TrainFuture
+
 if TYPE_CHECKING:
     from miniray import Worker
 
@@ -120,14 +122,14 @@ class MegatronRemoteBackend:
         self._initialized = True
         logger.info("All workers initialized")
 
-    def forward_backward(self, batch: dict[str, Any]) -> dict[str, float]:
+    def forward_backward(self, batch: dict[str, Any]) -> TrainFuture[dict[str, float]]:
         """Compute loss and gradients on batch.
 
         Args:
             batch: Training batch with input_ids, labels, etc.
 
         Returns:
-            Metrics dict with loss, etc.
+            Future resolving to metrics dict with loss, etc.
         """
         assert self._initialized, "Call initialize() first"
 
@@ -142,12 +144,12 @@ class MegatronRemoteBackend:
         assert response["status"] == "ok", f"Train step failed: {response}"
 
         self._step += 1
-        return response["metrics"]
+        return ImmediateTrainFuture(response["metrics"], operation="forward_backward")
 
-    def optim_step(self) -> dict[str, float]:
+    def optim_step(self) -> TrainFuture[dict[str, float]]:
         """Apply gradients (already done in forward_backward for Megatron)."""
         # Megatron does optimizer step inside forward_backward
-        return {"step": self._step}
+        return ImmediateTrainFuture({"step": self._step}, operation="optim_step")
 
     def sync_weights(self) -> None:
         """Sync weights to inference engines."""

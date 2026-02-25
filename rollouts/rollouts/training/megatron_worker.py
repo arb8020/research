@@ -203,6 +203,11 @@ def _training_loop(
             msg = handle.recv(max_size=100 * 1024 * 1024)  # 100MB for batches
             cmd_str = msg["cmd"]
             cmd_id = CMD_MAP.get(cmd_str, -1)
+            if cmd_id == -1:
+                error_msg = f"Unknown command: {cmd_str}"
+                logger.error(error_msg)
+                handle.send({"status": "error", "error": error_msg})
+                raise ValueError(error_msg)
 
             # Broadcast command ID to other ranks
             cmd_tensor = torch.tensor([cmd_id], dtype=torch.long, device="cuda")
@@ -213,6 +218,9 @@ def _training_loop(
             dist.broadcast(cmd_tensor, src=0)
             cmd_id = int(cmd_tensor.item())
             msg = {}
+
+            if cmd_id == -1:
+                raise ValueError(f"Unknown command ID: {cmd_id}")
 
         # Handle shutdown
         if cmd_id == Command.SHUTDOWN:
