@@ -135,8 +135,6 @@ def setup_megatron_model(
 
     logger.info("Loading model via AutoBridge: %s", config.model_name)
 
-    # Create model provider from HuggingFace model
-    # AutoBridge auto-detects the model type and uses registered bridges
     try:
         bridge = AutoBridge.from_pretrained(
             config.model_name,
@@ -150,18 +148,10 @@ def setup_megatron_model(
             f"Original error: {e}"
         ) from e
 
-    # Configure parallelism (reads from mpu which was initialized in init_megatron)
-    from megatron.core import mpu
+    provider = _build_model_provider(config, bridge)
 
-    provider = bridge.to_megatron_provider(load_weights=False)  # Load weights separately
-    provider.tensor_model_parallel_size = mpu.get_tensor_model_parallel_world_size()
-    provider.pipeline_model_parallel_size = mpu.get_pipeline_model_parallel_world_size()
-    provider.expert_model_parallel_size = mpu.get_expert_model_parallel_world_size()
-    provider.finalize()
-
-    # Get model using Megatron's model factory
     model = get_model(
-        model_provider_func=provider.provide,
+        model_provider_func=provider,
         model_type=ModelType.encoder_or_decoder,
         wrap_with_ddp=True,
     )
@@ -210,6 +200,173 @@ def setup_megatron_model(
         _load_checkpoint(model, optimizer, scheduler, checkpoint_path)
 
     return model, optimizer, scheduler
+
+
+def _build_model_provider(config: MegatronModelConfig, bridge: Any) -> Any:
+    """Build a Megatron model provider without bridge-specific provider APIs.
+
+    Current mbridge pip package does not expose `to_megatron_provider` on
+    per-model bridge objects. In that case, we build the model directly from the
+    bridge-generated Megatron/Transformer config and rely on mbridge for weight
+    loading only.
+    """
+    from megatron.core import mpu
+    from megatron.core.models.gpt import GPTModel
+    from megatron.core.models.gpt.gpt_layer_specs import (
+        get_gpt_decoder_block_spec,
+        get_gpt_layer_local_spec,
+        get_gpt_layer_with_transformer_engine_spec,
+    )
+    from transformers import AutoConfig
+
+    # Backward-compatible path when the old API is available.
+    if hasattr(bridge, "to_megatron_provider"):
+        provider = bridge.to_megatron_provider(load_weights=False)  # type: ignore[attr-defined]
+        provider.tensor_model_parallel_size = mpu.get_tensor_model_parallel_world_size()
+        provider.pipeline_model_parallel_size = mpu.get_pipeline_model_parallel_world_size()
+        provider.expert_model_parallel_size = mpu.get_expert_model_parallel_world_size()
+        provider.finalize()
+        return provider.provide
+
+    logger.info("mbridge does not provide to_megatron_provider; using raw model-provider path")
+    if not hasattr(bridge, "_build_config"):
+        raise AttributeError(
+            "Bridge object does not expose `to_megatron_provider` or `_build_config`. "
+            "This mbridge version cannot construct Megatron models directly. "
+            "Consider using a megatron.bridge build instead."
+        )
+
+    hf_config = AutoConfig.from_pretrained(
+        config.model_name, trust_remote_code=config.trust_remote_code
+    )
+    transformer_config = bridge._build_config()
+
+    # Apply lightweight overrides from rollouts config.
+    _apply_architecture_overrides(transformer_config, config)
+
+    if hasattr(bridge, "_get_gptmodel_args"):
+        gpt_kwargs = dict(bridge._get_gptmodel_args())  # type: ignore[attr-defined]
+    else:
+        gpt_kwargs = {}
+
+    # Fill args required by GPTModel defaults.
+    gpt_kwargs.setdefault("vocab_size", getattr(hf_config, "vocab_size", None))
+    max_sequence_length = gpt_kwargs.get("max_sequence_length")
+    if max_sequence_length is None:
+        max_sequence_length = getattr(hf_config, "max_position_embeddings", None)
+    if max_sequence_length is None:
+        max_sequence_length = getattr(hf_config, "max_seq_len", None)
+    if max_sequence_length is None:
+        raise ValueError(
+            f"Unable to infer max sequence length from model config: {config.model_name}"
+        )
+    gpt_kwargs["max_sequence_length"] = max_sequence_length
+
+    gpt_kwargs.setdefault("position_embedding_type", "rope")
+    gpt_kwargs.setdefault("rotary_percent", 1.0)
+    if gpt_kwargs.get("rotary_base") is None:
+        rope_theta = getattr(hf_config, "rope_theta", None)
+        if rope_theta is None:
+            rope_theta = getattr(hf_config, "rope_scaling", {}).get("rope_theta")
+        gpt_kwargs["rotary_base"] = rope_theta if rope_theta is not None else 10000.0
+
+    if gpt_kwargs.get("share_embeddings_and_output_weights") is None:
+        gpt_kwargs["share_embeddings_and_output_weights"] = True
+    if gpt_kwargs.get("fp16_lm_cross_entropy") is None:
+        gpt_kwargs["fp16_lm_cross_entropy"] = config.fp16
+    if gpt_kwargs.get("parallel_output") is None:
+        gpt_kwargs["parallel_output"] = True
+
+    gpt_kwargs.update(config.architecture_args)
+
+    # Determine expert settings.
+    num_experts = config.num_experts
+    if num_experts is None:
+        num_experts = getattr(hf_config, "n_routed_experts", 0) or getattr(
+            hf_config, "num_experts", 0
+        )
+
+    use_te = False
+
+    def model_provider(
+        pre_process: bool = True,
+        post_process: bool = True,
+        vp_stage: int | None = None,
+    ) -> GPTModel:
+        if num_experts:
+            kwargs = {"use_transformer_engine": use_te}
+            if vp_stage is not None:
+                kwargs["vp_stage"] = vp_stage
+            transformer_layer_spec = get_gpt_decoder_block_spec(transformer_config, **kwargs)
+        else:
+            if use_te:
+                layer_spec_kwargs = {
+                    "num_experts": num_experts,
+                    "moe_grouped_gemm": getattr(transformer_config, "moe_grouped_gemm", False),
+                    "qk_layernorm": getattr(transformer_config, "qk_layernorm", False),
+                    "multi_latent_attention": getattr(
+                        transformer_config, "multi_latent_attention", False
+                    ),
+                    "moe_use_legacy_grouped_gemm": getattr(
+                        transformer_config, "moe_use_legacy_grouped_gemm", False
+                    ),
+                }
+                transformer_layer_spec = get_gpt_layer_with_transformer_engine_spec(
+                    **layer_spec_kwargs,
+                )
+            else:
+                layer_spec_kwargs = {
+                    "num_experts": num_experts,
+                    "moe_grouped_gemm": getattr(transformer_config, "moe_grouped_gemm", False),
+                    "qk_layernorm": getattr(transformer_config, "qk_layernorm", False),
+                    "multi_latent_attention": getattr(
+                        transformer_config, "multi_latent_attention", False
+                    ),
+                    "moe_use_legacy_grouped_gemm": getattr(
+                        transformer_config, "moe_use_legacy_grouped_gemm", False
+                    ),
+                }
+                transformer_layer_spec = get_gpt_layer_local_spec(**layer_spec_kwargs)
+
+        kwargs = dict(gpt_kwargs)
+        kwargs.update({
+            "config": transformer_config,
+            "transformer_layer_spec": transformer_layer_spec,
+            "pre_process": pre_process,
+            "post_process": post_process,
+        })
+        if vp_stage is not None and "vp_stage" not in kwargs:
+            kwargs["vp_stage"] = vp_stage
+        return GPTModel(**kwargs)
+
+    return model_provider
+
+
+def _apply_architecture_overrides(transformer_config: Any, config: MegatronModelConfig) -> None:
+    """Apply explicit MegatronModelConfig fields to a generated Megatron config."""
+    if not hasattr(transformer_config, "__dict__"):
+        return
+
+    overrides = {
+        "num_moe_experts": config.num_experts,
+        "moe_router_topk": config.moe_router_topk,
+        "moe_ffn_hidden_size": config.moe_ffn_hidden_size,
+        "multi_latent_attention": config.multi_latent_attention,
+        "q_lora_rank": config.q_lora_rank,
+        "kv_lora_rank": config.kv_lora_rank,
+        "qk_head_dim": config.qk_head_dim,
+        "v_head_dim": config.v_head_dim,
+    }
+    for key, value in overrides.items():
+        if value is not None and hasattr(transformer_config, key):
+            setattr(transformer_config, key, value)
+
+    if not config.architecture_args:
+        return
+
+    for key, value in config.architecture_args.items():
+        if hasattr(transformer_config, key):
+            setattr(transformer_config, key, value)
 
 
 def _load_checkpoint(
