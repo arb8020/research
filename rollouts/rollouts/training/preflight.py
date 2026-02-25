@@ -619,9 +619,9 @@ def validate_config(config: Any, gpu_type: str) -> PreflightResult:
     use_lora = getattr(config.model, "use_lora", False)
     activation_checkpointing = getattr(config.trainer, "activation_checkpointing", False)
 
-    # Check if using FSDP-style backend
+    # Check if using FSDP-style backend or Megatron (which has its own sharding)
     backend = getattr(config.trainer, "backend", "pytorch")
-    use_fsdp = backend in ("fsdp", "fsdp2", "torchtitan")
+    use_fsdp = backend in ("fsdp", "fsdp2", "torchtitan", "megatron")
 
     # Estimate inference VRAM (per GPU after parallelism split)
     inference_est = estimate_inference_vram(
