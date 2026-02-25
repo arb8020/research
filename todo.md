@@ -35,7 +35,13 @@
         - cached to Modal Dict, persists 30 days
     [x] test snapshot mounting on subsequent runs - works! skips 13min download
     [x] fix preflight to recognize megatron sharding (was estimating 383GB, now 57GB)
-    [-] testing megatron backend with GLM-4.7-Flash (SGLang loading model now)
+    [x] fix megatron worker fork order (workers must spawn before CUDA init)
+        - CUDA contexts don't survive fork() - children inherit broken state
+        - moved spawn_megatron_workers() to top of _grpo_train_async, before SGLang
+    [x] add uncommitted changes warning to modal_runner (matches RunPod behavior)
+    [-] testing megatron backend with GLM-4.7-Flash
+        - added mbridge dep for HF->Megatron weight conversion
+        - workers now survive fork, running setup_megatron_model()
 
 [~] make engine_v2.py faster
   [~] benchmark engine_v2 vs sglang
