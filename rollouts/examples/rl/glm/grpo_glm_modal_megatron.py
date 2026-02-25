@@ -123,7 +123,7 @@ config = GRPOConfig(
         num_steps=50,
         checkpoint_every=10,
         sync_weights_every=1,
-        weight_sync_mode="disk",
+        weight_sync_mode="nccl",
     ),
 )
 
