@@ -157,9 +157,20 @@ def generate_random_prompt(length: int) -> str:
     chars = length * 4
     return "".join(random.choices(string.ascii_letters + " ", k=chars))
 
+def _drain_stdout(proc, stop_event):
+    """Background thread to drain server stdout and prevent pipe deadlock."""
+    import threading
+    while not stop_event.is_set():
+        line = proc.stdout.readline()
+        if not line:
+            break
+        line_str = line.decode("utf-8", errors="replace").rstrip()
+        log_event("server_log", line=line_str)
+
 async def start_server():
     """Start the inference server."""
     import subprocess
+    import threading
 
     if BACKEND == "engine_v2":
         cmd = [
@@ -189,35 +200,22 @@ async def start_server():
         env={{**dict(__import__("os").environ), "PYTHONUNBUFFERED": "1"}},
     )
 
-    # Stream server output while waiting for ready
-    import selectors
-    import os
-    sel = selectors.DefaultSelector()
-    sel.register(proc.stdout, selectors.EVENT_READ)
+    # Start background thread to drain stdout (prevents pipe buffer deadlock)
+    stop_drain = threading.Event()
+    drain_thread = threading.Thread(target=_drain_stdout, args=(proc, stop_drain), daemon=True)
+    drain_thread.start()
 
-    server_logs = []
+    # Wait for server to be ready
     start_wait = time.time()
     timeout_sec = 180  # 3 min timeout
 
     while time.time() - start_wait < timeout_sec:
-        # Check for output (non-blocking)
-        ready = sel.select(timeout=0.1)
-        for key, _ in ready:
-            line = key.fileobj.readline()
-            if line:
-                line_str = line.decode("utf-8", errors="replace").rstrip()
-                server_logs.append(line_str)
-                log_event("server_log", line=line_str)
-
         # Check if process died
         poll = proc.poll()
         if poll is not None:
-            # Drain remaining output
-            remaining = proc.stdout.read().decode("utf-8", errors="replace")
-            for line in remaining.splitlines():
-                server_logs.append(line)
-                log_event("server_log", line=line)
-            log_event("server_died", exit_code=poll, logs_tail=server_logs[-20:])
+            stop_drain.set()
+            drain_thread.join(timeout=1.0)
+            log_event("server_died", exit_code=poll)
             raise RuntimeError(f"Server died with exit code {{poll}}")
 
         # Check if server is ready
@@ -227,14 +225,18 @@ async def start_server():
                 if resp.status_code == 200:
                     elapsed = time.time() - start_wait
                     log_event("server_ready", elapsed_sec=round(elapsed, 1))
-                    sel.close()
-                    return proc
+                    # Return proc and stop_drain so caller can stop draining on cleanup
+                    return proc, stop_drain, drain_thread
         except Exception:
             pass
 
+        await asyncio.sleep(0.1)
+
     # Timeout
+    stop_drain.set()
+    drain_thread.join(timeout=1.0)
     proc.terminate()
-    log_event("server_timeout", logs_tail=server_logs[-30:])
+    log_event("server_timeout")
     raise RuntimeError("Server failed to start within timeout")
 
 
@@ -305,8 +307,10 @@ async def run_benchmark():
               concurrency=CONCURRENCY)
 
     proc = None
+    stop_drain = None
+    drain_thread = None
     if START_SERVER:
-        proc = await start_server()
+        proc, stop_drain, drain_thread = await start_server()
     else:
         log_event("server_reuse", url=SERVER_URL)
         await wait_for_existing_server()
@@ -396,8 +400,12 @@ async def run_benchmark():
 
     finally:
         if proc is not None:
+            if stop_drain is not None:
+                stop_drain.set()
             proc.terminate()
             proc.wait()
+            if drain_thread is not None:
+                drain_thread.join(timeout=1.0)
             log_event("server_stopped")
 
 if __name__ == "__main__":
