@@ -48,6 +48,14 @@ REPO_ROOT = Path(__file__).parent.parent
 # Default Modal app name
 MODAL_APP_NAME = "rollouts-training"
 
+# Modal Dict for storing model weight snapshots
+# Key: model name (e.g., "zai-org/GLM-4.7-Flash")
+# Value: snapshot image ID
+MODEL_CACHE_DICT_NAME = "rollouts-model-cache"
+
+# HuggingFace cache directory in sandbox
+HF_CACHE_DIR = "/root/.cache/huggingface"
+
 
 @dataclass
 class ModalRunConfig:
@@ -62,6 +70,7 @@ class ModalRunConfig:
     deps: DepsConfig | None = None  # Required - validated by HardwareConfig
     timeout_hours: int = 4
     use_torchrun: bool = True  # False for torchtitan (handles multi-GPU internally)
+    model_name: str | None = None  # Model name for weight caching (e.g., "zai-org/GLM-4.7-Flash")
 
     def __post_init__(self) -> None:
         if self.deps is None:
@@ -127,6 +136,106 @@ def _build_modal_image(modal: Any, deps: DepsConfig, gpu_type: str) -> Any:
     })
 
     return image
+
+
+def _get_model_cache_key(model_name: str) -> str:
+    """Convert model name to a valid cache key."""
+    # Replace slashes and other special chars
+    return model_name.replace("/", "--").replace(":", "-")
+
+
+async def _get_cached_snapshot(model_name: str) -> Any | None:
+    """Look up cached model weights snapshot from Modal Dict.
+
+    Returns the snapshot Image if found, None otherwise.
+    """
+    import modal
+    import trio_asyncio
+
+    cache_key = _get_model_cache_key(model_name)
+
+    try:
+        cache_dict = await trio_asyncio.aio_as_trio(
+            modal.Dict.from_name.aio(MODEL_CACHE_DICT_NAME, create_if_missing=True)
+        )
+        snapshot_id = await trio_asyncio.aio_as_trio(cache_dict.get.aio(cache_key))
+        if snapshot_id:
+            logger.info(f"Found cached weights snapshot for {model_name}: {snapshot_id}")
+            # Reconstruct the Image from the snapshot ID
+            snapshot = modal.Image.from_id(snapshot_id)
+            return snapshot
+    except Exception as e:
+        logger.warning(f"Failed to look up model cache: {e}")
+
+    return None
+
+
+async def _save_snapshot_to_cache(model_name: str, snapshot: Any) -> None:
+    """Save a model weights snapshot to the Modal Dict cache."""
+    import modal
+    import trio_asyncio
+
+    cache_key = _get_model_cache_key(model_name)
+    snapshot_id = snapshot.object_id
+
+    try:
+        cache_dict = await trio_asyncio.aio_as_trio(
+            modal.Dict.from_name.aio(MODEL_CACHE_DICT_NAME, create_if_missing=True)
+        )
+        await trio_asyncio.aio_as_trio(cache_dict.put.aio(cache_key, snapshot_id))
+        logger.info(f"Cached weights snapshot for {model_name}: {snapshot_id}")
+    except Exception as e:
+        logger.warning(f"Failed to save model cache: {e}")
+
+
+async def _download_and_snapshot_model(sandbox: Any, model_name: str) -> Any | None:
+    """Download model weights and create a directory snapshot.
+
+    Returns the snapshot Image, or None if snapshotting failed.
+    """
+    import trio_asyncio
+
+    logger.info(f"Downloading model weights for {model_name}...")
+
+    # Download using huggingface-cli (faster with hf_transfer)
+    proc = await trio_asyncio.aio_as_trio(
+        sandbox.exec.aio(
+            "python",
+            "-c",
+            f"from huggingface_hub import snapshot_download; "
+            f"snapshot_download('{model_name}', local_dir=None)",  # Uses default cache
+            timeout=1800,  # 30 min timeout for large models
+        )
+    )
+
+    # Stream output
+    async for line in proc.stdout:
+        logger.info(f"[download] {line.rstrip()}")
+
+    exit_code = await trio_asyncio.aio_as_trio(proc.wait.aio())
+    if exit_code != 0:
+        logger.error(f"Model download failed with exit code {exit_code}")
+        return None
+
+    logger.info("Model downloaded, creating directory snapshot...")
+
+    # Snapshot the HuggingFace cache directory
+    try:
+        snapshot = await trio_asyncio.aio_as_trio(sandbox.snapshot_directory.aio(HF_CACHE_DIR))
+        logger.info(f"Created snapshot: {snapshot.object_id}")
+        return snapshot
+    except Exception:
+        logger.exception("Failed to create snapshot")
+        return None
+
+
+async def _mount_cached_weights(sandbox: Any, snapshot: Any) -> None:
+    """Mount cached model weights into the sandbox."""
+    import trio_asyncio
+
+    logger.info(f"Mounting cached weights from snapshot {snapshot.object_id}...")
+    await trio_asyncio.aio_as_trio(sandbox.mount_image.aio(HF_CACHE_DIR, snapshot))
+    logger.info("Cached weights mounted")
 
 
 async def _create_sandbox(
@@ -422,6 +531,19 @@ async def run_modal(config: ModalRunConfig) -> dict[str, Any]:
                 assert exit_code == 0, f"nvidia-smi failed with exit code {exit_code}"
                 logger.info("GPU access verified")
 
+                # Model weight caching: check for cached snapshot or download and cache
+                if config.model_name:
+                    cached_snapshot = await _get_cached_snapshot(config.model_name)
+                    if cached_snapshot:
+                        # Mount cached weights
+                        await _mount_cached_weights(sandbox, cached_snapshot)
+                    else:
+                        # Download weights and create snapshot for future runs
+                        logger.info(f"No cached weights for {config.model_name}, downloading...")
+                        snapshot = await _download_and_snapshot_model(sandbox, config.model_name)
+                        if snapshot:
+                            await _save_snapshot_to_cache(config.model_name, snapshot)
+
                 # Sync code (always uses local git bundle)
                 logger.info("Syncing code to sandbox...")
                 workspace = await _sync_code_to_sandbox(sandbox, REPO_ROOT)
@@ -532,6 +654,14 @@ def main() -> None:
     gpu_type = args.gpu if args.gpu != "A100" else hardware.gpu_type
     gpu_count = args.gpu_count if args.gpu_count != 1 else hardware.gpu_count
 
+    # Extract model name for weight caching (if available)
+    # Look for config.model.name (GRPOConfig structure)
+    grpo_config = getattr(config_module, "config", None)
+    model_name = None
+    if grpo_config and hasattr(grpo_config, "model") and hasattr(grpo_config.model, "name"):
+        model_name = grpo_config.model.name
+        logger.info(f"Model name for weight caching: {model_name}")
+
     # Build run config
     run_config = ModalRunConfig(
         config_path=str(config_path),
@@ -540,6 +670,7 @@ def main() -> None:
         deps=deps,
         timeout_hours=args.timeout_hours,
         use_torchrun=hardware.use_torchrun,
+        model_name=model_name,
     )
 
     # Run
