@@ -150,15 +150,17 @@ async def _get_cached_snapshot(model_name: str) -> Any | None:
     Returns the snapshot Image if found, None otherwise.
     """
     import modal
-    import trio_asyncio
+    import trio
 
     cache_key = _get_model_cache_key(model_name)
 
     try:
-        cache_dict = await trio_asyncio.aio_as_trio(
-            modal.Dict.from_name.aio(MODEL_CACHE_DICT_NAME, create_if_missing=True)
-        )
-        snapshot_id = await trio_asyncio.aio_as_trio(cache_dict.get.aio(cache_key))
+        # Dict operations are sync, run in thread
+        def _lookup() -> str | None:
+            cache_dict = modal.Dict.from_name(MODEL_CACHE_DICT_NAME, create_if_missing=True)
+            return cache_dict.get(cache_key)
+
+        snapshot_id = await trio.to_thread.run_sync(_lookup)
         if snapshot_id:
             logger.info(f"Found cached weights snapshot for {model_name}: {snapshot_id}")
             # Reconstruct the Image from the snapshot ID
@@ -173,16 +175,18 @@ async def _get_cached_snapshot(model_name: str) -> Any | None:
 async def _save_snapshot_to_cache(model_name: str, snapshot: Any) -> None:
     """Save a model weights snapshot to the Modal Dict cache."""
     import modal
-    import trio_asyncio
+    import trio
 
     cache_key = _get_model_cache_key(model_name)
     snapshot_id = snapshot.object_id
 
     try:
-        cache_dict = await trio_asyncio.aio_as_trio(
-            modal.Dict.from_name.aio(MODEL_CACHE_DICT_NAME, create_if_missing=True)
-        )
-        await trio_asyncio.aio_as_trio(cache_dict.put.aio(cache_key, snapshot_id))
+        # Dict operations are sync, run in thread
+        def _save() -> None:
+            cache_dict = modal.Dict.from_name(MODEL_CACHE_DICT_NAME, create_if_missing=True)
+            cache_dict[cache_key] = snapshot_id
+
+        await trio.to_thread.run_sync(_save)
         logger.info(f"Cached weights snapshot for {model_name}: {snapshot_id}")
     except Exception as e:
         logger.warning(f"Failed to save model cache: {e}")
@@ -193,24 +197,31 @@ async def _download_and_snapshot_model(sandbox: Any, model_name: str) -> Any | N
 
     Returns the snapshot Image, or None if snapshotting failed.
     """
+    import trio
     import trio_asyncio
 
     logger.info(f"Downloading model weights for {model_name}...")
 
-    # Download using huggingface-cli (faster with hf_transfer)
+    # Download using huggingface_hub CLI module
     proc = await trio_asyncio.aio_as_trio(
         sandbox.exec.aio(
             "python",
-            "-c",
-            f"from huggingface_hub import snapshot_download; "
-            f"snapshot_download('{model_name}', local_dir=None)",  # Uses default cache
+            "-m",
+            "huggingface_hub.commands.huggingface_cli",
+            "download",
+            model_name,
             timeout=1800,  # 30 min timeout for large models
         )
     )
 
-    # Stream output
-    async for line in proc.stdout:
-        logger.info(f"[download] {line.rstrip()}")
+    # Stream output using threads (async for doesn't work with trio_asyncio bridge)
+    def _stream_output() -> None:
+        for line in proc.stdout:
+            logger.info(f"[download] {line.rstrip()}")
+        for line in proc.stderr:
+            logger.warning(f"[download stderr] {line.rstrip()}")
+
+    await trio.to_thread.run_sync(_stream_output)
 
     exit_code = await trio_asyncio.aio_as_trio(proc.wait.aio())
     if exit_code != 0:
