@@ -1385,6 +1385,8 @@ class FilesystemWeightSyncer:
         # Reuse existing fast path helper (RAM disk if available).
         base_dir = self.sync_dir or get_fast_sync_dir()
         checkpoint_path = await self.backend.save_weights_for_sampler(base_dir / "sync_latest")
+        if checkpoint_path is None:
+            return
 
         # Distributed safety: all ranks may need to participate in the backend's
         # collective state-dict gather, but only rank 0 should poke inference.

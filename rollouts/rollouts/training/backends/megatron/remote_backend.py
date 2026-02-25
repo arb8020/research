@@ -78,6 +78,7 @@ class MegatronRemoteBackend:
     workers: list[Worker]
     config: MegatronRemoteConfig
     checkpoint_dir: Path = field(default_factory=lambda: Path("./checkpoints"))
+    weight_version: int = 0
 
     _step: int = field(default=0, init=False)
     _initialized: bool = field(default=False, init=False)
@@ -158,12 +159,12 @@ class MegatronRemoteBackend:
         self.workers[0].send({"cmd": "sync_weights"})
         response = self.workers[0].recv(max_size=1024)
         assert response["status"] == "synced", f"Weight sync failed: {response}"
+        self.weight_version += 1
 
-    def save_checkpoint(self, step: int | None = None) -> Path:
+    def save_checkpoint(self, step: int, metrics: dict[str, Any]) -> TrainFuture[Path]:
         """Save checkpoint."""
         assert self._initialized, "Call initialize() first"
 
-        step = step or self._step
         self.workers[0].send({
             "cmd": "save_checkpoint",
             "step": step,
@@ -171,7 +172,38 @@ class MegatronRemoteBackend:
         })
         response = self.workers[0].recv(max_size=1024)
         assert response["status"] == "saved", f"Checkpoint save failed: {response}"
-        return Path(response["path"])
+        return ImmediateTrainFuture(Path(response["path"]), operation="save_checkpoint")
+
+    def save_weights_for_sampler(self, path: Path) -> TrainFuture[None]:
+        """Sync weights for sampler inference update.
+
+        Remote Megatron workers sync weights directly through the existing
+        worker sync command, so this is a no-op beyond triggering sync_weights.
+        """
+        del path
+        self.sync_weights()
+        return ImmediateTrainFuture(None, operation="save_weights_for_sampler")
+
+    async def init_nccl_weight_sync(
+        self,
+        inference_endpoints: list[str],
+        master_addr: str | None = None,
+        master_port: int = 29500,
+    ) -> None:
+        """No-op stub for now (remote setup uses disk sync path)."""
+        logger.debug(
+            "Skipping NCCL init for remote Megatron backend (using worker-based weight sync path)."
+        )
+        del inference_endpoints
+        del master_addr
+        del master_port
+        return None
+
+    def load_checkpoint(self, checkpoint_path: Path) -> TrainFuture[None]:
+        """Checkpoint restore is handled inside remote workers; stub for interface."""
+        del checkpoint_path
+        logger.info("Remote Megatron backend does not support direct checkpoint restore from host.")
+        return ImmediateTrainFuture(None, operation="load_checkpoint")
 
     def shutdown(self) -> None:
         """Shutdown all workers."""

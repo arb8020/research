@@ -1147,7 +1147,11 @@ async def _grpo_train_async(
             if (ckpt_path / "pytorch_model.bin").exists():
                 # Our checkpoint format
                 logger.info(f"Loading checkpoint from {ckpt_path}")
-                await backend.load_checkpoint(ckpt_path)
+                load_result = backend.load_checkpoint(ckpt_path)
+                if hasattr(load_result, "result") and not hasattr(load_result, "__await__"):
+                    await load_result.result()
+                else:
+                    await load_result
                 logger.info("Checkpoint loaded successfully")
             elif (ckpt_path / "config.json").exists():
                 # HuggingFace format - already loaded via model_name
@@ -1158,12 +1162,17 @@ async def _grpo_train_async(
                 )
 
         # VRAM preflight: dry-run one forward+backward at worst-case seq_len
-        if not config.trainer.skip_vram_check:
+        if not config.trainer.skip_vram_check and config.trainer.backend != "megatron":
             from ..training.vram import preflight_vram_check
 
             preflight_vram_check(backend, config, device)
         else:
-            logger.info("VRAM preflight check skipped (skip_vram_check=True)")
+            reason = (
+                "backend=megatron"
+                if config.trainer.backend == "megatron"
+                else "skip_vram_check=True"
+            )
+            logger.info(f"VRAM preflight check skipped ({reason})")
 
         # Initialize NCCL weight sync if enabled (PipelineRL-style in-flight updates).
         # Skip for true_pipeline mode - NCCLWeightSyncer handles NCCL init separately.
@@ -1229,7 +1238,12 @@ async def _grpo_train_async(
             numeric_metrics = {
                 k: float(v) for k, v in step_metrics.items() if isinstance(v, (int, float))
             }
-            ckpt_dir = await save_fn(step, numeric_metrics)
+            save_result = save_fn(step, numeric_metrics)
+            if hasattr(save_result, "result") and not hasattr(save_result, "__await__"):
+                ckpt_result = await save_result.result()
+            else:
+                ckpt_result = await save_result
+            ckpt_dir = ckpt_result
             logger.info(f"Saved checkpoint: {ckpt_dir}")
             return ckpt_dir
 
