@@ -57,6 +57,53 @@ MODEL_CACHE_DICT_NAME = "rollouts-model-cache"
 HF_CACHE_DIR = "/root/.cache/huggingface"
 
 
+def _check_uncommitted_changes_warning() -> None:
+    """Warn if there are uncommitted changes that won't be deployed.
+
+    Modal runner uses git bundle, which only includes committed code.
+    This matches the behavior in run.py (RunPod) which uses bifrost.
+    """
+    result = subprocess.run(
+        ["git", "status", "--porcelain"],
+        cwd=str(REPO_ROOT),
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        return  # Not a git repo or git not available
+
+    lines = [line for line in result.stdout.strip().split("\n") if line]
+    if not lines:
+        return  # No changes
+
+    # Parse into modified and untracked
+    modified = [line[3:] for line in lines if line[:2].strip() in ("M", "MM", "AM", "A")]
+    untracked = [line[3:] for line in lines if line.startswith("??")]
+
+    if not modified and not untracked:
+        return
+
+    print(
+        "\n⚠️  WARNING: Uncommitted changes detected!\n"
+        "Modal runner uses git bundle - only committed code is deployed.\n",
+        file=sys.stderr,
+    )
+    total = len(modified) + len(untracked)
+    print(f"{total} file(s) will NOT be deployed:\n", file=sys.stderr)
+    for f in modified[:5]:
+        print(f"   - {f} (modified)", file=sys.stderr)
+    if len(modified) > 5:
+        print(f"   ... and {len(modified) - 5} more modified", file=sys.stderr)
+    for f in untracked[:5]:
+        print(f"   - {f} (untracked)", file=sys.stderr)
+    if len(untracked) > 5:
+        print(f"   ... and {len(untracked) - 5} more untracked", file=sys.stderr)
+    print("\nCommit your changes or use '--allow-dirty' to proceed anyway.\n", file=sys.stderr)
+
+    # For now, just warn (not blocking like RunPod)
+    # To make this blocking, raise SystemExit(1) here
+
+
 @dataclass
 class ModalRunConfig:
     """Configuration for a Modal training run.
@@ -650,6 +697,9 @@ def main() -> None:
     )
 
     args = parser.parse_args()
+
+    # Check for uncommitted changes - git bundle only includes committed code
+    _check_uncommitted_changes_warning()
 
     # Setup logging with JSONL file output for debugging
     # Creates results/modal_runs/{timestamp}/run.jsonl

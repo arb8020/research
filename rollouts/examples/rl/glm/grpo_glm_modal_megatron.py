@@ -66,6 +66,8 @@ GLM_DEPS = DepsConfig(
         "~/.local/bin/uv pip install --system --upgrade 'transformers>=5.0.0' 'huggingface-hub>=1.4.0'",
         # Clone Megatron-LM for megatron.core imports
         "git clone --depth 1 https://github.com/NVIDIA/Megatron-LM.git /root/Megatron-LM",
+        # Install mbridge for HF->Megatron weight conversion
+        "~/.local/bin/uv pip install --system 'git+https://github.com/ISEEKYAN/mbridge.git'",
     ),
 )
 
