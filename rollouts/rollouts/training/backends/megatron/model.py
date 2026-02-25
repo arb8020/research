@@ -291,8 +291,9 @@ def _build_model_provider(config: MegatronModelConfig, bridge: Any) -> Any:
     def model_provider(
         pre_process: bool = True,
         post_process: bool = True,
+        config: Any = None,  # TransformerConfig from Megatron, we use transformer_config from closure
+        pg_collection: Any = None,  # ProcessGroupCollection, unused
         vp_stage: int | None = None,
-        **kwargs: Any,  # Megatron's get_model() passes config=... and other args
     ) -> GPTModel:
         if num_experts:
             layer_kwargs: dict[str, bool | int] = {"use_transformer_engine": use_te}
