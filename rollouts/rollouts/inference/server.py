@@ -523,19 +523,30 @@ class InferenceServer:
         if startup_complete is not None:
             startup_complete.set()
 
-        while True:
-            # Poll engine thread for results (blocking with timeout)
-            # Use functools.partial since anyio.to_thread.run_sync doesn't pass args
-            results = await anyio.to_thread.run_sync(
-                functools.partial(self._engine_thread.get_results, 0.01)
-            )
+        loop_count = 0
+        try:
+            while True:
+                loop_count += 1
+                if loop_count % 1000 == 0:
+                    logger.info(
+                        f"result_dispatcher: loop={loop_count}, pending={len(self._pending)}"
+                    )
 
-            if not results:
-                # No results, yield to other coroutines
-                await anyio.sleep(0.001)
-                continue
+                # Poll engine thread for results (blocking with timeout)
+                # Use functools.partial since anyio.to_thread.run_sync doesn't pass args
+                results = await anyio.to_thread.run_sync(
+                    functools.partial(self._engine_thread.get_results, 0.01)
+                )
 
-            logger.info(f"Dispatching {len(results)} results")
+                if not results:
+                    # No results, yield to other coroutines
+                    await anyio.sleep(0.001)
+                    continue
+
+                logger.info(f"Dispatching {len(results)} results")
+        except Exception as e:
+            logger.exception(f"result_dispatcher crashed after {loop_count} loops: {e}")
+            raise
 
             async with self._lock:
                 for result in results:
