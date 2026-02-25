@@ -126,7 +126,8 @@ def _register() -> bool:
                 moe_router_topk=self.hf_config.num_experts_per_tok,
                 num_moe_experts=self.hf_config.n_routed_experts,
                 moe_router_load_balancing_type="none",  # No aux loss for RL
-                moe_grouped_gemm=True,
+                # grouped_gemm not installed in Modal image; disable for now
+                moe_grouped_gemm=False,
                 moe_router_score_function="sigmoid",
                 moe_router_enable_expert_bias=True,
                 moe_router_pre_softmax=True,

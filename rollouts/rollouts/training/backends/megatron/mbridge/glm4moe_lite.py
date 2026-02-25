@@ -88,7 +88,8 @@ def _register() -> bool:
                 "moe_aux_loss_coeff": getattr(hf_config, "aux_loss_alpha", 0.001),
                 "moe_router_load_balancing_type": "none",
                 "moe_shared_expert_overlap": True,
-                "moe_grouped_gemm": True,
+                # grouped_gemm not installed in Modal image; disable for now
+                "moe_grouped_gemm": False,
                 "moe_router_score_function": "sigmoid",
                 "moe_router_pre_softmax": True,
                 "moe_router_topk_scaling_factor": getattr(hf_config, "routed_scaling_factor", 1.0),
