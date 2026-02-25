@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import os
+from argparse import Namespace
 from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
@@ -43,6 +44,75 @@ class MegatronParallelismConfig:
         assert self.tensor_parallel_size >= 1
         assert self.pipeline_parallel_size >= 1
         assert self.expert_parallel_size >= 1
+
+
+def _build_megatron_args(
+    rank: int,
+    world_size: int,
+    config: MegatronParallelismConfig,
+    *,
+    master_addr: str,
+    master_port: int,
+    global_batch_size: int,
+    micro_batch_size: int,
+    seq_length: int,
+) -> Namespace:
+    """Build a Megatron argument namespace before model construction."""
+    try:
+        from megatron.training.arguments import parse_args
+
+        try:
+            args = parse_args()
+        except TypeError:
+            # Some Megatron versions use a callback hook for parser extension.
+            args = parse_args(lambda parser: parser)  # type: ignore[call-arg]
+    except Exception:
+        # Conservative fallback if parser integration is unavailable.
+        args = Namespace()
+
+    model_parallel_size = (
+        config.tensor_parallel_size * config.pipeline_parallel_size * config.expert_parallel_size
+    )
+    data_parallel_size = max(1, world_size // max(1, model_parallel_size))
+
+    args.rank = rank
+    args.local_rank = rank
+    args.world_size = world_size
+    args.tensor_model_parallel_size = config.tensor_parallel_size
+    args.pipeline_model_parallel_size = config.pipeline_parallel_size
+    args.expert_model_parallel_size = config.expert_parallel_size
+    args.virtual_pipeline_model_parallel_size = config.virtual_pipeline_model_parallel_size
+    args.sequence_parallel = config.sequence_parallel
+    args.data_parallel_size = data_parallel_size
+
+    args.master_addr = master_addr
+    args.master_port = master_port
+    args.distributed_backend = getattr(args, "distributed_backend", "nccl")
+
+    args.micro_batch_size = micro_batch_size
+    args.global_batch_size = global_batch_size
+    args.seq_length = seq_length
+    args.max_position_embeddings = seq_length
+
+    args.fp16 = getattr(args, "fp16", False)
+    args.bf16 = getattr(args, "bf16", True)
+    args.use_distributed_optimizer = getattr(args, "use_distributed_optimizer", True)
+    args.overlap_grad_reduce = getattr(args, "overlap_grad_reduce", False)
+    args.overlap_param_gather = getattr(args, "overlap_param_gather", False)
+    args.accumulate_allreduce_grads_in_fp32 = getattr(
+        args, "accumulate_allreduce_grads_in_fp32", False
+    )
+
+    if getattr(args, "padded_vocab_size", None) is None:
+        args.padded_vocab_size = 0
+    if getattr(args, "vocab_size", None) is None:
+        args.vocab_size = 0
+    if getattr(args, "num_layers", None) is None:
+        args.num_layers = 1
+    if getattr(args, "seed", None) is None:
+        args.seed = 0
+
+    return args
 
 
 def init_megatron(
@@ -96,12 +166,36 @@ def init_megatron(
     try:
         import torch.distributed as dist
         from megatron.core import mpu
+        from megatron.training.global_vars import set_args
     except ImportError as e:
         raise ImportError(
             "Megatron-Core is required. Install from: "
             "pip install megatron-core or "
             "pip install git+https://github.com/NVIDIA/Megatron-LM.git"
         ) from e
+
+    master_addr = os.environ.get("MASTER_ADDR", master_addr or "127.0.0.1")
+    master_port = int(os.environ.get("MASTER_PORT", str(master_port) if master_port else "29500"))
+
+    # Set environment vars first for dist init and to keep worker behavior consistent.
+    os.environ["MASTER_ADDR"] = master_addr
+    os.environ["MASTER_PORT"] = str(master_port)
+    os.environ["RANK"] = str(rank)
+    os.environ["WORLD_SIZE"] = str(world_size)
+    os.environ["LOCAL_RANK"] = str(rank)
+
+    # Register Megatron args in global state before calling get_model.
+    megatron_args = _build_megatron_args(
+        rank=rank,
+        world_size=world_size,
+        config=config,
+        master_addr=master_addr,
+        master_port=master_port,
+        global_batch_size=max(1, world_size),
+        micro_batch_size=1,
+        seq_length=4096,
+    )
+    set_args(megatron_args)
 
     # Initialize torch.distributed first
     if not dist.is_initialized():
