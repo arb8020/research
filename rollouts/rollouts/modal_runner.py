@@ -402,9 +402,21 @@ async def run_modal(config: ModalRunConfig) -> dict[str, Any]:
 
             try:
                 # Test GPU access
+                # NOTE: If this hangs, it's likely due to too many pending sandboxes.
+                # The cleanup above should prevent this, but if it happens:
+                # 1. Check Modal dashboard for pending sandboxes
+                # 2. Run: modal.Sandbox.list() and terminate stale ones
+                # 3. Modal has per-app sandbox limits that cause exec() to block
                 logger.info("Verifying GPU access...")
+                start = trio.current_time()
                 proc = await trio_asyncio.aio_as_trio(sandbox.exec.aio("nvidia-smi", timeout=30))
                 stdout = await trio_asyncio.aio_as_trio(proc.stdout.read.aio())
+                elapsed = trio.current_time() - start
+                if elapsed > 10:
+                    logger.warning(
+                        f"GPU verification took {elapsed:.1f}s (expected <5s). "
+                        "If this persists, check for pending sandboxes in Modal dashboard."
+                    )
                 logger.info(f"[sandbox] {stdout}")
                 exit_code = await trio_asyncio.aio_as_trio(proc.wait.aio())
                 assert exit_code == 0, f"nvidia-smi failed with exit code {exit_code}"
