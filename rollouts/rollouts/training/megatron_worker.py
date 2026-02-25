@@ -73,12 +73,12 @@ def train(handle: Worker) -> None:
 
     # Set CUDA device BEFORE importing torch
     local_rank = rank % 8  # Assume max 8 GPUs per node
-    # Note: For training GPUs 1-7, local_rank maps to actual GPU
-    cuda_device = (
-        config.get("cuda_device_ids", list(range(8)))[rank]
-        if rank < len(config.get("cuda_device_ids", []))
-        else local_rank + 1
-    )
+    cuda_device_ids = config.get("cuda_device_ids")
+    if cuda_device_ids and rank < len(cuda_device_ids):
+        cuda_device = cuda_device_ids[rank]
+    else:
+        # Default: use local_rank directly (rank 0 -> GPU 0, rank 1 -> GPU 1, etc.)
+        cuda_device = local_rank
     os.environ["CUDA_VISIBLE_DEVICES"] = str(cuda_device)
     logger.info("Worker rank %d using CUDA_VISIBLE_DEVICES=%s", rank, cuda_device)
 
