@@ -43,8 +43,8 @@ GLM_DEPS = DepsConfig(
         "tmux",
     ),
     pip_packages=(
-        # PyTorch nightly with CUDA 12.8 for B200
-        "torch",
+        # PyTorch 2.10+ with CUDA 12.8 for B200 (requires varlen attention for torchtitan)
+        "torch>=2.10.0",
         "torchvision",
         "torchaudio",
         "flashinfer-python",

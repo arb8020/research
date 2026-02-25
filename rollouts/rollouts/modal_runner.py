@@ -202,26 +202,44 @@ async def _download_and_snapshot_model(sandbox: Any, model_name: str) -> Any | N
 
     logger.info(f"Downloading model weights for {model_name}...")
 
-    # Download using huggingface_hub CLI module
+    # Download using snapshot_download with progress enabled
+    # Note: tqdm progress goes to stderr
+    download_script = f"""
+import sys
+from huggingface_hub import snapshot_download
+print(f"Starting download of {model_name!r}...", flush=True)
+path = snapshot_download("{model_name}")
+print(f"Downloaded to: {{path}}", flush=True)
+"""
     proc = await trio_asyncio.aio_as_trio(
         sandbox.exec.aio(
             "python",
-            "-m",
-            "huggingface_hub.commands.huggingface_cli",
-            "download",
-            model_name,
+            "-c",
+            download_script.strip(),
             timeout=1800,  # 30 min timeout for large models
         )
     )
 
-    # Stream output using threads (async for doesn't work with trio_asyncio bridge)
-    def _stream_output() -> None:
+    # Stream output using parallel threads (async for doesn't work with trio_asyncio bridge)
+    import threading
+
+    def _read_stdout() -> None:
         for line in proc.stdout:
             logger.info(f"[download] {line.rstrip()}")
-        for line in proc.stderr:
-            logger.warning(f"[download stderr] {line.rstrip()}")
 
-    await trio.to_thread.run_sync(_stream_output)
+    def _read_stderr() -> None:
+        for line in proc.stderr:
+            logger.info(f"[download] {line.rstrip()}")  # tqdm progress goes here
+
+    def _stream_both() -> None:
+        t1 = threading.Thread(target=_read_stdout)
+        t2 = threading.Thread(target=_read_stderr)
+        t1.start()
+        t2.start()
+        t1.join()
+        t2.join()
+
+    await trio.to_thread.run_sync(_stream_both)
 
     exit_code = await trio_asyncio.aio_as_trio(proc.wait.aio())
     if exit_code != 0:
@@ -231,8 +249,12 @@ async def _download_and_snapshot_model(sandbox: Any, model_name: str) -> Any | N
     logger.info("Model downloaded, creating directory snapshot...")
 
     # Snapshot the HuggingFace cache directory
+    # Note: _experimental_snapshot_directory is the alpha API for directory-only snapshots
+    # It's more efficient than snapshot_filesystem for caching just the model weights
     try:
-        snapshot = await trio_asyncio.aio_as_trio(sandbox.snapshot_directory.aio(HF_CACHE_DIR))
+        snapshot = await trio_asyncio.aio_as_trio(
+            sandbox._experimental_snapshot_directory.aio(HF_CACHE_DIR)
+        )
         logger.info(f"Created snapshot: {snapshot.object_id}")
         return snapshot
     except Exception:
@@ -245,7 +267,8 @@ async def _mount_cached_weights(sandbox: Any, snapshot: Any) -> None:
     import trio_asyncio
 
     logger.info(f"Mounting cached weights from snapshot {snapshot.object_id}...")
-    await trio_asyncio.aio_as_trio(sandbox.mount_image.aio(HF_CACHE_DIR, snapshot))
+    # Note: _experimental_mount_image is the alpha API for mounting directory snapshots
+    await trio_asyncio.aio_as_trio(sandbox._experimental_mount_image.aio(HF_CACHE_DIR, snapshot))
     logger.info("Cached weights mounted")
 
 
