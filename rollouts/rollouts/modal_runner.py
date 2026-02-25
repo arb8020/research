@@ -144,6 +144,17 @@ async def _create_sandbox(
         modal.App.lookup.aio(MODAL_APP_NAME, create_if_missing=True)
     )
 
+    # Clean up any existing sandboxes from this app to avoid hitting limits
+    existing = list(modal.Sandbox.list(app_id=app.app_id))
+    if existing:
+        logger.info(f"Cleaning up {len(existing)} existing sandbox(es)...")
+        for sb in existing:
+            try:
+                sb.terminate()
+                logger.info(f"  Terminated {sb.object_id}")
+            except Exception as e:
+                logger.warning(f"  Failed to terminate {sb.object_id}: {e}")
+
     logger.info("Building image...")
     assert config.deps is not None  # Validated in __post_init__
     image = _build_modal_image(modal, config.deps, config.gpu_type)
@@ -171,6 +182,7 @@ async def _create_sandbox(
             gpu=gpu_spec,
             timeout=timeout_seconds,
             name=sandbox_name,
+            verbose=True,  # Enable backend logging for observability
         )
     )
 
@@ -391,12 +403,11 @@ async def run_modal(config: ModalRunConfig) -> dict[str, Any]:
             try:
                 # Test GPU access
                 logger.info("Verifying GPU access...")
-
-                def _check_gpu() -> None:
-                    stdout, _, exit_code = _exec_sync(sandbox, "nvidia-smi", timeout=30)
-                    assert exit_code == 0, "nvidia-smi failed"
-
-                await trio.to_thread.run_sync(_check_gpu)
+                proc = await trio_asyncio.aio_as_trio(sandbox.exec.aio("nvidia-smi", timeout=30))
+                stdout = await trio_asyncio.aio_as_trio(proc.stdout.read.aio())
+                logger.info(f"[sandbox] {stdout}")
+                exit_code = await trio_asyncio.aio_as_trio(proc.wait.aio())
+                assert exit_code == 0, f"nvidia-smi failed with exit code {exit_code}"
                 logger.info("GPU access verified")
 
                 # Sync code (always uses local git bundle)
