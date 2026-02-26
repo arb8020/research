@@ -69,6 +69,8 @@ GLM_DEPS = DepsConfig(
         "curl -LsSf https://astral.sh/uv/install.sh | sh && . ~/.local/bin/env",
         "~/.local/bin/uv pip install --system 'sglang[all] @ git+https://github.com/sgl-project/sglang.git@main#subdirectory=python'",
         "~/.local/bin/uv pip install --system --upgrade 'transformers>=5.0.0' 'huggingface-hub>=1.4.0'",
+        # mbridge for Megatron HF->Megatron weight conversion
+        "~/.local/bin/uv pip install --system 'mbridge @ git+https://github.com/ISEEKYAN/mbridge.git'",
         "git clone --depth 1 https://github.com/NVIDIA/Megatron-LM.git /root/Megatron-LM",
     ),
 )
