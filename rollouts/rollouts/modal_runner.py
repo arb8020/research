@@ -120,6 +120,9 @@ class ModalRunConfig:
     sandbox_id: str | None = None
     keep_alive: bool = False
     model_name: str | None = None  # Model name for weight caching (e.g., "zai-org/GLM-4.7-Flash")
+    pruning_recipe: str | None = (
+        None  # Path to pruning recipe JSON (if set, model is pruned before caching)
+    )
 
     def __post_init__(self) -> None:
         if self.deps is None:
@@ -187,13 +190,22 @@ def _build_modal_image(modal: Any, deps: DepsConfig, gpu_type: str) -> Any:
     return image
 
 
-def _get_model_cache_key(model_name: str) -> str:
-    """Convert model name to a valid cache key."""
-    # Replace slashes and other special chars
-    return model_name.replace("/", "--").replace(":", "-")
+def _get_model_cache_key(model_name: str, pruning_recipe: str | None = None) -> str:
+    """Convert model name to a valid cache key.
+
+    If pruning_recipe is set, includes a hash of the recipe in the key
+    so pruned models get their own cache entry.
+    """
+    key = model_name.replace("/", "--").replace(":", "-")
+    if pruning_recipe:
+        import hashlib
+
+        recipe_hash = hashlib.md5(pruning_recipe.encode()).hexdigest()[:8]
+        key = f"{key}--pruned-{recipe_hash}"
+    return key
 
 
-async def _get_cached_snapshot(model_name: str) -> Any | None:
+async def _get_cached_snapshot(model_name: str, pruning_recipe: str | None = None) -> Any | None:
     """Look up cached model weights snapshot from Modal Dict.
 
     Returns the snapshot Image if found, None otherwise.
@@ -201,7 +213,7 @@ async def _get_cached_snapshot(model_name: str) -> Any | None:
     import modal
     import trio
 
-    cache_key = _get_model_cache_key(model_name)
+    cache_key = _get_model_cache_key(model_name, pruning_recipe)
 
     try:
         # Dict operations are sync, run in thread
@@ -221,12 +233,14 @@ async def _get_cached_snapshot(model_name: str) -> Any | None:
     return None
 
 
-async def _save_snapshot_to_cache(model_name: str, snapshot: Any) -> None:
+async def _save_snapshot_to_cache(
+    model_name: str, snapshot: Any, pruning_recipe: str | None = None
+) -> None:
     """Save a model weights snapshot to the Modal Dict cache."""
     import modal
     import trio
 
-    cache_key = _get_model_cache_key(model_name)
+    cache_key = _get_model_cache_key(model_name, pruning_recipe)
     snapshot_id = snapshot.object_id
 
     try:
@@ -305,6 +319,304 @@ print(f"Downloaded to: {{path}}", flush=True)
             sandbox._experimental_snapshot_directory.aio(HF_CACHE_DIR)
         )
         logger.info(f"Created snapshot: {snapshot.object_id}")
+        return snapshot
+    except Exception:
+        logger.exception("Failed to create snapshot")
+        return None
+
+
+async def _download_prune_and_snapshot_model(
+    sandbox: Any, model_name: str, pruning_recipe: str
+) -> Any | None:
+    """Download model, apply pruning recipe, and create a directory snapshot.
+
+    The pruning runs in the sandbox (requires GPU for model loading).
+    Returns the snapshot Image, or None if failed.
+    """
+    import trio
+    import trio_asyncio
+
+    logger.info(f"Downloading and pruning model: {model_name}")
+
+    # Python script to download, prune, and save
+    # The pruned model overwrites the HF cache so the snapshot contains pruned weights
+    prune_script = f'''
+import json
+import logging
+import torch
+import torch.nn as nn
+from transformers import AutoModelForCausalLM, AutoTokenizer
+from huggingface_hub import snapshot_download
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+model_name = "{model_name}"
+recipe_json = """{pruning_recipe}"""
+
+# Parse recipe
+recipe = json.loads(recipe_json)
+experts_to_keep = {{int(k): v for k, v in recipe["experts_to_keep"].items()}}
+
+# Download model first
+logger.info(f"Downloading {{model_name}}...")
+cache_path = snapshot_download(model_name)
+logger.info(f"Downloaded to: {{cache_path}}")
+
+# Load model
+logger.info("Loading model for pruning...")
+model = AutoModelForCausalLM.from_pretrained(
+    model_name,
+    torch_dtype=torch.bfloat16,
+    trust_remote_code=True,
+    device_map="auto",
+)
+tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+
+# Get original config
+config = model.config
+original_num = getattr(config, "n_routed_experts", None) or getattr(config, "num_experts", 0)
+logger.info(f"Original experts: {{original_num}}")
+
+# Apply pruning
+for layer_idx, keep_indices in experts_to_keep.items():
+    layer = model.model.layers[layer_idx]
+    moe_block = getattr(layer, "mlp", None)
+    if moe_block is None or not hasattr(moe_block, "experts"):
+        continue
+
+    experts = moe_block.experts
+    num_experts = len(experts)
+
+    # Prune experts
+    new_experts = nn.ModuleList([experts[i] for i in keep_indices])
+    moe_block.experts = new_experts
+
+    # Prune router
+    router = getattr(moe_block, "gate", None)
+    if router is not None and hasattr(router, "weight"):
+        weight = router.weight.data
+        if weight.shape[0] == num_experts:
+            router.weight = nn.Parameter(weight[keep_indices])
+        elif weight.shape[1] == num_experts:
+            router.weight = nn.Parameter(weight[:, keep_indices])
+        if hasattr(router, "bias") and router.bias is not None:
+            if router.bias.shape[0] == num_experts:
+                router.bias = nn.Parameter(router.bias.data[keep_indices])
+
+    logger.info(f"Layer {{layer_idx}}: {{num_experts}} -> {{len(keep_indices)}} experts")
+
+# Update config
+new_num = len(next(iter(experts_to_keep.values())))
+if hasattr(config, "n_routed_experts"):
+    config.n_routed_experts = new_num
+if hasattr(config, "num_experts"):
+    config.num_experts = new_num
+
+logger.info(f"Pruning complete: {{original_num}} -> {{new_num}} experts")
+
+# Save back to cache location (overwrites original)
+logger.info(f"Saving pruned model to {{cache_path}}...")
+model.save_pretrained(cache_path, safe_serialization=True)
+tokenizer.save_pretrained(cache_path)
+
+# Also save recipe for reference
+with open(f"{{cache_path}}/pruning_recipe.json", "w") as f:
+    json.dump(recipe, f, indent=2)
+
+logger.info("Pruned model saved!")
+'''
+
+    proc = await trio_asyncio.aio_as_trio(
+        sandbox.exec.aio(
+            "python",
+            "-c",
+            prune_script,
+            timeout=3600,  # 1 hour for download + prune + save
+        )
+    )
+
+    # Stream output
+    import threading
+
+    def _read_stdout() -> None:
+        for line in proc.stdout:
+            logger.info(f"[prune] {line.rstrip()}")
+
+    def _read_stderr() -> None:
+        for line in proc.stderr:
+            logger.info(f"[prune] {line.rstrip()}")
+
+    def _stream_both() -> None:
+        t1 = threading.Thread(target=_read_stdout)
+        t2 = threading.Thread(target=_read_stderr)
+        t1.start()
+        t2.start()
+        t1.join()
+        t2.join()
+
+    await trio.to_thread.run_sync(_stream_both)
+
+    exit_code = await trio_asyncio.aio_as_trio(proc.wait.aio())
+    if exit_code != 0:
+        logger.error(f"Pruning failed with exit code {exit_code}")
+        return None
+
+    logger.info("Pruning complete, creating directory snapshot...")
+
+    try:
+        snapshot = await trio_asyncio.aio_as_trio(
+            sandbox._experimental_snapshot_directory.aio(HF_CACHE_DIR)
+        )
+        logger.info(f"Created pruned model snapshot: {snapshot.object_id}")
+        return snapshot
+    except Exception:
+        logger.exception("Failed to create snapshot")
+        return None
+
+
+async def _prune_mounted_model_and_snapshot(
+    sandbox: Any, model_name: str, pruning_recipe: str
+) -> Any | None:
+    """Prune already-mounted model weights and create a directory snapshot.
+
+    Use this when the base model is already cached/mounted. Skips download.
+    Returns the snapshot Image, or None if failed.
+    """
+    import trio
+    import trio_asyncio
+
+    logger.info(f"Pruning mounted model: {model_name}")
+
+    # Python script to prune (model already in HF cache from mount)
+    prune_script = f'''
+import json
+import logging
+import torch
+import torch.nn as nn
+from transformers import AutoModelForCausalLM, AutoTokenizer
+from huggingface_hub import snapshot_download
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+model_name = "{model_name}"
+recipe_json = """{pruning_recipe}"""
+
+# Parse recipe
+recipe = json.loads(recipe_json)
+experts_to_keep = {{int(k): v for k, v in recipe["experts_to_keep"].items()}}
+
+# Get cache path (model should already be there from mount)
+cache_path = snapshot_download(model_name, local_files_only=True)
+logger.info(f"Using cached model at: {{cache_path}}")
+
+# Load model
+logger.info("Loading model for pruning...")
+model = AutoModelForCausalLM.from_pretrained(
+    model_name,
+    torch_dtype=torch.bfloat16,
+    trust_remote_code=True,
+    device_map="auto",
+)
+tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+
+# Get original config
+config = model.config
+original_num = getattr(config, "n_routed_experts", None) or getattr(config, "num_experts", 0)
+logger.info(f"Original experts: {{original_num}}")
+
+# Apply pruning
+for layer_idx, keep_indices in experts_to_keep.items():
+    layer = model.model.layers[layer_idx]
+    moe_block = getattr(layer, "mlp", None)
+    if moe_block is None or not hasattr(moe_block, "experts"):
+        continue
+
+    experts = moe_block.experts
+    num_experts = len(experts)
+
+    # Prune experts
+    new_experts = nn.ModuleList([experts[i] for i in keep_indices])
+    moe_block.experts = new_experts
+
+    # Prune router
+    router = getattr(moe_block, "gate", None)
+    if router is not None and hasattr(router, "weight"):
+        weight = router.weight.data
+        if weight.shape[0] == num_experts:
+            router.weight = nn.Parameter(weight[keep_indices])
+        elif weight.shape[1] == num_experts:
+            router.weight = nn.Parameter(weight[:, keep_indices])
+        if hasattr(router, "bias") and router.bias is not None:
+            if router.bias.shape[0] == num_experts:
+                router.bias = nn.Parameter(router.bias.data[keep_indices])
+
+    logger.info(f"Layer {{layer_idx}}: {{num_experts}} -> {{len(keep_indices)}} experts")
+
+# Update config
+new_num = len(next(iter(experts_to_keep.values())))
+if hasattr(config, "n_routed_experts"):
+    config.n_routed_experts = new_num
+if hasattr(config, "num_experts"):
+    config.num_experts = new_num
+
+logger.info(f"Pruning complete: {{original_num}} -> {{new_num}} experts")
+
+# Save back to cache location (overwrites original)
+logger.info(f"Saving pruned model to {{cache_path}}...")
+model.save_pretrained(cache_path, safe_serialization=True)
+tokenizer.save_pretrained(cache_path)
+
+# Also save recipe for reference
+with open(f"{{cache_path}}/pruning_recipe.json", "w") as f:
+    json.dump(recipe, f, indent=2)
+
+logger.info("Pruned model saved!")
+'''
+
+    proc = await trio_asyncio.aio_as_trio(
+        sandbox.exec.aio(
+            "python",
+            "-c",
+            prune_script,
+            timeout=1800,  # 30 min (no download needed)
+        )
+    )
+
+    # Stream output
+    import threading
+
+    def _read_stdout() -> None:
+        for line in proc.stdout:
+            logger.info(f"[prune] {line.rstrip()}")
+
+    def _read_stderr() -> None:
+        for line in proc.stderr:
+            logger.info(f"[prune] {line.rstrip()}")
+
+    def _stream_both() -> None:
+        t1 = threading.Thread(target=_read_stdout)
+        t2 = threading.Thread(target=_read_stderr)
+        t1.start()
+        t2.start()
+        t1.join()
+        t2.join()
+
+    await trio.to_thread.run_sync(_stream_both)
+
+    exit_code = await trio_asyncio.aio_as_trio(proc.wait.aio())
+    if exit_code != 0:
+        logger.error(f"Pruning failed with exit code {exit_code}")
+        return None
+
+    logger.info("Pruning complete, creating directory snapshot...")
+
+    try:
+        snapshot = await trio_asyncio.aio_as_trio(
+            sandbox._experimental_snapshot_directory.aio(HF_CACHE_DIR)
+        )
+        logger.info(f"Created pruned model snapshot: {snapshot.object_id}")
         return snapshot
     except Exception:
         logger.exception("Failed to create snapshot")
@@ -631,17 +943,44 @@ async def run_modal(config: ModalRunConfig) -> dict[str, Any]:
                 logger.info("GPU access verified")
 
                 # Model weight caching: check for cached snapshot or download and cache
+                # If pruning_recipe is set, the cache key includes a hash of the recipe
                 if config.model_name:
-                    cached_snapshot = await _get_cached_snapshot(config.model_name)
+                    cached_snapshot = await _get_cached_snapshot(
+                        config.model_name, config.pruning_recipe
+                    )
                     if cached_snapshot:
-                        # Mount cached weights
+                        # Mount cached weights (possibly pruned)
                         await _mount_cached_weights(sandbox, cached_snapshot)
                     else:
-                        # Download weights and create snapshot for future runs
-                        logger.info(f"No cached weights for {config.model_name}, downloading...")
-                        snapshot = await _download_and_snapshot_model(sandbox, config.model_name)
+                        # Need to download/prune weights
+                        if config.pruning_recipe:
+                            # Check if base model is cached (can skip download)
+                            base_snapshot = await _get_cached_snapshot(config.model_name, None)
+                            if base_snapshot:
+                                logger.info("Using cached base model, applying pruning...")
+                                await _mount_cached_weights(sandbox, base_snapshot)
+                                # Prune the mounted weights (they're now in HF_CACHE_DIR)
+                                snapshot = await _prune_mounted_model_and_snapshot(
+                                    sandbox, config.model_name, config.pruning_recipe
+                                )
+                            else:
+                                logger.info(
+                                    f"No cached weights for {config.model_name}, downloading and pruning..."
+                                )
+                                snapshot = await _download_prune_and_snapshot_model(
+                                    sandbox, config.model_name, config.pruning_recipe
+                                )
+                        else:
+                            logger.info(
+                                f"No cached weights for {config.model_name}, downloading..."
+                            )
+                            snapshot = await _download_and_snapshot_model(
+                                sandbox, config.model_name
+                            )
                         if snapshot:
-                            await _save_snapshot_to_cache(config.model_name, snapshot)
+                            await _save_snapshot_to_cache(
+                                config.model_name, snapshot, config.pruning_recipe
+                            )
 
                 # Sync code (always uses local git bundle)
                 logger.info("Syncing code to sandbox...")
@@ -774,13 +1113,27 @@ def main() -> None:
     gpu_type = args.gpu if args.gpu != "A100" else hardware.gpu_type
     gpu_count = args.gpu_count if args.gpu_count != 1 else hardware.gpu_count
 
-    # Extract model name for weight caching (if available)
-    # Look for config.model.name (GRPOConfig structure)
+    # Extract model name and pruning recipe for weight caching (if available)
+    # Look for config.model.name and config.model.pruning_recipe (GRPOConfig structure)
     grpo_config = getattr(config_module, "config", None)
     model_name = None
-    if grpo_config and hasattr(grpo_config, "model") and hasattr(grpo_config.model, "name"):
-        model_name = grpo_config.model.name
-        logger.info(f"Model name for weight caching: {model_name}")
+    pruning_recipe = None
+    if grpo_config and hasattr(grpo_config, "model"):
+        model_config = grpo_config.model
+        if hasattr(model_config, "name"):
+            model_name = model_config.name
+            logger.info(f"Model name for weight caching: {model_name}")
+        if hasattr(model_config, "pruning_recipe") and model_config.pruning_recipe:
+            # Read the recipe file content
+            recipe_path = Path(model_config.pruning_recipe)
+            if not recipe_path.is_absolute():
+                recipe_path = REPO_ROOT / recipe_path
+            if recipe_path.exists():
+                with open(recipe_path) as f:
+                    pruning_recipe = f.read()
+                logger.info(f"Pruning recipe loaded: {model_config.pruning_recipe}")
+            else:
+                logger.warning(f"Pruning recipe not found: {recipe_path}")
 
     # Build run config
     run_config = ModalRunConfig(
@@ -793,6 +1146,7 @@ def main() -> None:
         sandbox_id=args.sandbox_id,
         keep_alive=args.keep_alive,
         model_name=model_name,
+        pruning_recipe=pruning_recipe,
     )
 
     # Run

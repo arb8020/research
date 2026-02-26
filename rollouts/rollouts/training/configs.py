@@ -214,6 +214,10 @@ class ModelConfig:
     lora_alpha: int = 32
     # Checkpoint loading (for SFT → RL pipeline)
     checkpoint_path: str | None = None
+    # Expert pruning recipe (path to JSON with experts_to_keep mapping)
+    # If set, model is downloaded, pruned, and cached before training
+    # Recipe format: {"base_model": "...", "experts_to_keep": {"layer_idx": [expert_indices]}}
+    pruning_recipe: str | None = None
 
 
 # =============================================================================
