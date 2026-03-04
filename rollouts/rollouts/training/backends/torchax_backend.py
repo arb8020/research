@@ -82,8 +82,15 @@ class TorchaxTrainingBackend:
             "See docs/D6_TRAINING_BACKEND.md for details."
         )
 
-    def forward_backward(self, batch: dict[str, Any]) -> TrainFuture[dict[str, float]]:
+    def forward_backward(
+        self,
+        batch: dict[str, Any],
+        *,
+        loss_fn: Callable[..., Any] | None = None,
+        loss_fn_config: dict[str, float] | None = None,
+    ) -> TrainFuture[dict[str, float]]:
         """Standard PyTorch training step (runs on JAX runtime)."""
+        del batch, loss_fn, loss_fn_config
         raise NotImplementedError("D6v4: Not implemented")
 
     def optim_step(self) -> TrainFuture[dict[str, float]]:

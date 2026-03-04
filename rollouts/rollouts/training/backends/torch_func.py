@@ -84,11 +84,18 @@ class TorchFuncTrainingBackend:
             "See docs/D6_TRAINING_BACKEND.md for implementation plan."
         )
 
-    def forward_backward(self, batch: dict[str, Any]) -> TrainFuture[dict[str, float]]:
+    def forward_backward(
+        self,
+        batch: dict[str, Any],
+        *,
+        loss_fn: Callable[..., Any] | None = None,
+        loss_fn_config: dict[str, float] | None = None,
+    ) -> TrainFuture[dict[str, float]]:
         """Compute loss and gradients (functional style).
 
         Uses torch.func.grad_and_value for JAX-style autodiff.
         """
+        del batch, loss_fn, loss_fn_config
         raise NotImplementedError("D6v2: Not yet implemented")
 
     def optim_step(self) -> TrainFuture[dict[str, float]]:

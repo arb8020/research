@@ -42,6 +42,20 @@ From nmoe and `code_style/FAVORITES.md`:
 - **Frozen dataclasses for bundles** - group related data without behavior
 - **Pure functions for transforms** - inputs determine outputs
 
+## Scope Note: `nn.Module` Surface vs Functional Core
+
+This doc focuses on making our **existing PyTorch backend (D6v1)** less stateful by pushing mutation into explicit
+local variables and returning updated state snapshots.
+
+Separately, we also want a **D6v2 `torch.func` backend** that is more fully functional internally. The current
+direction is a middle ground:
+
+- Keep `nn.Module` as the shared interoperability surface (HF/PEFT/FSDP, `state_dict`, inference reload).
+- Implement the training step with a functional core when useful (`torch.func.functional_call`, explicit params/opt
+  state).
+
+Decision criteria and the D6 ladder are documented in `docs/D6_TRAINING_BACKEND.md`.
+
 ## Proposed Design
 
 ### Core Types

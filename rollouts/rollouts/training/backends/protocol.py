@@ -8,6 +8,7 @@ Minimal surface area (Tinker-inspired):
 Tiger Style: Protocol-based, explicit operations.
 """
 
+from collections.abc import Callable
 from typing import Any, Protocol
 
 from ...training.types import TrainFuture
@@ -22,7 +23,13 @@ class TrainingBackend(Protocol):
     Casey: Protocol over inheritance (low coupling).
     """
 
-    def forward_backward(self, batch: dict[str, Any]) -> TrainFuture[dict[str, float]]:
+    def forward_backward(
+        self,
+        batch: dict[str, Any],
+        *,
+        loss_fn: Callable[..., Any] | None = None,
+        loss_fn_config: dict[str, float] | None = None,
+    ) -> TrainFuture[dict[str, float]]:
         """Compute loss and gradients
 
         Args:

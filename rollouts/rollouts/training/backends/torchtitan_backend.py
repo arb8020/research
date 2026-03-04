@@ -300,11 +300,22 @@ class TorchTitanBackend:
         """Get the model (for weight sync)."""
         return self._model
 
-    def forward_backward(self, batch: dict[str, Any]) -> TrainFuture[dict[str, float]]:
+    def forward_backward(
+        self,
+        batch: dict[str, Any],
+        *,
+        loss_fn: Callable[..., Any] | None = None,
+        loss_fn_config: dict[str, float] | None = None,
+    ) -> TrainFuture[dict[str, float]]:
         """Compute loss and gradients."""
         import torch
 
         assert self._model is not None, "Model not initialized"
+        if loss_fn_config is not None:
+            raise ValueError(
+                "loss_fn_config is not supported for TorchTitanTrainingBackend.forward_backward yet. "
+                "Pass a closure via loss_fn that captures any config instead."
+            )
 
         self._model.train()
 
@@ -314,7 +325,8 @@ class TorchTitanBackend:
         logits = self._model(input_ids)
 
         # Compute loss using provided loss_fn
-        loss = self.loss_fn(logits, batch)
+        active_loss_fn = loss_fn or self.loss_fn
+        loss = active_loss_fn(logits, batch)
 
         # Backward pass
         loss.backward()

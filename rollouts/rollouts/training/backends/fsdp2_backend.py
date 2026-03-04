@@ -125,7 +125,13 @@ class FSDP2TrainingBackend:
             # BF16 doesn't need gradient scaling
             self._grad_scaler = None
 
-    def forward_backward(self, batch: dict[str, Any]) -> TrainFuture[dict[str, float]]:
+    def forward_backward(
+        self,
+        batch: dict[str, Any],
+        *,
+        loss_fn: Callable[..., Any] | None = None,
+        loss_fn_config: dict[str, float] | None = None,
+    ) -> TrainFuture[dict[str, float]]:
         """Compute loss and gradients using FSDP.
 
         Args:
@@ -140,6 +146,12 @@ class FSDP2TrainingBackend:
             Future resolving to {"loss": float, ...}
         """
         import torch
+
+        if loss_fn_config is not None:
+            raise ValueError(
+                "loss_fn_config is not supported for FSDP2TrainingBackend.forward_backward yet. "
+                "Pass a closure via loss_fn that captures any config instead."
+            )
 
         # Determine compute dtype
         dtype_map = {
@@ -162,7 +174,8 @@ class FSDP2TrainingBackend:
             )
 
             # Compute loss
-            loss = self.loss_fn(outputs, batch)
+            active_loss_fn = loss_fn or self.loss_fn
+            loss = active_loss_fn(outputs, batch)
 
             # Apply advantage weighting for RL
             advantages = batch.get("advantages")

@@ -169,7 +169,13 @@ class PyTorchTrainingBackend:
         else:
             self._fsdp_state_dict_opts = None
 
-    def forward_backward(self, batch: dict[str, Any]) -> TrainFuture[dict[str, float]]:
+    def forward_backward(
+        self,
+        batch: dict[str, Any],
+        *,
+        loss_fn: Callable[..., Any] | None = None,
+        loss_fn_config: dict[str, float] | None = None,
+    ) -> TrainFuture[dict[str, float]]:
         """Compute loss and gradients with gradient accumulation (returns future immediately).
 
         Supports micro-batching for memory efficiency (SLIME/Tinker pattern):
@@ -195,6 +201,11 @@ class PyTorchTrainingBackend:
         assert "input_ids" in batch, "batch must have 'input_ids'"
         assert "labels" in batch, "batch must have 'labels'"
         assert "loss_mask" in batch, "batch must have 'loss_mask'"
+        if loss_fn_config is not None:
+            raise ValueError(
+                "loss_fn_config is not supported for PyTorchTrainingBackend.forward_backward yet. "
+                "Pass a closure via loss_fn that captures any config instead."
+            )
 
         try:
             # Zero gradients at the start
@@ -247,7 +258,9 @@ class PyTorchTrainingBackend:
                     logger.warning(f"Model has {trainable} trainable parameters")
 
                 # Compute loss (loss_fn returns (loss, metrics) or just loss)
-                loss_result = self.loss_fn(logits, micro_batch)
+                # If caller provided an override, prefer it (Tinker-style: per-step loss selection).
+                active_loss_fn = loss_fn or self.loss_fn
+                loss_result = active_loss_fn(logits, micro_batch)
 
                 # Handle both (loss, metrics) tuple and bare loss tensor
                 if isinstance(loss_result, tuple):

@@ -331,7 +331,13 @@ class FSDPTrainingBackend:
 
         return self.model
 
-    def forward_backward(self, batch: dict[str, Any]) -> TrainFuture[dict[str, float]]:
+    def forward_backward(
+        self,
+        batch: dict[str, Any],
+        *,
+        loss_fn: Callable[..., Any] | None = None,
+        loss_fn_config: dict[str, float] | None = None,
+    ) -> TrainFuture[dict[str, float]]:
         """Compute loss and gradients (distributed across GPUs).
 
         Args:
@@ -356,6 +362,11 @@ class FSDPTrainingBackend:
         assert self._fsdp_model is not None, "Cannot call forward_backward before initialization"
         assert "input_ids" in batch, "batch must contain 'input_ids'"
         assert isinstance(batch["input_ids"], torch.Tensor), "input_ids must be a tensor"
+        if loss_fn_config is not None:
+            raise ValueError(
+                "loss_fn_config is not supported for FSDPTrainingBackend.forward_backward yet. "
+                "Pass a closure via loss_fn that captures any config instead."
+            )
 
         # Move batch to device
         batch = {
@@ -379,7 +390,8 @@ class FSDPTrainingBackend:
         # Support both:
         #   - loss_fn(...) -> torch.Tensor
         #   - loss_fn(...) -> (torch.Tensor, metrics: dict[str, float])
-        loss_result = self.loss_fn(logits=logits, batch=batch)
+        active_loss_fn = loss_fn or self.loss_fn
+        loss_result = active_loss_fn(logits=logits, batch=batch)
         if isinstance(loss_result, tuple):
             loss, loss_metrics = loss_result
         else:

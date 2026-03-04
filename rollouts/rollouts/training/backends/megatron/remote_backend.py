@@ -130,7 +130,13 @@ class MegatronRemoteBackend:
         self._initialized = True
         logger.info("All workers initialized")
 
-    def forward_backward(self, batch: dict[str, Any]) -> TrainFuture[dict[str, float]]:
+    def forward_backward(
+        self,
+        batch: dict[str, Any],
+        *,
+        loss_fn: Any | None = None,
+        loss_fn_config: dict[str, float] | None = None,
+    ) -> TrainFuture[dict[str, float]]:
         """Compute loss and gradients on batch.
 
         Args:
@@ -140,6 +146,11 @@ class MegatronRemoteBackend:
             Future resolving to metrics dict with loss, etc.
         """
         assert self._initialized, "Call initialize() first"
+        if loss_fn is not None or loss_fn_config is not None:
+            raise ValueError(
+                "MegatronRemoteBackend.forward_backward does not support per-call loss overrides yet. "
+                "Loss selection must happen inside the worker (or via an enum/string loss id carried in the request)."
+            )
 
         # Send batch to rank 0 (it broadcasts to other ranks)
         self.workers[0].send({

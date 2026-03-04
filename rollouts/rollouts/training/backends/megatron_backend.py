@@ -126,7 +126,13 @@ class MegatronTrainingBackend:
                 "Install from: https://github.com/NVIDIA/Megatron-LM"
             ) from e
 
-    def forward_backward(self, batch: dict[str, Any]) -> TrainFuture[dict[str, float]]:
+    def forward_backward(
+        self,
+        batch: dict[str, Any],
+        *,
+        loss_fn: Any | None = None,
+        loss_fn_config: dict[str, float] | None = None,
+    ) -> TrainFuture[dict[str, float]]:
         """Compute loss and gradients using Megatron's pipeline engine.
 
         Args:
@@ -148,6 +154,12 @@ class MegatronTrainingBackend:
 
         import torch
 
+        if loss_fn_config is not None:
+            raise ValueError(
+                "loss_fn_config is not supported for MegatronTrainingBackend.forward_backward yet. "
+                "Pass a closure via loss_fn that captures any config instead."
+            )
+
         # Zero gradients
         for model_chunk in self.model:
             model_chunk.zero_grad_buffer()
@@ -160,10 +172,10 @@ class MegatronTrainingBackend:
                 self._batch = batch
                 self._consumed = False
 
-            def __iter__(self):
+            def __iter__(self) -> BatchIterator:
                 return self
 
-            def __next__(self):
+            def __next__(self) -> dict[str, Any]:
                 if self._consumed:
                     raise StopIteration
                 self._consumed = True
@@ -172,7 +184,7 @@ class MegatronTrainingBackend:
         data_iterator = BatchIterator(batch)
 
         # Forward step function for Megatron pipeline
-        def forward_step(data_iter, model):
+        def forward_step(data_iter: Any, model: Any) -> Any:
             batch = next(data_iter)
             tokens = batch["input_ids"]
             labels = batch["labels"]
@@ -188,8 +200,9 @@ class MegatronTrainingBackend:
             )
 
             # Compute loss
-            if self.loss_fn is not None:
-                loss = self.loss_fn(output, labels, loss_mask)
+            active_loss_fn = loss_fn if loss_fn is not None else self.loss_fn
+            if active_loss_fn is not None:
+                loss = active_loss_fn(output, labels, loss_mask)
             else:
                 # Default: assume model returns loss directly
                 loss = output if isinstance(output, torch.Tensor) else output.loss
@@ -199,7 +212,7 @@ class MegatronTrainingBackend:
                 loss = loss * advantages.mean()
 
             # Return for pipeline engine
-            def loss_reducer(output_tensor):
+            def loss_reducer(output_tensor: Any) -> dict[str, Any]:
                 return {"loss": output_tensor}
 
             return loss, loss_reducer
@@ -292,22 +305,13 @@ class MegatronTrainingBackend:
         Args:
             weights: state_dict to load
         """
-        try:
-            from megatron.training.checkpointing import load_checkpoint
-        except ImportError:
-            # Fallback to simple load
-            for i, model_chunk in enumerate(self.model):
-                prefix = f"chunk_{i}."
-                chunk_state = {
-                    k[len(prefix) :]: v for k, v in weights.items() if k.startswith(prefix)
-                }
-                if chunk_state:
-                    model_chunk.load_state_dict(chunk_state)
-            return ImmediateTrainFuture(None)
-
-        # Use Megatron's checkpoint loading
-        for model_chunk in self.model:
-            model_chunk.load_state_dict(weights, strict=False)
+        # Our get_weights() returns a "chunk_{i}."-prefixed dict.
+        # Load that representation back into the model chunks.
+        for i, model_chunk in enumerate(self.model):
+            prefix = f"chunk_{i}."
+            chunk_state = {k[len(prefix) :]: v for k, v in weights.items() if k.startswith(prefix)}
+            if chunk_state:
+                model_chunk.load_state_dict(chunk_state, strict=False)
 
         return ImmediateTrainFuture(None)
 

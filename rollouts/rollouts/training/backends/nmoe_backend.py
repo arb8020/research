@@ -368,8 +368,14 @@ class NmoeTrainingBackend:
         return self._inner.weight_version
 
     # TrainingBackend protocol methods
-    def forward_backward(self, batch: dict[str, Any]) -> TrainFuture[dict[str, float]]:
-        return self._inner.forward_backward(batch)
+    def forward_backward(
+        self,
+        batch: dict[str, Any],
+        *,
+        loss_fn: Callable[..., Any] | None = None,
+        loss_fn_config: dict[str, float] | None = None,
+    ) -> TrainFuture[dict[str, float]]:
+        return self._inner.forward_backward(batch, loss_fn=loss_fn, loss_fn_config=loss_fn_config)
 
     def optim_step(self) -> TrainFuture[dict[str, float]]:
         return self._inner.optim_step()
