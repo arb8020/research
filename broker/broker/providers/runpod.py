@@ -16,6 +16,7 @@ from ..types import CloudType, GPUInstance, GPUOffer, InstanceStatus, ProvisionR
 logger = logging.getLogger(__name__)
 
 RUNPOD_API_URL = "https://api.runpod.io/graphql"
+RUNPOD_REST_API_URL = "https://rest.runpod.io/v1"
 
 # GraphQL query for pod details - extracted to module level to avoid duplication
 # Why separate constant: This 45-line query appears in multiple functions,
@@ -321,6 +322,129 @@ def _raise_classified_graphql_error(errors: list[dict], key_hint: str) -> None:
     raise Exception(f"GraphQL errors: {errors}")
 
 
+async def list_network_volumes(api_key: str | None = None) -> list[dict[str, Any]]:
+    """List all network volumes for the current RunPod account.
+
+    Returns list of dicts with keys: id, name, dataCenterId, size.
+
+    RunPod network volumes are datacenter-locked — a volume can only be attached
+    to pods in the same datacenter it was created in.
+    """
+    query = """
+    query {
+        myself {
+            networkVolumes {
+                id
+                name
+                dataCenterId
+                size
+            }
+        }
+    }
+    """
+    data = await _make_graphql_request(query, api_key=api_key)
+    return data.get("myself", {}).get("networkVolumes", [])
+
+
+@async_retry(
+    max_attempts=3, delay=1, backoff=2, exceptions=(httpx.HTTPError, httpx.TimeoutException)
+)
+async def _make_rest_request(
+    method: str,
+    path: str,
+    api_key: str | None = None,
+    json_body: dict[str, Any] | None = None,
+) -> Any:
+    """Make an authenticated request to RunPod REST API."""
+    if not api_key:
+        raise ValueError("RunPod API key is required but was not provided")
+
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    url = f"{RUNPOD_REST_API_URL}{path}"
+
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(30, connect=10)) as client:
+            response = await client.request(method=method, url=url, headers=headers, json=json_body)
+    except httpx.TimeoutException:
+        logger.exception("RunPod REST request timed out")
+        raise
+    except httpx.HTTPError as exc:
+        logger.error(f"RunPod REST request failed: {exc}")  # noqa: TRY400 — re-raising
+        raise
+
+    if response.status_code in (401, 403):
+        key_hint = api_key[-4:] if api_key else "none"
+        raise AccountError(
+            "RunPod API key invalid or unauthorized",
+            provider="runpod",
+            key_hint=key_hint,
+        )
+
+    if response.status_code >= 400:
+        key_hint = api_key[-4:] if api_key else "none"
+        text = response.text.lower()
+        if "balance" in text or "insufficient fund" in text or "payment" in text:
+            raise AccountError(
+                "RunPod account balance too low",
+                provider="runpod",
+                key_hint=key_hint,
+                action_url="https://runpod.io/billing",
+            )
+        raise Exception(f"RunPod REST error {response.status_code}: {response.text}")
+
+    if not response.text:
+        return None
+
+    try:
+        return response.json()
+    except ValueError:
+        return response.text
+
+
+async def create_network_volume(
+    name: str,
+    datacenter_id: str,
+    size_gb: int,
+    api_key: str | None = None,
+) -> dict[str, Any]:
+    """Create a RunPod network volume via REST API."""
+    assert name.strip(), "name cannot be empty"
+    assert datacenter_id.strip(), "datacenter_id cannot be empty"
+    assert size_gb > 0, "size_gb must be positive"
+
+    payload = {"name": name, "dataCenterId": datacenter_id, "size": size_gb}
+    response = await _make_rest_request(
+        method="POST",
+        path="/networkvolumes",
+        api_key=api_key,
+        json_body=payload,
+    )
+
+    if not isinstance(response, dict):
+        raise TypeError(f"Unexpected create_network_volume response: {response}")
+
+    return response
+
+
+async def delete_network_volume(volume_id: str, api_key: str | None = None) -> None:
+    """Delete a RunPod network volume by ID via REST API."""
+    assert volume_id.strip(), "volume_id cannot be empty"
+    await _make_rest_request(
+        method="DELETE",
+        path=f"/networkvolumes/{volume_id}",
+        api_key=api_key,
+    )
+
+
+async def get_network_volume_datacenter(volume_id: str, api_key: str | None = None) -> str | None:
+    """Return the dataCenterId for a given network volume ID, or None if not found."""
+    volumes = await list_network_volumes(api_key=api_key)
+    for vol in volumes:
+        if vol.get("id") == volume_id:
+            return vol.get("dataCenterId")
+    return None
+
+
 async def search_gpu_offers(
     cuda_version: str | None = None,
     manufacturer: str | None = None,
@@ -511,6 +635,18 @@ async def provision_instance(
     if request.gpu_type:
         # Use the GPU type ID directly - it should already be the full RunPod ID
         pod_input["gpuTypeId"] = request.gpu_type
+
+    # Network volume — persistent storage that survives pod termination.
+    # RunPod constraint: volume must be in the same datacenter as the pod.
+    # If network_volume_id is set, dataCenterId pins the pod to that DC.
+    if request.network_volume_id:
+        assert request.datacenter_id, (
+            f"datacenter_id required when network_volume_id is set "
+            f"(volume {request.network_volume_id} is datacenter-locked). "
+            f"Use `broker volumes` to find the datacenter for your volume."
+        )
+        pod_input["networkVolumeId"] = request.network_volume_id
+        pod_input["dataCenterId"] = request.datacenter_id
 
     variables = {"input": pod_input}
 

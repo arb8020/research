@@ -635,6 +635,9 @@ async def create(  # noqa: PLR0913 - create API has many configuration options
     jupyter_password: str | None = None,
     # RunPod-specific: Template support
     template_id: str | None = None,
+    # RunPod-specific: Network volume (persistent storage, datacenter-locked)
+    network_volume_id: str | None = None,
+    datacenter_id: str | None = None,
     # Offer selection parameters
     n_offers: int = 3,
     # API credentials
@@ -679,6 +682,12 @@ async def create(  # noqa: PLR0913 - create API has many configuration options
     assert len(credentials) > 0, "credentials dict cannot be empty"
     assert n_offers > 0, f"n_offers must be positive, got {n_offers}"
     assert gpu_count > 0, f"gpu_count must be positive, got {gpu_count}"
+
+    # Inject volume params into kwargs so they flow into ProvisionRequest via **kwargs
+    if network_volume_id is not None:
+        kwargs["network_volume_id"] = network_volume_id
+    if datacenter_id is not None:
+        kwargs["datacenter_id"] = datacenter_id
 
     # Normalize input to list of offers
     suitable_offers = await _normalize_query_input(

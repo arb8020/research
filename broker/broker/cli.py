@@ -30,7 +30,11 @@ from broker.types import ProviderCredentials
 console = Console()
 app = typer.Typer(help="GPU broker - provision cloud GPUs")
 auth_app = typer.Typer(help="Manage provider credentials (~/.broker/credentials.toml)")
+volumes_app = typer.Typer(
+    help="Manage RunPod network volumes", invoke_without_command=True, no_args_is_help=False
+)
 app.add_typer(auth_app, name="auth")
+app.add_typer(volumes_app, name="volumes")
 
 # Logger will be configured in callback
 logger = logging.getLogger("broker")
@@ -382,6 +386,16 @@ def create(  # noqa: PLR0913 - CLI create has many configuration options
         "--min-cuda-version",
         help="Minimum CUDA version required (e.g., '12.1', '12.8'). Ensures node has compatible driver.",
     ),
+    network_volume_id: str | None = typer.Option(
+        None,
+        "--network-volume-id",
+        help="RunPod network volume ID to attach. Volume must be in datacenter specified by --datacenter-id.",
+    ),
+    datacenter_id: str | None = typer.Option(
+        None,
+        "--datacenter-id",
+        help="RunPod datacenter ID to provision in (required when --network-volume-id is set). Use 'broker volumes' to list volumes and their datacenters.",
+    ),
     name: str | None = typer.Option(None, "--name", help="Instance name"),
     wait_ssh: bool = typer.Option(
         False, "--wait-ssh", help="Wait for SSH to be ready before returning"
@@ -449,7 +463,13 @@ def create(  # noqa: PLR0913 - CLI create has many configuration options
             cloud_msg = f" ({cloud_type} cloud)" if cloud_type else ""
             logger.info(f"provisioning instance{cloud_msg}...")
         instance = await client.create(
-            query, image=image, name=name, gpu_count=gpu_count, min_cuda_version=min_cuda_version
+            query,
+            image=image,
+            name=name,
+            gpu_count=gpu_count,
+            min_cuda_version=min_cuda_version,
+            network_volume_id=network_volume_id,
+            datacenter_id=datacenter_id,
         )
 
         if not instance:
@@ -1271,6 +1291,226 @@ def logs(
                 console.print(entry)
         else:
             console.print(result)
+
+
+@volumes_app.callback(invoke_without_command=True)
+def volumes_root(ctx: typer.Context) -> None:
+    """Manage RunPod network volumes."""
+    if ctx.invoked_subcommand is None:
+        volumes_list(ctx)
+
+
+@volumes_app.command("list")
+def volumes_list(ctx: typer.Context) -> None:
+    """List RunPod network volumes and their datacenters.
+
+    Network volumes are persistent storage that survive pod termination.
+    Each volume is locked to a specific datacenter — you must provision
+    pods in the same datacenter to attach the volume.
+
+    Use the volume ID and datacenter ID with:
+        broker create --network-volume-id <id> --datacenter-id <dc-id> ...
+    """
+
+    async def _volumes_async() -> None:
+        creds = resolve_credentials(ctx)
+        runpod_key = creds.runpod
+        if not runpod_key:
+            logger.error("RunPod API key required. Run: broker auth login runpod")
+            raise typer.Exit(1)
+
+        from broker.providers.runpod import list_network_volumes
+
+        vols = await list_network_volumes(api_key=runpod_key)
+
+        if not vols:
+            console.print("No network volumes found.")
+            console.print(
+                "Create one with: broker volumes create --name <name> --datacenter-id <dc-id> --size-gb <gb>"
+            )
+            return
+
+        console.print(f"Found {len(vols)} network volume(s):\n")
+        for vol in vols:
+            vol_id = vol.get("id", "unknown")
+            vol_name = vol.get("name", "unnamed")
+            dc_id = vol.get("dataCenterId", "unknown")
+            size_gb = vol.get("size", "?")
+            console.print(f"  {vol_name}")
+            console.print(f"    id:           {vol_id}")
+            console.print(f"    datacenter:   {dc_id}")
+            console.print(f"    size:         {size_gb} GB")
+            console.print(f"    attach with:  --network-volume-id {vol_id} --datacenter-id {dc_id}")
+            console.print("")
+
+    trio.run(_volumes_async)
+
+
+@volumes_app.command("create")
+def volumes_create(
+    ctx: typer.Context,
+    name: str = typer.Option(..., "--name", help="Network volume name"),
+    datacenter_id: str = typer.Option(..., "--datacenter-id", help="RunPod datacenter ID"),
+    size_gb: int = typer.Option(..., "--size-gb", min=1, help="Volume size in GB"),
+    if_missing: bool = typer.Option(
+        True,
+        "--if-missing/--no-if-missing",
+        help="Reuse existing volume with same name+datacenter instead of failing",
+    ),
+) -> None:
+    """Create a RunPod network volume via REST API."""
+
+    async def _create_volume_async() -> None:
+        creds = resolve_credentials(ctx)
+        runpod_key = creds.runpod
+        if not runpod_key:
+            logger.error("RunPod API key required. Run: broker auth login runpod")
+            raise typer.Exit(1)
+
+        from broker.providers.runpod import create_network_volume, list_network_volumes
+
+        existing = await list_network_volumes(api_key=runpod_key)
+        matching = [
+            vol
+            for vol in existing
+            if vol.get("name") == name and vol.get("dataCenterId") == datacenter_id
+        ]
+        if matching:
+            existing_vol = matching[0]
+            existing_size = existing_vol.get("size")
+            if existing_size is not None and str(existing_size) != str(size_gb):
+                logger.warning(
+                    f"Existing volume has size {existing_size} GB (requested {size_gb} GB). Reusing existing."
+                )
+            if if_missing:
+                if ctx.obj["json"]:
+                    print(json.dumps(existing_vol, indent=2))
+                else:
+                    console.print(f"Volume already exists: {name}")
+                    console.print(f"  id:         {existing_vol.get('id', 'unknown')}")
+                    console.print(f"  datacenter: {datacenter_id}")
+                    console.print(f"  size:       {existing_size} GB")
+                return
+
+            logger.error(f"Volume already exists: name={name}, datacenter={datacenter_id}")
+            raise typer.Exit(1)
+
+        created = await create_network_volume(
+            name=name,
+            datacenter_id=datacenter_id,
+            size_gb=size_gb,
+            api_key=runpod_key,
+        )
+        if ctx.obj["json"]:
+            print(json.dumps(created, indent=2))
+        else:
+            console.print(f"Created volume: {created.get('name', name)}")
+            console.print(f"  id:         {created.get('id', 'unknown')}")
+            console.print(f"  datacenter: {created.get('dataCenterId', datacenter_id)}")
+            console.print(f"  size:       {created.get('size', size_gb)} GB")
+            console.print(
+                f"  attach with: --network-volume-id {created.get('id', 'unknown')} --datacenter-id {created.get('dataCenterId', datacenter_id)}"
+            )
+
+    trio.run(_create_volume_async)
+
+
+@volumes_app.command("delete")
+def volumes_delete(
+    ctx: typer.Context,
+    volume_id: str | None = typer.Option(None, "--id", help="Network volume ID to delete"),
+    name: str | None = typer.Option(None, "--name", help="Network volume name to resolve"),
+    datacenter_id: str | None = typer.Option(
+        None, "--datacenter-id", help="RunPod datacenter ID (required with --name)"
+    ),
+    if_missing: bool = typer.Option(
+        True,
+        "--if-missing/--no-if-missing",
+        help="Treat missing volume as success",
+    ),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip delete confirmation prompt"),
+) -> None:
+    """Delete a RunPod network volume via REST API."""
+
+    async def _delete_volume_async() -> None:
+        if volume_id is None and name is None:
+            logger.error("Provide either --id or --name with --datacenter-id")
+            raise typer.Exit(1)
+        if volume_id is not None and name is not None:
+            logger.error("Use either --id or --name (not both)")
+            raise typer.Exit(1)
+        if name is not None and datacenter_id is None:
+            logger.error("--datacenter-id is required with --name")
+            raise typer.Exit(1)
+        if datacenter_id is not None and name is None:
+            logger.error("--datacenter-id can only be used with --name")
+            raise typer.Exit(1)
+
+        creds = resolve_credentials(ctx)
+        runpod_key = creds.runpod
+        if not runpod_key:
+            logger.error("RunPod API key required. Run: broker auth login runpod")
+            raise typer.Exit(1)
+
+        from broker.providers.runpod import delete_network_volume, list_network_volumes
+
+        resolved_id = volume_id
+        resolved_name = name or "unknown"
+        resolved_datacenter = datacenter_id or "unknown"
+        resolved_size = "?"
+
+        if resolved_id is None:
+            volumes = await list_network_volumes(api_key=runpod_key)
+            matches = [
+                vol
+                for vol in volumes
+                if vol.get("name") == name and vol.get("dataCenterId") == datacenter_id
+            ]
+            if not matches:
+                if if_missing:
+                    if ctx.obj["json"]:
+                        print(json.dumps({"deleted": False, "reason": "not_found"}, indent=2))
+                    else:
+                        console.print(
+                            f"Volume not found for name={name}, datacenter={datacenter_id}; nothing to delete."
+                        )
+                    return
+                logger.error(f"Volume not found for name={name}, datacenter={datacenter_id}")
+                raise typer.Exit(1)
+            selected = matches[0]
+            resolved_id = selected.get("id")
+            resolved_name = selected.get("name", resolved_name)
+            resolved_datacenter = selected.get("dataCenterId", resolved_datacenter)
+            resolved_size = selected.get("size", resolved_size)
+
+        assert resolved_id is not None
+        if not yes:
+            answer = builtins.input(
+                f"Delete volume {resolved_name} (id={resolved_id}, dc={resolved_datacenter}, size={resolved_size} GB)? [y/N]: "
+            ).strip()
+            if answer.lower() not in {"y", "yes"}:
+                console.print("Aborted.")
+                raise typer.Exit(1)
+
+        await delete_network_volume(volume_id=resolved_id, api_key=runpod_key)
+        if ctx.obj["json"]:
+            print(
+                json.dumps(
+                    {
+                        "deleted": True,
+                        "id": resolved_id,
+                        "name": resolved_name,
+                        "dataCenterId": resolved_datacenter,
+                    },
+                    indent=2,
+                )
+            )
+        else:
+            console.print(f"Deleted volume: {resolved_name}")
+            console.print(f"  id:         {resolved_id}")
+            console.print(f"  datacenter: {resolved_datacenter}")
+
+    trio.run(_delete_volume_async)
 
 
 @auth_app.command("login")

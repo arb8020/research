@@ -324,6 +324,10 @@ class ProvisionRequest:
     raw_data: dict[str, Any] | None = None
     # CUDA version constraint - ensures node has compatible driver
     min_cuda_version: str | None = None  # e.g., "12.1" or "12.8"
+    # RunPod network volume - persistent storage that survives pod termination
+    # Must be in the same datacenter as the pod (RunPod constraint)
+    network_volume_id: str | None = None  # RunPod network volume ID to attach
+    datacenter_id: str | None = None  # RunPod datacenter ID (required when network_volume_id set)
 
 
 @dataclass

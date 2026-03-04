@@ -68,6 +68,10 @@ class GPUQuery:
     # Provider credentials (optional - falls back to env vars)
     credentials: dict[str, str] = field(default_factory=dict)
 
+    # RunPod network volume support (datacenter-locked)
+    network_volume_id: str | None = None
+    datacenter_id: str | None = None
+
 
 async def acquire_node(
     ssh: str | None = None,
@@ -192,6 +196,8 @@ async def acquire_node(
         image=provision.image,
         name=provision.name,
         gpu_count=provision.count,
+        network_volume_id=provision.network_volume_id,
+        datacenter_id=provision.datacenter_id,
         cloud_type=provision.cloud_type,
         container_disk_gb=provision.container_disk_gb,
         volume_disk_gb=provision.volume_disk_gb,

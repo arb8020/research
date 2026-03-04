@@ -118,6 +118,11 @@ def parse_args() -> argparse.Namespace:
         type=int,
         help="Number of GPUs (default from recipe or 1)",
     )
+    parser.add_argument(
+        "--provider",
+        type=str,
+        help="Provider to provision on (default from recipe or runpod)",
+    )
 
     # Model configuration (overrides recipe)
     parser.add_argument(
@@ -130,6 +135,11 @@ def parse_args() -> argparse.Namespace:
         type=int,
         help="Server port (default from recipe or 30000)",
     )
+    parser.add_argument(
+        "--hf-cache-dir",
+        type=str,
+        help="HF_HOME cache directory on remote node (use network volume mount for preloaded weights)",
+    )
 
     # Cloud type
     parser.add_argument(
@@ -138,11 +148,15 @@ def parse_args() -> argparse.Namespace:
         help="Use community cloud (cheaper but less reliable)",
     )
 
-    # Account selection
     parser.add_argument(
-        "--wafer",
-        action="store_true",
-        help="Use wafer RunPod account (WAFER_RUNPOD_API_KEY)",
+        "--network-volume-id",
+        type=str,
+        help="RunPod network volume ID to attach (speeds up model preload)",
+    )
+    parser.add_argument(
+        "--datacenter-id",
+        type=str,
+        help="RunPod datacenter for the network volume (required when --network-volume-id is set)",
     )
 
     return parser.parse_args()
@@ -174,6 +188,7 @@ async def main() -> int:
     model = args.model or (recipe.model.model if recipe else "Qwen/Qwen2.5-7B-Instruct")
     gpu_type = args.gpu_type or (recipe.target.gpu_type if recipe else "A100")
     gpu_count = args.gpu_count or (recipe.target.gpu_count if recipe else 1)
+    provider = args.provider or (recipe.target.provider if recipe else "runpod")
     port = args.port or (recipe.engine.port if recipe else 30000)
 
     # Step 1: Acquire node
@@ -181,37 +196,36 @@ async def main() -> int:
     print("Step 1: Acquiring GPU node")
     print("=" * 60)
 
+    if args.network_volume_id and not args.datacenter_id:
+        print("Error: --datacenter-id is required when --network-volume-id is set.")
+        return 1
+    if args.network_volume_id and provider != "runpod":
+        print("Error: --network-volume-id requires --provider runpod.")
+        return 1
+
     if args.ssh:
         print(f"Using static SSH: {args.ssh}")
-        client, instance = acquire_node(ssh=args.ssh)
+        client, instance = await acquire_node(ssh=args.ssh)
         ssh_connection = args.ssh
     elif args.node_id:
         print(f"Using existing instance: {args.node_id}")
-        client, instance = acquire_node(node_id=args.node_id)
+        client, instance = await acquire_node(node_id=args.node_id)
         assert instance is not None
         ssh_connection = instance.ssh_connection_string()
     else:
-        import os
-
         cloud_type = "community" if args.community else "secure"
 
-        # Use wafer account if requested
-        credentials = {}
-        if args.wafer:
-            wafer_key = os.environ.get("WAFER_RUNPOD_API_KEY")
-            if not wafer_key:
-                print("Error: --wafer flag requires WAFER_RUNPOD_API_KEY in .env")
-                return 1
-            credentials["runpod"] = wafer_key
-            print("Using wafer RunPod account")
-
-        print(f"Provisioning new instance: {gpu_count}x {gpu_type} ({cloud_type})")
-        client, instance = acquire_node(
+        print(
+            f"Provisioning new instance: {gpu_count}x {gpu_type} ({cloud_type}, provider={provider})"
+        )
+        client, instance = await acquire_node(
             provision=GPUQuery(
                 type=gpu_type,
                 count=gpu_count,
+                provider=provider,
                 cloud_type=cloud_type,
-                credentials=credentials,
+                network_volume_id=args.network_volume_id,
+                datacenter_id=args.datacenter_id,
             )
         )
         assert instance is not None
@@ -233,6 +247,7 @@ async def main() -> int:
         "ssh_connection": ssh_connection,
         "gpu_ranks": list(range(gpu_count)),
         "tensor_parallel_size": gpu_count,
+        "hf_cache_dir": args.hf_cache_dir or "/home/ubuntu/.cache/huggingface",
     }
 
     # Apply recipe settings if available
