@@ -184,7 +184,9 @@ def _cc_extract_text(content: Any) -> str:
     return "\n".join(p for p in parts if p)
 
 
-def _cc_file_touch_from_tool(tool_name: str, arguments: dict[str, Any], call_id: str, turn_id: str | None) -> _FileTouch | None:
+def _cc_file_touch_from_tool(
+    tool_name: str, arguments: dict[str, Any], call_id: str, turn_id: str | None
+) -> _FileTouch | None:
     if tool_name in _CC_FILE_TOOLS:
         key, op = _CC_FILE_TOOLS[tool_name]
         fp = arguments.get(key)
@@ -195,11 +197,15 @@ def _cc_file_touch_from_tool(tool_name: str, arguments: dict[str, Any], call_id:
         # Store the bash command touch as-is against the cwd; filepath=command for queryability
         # We don't heuristically parse the command — callers can do that in SQL if needed
         if command:
-            return _FileTouch(tool_call_id=call_id, turn_id=turn_id, filepath=command, operation="bash")
+            return _FileTouch(
+                tool_call_id=call_id, turn_id=turn_id, filepath=command, operation="bash"
+            )
     return None
 
 
-def _parse_claude_code(file_path: Path, session_id: str, project_path: str | None) -> _ParsedSession:
+def _parse_claude_code(
+    file_path: Path, session_id: str, project_path: str | None
+) -> _ParsedSession:
     summary: str | None = None
     model: str | None = None
     start_time: str | None = None
@@ -238,6 +244,7 @@ def _parse_claude_code(file_path: Path, session_id: str, project_path: str | Non
             timestamp = entry.get("timestamp")
             if isinstance(timestamp, (int, float)):
                 from datetime import datetime
+
                 timestamp = datetime.fromtimestamp(timestamp / 1000).isoformat()
 
             if start_time is None and timestamp:
@@ -283,13 +290,19 @@ def _parse_claude_code(file_path: Path, session_id: str, project_path: str | Non
 
                 # Check if this is a tool result message
                 if isinstance(content, list):
-                    tool_results = [b for b in content if isinstance(b, dict) and b.get("type") == "tool_result"]
+                    tool_results = [
+                        b for b in content if isinstance(b, dict) and b.get("type") == "tool_result"
+                    ]
                     if tool_results:
                         for tr in tool_results:
                             raw_id = tr.get("tool_use_id", "")
                             call_id = f"{session_id}:{raw_id}"
                             result_content = tr.get("content", "")
-                            output = _cc_extract_text(result_content) if isinstance(result_content, list) else str(result_content)
+                            output = (
+                                _cc_extract_text(result_content)
+                                if isinstance(result_content, list)
+                                else str(result_content)
+                            )
                             if call_id in pending_tool_calls:
                                 pending_tool_calls[call_id].output_text = output
                         continue
@@ -299,7 +312,9 @@ def _parse_claude_code(file_path: Path, session_id: str, project_path: str | Non
                 raw_uuid = entry.get("uuid") or str(uuid.uuid4())
                 turn_id = f"{session_id}:{raw_uuid}"
                 user_text = _cc_extract_text(content)
-                turn = _Turn(id=turn_id, seq=turn_seq, user_message=user_text or None, timestamp=timestamp)
+                turn = _Turn(
+                    id=turn_id, seq=turn_seq, user_message=user_text or None, timestamp=timestamp
+                )
                 turns.append(turn)
                 current_turn_id = turn_id
                 turn_seq += 1
@@ -390,7 +405,9 @@ def _parse_codex(file_path: Path, session_id: str) -> _ParsedSession:
             elif effective_type == "user_message":
                 turn_id = str(uuid.uuid4())
                 user_text = effective_data.get("message", "")
-                turn = _Turn(id=turn_id, seq=turn_seq, user_message=user_text or None, timestamp=timestamp)
+                turn = _Turn(
+                    id=turn_id, seq=turn_seq, user_message=user_text or None, timestamp=timestamp
+                )
                 turns.append(turn)
                 current_turn_id = turn_id
                 turn_seq += 1
@@ -414,12 +431,14 @@ def _parse_codex(file_path: Path, session_id: str) -> _ParsedSession:
 
                 cmd_str = " ".join(str(c) for c in command)
                 if cmd_str:
-                    file_touches.append(_FileTouch(
-                        tool_call_id=call_id,
-                        turn_id=current_turn_id,
-                        filepath=cmd_str,
-                        operation="bash",
-                    ))
+                    file_touches.append(
+                        _FileTouch(
+                            tool_call_id=call_id,
+                            turn_id=current_turn_id,
+                            filepath=cmd_str,
+                            operation="bash",
+                        )
+                    )
 
             elif effective_type == "exec_command_end":
                 call_id = effective_data.get("call_id", "")
@@ -603,11 +622,13 @@ class SessionIndex:
 
     def _ingest(self, parsed: _ParsedSession, mtime: float) -> None:
         from datetime import datetime, timezone
+
         now = datetime.now(timezone.utc).isoformat()
 
         with self._conn:
             # Upsert session
-            self._conn.execute("""
+            self._conn.execute(
+                """
                 INSERT INTO sessions (id, provider, project_path, file_path, summary, model, start_time, indexed_at, file_mtime)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
@@ -618,8 +639,19 @@ class SessionIndex:
                     start_time=excluded.start_time,
                     indexed_at=excluded.indexed_at,
                     file_mtime=excluded.file_mtime
-            """, (parsed.id, parsed.provider, parsed.project_path, parsed.file_path,
-                  parsed.summary, parsed.model, parsed.start_time, now, mtime))
+            """,
+                (
+                    parsed.id,
+                    parsed.provider,
+                    parsed.project_path,
+                    parsed.file_path,
+                    parsed.summary,
+                    parsed.model,
+                    parsed.start_time,
+                    now,
+                    mtime,
+                ),
+            )
 
             # On re-index: delete old child rows first
             self._conn.execute("DELETE FROM file_touches WHERE session_id = ?", (parsed.id,))
@@ -628,29 +660,49 @@ class SessionIndex:
             self._conn.execute("DELETE FROM session_tags WHERE session_id = ?", (parsed.id,))
 
             for turn in parsed.turns:
-                self._conn.execute("""
+                self._conn.execute(
+                    """
                     INSERT INTO turns (id, session_id, seq, user_message, timestamp)
                     VALUES (?, ?, ?, ?, ?)
-                """, (turn.id, parsed.id, turn.seq, turn.user_message, turn.timestamp))
+                """,
+                    (turn.id, parsed.id, turn.seq, turn.user_message, turn.timestamp),
+                )
 
             for tc in parsed.tool_calls:
-                self._conn.execute("""
+                self._conn.execute(
+                    """
                     INSERT INTO tool_calls (id, turn_id, session_id, tool_name, input_json, output_text, timestamp)
                     VALUES (?, ?, ?, ?, ?, ?, ?)
-                """, (tc.id, tc.turn_id, parsed.id, tc.tool_name, tc.input_json, tc.output_text, tc.timestamp))
+                """,
+                    (
+                        tc.id,
+                        tc.turn_id,
+                        parsed.id,
+                        tc.tool_name,
+                        tc.input_json,
+                        tc.output_text,
+                        tc.timestamp,
+                    ),
+                )
 
             for ft in parsed.file_touches:
-                self._conn.execute("""
+                self._conn.execute(
+                    """
                     INSERT INTO file_touches (session_id, turn_id, tool_call_id, filepath, operation)
                     VALUES (?, ?, ?, ?, ?)
-                """, (parsed.id, ft.turn_id, ft.tool_call_id, ft.filepath, ft.operation))
+                """,
+                    (parsed.id, ft.turn_id, ft.tool_call_id, ft.filepath, ft.operation),
+                )
 
             for key, value in parsed.tags.items():
-                self._conn.execute("""
+                self._conn.execute(
+                    """
                     INSERT INTO session_tags (session_id, key, value)
                     VALUES (?, ?, ?)
                     ON CONFLICT(session_id, key) DO UPDATE SET value=excluded.value
-                """, (parsed.id, key, str(value)))
+                """,
+                    (parsed.id, key, str(value)),
+                )
 
     def _link_agent_sessions(self) -> None:
         """Tag agent sub-sessions with parent_session_id.
@@ -674,22 +726,28 @@ class SessionIndex:
             project_dir = row["project_dir"]
 
             # Find main sessions in the same dir
-            parent = self._conn.execute("""
+            parent = self._conn.execute(
+                """
                 SELECT s.id FROM sessions s
                 JOIN session_tags st ON s.id = st.session_id
                 WHERE s.file_path LIKE ? || '/%'
                   AND st.key = 'session_type' AND st.value = 'main'
                 ORDER BY s.start_time DESC
                 LIMIT 1
-            """, (project_dir,)).fetchone()
+            """,
+                (project_dir,),
+            ).fetchone()
 
             if parent:
                 with self._conn:
-                    self._conn.execute("""
+                    self._conn.execute(
+                        """
                         INSERT INTO session_tags (session_id, key, value)
                         VALUES (?, 'parent_session_id', ?)
                         ON CONFLICT(session_id, key) DO UPDATE SET value=excluded.value
-                    """, (agent_id, parent["id"]))
+                    """,
+                        (agent_id, parent["id"]),
+                    )
 
     # ------------------------------------------------------------------
     # Query
@@ -817,7 +875,8 @@ class SessionIndex:
         tool names used in that turn. Use this to navigate a session before
         calling turn_detail() or file_touches() on a specific range.
         """
-        return self.query("""
+        return self.query(
+            """
             SELECT
                 t.seq,
                 t.user_message,
@@ -828,7 +887,9 @@ class SessionIndex:
             WHERE t.session_id = ?
             GROUP BY t.id
             ORDER BY t.seq
-        """, (session_id,))
+        """,
+            (session_id,),
+        )
 
     def turn_detail(self, session_id: str, turn_seq: int) -> dict[str, Any]:
         """Full content of one turn: user message + every tool call with input/output.
@@ -837,21 +898,27 @@ class SessionIndex:
           turn   - {seq, user_message, timestamp}
           calls  - list of {tool_name, input_json, output_text, timestamp}
         """
-        turn_rows = self.query("""
+        turn_rows = self.query(
+            """
             SELECT id, seq, user_message, timestamp
             FROM turns WHERE session_id = ? AND seq = ?
-        """, (session_id, turn_seq))
+        """,
+            (session_id, turn_seq),
+        )
 
         if not turn_rows:
             return {"turn": None, "calls": []}
 
         turn = turn_rows[0]
-        calls = self.query("""
+        calls = self.query(
+            """
             SELECT tool_name, input_json, output_text, timestamp
             FROM tool_calls
             WHERE turn_id = ?
             ORDER BY timestamp
-        """, (turn["id"],))
+        """,
+            (turn["id"],),
+        )
 
         return {"turn": turn, "calls": calls}
 
@@ -881,7 +948,8 @@ class SessionIndex:
             params.append(to_turn)
 
         where = " AND ".join(conditions)
-        return self.query(f"""
+        return self.query(
+            f"""
             SELECT
                 t.seq AS turn_seq,
                 t.user_message,
@@ -894,7 +962,9 @@ class SessionIndex:
             JOIN turns t ON ft.turn_id = t.id
             WHERE {where}
             ORDER BY tc.timestamp
-        """, tuple(params))
+        """,
+            tuple(params),
+        )
 
     # ------------------------------------------------------------------
     # Tagging
@@ -907,11 +977,14 @@ class SessionIndex:
         """
         with self._conn:
             for key, value in kwargs.items():
-                self._conn.execute("""
+                self._conn.execute(
+                    """
                     INSERT INTO session_tags (session_id, key, value)
                     VALUES (?, ?, ?)
                     ON CONFLICT(session_id, key) DO UPDATE SET value=excluded.value
-                """, (session_id, key, str(value)))
+                """,
+                    (session_id, key, str(value)),
+                )
 
     # ------------------------------------------------------------------
     # Context manager
@@ -961,9 +1034,19 @@ def _cli() -> None:
     tag_p.add_argument("session_id")
     tag_p.add_argument("tags", nargs="+", help="key=value pairs")
 
-    why_p = sub.add_parser("why", help="Why did we touch a file?")
-    why_p.add_argument("filepath")
-    why_p.add_argument("--session", help="Restrict to session ID")
+    sub.add_parser("describe", help="Print schema and example queries")
+
+    turns_p = sub.add_parser("turns", help="List turns in a session with tool preview")
+    turns_p.add_argument("session_id")
+
+    detail_p = sub.add_parser("turn-detail", help="Full content of one turn")
+    detail_p.add_argument("session_id")
+    detail_p.add_argument("turn_seq", type=int)
+
+    touches_p = sub.add_parser("file-touches", help="File touches in a session")
+    touches_p.add_argument("session_id")
+    touches_p.add_argument("--from-turn", type=int, default=None)
+    touches_p.add_argument("--to-turn", type=int, default=None)
 
     args = parser.parse_args()
 
@@ -972,7 +1055,9 @@ def _cli() -> None:
     with SessionIndex(args.db) as idx:
         if args.cmd == "sync":
             stats = idx.sync(verbose=args.verbose)
-            print(f"indexed={stats['indexed']} skipped={stats['skipped']} errored={stats['errored']}")
+            print(
+                f"indexed={stats['indexed']} skipped={stats['skipped']} errored={stats['errored']}"
+            )
 
         elif args.cmd == "query":
             rows = idx.query(args.sql)
@@ -990,8 +1075,24 @@ def _cli() -> None:
             idx.tag(args.session_id, **kwargs)
             print(f"tagged {args.session_id}")
 
-        elif args.cmd == "why":
-            rows = idx.why(args.filepath, session_id=args.session)
+        elif args.cmd == "describe":
+            print(idx.describe())
+
+        elif args.cmd == "turns":
+            rows = idx.turns(args.session_id)
+            for row in rows:
+                print(json.dumps(row, default=str))
+
+        elif args.cmd == "turn-detail":
+            detail = idx.turn_detail(args.session_id, args.turn_seq)
+            print(json.dumps(detail, default=str))
+
+        elif args.cmd == "file-touches":
+            rows = idx.file_touches(
+                args.session_id,
+                from_turn=args.from_turn,
+                to_turn=args.to_turn,
+            )
             for row in rows:
                 print(json.dumps(row, default=str))
 
