@@ -1485,10 +1485,10 @@ def volumes_delete(
 
         assert resolved_id is not None
         if not yes:
-            answer = builtins.input(
+            answer = typer.confirm(
                 f"Delete volume {resolved_name} (id={resolved_id}, dc={resolved_datacenter}, size={resolved_size} GB)? [y/N]: "
-            ).strip()
-            if answer.lower() not in {"y", "yes"}:
+            )
+            if not answer:
                 console.print("Aborted.")
                 raise typer.Exit(1)
 

@@ -43,7 +43,7 @@ import importlib.util
 import logging
 import os
 import sys
-from collections.abc import Callable, Generator
+from collections.abc import Generator
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -78,6 +78,12 @@ if _workspace_root.exists() and str(_workspace_root) not in sys.path:
     sys.path.insert(0, str(_workspace_root))
 
 
+class _RunLogger:
+    """Callable logger interface for structured run events."""
+
+    def __call__(self, event: str, **data: Any) -> None: ...
+
+
 def load_config_module(config_path: Path) -> Any:
     """Load a config module from path."""
     spec = importlib.util.spec_from_file_location("_config", config_path)
@@ -90,7 +96,7 @@ def load_config_module(config_path: Path) -> Any:
     return module
 
 
-def _setup_run_logging(run_dir: Path) -> Callable[[str, Any], None]:
+def _setup_run_logging(run_dir: Path) -> _RunLogger:
     """Create run directory and return a logging function."""
     import json
     from datetime import datetime
@@ -120,6 +126,7 @@ async def _deploy_and_submit(
     quiet: bool = False,
     skip_hf_token_check: bool = False,
     container_disk_gb: int = 100,
+    raw_script: bool = False,
 ) -> tuple:
     """Provision node, deploy code, submit training job.
 
@@ -632,6 +639,7 @@ async def run_remote(
         quiet=quiet,
         skip_hf_token_check=skip_hf_token_check,
         container_disk_gb=container_disk_gb,
+        raw_script=raw_script,
     )
 
     assert instance is not None, "run_remote requires a provisioned instance"

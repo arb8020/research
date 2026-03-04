@@ -78,7 +78,7 @@ you can. Start by profiling the reference to understand where time is spent."""
     ]
 
 
-def score_sample(sample: Any):
+def score_sample(sample: Any) -> Any:
     """Score a completed sample.
 
     Looks for correctness and speedup signals in the trajectory.

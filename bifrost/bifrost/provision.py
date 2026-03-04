@@ -122,7 +122,7 @@ async def acquire_node(
 
     # Default SSH key path
     if ssh_key_path is None:
-        ssh_key_path = os.path.expanduser("~/.ssh/id_ed25519")
+        ssh_key_path = f"{os.environ['HOME']}/.ssh/id_ed25519"
 
     # Import here to avoid circular dependency
     from .client import BifrostClient

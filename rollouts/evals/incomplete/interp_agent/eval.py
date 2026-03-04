@@ -82,7 +82,7 @@ and ablate until you can name the specific components."""
     ]
 
 
-def score_sample(sample: Any):
+def score_sample(sample: Any) -> Any:
     """Score a completed sample.
 
     Checks hypothesis.json for circuit components and compares against ground truth.
