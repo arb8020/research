@@ -1,0 +1,11 @@
+[
+  {
+    "id": "flash_attention_v1",
+    "name": "Flash Attention Forward Pass",
+    "description": "Implement a fused attention kernel (Q@K^T softmax @V) that matches the reference PyTorch implementation and achieves >2x speedup over the unfused baseline on sequence length 1024, head dim 64.",
+    "reference_code": "import torch\nimport torch.nn.functional as F\n\ndef reference_attention(q, b, v):\n    scale = q.size(-1) ** -0.5\n    attn = (q @ k.transpose(-2, -1)) * scale\n    attn = F.softmax(attn, dim=-1)\n    return attn @ v",
+    "verify_cmd": "python verify.py",
+    "gpu_type": "A100",
+    "tolerance": 1e-3
+  }
+]

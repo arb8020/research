@@ -119,6 +119,7 @@ async def _deploy_and_submit(
     allow_dirty: bool = False,
     quiet: bool = False,
     skip_hf_token_check: bool = False,
+    container_disk_gb: int = 100,
 ) -> tuple:
     """Provision node, deploy code, submit training job.
 
@@ -252,6 +253,7 @@ async def _deploy_and_submit(
                         count=gpu_count,
                         min_cuda="12.8",
                         exposed_ports=(logs_port,),
+                        container_disk_gb=container_disk_gb,
                         name=f"rollouts/{run_name}",
                         provider=provider,
                     )
@@ -505,20 +507,29 @@ async def _deploy_and_submit(
     }
 
     # Submit training job
+    if raw_script:
+        run_args = (
+            "run",
+            "python",
+            str(script_rel_path),
+        )
+    else:
+        run_args = (
+            "run",
+            "python",
+            "-m",
+            "rollouts.run",
+            "--config",
+            str(script_rel_path),
+            "--local",
+        )
+
     log("submit_start")
     with spinner(f"Starting {run_name}...") as spin:
         job = bifrost.submit(
             ProcessSpec(
                 command="/root/.local/bin/uv",
-                args=(
-                    "run",
-                    "python",
-                    "-m",
-                    "rollouts.run",
-                    "--config",
-                    str(script_rel_path),
-                    "--local",
-                ),
+                args=run_args,
                 cwd=f"{workspace}/rollouts",
                 env=env_vars,
             ),
@@ -568,8 +579,13 @@ async def _sync_and_cleanup(
                 )
                 if result and result.success:
                     logger.info("Synced: %s/%s", run_name, filename)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning(
+                    "Failed to sync file %s for run %s: %s",
+                    filename,
+                    run_name,
+                    exc,
+                )
 
     if instance:
         if not keep_alive:
@@ -592,6 +608,9 @@ async def run_remote(
     allow_dirty: bool = False,
     quiet: bool = False,
     skip_hf_token_check: bool = False,
+    container_disk_gb: int = 100,
+    raw_script: bool = False,
+    block: bool = False,
 ) -> None:
     """Run training script on remote GPU via bifrost."""
     (
@@ -612,6 +631,7 @@ async def run_remote(
         allow_dirty=allow_dirty,
         quiet=quiet,
         skip_hf_token_check=skip_hf_token_check,
+        container_disk_gb=container_disk_gb,
     )
 
     assert instance is not None, "run_remote requires a provisioned instance"
@@ -649,12 +669,15 @@ async def run_remote(
         logger.info("Install tmux for automatic log sync")
 
     # Default: fire-and-forget (print attach instructions and exit)
-    if not tui and not tail:
+    if not tui and not tail and not block:
         if keep_alive:
             logger.info("  (instance will stay alive)")
         else:
             logger.info("  (instance will terminate when job completes)")
         return
+
+    if block:
+        tail = True
 
     # --tui or --tail: launch monitor
     import subprocess

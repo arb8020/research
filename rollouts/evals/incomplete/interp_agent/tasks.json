@@ -1,0 +1,229 @@
+[
+  {
+    "id": "palindromes",
+    "name": "Palindrome Classifier",
+    "source": "ARENA 1.5.X monthly_algorithmic_problems/july23_palindromes",
+    "checkpoint": "monthly_algorithmic_problems/july23_palindromes/palindrome_classifier.pt",
+    "dataset_module": "monthly_algorithmic_problems.july23_palindromes.dataset",
+    "model_module": "monthly_algorithmic_problems.july23_palindromes.model",
+    "behavior": "A 2-layer, 2-head attention-only transformer classifies whether a sequence of integers is a palindrome. Given START token followed by N integers followed by END token, the model outputs 1 (palindrome) or 0 (not palindrome) at the END position. Explain the full mechanism: how do attention heads detect (non-)palindromic structure, what do the QK and OV circuits compute, and which heads are responsible.",
+    "model_config": {
+      "n_layers": 2,
+      "n_heads": 2,
+      "d_mlp": null,
+      "normalization_type": "LN",
+      "half_length": 10,
+      "max_value": 30
+    },
+    "oracle": "ablation_accuracy_drop",
+    "oracle_notes": "Ablate agent-identified heads; accuracy should drop significantly on non-palindromes. Baseline accuracy ~95%+.",
+    "confidence": "high",
+    "network_required": false,
+    "difficulty": "easy",
+    "tags": ["attention-only", "classification", "self-contained", "algorithmic"]
+  },
+  {
+    "id": "unique_char",
+    "name": "First Unique Character",
+    "source": "ARENA 1.5.X monthly_algorithmic_problems/august23_unique_char",
+    "checkpoint": "monthly_algorithmic_problems/august23_unique_char/first_unique_char_model.pt",
+    "dataset_module": "monthly_algorithmic_problems.august23_unique_char.dataset",
+    "model_module": "monthly_algorithmic_problems.august23_unique_char.model",
+    "behavior": "A 2-layer, 3-head attention-only transformer reads a sequence of characters and at each position outputs the first non-repeating character seen so far (or '?' if none exists). The null token '?' is also used as a START token. Explain how the model tracks character repetition across positions — which heads implement which part of the algorithm, and what the QK/OV circuits compute.",
+    "model_config": {
+      "n_layers": 2,
+      "n_heads": 3,
+      "d_mlp": null,
+      "normalization_type": "LN",
+      "seq_len": 10,
+      "vocab": ["a", "b", "c", "d", "e", "f", "g", "h", "i", "j"]
+    },
+    "oracle": "ablation_accuracy_drop",
+    "oracle_notes": "Ablate agent-identified heads; per-position accuracy should drop. Also check: does ablating head X break tracking of repeated chars specifically?",
+    "confidence": "high",
+    "network_required": false,
+    "difficulty": "medium",
+    "tags": ["attention-only", "sequence-labeling", "self-contained", "algorithmic"]
+  },
+  {
+    "id": "cumsum",
+    "name": "Cumulative Sum Sign Tracker",
+    "source": "ARENA 1.5.X monthly_algorithmic_problems/november23_cumsum",
+    "checkpoint": "monthly_algorithmic_problems/november23_cumsum/cumsum_model.pt",
+    "dataset_module": "monthly_algorithmic_problems.november23_cumsum.dataset",
+    "model_module": "monthly_algorithmic_problems.november23_cumsum.model",
+    "behavior": "A transformer reads a sequence of integers and at each position outputs whether the running cumulative sum is positive (2), zero (1), or negative (0). Explain the full mechanism: how does the model accumulate the running sum, what circuits track sign, and which components handle the zero/boundary case.",
+    "model_config": {
+      "normalization_type": "LN",
+      "seq_len": 20,
+      "max_value": 10
+    },
+    "oracle": "ablation_accuracy_drop",
+    "oracle_notes": "Ablate agent-identified components; per-position sign accuracy should drop. Particularly interesting: does ablation hurt the zero-detection case more than pos/neg?",
+    "confidence": "high",
+    "network_required": false,
+    "difficulty": "medium",
+    "tags": ["algorithmic", "sequence-labeling", "self-contained"]
+  },
+  {
+    "id": "sorted_list",
+    "name": "Sorted List Classifier",
+    "source": "ARENA 1.5.X monthly_algorithmic_problems/october23_sorted_list",
+    "checkpoint": "monthly_algorithmic_problems/october23_sorted_list/sorted_list_model.pt",
+    "dataset_module": "monthly_algorithmic_problems.october23_sorted_list.dataset",
+    "model_module": "monthly_algorithmic_problems.october23_sorted_list.model",
+    "behavior": "A transformer reads [START, a1, ..., a10, END] and outputs 1 (sorted) or 0 (unsorted) at the END position. Explain how the model detects ordering violations: which heads compare adjacent or non-adjacent elements, what the OV circuits project onto, and whether the model is doing something clever (e.g. only checking adjacent pairs vs all pairs).",
+    "model_config": {
+      "normalization_type": "LN",
+      "list_len": 10,
+      "max_value": 10
+    },
+    "oracle": "ablation_accuracy_drop",
+    "oracle_notes": "Ablate agent-identified heads; accuracy on unsorted sequences (where exactly one adjacent pair is swapped) should drop most.",
+    "confidence": "high",
+    "network_required": false,
+    "difficulty": "medium",
+    "tags": ["attention-only", "classification", "self-contained", "algorithmic"]
+  },
+  {
+    "id": "sum_4digit",
+    "name": "4-Digit Addition",
+    "source": "ARENA 1.5.X monthly_algorithmic_problems/september23_sum",
+    "checkpoint": "monthly_algorithmic_problems/september23_sum/sum_model.pt",
+    "dataset_module": "monthly_algorithmic_problems.september23_sum.dataset",
+    "model_module": "monthly_algorithmic_problems.september23_sum.model",
+    "behavior": "A 3-layer, 3-head attention-only transformer adds two 4-digit numbers given in little-endian format: [d0, d1, d2, d3, +, e0, e1, e2, e3, =, ?]. The model outputs the 4 digits of the sum. Explain the carry propagation mechanism: how the model handles carries across digit positions, which heads route information between positions, and whether the algorithm is interpretable as a clean circuit.",
+    "model_config": {
+      "n_layers": 3,
+      "n_heads": 3,
+      "d_mlp": null,
+      "normalization_type": "LN",
+      "num_digits": 4
+    },
+    "oracle": "ablation_accuracy_drop",
+    "oracle_notes": "Ablate agent-identified heads; digit-level accuracy should drop, especially for digits that require carry propagation. Construct carry-heavy examples (e.g. 9999 + 1) as adversarial tests.",
+    "confidence": "high",
+    "network_required": false,
+    "difficulty": "hard",
+    "tags": ["attention-only", "arithmetic", "self-contained", "algorithmic", "carry-propagation"]
+  },
+  {
+    "id": "balanced_brackets",
+    "name": "Balanced Bracket Classifier",
+    "source": "ARENA 1.5.1 part51_balanced_bracket_classifier",
+    "checkpoint": "part51_balanced_bracket_classifier/brackets_model_state_dict.pt",
+    "dataset_module": "part51_balanced_bracket_classifier.brackets_datasets",
+    "model_module": null,
+    "behavior": "A 3-layer transformer classifies whether a bracket sequence is balanced. The model uses two distinct failure modes: total elevation failure (net negative depth) and negative failure (depth goes negative at some point). Explain the full circuit: which heads track running depth, how the model detects each failure mode, and what the MLP layers contribute.",
+    "model_config": {
+      "n_layers": 3,
+      "normalization_type": "LN"
+    },
+    "oracle": "ablation_accuracy_drop",
+    "oracle_notes": "Ablate agent-identified components; accuracy should drop on both failure modes. A strong answer handles elevation failure and negative failure separately.",
+    "confidence": "high",
+    "network_required": false,
+    "difficulty": "medium",
+    "tags": ["classification", "self-contained", "canonical", "two-failure-modes"],
+    "review_notes": "Canonical ARENA walkthrough — known solution exists. Risk of agent regurgitating. Consider withholding the 'two failure modes' framing from the task prompt."
+  },
+  {
+    "id": "caesar_cipher_easy",
+    "name": "Caesar Cipher Decoding (Easy)",
+    "source": "ARENA 1.5.X monthly_algorithmic_problems/january24_caesar_cipher",
+    "checkpoint": "monthly_algorithmic_problems/january24_caesar_cipher/caesar_cipher_model_easy.pt",
+    "dataset_module": "monthly_algorithmic_problems.january24_caesar_cipher.dataset",
+    "model_module": "monthly_algorithmic_problems.january24_caesar_cipher.model",
+    "behavior": "A transformer reads text encoded with a Caesar cipher (fixed shift applied to each character) and outputs the decoded text. Vocab: lowercase letters + space. Explain how the model identifies the shift and applies it — does it use a lookup, a linear projection, or something more compositional? Which layers/heads are responsible for shift detection vs character translation?",
+    "model_config": {
+      "normalization_type": "LN",
+      "vocab": "easy"
+    },
+    "oracle": "ablation_accuracy_drop",
+    "oracle_notes": "Ablate agent-identified components; per-character decoding accuracy should drop. Extra: does ablation affect all shifts equally or specific shifts more?",
+    "confidence": "medium",
+    "network_required": false,
+    "difficulty": "hard",
+    "tags": ["algorithmic", "self-contained", "cipher"],
+    "review_notes": "Checkpoint is self-contained but dataset generation requires downloading openwebtext-10k from HuggingFace. Need to either pre-generate and bundle a fixed test set, or patch dataset.py to use a local corpus."
+  },
+  {
+    "id": "trigrams",
+    "name": "Trigram Prediction",
+    "source": "ARENA 1.5.X monthly_algorithmic_problems/november24_trigrams",
+    "checkpoint": "monthly_algorithmic_problems/november24_trigrams/trigram_model.pt",
+    "dataset_module": "monthly_algorithmic_problems.november24_trigrams.dataset",
+    "model_module": "monthly_algorithmic_problems.november24_trigrams.model",
+    "behavior": "A transformer is trained on sequences where certain (a, b) -> c trigram rules determine the next token. Explain how the model discovers and applies trigram rules: does it use induction-head-like mechanisms, are the trigrams stored in specific heads or MLP weights, and how does the model handle positions not governed by any trigram?",
+    "model_config": {
+      "normalization_type": "LN"
+    },
+    "oracle": "ablation_accuracy_drop",
+    "oracle_notes": "Ablate agent-identified components; accuracy on trigram-governed positions should drop more than non-trigram positions.",
+    "confidence": "medium",
+    "network_required": false,
+    "difficulty": "hard",
+    "tags": ["algorithmic", "self-contained", "induction"],
+    "review_notes": "Dataset is fully self-contained (fixed seed). Oracle framing is less crisp than others — what counts as 'finding the circuit' needs to be defined before this is ready."
+  },
+  {
+    "id": "othellogpt_probes",
+    "name": "OthelloGPT Linear Probes",
+    "source": "ARENA 1.5.3 part53_othellogpt",
+    "checkpoint": "part53_othellogpt/main_linear_probe.pth",
+    "dataset_module": null,
+    "model_module": null,
+    "behavior": "A GPT trained to predict legal Othello moves develops an internal world model of the board state. Using the provided linear probe (which maps residual stream -> board state), explain which layers encode board state, whether the representation is 'mine/theirs' vs 'black/white', and what happens to the representation when the player perspective flips mid-game.",
+    "model_config": {
+      "source_model": "othello-gpt",
+      "probe_included": true
+    },
+    "oracle": "probe_accuracy_by_layer",
+    "oracle_notes": "Run probe at each layer; check if agent's stated peak layer matches actual peak within +/- 1.",
+    "confidence": "low",
+    "network_required": true,
+    "difficulty": "hard",
+    "tags": ["world-model", "probing"],
+    "review_notes": "Probe .pth is included. OthelloGPT model itself needs download — need to identify the correct HuggingFace model ID ARENA expects."
+  },
+  {
+    "id": "ioi_gpt2",
+    "name": "Indirect Object Identification (GPT-2 Small)",
+    "source": "ARENA 1.4.1 part41_indirect_object_identification",
+    "checkpoint": null,
+    "dataset_module": "part41_indirect_object_identification.ioi_dataset",
+    "model_module": null,
+    "behavior": "GPT-2 Small correctly completes sentences like 'When Mary and John went to the store, John gave a drink to __' with 'Mary'. Reproduce the IOI circuit from Wang et al. 2022: identify name mover heads, backup name mover heads, negative name mover heads, and S-inhibition heads. Explain what each class of head computes and how they interact.",
+    "model_config": {
+      "source_model": "gpt2",
+      "hf_model_id": "gpt2"
+    },
+    "oracle": "ablation_logit_diff",
+    "oracle_notes": "Ablate agent-identified name mover heads; logit difference (P(IO) - P(S)) should drop. Compare against Wang et al. 2022 Table 1 as ground truth.",
+    "confidence": "low",
+    "network_required": true,
+    "difficulty": "hard",
+    "tags": ["gpt2", "real-model", "circuit-replication", "paper-replication"],
+    "review_notes": "Requires GPT-2 from HuggingFace. Well-known result — high memorization risk. Good benchmark validity but weak test of genuine reasoning. Consider a less-studied model or a corrupted/distilled variant."
+  },
+  {
+    "id": "induction_heads",
+    "name": "Induction Heads in 2-Layer Transformer",
+    "source": "ARENA 1.2 part2_intro_to_mech_interp",
+    "checkpoint": null,
+    "dataset_module": null,
+    "model_module": null,
+    "behavior": "A small 2-layer attention-only transformer develops induction heads: heads that implement the 'previous token + copy' pattern, enabling in-context learning. Identify which heads are induction heads vs previous-token heads, characterize their QK circuits via full OV circuit analysis, and measure their contribution via ablation on repeated-token sequences.",
+    "model_config": {
+      "source_model": "attn-only-2l",
+      "hf_model_id": "ArthurConmy/attn-only-2l-induction-heads"
+    },
+    "oracle": "ablation_induction_score",
+    "oracle_notes": "Induction score = avg attention weight on the token after the previous occurrence of current token. Ablating induction head should reduce to near zero.",
+    "confidence": "low",
+    "network_required": true,
+    "difficulty": "easy",
+    "tags": ["attention-only", "induction-heads", "paper-replication"],
+    "review_notes": "HuggingFace model ID needs verification. Very well-known result — low oracle fidelity as a test of genuine reasoning. Probably better as a sanity-check / warm-up task than a real benchmark entry."
+  }
+]

@@ -206,71 +206,20 @@ def run_tests() -> None:
 
 
 def run_remote() -> None:
-    """Run tests on remote GPU."""
-    import os
-    from pathlib import Path
+    """Run tests on remote GPU via rollouts.run."""
+    import trio
 
-    from dotenv import load_dotenv
+    from rollouts.run import run_remote as run_remote_impl
 
-    from bifrost.client import BifrostClient
-    from broker.client import GPUClient
-
-    load_dotenv()
-
-    script = Path(__file__).resolve()
-    import subprocess
-
-    git_root = Path(
-        subprocess.check_output(["git", "rev-parse", "--show-toplevel"], text=True).strip()
+    trio.run(
+        run_remote_impl,
+        script_path=__file__,
+        keep_alive=False,
+        tail=True,
+        allow_dirty=True,
+        skip_hf_token_check=True,
+        raw_script=True,
     )
-    rel_path = script.relative_to(git_root)
-
-    runpod_key = os.getenv("RUNPOD_API_KEY")
-    assert runpod_key, "RUNPOD_API_KEY not set"
-    ssh_key_path = os.getenv("SSH_KEY_PATH", "~/.ssh/id_ed25519")
-
-    client = GPUClient(credentials={"runpod": runpod_key}, ssh_key_path=ssh_key_path)
-    gpu = None
-
-    try:
-        print("Provisioning GPU...")
-        gpu = client.create(
-            query=(client.vram_gb >= 24) & (client.price_per_hour <= 0.5),
-            name="test-kv-cache",
-        )
-        if not gpu:
-            print("Failed to provision GPU")
-            return
-
-        print(f"GPU ready: {gpu.id}")
-        if not gpu.wait_until_ssh_ready(timeout=300):
-            print("SSH timeout")
-            client.terminate_instance(gpu.id, gpu.provider)
-            return
-
-        print(f"SSH: {gpu.ssh_connection_string()}")
-
-        workspace = "~/.bifrost/workspaces/rollouts"
-        bifrost = BifrostClient(gpu.ssh_connection_string(), ssh_key_path)
-        bootstrap = [
-            "cd rollouts && uv python install 3.12 && uv sync --python 3.12",
-            "uv pip install torch 'transformers<4.52' datasets accelerate",
-        ]
-        bifrost.push(workspace_path=workspace, bootstrap_cmd=bootstrap)
-        print("Code deployed")
-
-        remote_script = f"{workspace}/{rel_path}"
-        cmd = f"cd {workspace}/rollouts && uv run python {remote_script}"
-        print(f"Running: {cmd}")
-        print("-" * 50)
-        for line in bifrost.exec_stream(cmd):
-            print(line, end="")
-        print("-" * 50)
-
-    finally:
-        if gpu:
-            print("Cleaning up...")
-            client.terminate_instance(gpu.id, gpu.provider)
 
 
 def test_attention_correctness() -> None:

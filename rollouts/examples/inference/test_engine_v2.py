@@ -25,7 +25,6 @@ import json
 import logging
 import time
 from dataclasses import asdict, dataclass
-from pathlib import Path
 from typing import Any
 
 # Wide event logging pattern from logging_sucks.md
@@ -758,112 +757,18 @@ def run_tests(config: TestConfig, require_gpu: bool = True) -> list[dict]:
 
 
 async def run_remote_async(node_id: str | None = None, keep_alive: bool = True) -> None:
-    """Deploy and run on remote GPU via broker/bifrost."""
-    import os
-    import subprocess
+    """Deploy and run on remote GPU via rollouts.run."""
+    from rollouts.run import run_remote as run_remote_impl
 
-    from dotenv import load_dotenv
-
-    from bifrost.client import BifrostClient
-    from broker.client import GPUClient
-
-    # Load .env from git root (workspace root)
-    script = Path(__file__).resolve()
-    git_root = Path(
-        subprocess.check_output(["git", "rev-parse", "--show-toplevel"], text=True).strip()
+    await run_remote_impl(
+        script_path=__file__,
+        node_id=node_id,
+        keep_alive=keep_alive,
+        tail=True,
+        allow_dirty=True,
+        skip_hf_token_check=True,
+        raw_script=True,
     )
-    load_dotenv(git_root / ".env")
-
-    # Get script path relative to git root (already computed above)
-    rel_path = script.relative_to(git_root)
-
-    # Provision or reuse GPU
-    runpod_key = os.getenv("RUNPOD_API_KEY")
-    assert runpod_key, "RUNPOD_API_KEY not set"
-    ssh_key_path = os.getenv("SSH_KEY_PATH", "~/.ssh/id_ed25519")
-
-    client = GPUClient(credentials={"runpod": runpod_key}, ssh_key_path=ssh_key_path)
-    gpu = None
-
-    try:
-        if node_id:
-            print(f"Reusing instance: {node_id}")
-            gpu = await client.get_instance(node_id, provider="runpod")
-            if not gpu:
-                print(f"GPU {node_id} not found (is it still running?)")
-                return
-            keep_alive = True
-        else:
-            print("Provisioning GPU...")
-            gpu = await client.create(
-                query=(client.vram_gb >= 24) & (client.price_per_hour <= 0.5),
-                name=f"inference-{script.stem}",
-            )
-            if not gpu:
-                print("Failed to provision GPU")
-                return
-            print(f"GPU ready: {gpu.id}")
-
-            if not await gpu.wait_until_ssh_ready(timeout=300):
-                print("SSH timeout")
-                await client.terminate_instance(gpu.id, gpu.provider)
-                return
-
-        print(f"SSH: {gpu.ssh_connection_string()}")
-
-        # Deploy (bifrost methods are sync, only broker is async)
-        workspace = "~/.bifrost/workspaces/rollouts"
-        bifrost = BifrostClient(gpu.ssh_connection_string(), ssh_key_path)
-        bifrost.push(workspace_path=workspace, allow_dirty=True)
-        print("Code synced")
-
-        # Bootstrap steps
-        bootstrap_steps = [
-            ("Installing uv", "curl -LsSf https://astral.sh/uv/install.sh | sh"),
-            (
-                "Syncing deps",
-                f"~/.local/bin/uv python install 3.12 && ~/.local/bin/uv sync --project {workspace}/rollouts --python 3.12",
-            ),
-            (
-                "Installing torch",
-                "~/.local/bin/uv pip install torch 'transformers<4.52' accelerate",
-            ),
-        ]
-        for label, cmd in bootstrap_steps:
-            print(f"  {label}...")
-            result = bifrost.exec(cmd, working_dir=workspace)
-            if result.exit_code != 0:
-                raise RuntimeError(f"Bootstrap '{label}' failed: {result.stderr or result.stdout}")
-        print("Bootstrap done")
-
-        # Run with streaming output
-        remote_script = f"{workspace}/{rel_path}"
-        cmd = f"cd {workspace}/rollouts && ~/.local/bin/uv run python {remote_script}"
-        print(f"Running: {cmd}")
-        print("-" * 50)
-        for line in bifrost.exec_stream(cmd):
-            print(line, end="")
-        print("-" * 50)
-
-    except KeyboardInterrupt:
-        print("\n\nInterrupted!")
-        keep_alive = True
-
-    finally:
-        if gpu is None:
-            return
-        if keep_alive:
-            print()
-            print("=" * 50)
-            print(f"Instance kept alive: {gpu.id}")
-            print(f"SSH: {gpu.ssh_connection_string()}")
-            print()
-            print(f"Rerun with:   --node-id {gpu.id}")
-            print(f"Terminate:    broker terminate {gpu.id}")
-            print("=" * 50)
-        else:
-            print("Cleaning up...")
-            await client.terminate_instance(gpu.id, gpu.provider)
 
 
 def run_remote(node_id: str | None = None, keep_alive: bool = True) -> None:
