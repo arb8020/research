@@ -15,6 +15,15 @@ from .run import run_main
 
 
 def main(argv: list[str] | None = None) -> int:
+    if argv is None:
+        argv = sys.argv[1:]
+
+    if argv and argv[0] == "run":
+        return run_main(argv[1:])
+
+    if argv and argv[0] == "monitor":
+        return monitor_main(argv[1:])
+
     parser = argparse.ArgumentParser(prog="argus", description="Argus control plane")
     subparsers = parser.add_subparsers(dest="command", required=True)
 

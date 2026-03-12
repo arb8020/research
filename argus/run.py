@@ -78,9 +78,42 @@ REPO_ROOT = Path(__file__).resolve().parents[1] / "rollouts"
 REMOTE_SYSTEM_TOOLS_FEATURE = "remote-system-tools-v1"
 REMOTE_UV_FEATURE = "uv"
 
-# Add workspace root to sys.path for sibling packages (miniray, bifrost, etc.)
-# The git bundle includes the full workspace, but Python doesn't know about siblings.
-# This is needed when running remotely via bifrost deploy.
+# sys.path hack: make sibling packages (miniray, bifrost, broker, etc.) importable.
+#
+# WHY THIS EXISTS
+# ---------------
+# The workspace has multiple Python packages (argus, rollouts, bifrost, broker,
+# miniray, infra_utils) installed via `uv sync --extra deploy` from the workspace
+# root. Locally this works. But when argus deploys a job remotely, it git-pushes
+# the workspace as a bundle and then runs `argus run --local` inside it. At that
+# point the remote process has no venv and no installed packages — just a directory
+# tree. So the code manually inserts the workspace root into sys.path to make
+# siblings importable without installation.
+#
+# This also shows up in the PYTHONPATH set on the remote env (see `_deploy_and_submit`
+# near `env_vars`), which is doing the same thing for the remote training process.
+#
+# WHAT NEEDS TO MOVE
+# ------------------
+# When argus owns the full run lifecycle, the launch flow becomes:
+#
+#   1. argus emits ATTEMPT_CREATED + ALLOCATION_BOUND events (via broker)
+#   2. argus calls bifrost to deploy the workspace and run the job
+#   3. bifrost installs the workspace packages properly on the remote (uv sync)
+#      instead of relying on PYTHONPATH
+#   4. the remote training process imports cleanly from an installed venv
+#
+# Step 3 is the key change: bifrost should run `uv sync` (or equivalent) as part
+# of workspace setup, making the workspace packages genuinely installed rather than
+# path-patched. Once that happens:
+#   - This sys.path.insert block goes away
+#   - The PYTHONPATH line in `_deploy_and_submit` goes away
+#   - The TYPE_CHECKING guards for bifrost/broker imports become real imports
+#   - The rollouts/run.py __getattr__ forwarding shim can be deleted
+#
+# The net result: imports become honest, missing dependencies fail loudly at startup
+# instead of at the first call site, and the code no longer needs to know the
+# directory structure of the remote machine.
 _workspace_root = REPO_ROOT.parent
 if _workspace_root.exists() and str(_workspace_root) not in sys.path:
     sys.path.insert(0, str(_workspace_root))
@@ -1003,7 +1036,12 @@ Examples:
 
     config_path = Path(args.config)
     if not config_path.is_absolute():
-        config_path = REPO_ROOT / config_path
+        repo_relative = REPO_ROOT / config_path
+        workspace_relative = REPO_ROOT.parent / config_path
+        if repo_relative.exists():
+            config_path = repo_relative
+        else:
+            config_path = workspace_relative
 
     if not config_path.exists():
         print(f"Config not found: {config_path}", file=sys.stderr)
@@ -1187,3 +1225,8 @@ Examples:
 
 if __name__ == "__main__":
     sys.exit(main())
+
+
+def run_main(argv: list[str] | None = None) -> int:
+    """Compatibility entry for the Argus CLI."""
+    return main(argv)
