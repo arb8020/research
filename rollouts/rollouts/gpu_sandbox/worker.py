@@ -427,6 +427,7 @@ import time
 import base64
 import tempfile
 import os
+import gc
 import json
 import platform
 import subprocess
@@ -490,7 +491,21 @@ if "ModelNew" not in globals():
 import torch
 {runtime_provenance}
 
+def graceful_eval_cleanup(device=None):
+    try:
+        gc.collect()
+        if torch.cuda.is_available():
+            if device is None:
+                device = torch.device("cuda")
+            with torch.cuda.device(device):
+                torch.cuda.empty_cache()
+                torch.cuda.reset_peak_memory_stats(device=device)
+                torch.cuda.synchronize(device=device)
+    except Exception:
+        pass
+
 try:
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model_ref = Model(*get_init_inputs())
     model_new = ModelNew(*get_init_inputs())
     model_ref.eval()
@@ -517,9 +532,16 @@ try:
     print(f"CORRECTNESS_RESULT:{{passed}}/{{NUM_TESTS}}")
 
     if passed < NUM_TESTS:
+        del model_ref, model_new, ref_out, new_out, inputs
+        graceful_eval_cleanup(device)
         sys.exit(0)
 
 except Exception as e:
+    try:
+        del model_ref, model_new, ref_out, new_out, inputs
+    except Exception:
+        pass
+    graceful_eval_cleanup(locals().get("device"))
     print(f"CORRECTNESS_ERROR:{{e}}")
     sys.exit(0)
 
@@ -569,6 +591,11 @@ except Exception as e:
     print(f"BENCHMARK_ERROR:{{e}}")
 finally:
     try:
+        del model_ref, model_new, ref_out, new_out, inputs
+    except Exception:
+        pass
+    graceful_eval_cleanup(locals().get("device"))
+    try:
         os.remove(_kernel_path)
     except OSError:
         pass
@@ -595,6 +622,7 @@ def _build_scoring_script(kernel_code: str, ref_code: str, kernel_file_path: str
 import sys
 import time
 import os
+import gc
 import json
 import platform
 import subprocess
@@ -643,7 +671,21 @@ if "ModelNew" not in globals():
 import torch
 {runtime_provenance}
 
+def graceful_eval_cleanup(device=None):
+    try:
+        gc.collect()
+        if torch.cuda.is_available():
+            if device is None:
+                device = torch.device("cuda")
+            with torch.cuda.device(device):
+                torch.cuda.empty_cache()
+                torch.cuda.reset_peak_memory_stats(device=device)
+                torch.cuda.synchronize(device=device)
+    except Exception:
+        pass
+
 try:
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model_ref = Model(*get_init_inputs())
     model_new = ModelNew(*get_init_inputs())
     model_ref.eval()
@@ -671,9 +713,16 @@ try:
 
     if passed < NUM_TESTS:
         # Not fully correct, don't benchmark
+        del model_ref, model_new, ref_out, new_out, inputs
+        graceful_eval_cleanup(device)
         sys.exit(0)
 
 except Exception as e:
+    try:
+        del model_ref, model_new, ref_out, new_out, inputs
+    except Exception:
+        pass
+    graceful_eval_cleanup(locals().get("device"))
     print(f"CORRECTNESS_ERROR:{{e}}")
     sys.exit(0)
 
@@ -724,6 +773,12 @@ try:
 
 except Exception as e:
     print(f"BENCHMARK_ERROR:{{e}}")
+finally:
+    try:
+        del model_ref, model_new, ref_out, new_out, inputs
+    except Exception:
+        pass
+    graceful_eval_cleanup(locals().get("device"))
 '''
 
 

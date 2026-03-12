@@ -173,9 +173,17 @@ def _metadata_execution_result(sample: AttemptRow) -> dict[str, Any] | None:
         return None
 
     turn_history = metadata.get("turn_history", [])
+    has_kernel_code = any(
+        bool(turn.get("has_code", False)) for turn in turn_history if isinstance(turn, dict)
+    )
     compiled_any = any(
         turn.get("compiled", False) for turn in turn_history if isinstance(turn, dict)
     )
+    pass_rates = [
+        float(turn.get("pass_rate", 0.0))
+        for turn in turn_history
+        if isinstance(turn, dict) and turn.get("pass_rate") is not None
+    ]
     runtime_provenance = metadata.get("evaluator_provenance")
     if runtime_provenance is None:
         for turn in turn_history:
@@ -183,14 +191,17 @@ def _metadata_execution_result(sample: AttemptRow) -> dict[str, Any] | None:
                 runtime_provenance = turn["runtime_provenance"]
                 break
 
+    has_correct_kernel = bool(metadata.get("has_correct_kernel", False))
+    pass_rate = max(pass_rates) if pass_rates else (1.0 if has_correct_kernel else 0.0)
+
     return {
         "compiled": 1.0 if compiled_any else 0.0,
-        "correct": 1.0 if metadata.get("has_correct_kernel", False) else 0.0,
+        "correct": 1.0 if has_correct_kernel else 0.0,
         "speedup": float(metadata.get("best_speedup", 0.0)),
-        "pass_rate": float(metadata.get("pass_rate", 0.0)),
+        "pass_rate": pass_rate,
         "error": metadata.get("error"),
         "runtime_provenance": runtime_provenance,
-        "has_kernel_code": 1.0 if extract_kernel_code(sample.response) else 0.0,
+        "has_kernel_code": 1.0 if has_kernel_code else 0.0,
         "source": "environment_metadata",
     }
 

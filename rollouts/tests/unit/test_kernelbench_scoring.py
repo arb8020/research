@@ -103,7 +103,9 @@ async def test_kernelbench_scorer_uses_environment_metadata_without_evaluator() 
         metadata={
             "best_speedup": 1.75,
             "has_correct_kernel": True,
-            "turn_history": [{"turn": 1, "compiled": True, "correct": True}],
+            "turn_history": [
+                {"turn": 1, "has_code": True, "compiled": True, "correct": True, "pass_rate": 1.0}
+            ],
         },
         trajectory=None,
     )
@@ -116,6 +118,9 @@ async def test_kernelbench_scorer_uses_environment_metadata_without_evaluator() 
     assert sample.score is not None
     assert sample.reward == pytest.approx(2.05)
     assert sample.score.reward == pytest.approx(2.05)
+    metrics = {metric.name: metric.value for metric in sample.score.metrics}
+    assert metrics["has_kernel_code"] == 1.0
+    assert metrics["pass_rate"] == 1.0
 
 
 @pytest.mark.trio

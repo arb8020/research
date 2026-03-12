@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import base64
+import concurrent.futures
 import json
+import logging
 import math
 import os
 import time
@@ -19,6 +21,10 @@ if TYPE_CHECKING:
 
 
 DEFAULT_WORKSPACE_DIR = "/workspace"
+SANDBOX_COMMAND_TIMEOUT_RETRIES = 1
+
+logger = logging.getLogger(__name__)
+_event_logger = logging.getLogger("rollouts.eval.events")
 
 
 @dataclass(frozen=True)
@@ -218,13 +224,50 @@ class ModalSandboxResource:
             proc.wait()
             return proc.stdout.read(), proc.stderr.read(), proc.returncode
 
-        stdout, stderr, returncode = await trio.to_thread.run_sync(do_run)
-        return CommandExecutionResult(
-            returncode=returncode,
-            stdout=stdout,
-            stderr=stderr,
-            cwd=cwd,
-        )
+        timeout_seconds = max(1, math.ceil(timeout))
+        for attempt in range(SANDBOX_COMMAND_TIMEOUT_RETRIES + 1):
+            try:
+                stdout, stderr, returncode = await trio.to_thread.run_sync(do_run)
+                return CommandExecutionResult(
+                    returncode=returncode,
+                    stdout=stdout,
+                    stderr=stderr,
+                    cwd=cwd,
+                )
+            except (concurrent.futures.CancelledError, TimeoutError) as exc:
+                self._last_error = (
+                    f"sandbox command timed out after {timeout_seconds}s"
+                )
+                if attempt < SANDBOX_COMMAND_TIMEOUT_RETRIES:
+                    logger.warning(
+                        "Retrying sandbox command after timeout",
+                        extra={
+                            "timeout_seconds": timeout_seconds,
+                            "attempt": attempt + 1,
+                            "max_attempts": SANDBOX_COMMAND_TIMEOUT_RETRIES + 1,
+                            "sandbox_id": self._sandbox_id,
+                            "cwd": cwd,
+                            "problem_id": self.sample_data.get("problem_id"),
+                            "problem_name": self.sample_data.get("problem_name"),
+                        },
+                    )
+                    _event_logger.info(
+                        "sandbox_command_retry",
+                        extra={
+                            "timeout_seconds": timeout_seconds,
+                            "attempt": attempt + 1,
+                            "max_attempts": SANDBOX_COMMAND_TIMEOUT_RETRIES + 1,
+                            "sandbox_id": self._sandbox_id,
+                            "cwd": cwd,
+                            "problem_id": self.sample_data.get("problem_id"),
+                            "problem_name": self.sample_data.get("problem_name"),
+                        },
+                    )
+                    continue
+                raise RuntimeError(
+                    f"sandbox command timed out after {timeout_seconds}s while running "
+                    f"command in {cwd}"
+                ) from exc
 
     async def _ensure_sandbox(self) -> modal.Sandbox:
         if self._sandbox is not None:
@@ -313,6 +356,7 @@ asyncio.run(create_sandbox())
     async def _run_runtime_probe(self, sandbox: modal.Sandbox) -> dict[str, Any]:
         script = """
 import json
+import os
 import socket
 runtime = {"hostname": socket.gethostname(), "runtime_ok": True}
 errors = []

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import concurrent.futures
+
 import pytest
 
 from examples.rl.kernelbench.resources import (
@@ -9,6 +11,7 @@ from examples.rl.kernelbench.resources import (
 from rollouts.environments.kernelbench_multi import SandboxPoolKernelEvaluator
 from rollouts.environments.modal_sandbox_resource import (
     ModalSandboxManager,
+    ModalSandboxResource,
     ModalSandboxResourceConfig,
 )
 from rollouts.environments.resources import CommandExecutionResult
@@ -214,3 +217,79 @@ async def test_modal_sandbox_manager_reuses_resources_when_keep_warm() -> None:
     assert stats["create_count"] == 1
     assert stats["reuse_count"] == 1
     assert stats["release_count"] == 2
+
+
+class _FakeStream:
+    def __init__(self, text: str) -> None:
+        self._text = text
+
+    def read(self) -> str:
+        return self._text
+
+
+class _FakeProc:
+    def __init__(self, wait_impl) -> None:
+        self._wait_impl = wait_impl
+        self.stdout = _FakeStream("ok")
+        self.stderr = _FakeStream("")
+        self.returncode = 0
+
+    def wait(self) -> None:
+        self._wait_impl()
+
+
+class _FakeSandbox:
+    def __init__(self, wait_impl) -> None:
+        self._wait_impl = wait_impl
+        self.exec_calls = 0
+
+    def exec(self, *args, **kwargs) -> _FakeProc:
+        del args, kwargs
+        self.exec_calls += 1
+        return _FakeProc(self._wait_impl)
+
+
+@pytest.mark.trio
+async def test_modal_sandbox_resource_retries_once_on_timeout(monkeypatch) -> None:
+    attempts = {"count": 0}
+
+    def wait_impl() -> None:
+        attempts["count"] += 1
+        if attempts["count"] == 1:
+            raise concurrent.futures.CancelledError()
+
+    sandbox = _FakeSandbox(wait_impl)
+    resource = ModalSandboxResource(
+        config=ModalSandboxResourceConfig(gpu="A100"),
+    )
+
+    async def fake_ensure_sandbox():
+        return sandbox
+
+    monkeypatch.setattr(resource, "_ensure_sandbox", fake_ensure_sandbox)
+
+    result = await resource.run("echo ok", cwd="/workspace", timeout=120.0)
+
+    assert result.returncode == 0
+    assert sandbox.exec_calls == 2
+
+
+@pytest.mark.trio
+async def test_modal_sandbox_resource_raises_clear_timeout_after_retry(monkeypatch) -> None:
+    def wait_impl() -> None:
+        raise concurrent.futures.CancelledError()
+
+    sandbox = _FakeSandbox(wait_impl)
+    resource = ModalSandboxResource(
+        config=ModalSandboxResourceConfig(gpu="A100"),
+    )
+
+    async def fake_ensure_sandbox():
+        return sandbox
+
+    monkeypatch.setattr(resource, "_ensure_sandbox", fake_ensure_sandbox)
+
+    with pytest.raises(RuntimeError, match="sandbox command timed out after 120s"):
+        await resource.run("echo ok", cwd="/workspace", timeout=120.0)
+
+    assert sandbox.exec_calls == 2
