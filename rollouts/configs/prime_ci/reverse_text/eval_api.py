@@ -1,15 +1,17 @@
-"""Trusted reverse-text eval config.
-
-Small canonical eval that exercises the shared eval path with the explicit
-sample-scorer stage.
-"""
+"""Prime-CI reverse-text eval config."""
 
 from __future__ import annotations
 
 from examples.rl.reverse_text.base_config import SYSTEM_PROMPT, reverse_text_score_fn
+from rollouts.config_status import import_tested
 from rollouts.core import Message
 from rollouts.eval import EndpointConfig, EvalOutputConfig, EvalRunConfig
 from rollouts.training.scoring import FunctionSampleScorer
+
+config_status = import_tested(
+    "70bce1bf",
+    "Imports cleanly and exercises the shared eval path with explicit sample scoring.",
+)
 
 endpoint = EndpointConfig(
     provider="anthropic",
@@ -27,7 +29,7 @@ run = EvalRunConfig(
 )
 
 output = EvalOutputConfig(
-    experiment_name="trusted_eval_reverse_text_api",
+    experiment_name="prime_ci_reverse_text_eval_api",
 )
 
 tasks = [

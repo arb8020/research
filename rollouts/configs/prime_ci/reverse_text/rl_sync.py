@@ -1,9 +1,10 @@
-"""Trusted reverse-text RL config using the conservative sync pipeline."""
+"""Prime-CI reverse-text RL config using the conservative sync pipeline."""
 
 from __future__ import annotations
 
 from examples.rl.reverse_text.base_config import reverse_text_score_fn
 from examples.training_architecture.shared import make_synthetic_reverse_text_prompts
+from rollouts.config_status import import_tested
 from rollouts.environments.no_tools import BasicEnvironment
 from rollouts.training.grpo import (
     CheckpointConfig,
@@ -17,8 +18,13 @@ from rollouts.training.grpo import (
 )
 from rollouts.training.scoring import FunctionSampleScorer
 
+config_status = import_tested(
+    "70bce1bf",
+    "Imports cleanly and covers the conservative sync GRPO path.",
+)
+
 config = GRPOConfig(
-    output=GRPOOutputConfig(experiment_name="trusted_reverse_text_sync"),
+    output=GRPOOutputConfig(experiment_name="prime_ci_reverse_text_sync"),
     model=ModelConfig(
         name="PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT",
         use_lora=True,
