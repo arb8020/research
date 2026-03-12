@@ -20,6 +20,9 @@ broker search --gpu-type "H100"
 
 # Provision instance
 broker create --gpu-type "H100" --name my-job
+
+# Attach a persistent volume (provider-specific location hint may be required)
+broker create --gpu-type "H100" --persistent-volume-id vol-123 --persistent-volume-location iad-1
 ```
 
 ## Python API
