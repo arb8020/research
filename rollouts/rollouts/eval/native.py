@@ -640,7 +640,7 @@ async def _run_agent_with_error_handling(
     Distinguishes provider errors (rate limits, timeouts) from actual failures.
     Provider errors are excluded from accuracy calculation.
     """
-    from .providers.base import ProviderError
+    from ..providers.base import ProviderError
 
     try:
         states = await run_agent(initial_state, run_config)
