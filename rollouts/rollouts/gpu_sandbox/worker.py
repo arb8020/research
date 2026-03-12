@@ -54,6 +54,10 @@ class SandboxWorker(ABC):
     async def health_check(self) -> bool:
         """Check if worker is healthy."""
 
+    @abstractmethod
+    async def describe_runtime(self) -> dict[str, Any]:
+        """Describe the runtime environment used for scoring."""
+
 
 @dataclass
 class LocalSandboxWorker(SandboxWorker):
@@ -128,6 +132,20 @@ class LocalSandboxWorker(SandboxWorker):
     async def health_check(self) -> bool:
         """Local worker is always healthy."""
         return True
+
+    async def describe_runtime(self) -> dict[str, Any]:
+        """Describe the local subprocess runtime used for scoring."""
+
+        def _run_probe() -> tuple[str, str, int]:
+            result = subprocess.run(
+                [sys.executable, "-c", _build_runtime_probe_script()],
+                capture_output=True,
+                text=True,
+            )
+            return result.stdout, result.stderr, result.returncode
+
+        stdout, stderr, returncode = await trio.to_thread.run_sync(_run_probe)
+        return _parse_runtime_probe(stdout, stderr, returncode, worker_kind="local")
 
 
 @dataclass
@@ -207,6 +225,33 @@ SCORING_SCRIPT_EOF
         except Exception:
             return False
 
+    async def describe_runtime(self) -> dict[str, Any]:
+        """Describe the remote runtime used for scoring."""
+        escaped_script = _build_runtime_probe_script().replace("'", "'\"'\"'")
+        command = f"""
+python3 << 'RUNTIME_PROBE_EOF'
+{escaped_script}
+RUNTIME_PROBE_EOF
+"""
+        try:
+            result = await self.instance.aexec(
+                command,
+                ssh_key_path=self.ssh_key_path,
+                timeout=30,
+            )
+            return _parse_runtime_probe(
+                result.stdout,
+                result.stderr,
+                0 if result.success else 1,
+                worker_kind="broker",
+            )
+        except Exception as e:
+            return {
+                "worker_kind": "broker",
+                "runtime_ok": False,
+                "error": f"Runtime probe failed: {e}",
+            }
+
 
 def _build_runtime_provenance_snippet() -> str:
     """Build Python code that prints scorer runtime provenance as JSON."""
@@ -279,6 +324,96 @@ except Exception as e:
 """
 
 
+def _build_runtime_probe_script() -> str:
+    """Build a small Python script that reports sandbox runtime capabilities."""
+    return r'''
+import json
+import platform
+import sys
+
+result = {
+    "python_executable": sys.executable,
+    "python_version": platform.python_version(),
+    "runtime_ok": True,
+    "torch": {
+        "available": False,
+        "version": None,
+        "cuda_available": False,
+        "cuda_version": None,
+        "hip_version": None,
+        "device_count": 0,
+        "device_name": None,
+    },
+    "errors": [],
+}
+
+try:
+    import torch
+except Exception as e:
+    result["runtime_ok"] = False
+    result["errors"].append(f"import torch failed: {e!r}")
+else:
+    result["torch"]["available"] = True
+    result["torch"]["version"] = torch.__version__
+    result["torch"]["cuda_available"] = torch.cuda.is_available()
+    result["torch"]["cuda_version"] = torch.version.cuda
+    result["torch"]["hip_version"] = getattr(torch.version, "hip", None)
+    if torch.cuda.is_available():
+        try:
+            result["torch"]["device_count"] = torch.cuda.device_count()
+        except Exception as e:
+            result["runtime_ok"] = False
+            result["errors"].append(f"torch.cuda.device_count failed: {e!r}")
+        try:
+            result["torch"]["device_name"] = torch.cuda.get_device_name(0)
+        except Exception as e:
+            result["runtime_ok"] = False
+            result["errors"].append(f"torch.cuda.get_device_name failed: {e!r}")
+
+print(json.dumps(result, sort_keys=True))
+'''
+
+
+def _parse_runtime_probe(
+    stdout: str,
+    stderr: str,
+    returncode: int,
+    *,
+    worker_kind: str,
+) -> dict[str, Any]:
+    """Parse runtime probe output into a stable description."""
+    import json
+
+    if returncode != 0:
+        return {
+            "worker_kind": worker_kind,
+            "runtime_ok": False,
+            "error": _tail_text(stderr, limit=500)
+            or _tail_text(stdout, limit=500)
+            or f"Runtime probe failed with return code {returncode}",
+        }
+
+    lines = [line for line in stdout.splitlines() if line.strip()]
+    if not lines:
+        return {
+            "worker_kind": worker_kind,
+            "runtime_ok": False,
+            "error": "Runtime probe produced no output",
+        }
+
+    try:
+        parsed = json.loads(lines[-1])
+    except json.JSONDecodeError:
+        return {
+            "worker_kind": worker_kind,
+            "runtime_ok": False,
+            "error": _tail_text(stdout, limit=500) or "Failed to parse runtime probe JSON",
+        }
+
+    parsed["worker_kind"] = worker_kind
+    return parsed
+
+
 def _build_scoring_script_for_remote(ref_code: str, kernel_b64: str) -> str:
     """Build scoring script for remote execution with base64-encoded kernel.
 
@@ -295,6 +430,7 @@ import os
 import json
 import platform
 import subprocess
+import importlib.util
 
 # Set CUDA_HOME if not set (common Modal/container issue)
 if "CUDA_HOME" not in os.environ:
@@ -315,20 +451,36 @@ if "CUDA_HOME" not in os.environ:
 
 _kernel_b64 = "{kernel_b64}"
 _kernel_code = base64.b64decode(_kernel_b64).decode()
+_kernel_file = tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False)
+_kernel_path = _kernel_file.name
+_kernel_file.write(_kernel_code)
+_kernel_file.close()
 
 try:
-    exec(_kernel_code, globals())
+    spec = importlib.util.spec_from_file_location("kernelbench_candidate", _kernel_path)
+    module = importlib.util.module_from_spec(spec)
+    assert spec is not None and spec.loader is not None
+    spec.loader.exec_module(module)
+    ModelNew = module.ModelNew
     print("COMPILE_SUCCESS")
 except Exception as e:
     print(f"COMPILE_ERROR:{{e}}")
+    try:
+        os.remove(_kernel_path)
+    except OSError:
+        pass
     sys.exit(0)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Verify ModelNew exists
 # ─────────────────────────────────────────────────────────────────────────────
 
-if "ModelNew" not in dir():
+if "ModelNew" not in globals():
     print("COMPILE_ERROR:ModelNew class not defined")
+    try:
+        os.remove(_kernel_path)
+    except OSError:
+        pass
     sys.exit(0)
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -415,6 +567,11 @@ try:
 
 except Exception as e:
     print(f"BENCHMARK_ERROR:{{e}}")
+finally:
+    try:
+        os.remove(_kernel_path)
+    except OSError:
+        pass
 '''
 
 
@@ -441,6 +598,7 @@ import os
 import json
 import platform
 import subprocess
+import importlib.util
 
 # Set CUDA_HOME if not set (common Modal/container issue)
 if "CUDA_HOME" not in os.environ:
@@ -460,9 +618,11 @@ if "CUDA_HOME" not in os.environ:
 # ─────────────────────────────────────────────────────────────────────────────
 
 try:
-    with open("{kernel_file_path}", "r") as _f:
-        _kernel_code = _f.read()
-    exec(_kernel_code, globals())
+    spec = importlib.util.spec_from_file_location("kernelbench_candidate", "{kernel_file_path}")
+    module = importlib.util.module_from_spec(spec)
+    assert spec is not None and spec.loader is not None
+    spec.loader.exec_module(module)
+    ModelNew = module.ModelNew
     print("COMPILE_SUCCESS")
 except Exception as e:
     print(f"COMPILE_ERROR:{{e}}")
@@ -472,7 +632,7 @@ except Exception as e:
 # Verify ModelNew exists
 # ─────────────────────────────────────────────────────────────────────────────
 
-if "ModelNew" not in dir():
+if "ModelNew" not in globals():
     print("COMPILE_ERROR:ModelNew class not defined")
     sys.exit(0)
 
@@ -574,6 +734,16 @@ def _indent(code: str, prefix: str) -> str:
     return "\n".join(prefix + line if line.strip() else line for line in lines)
 
 
+def _tail_text(text: str, limit: int = 2000) -> str | None:
+    """Keep a bounded tail of debug output for observability."""
+    stripped = text.strip()
+    if not stripped:
+        return None
+    if len(stripped) <= limit:
+        return stripped
+    return stripped[-limit:]
+
+
 def _parse_scoring_output(stdout: str, stderr: str, returncode: int) -> dict[str, Any]:
     """Parse output from scoring script."""
     import json
@@ -587,6 +757,9 @@ def _parse_scoring_output(stdout: str, stderr: str, returncode: int) -> dict[str
         "pass_rate": 0.0,
         "error": None,
         "runtime_provenance": None,
+        "debug_stdout_tail": _tail_text(stdout),
+        "debug_stderr_tail": _tail_text(stderr),
+        "returncode": returncode,
     }
 
     provenance_match = re.search(r"PROVENANCE_RESULT:(\{.*\})", stdout)
@@ -623,6 +796,13 @@ def _parse_scoring_output(stdout: str, stderr: str, returncode: int) -> dict[str
         match = re.search(r"BENCHMARK_ERROR:(.*)", stdout)
         # Don't set error - kernel is still correct, just couldn't benchmark
         logger.warning(f"Benchmark error: {match.group(1) if match else 'unknown'}")
+
+    if result["error"] is None and returncode != 0:
+        result["error"] = (
+            _tail_text(stderr, limit=500)
+            or _tail_text(stdout, limit=500)
+            or f"Scoring subprocess failed with return code {returncode}"
+        )
 
     # Compute reward: 0.2 * compiled + 1.0 * correct + speedup (if correct)
     result["reward"] = (

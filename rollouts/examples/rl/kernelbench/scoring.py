@@ -12,7 +12,7 @@ from typing import Any, Protocol, runtime_checkable
 
 from rollouts.core import Metric, Score
 from rollouts.environments.resources import BatchKernelEvaluator, KernelEvaluator
-from rollouts.training.types import Sample
+from rollouts.training.types import AttemptRow, ScoringContext
 
 logger = logging.getLogger(__name__)
 
@@ -64,7 +64,7 @@ class KernelJudgePolicy:
 class KernelJudge(Protocol):
     async def judge_samples(
         self,
-        samples: list[Sample],
+        samples: list[AttemptRow],
         execution_results: list[dict[str, Any]],
     ) -> list[KernelJudgeDecision | None]: ...
 
@@ -76,13 +76,13 @@ class FunctionKernelJudge:
     """Adapter for simple callable judge implementations."""
 
     judge_fn: Callable[
-        [list[Sample], list[dict[str, Any]]],
+        [list[AttemptRow], list[dict[str, Any]]],
         Awaitable[list[KernelJudgeDecision | None]] | list[KernelJudgeDecision | None],
     ]
 
     async def judge_samples(
         self,
-        samples: list[Sample],
+        samples: list[AttemptRow],
         execution_results: list[dict[str, Any]],
     ) -> list[KernelJudgeDecision | None]:
         result = self.judge_fn(samples, execution_results)
@@ -149,9 +149,26 @@ def build_kernelbench_score(
     return Score(metrics=tuple(metrics))
 
 
-def _metadata_execution_result(sample: Sample) -> dict[str, Any] | None:
+def _metadata_execution_result(sample: AttemptRow) -> dict[str, Any] | None:
     """Use environment-produced metadata when the rollout already executed scoring."""
     metadata = sample.metadata
+    status = metadata.get("status")
+    error = metadata.get("error")
+    if status in {"failed", "provider_error"} and error:
+        runtime_provenance = metadata.get("evaluator_provenance") or metadata.get(
+            "sandbox_runtime_provenance"
+        )
+        return {
+            "compiled": 0.0,
+            "correct": 0.0,
+            "speedup": 0.0,
+            "pass_rate": 0.0,
+            "error": error,
+            "runtime_provenance": runtime_provenance,
+            "has_kernel_code": 1.0 if extract_kernel_code(sample.response) else 0.0,
+            "source": "environment_failure",
+        }
+
     if "best_speedup" not in metadata and "has_correct_kernel" not in metadata:
         return None
 
@@ -180,7 +197,7 @@ def _metadata_execution_result(sample: Sample) -> dict[str, Any] | None:
 
 async def _score_one_with_evaluator(
     evaluator: KernelEvaluator,
-    sample: Sample,
+    sample: AttemptRow,
     timeout: float,
 ) -> dict[str, Any]:
     response = sample.response
@@ -235,8 +252,12 @@ class KernelBenchSampleScorer:
     _judge_skipped_count: int = field(default=0, init=False, repr=False)
     _judge_gated_count: int = field(default=0, init=False, repr=False)
 
-    async def score_samples(self, samples: list[Sample]) -> list[Sample]:
-        execution_results = await self._score_execution(samples)
+    async def score_samples(
+        self,
+        samples: list[AttemptRow],
+        contexts: list[ScoringContext | None] | None = None,
+    ) -> list[AttemptRow]:
+        execution_results = await self._score_execution(samples, contexts=contexts)
         judge_results = await self._score_judge(samples, execution_results)
 
         for sample, execution_result, judge_result in zip(
@@ -275,7 +296,7 @@ class KernelBenchSampleScorer:
 
         return samples
 
-    async def score_sample(self, sample: Sample) -> Score:
+    async def score_sample(self, sample: AttemptRow) -> Score:
         await self.score_samples([sample])
         assert sample.score is not None, "score_samples must populate sample.score"
         return sample.score
@@ -302,17 +323,39 @@ class KernelBenchSampleScorer:
             stats["judge_backend"] = self.judge.stats()
         return stats
 
-    async def _score_execution(self, samples: list[Sample]) -> list[dict[str, Any]]:
+    async def _score_execution(
+        self,
+        samples: list[AttemptRow],
+        contexts: list[ScoringContext | None] | None = None,
+    ) -> list[dict[str, Any]]:
+        if contexts is None:
+            contexts = [None] * len(samples)
         results: list[dict[str, Any] | None] = [None] * len(samples)
         batchable_indices: list[int] = []
         batch_requests: list[dict[str, Any]] = []
 
-        for idx, sample in enumerate(samples):
+        for idx, (sample, context) in enumerate(zip(samples, contexts, strict=False)):
             metadata_result = _metadata_execution_result(sample)
             if metadata_result is not None:
                 self._execution_metadata_count += 1
                 results[idx] = metadata_result
                 continue
+
+            environment = context.environment if context is not None else None
+            if environment is not None:
+                runtime_metadata = getattr(environment, "get_runtime_metadata", None)
+                if callable(runtime_metadata):
+                    try:
+                        extra_metadata = runtime_metadata()
+                    except Exception:
+                        extra_metadata = None
+                    if isinstance(extra_metadata, dict):
+                        sample.metadata.update(extra_metadata)
+                        metadata_result = _metadata_execution_result(sample)
+                        if metadata_result is not None:
+                            self._execution_metadata_count += 1
+                            results[idx] = metadata_result
+                            continue
 
             if self.evaluator is None:
                 raise ValueError(
@@ -364,7 +407,7 @@ class KernelBenchSampleScorer:
 
     async def _score_judge(
         self,
-        samples: list[Sample],
+        samples: list[AttemptRow],
         execution_results: list[dict[str, Any]],
     ) -> list[KernelJudgeDecision | None]:
         if self.judge is None:

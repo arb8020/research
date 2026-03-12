@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-import asyncio
 from typing import Any, cast
 
 import pytest
+import trio
 
 from rollouts.gpu_sandbox.pool import SandboxPool
 
@@ -29,9 +29,12 @@ def test_sandbox_pool_explicit_leases_and_stats() -> None:
     async def run() -> None:
         pool = SandboxPool()
         pool._workers = cast(Any, [FakeWorker("w0"), FakeWorker("w1")])
+        send, recv = trio.open_memory_channel[int](len(pool._workers))
+        pool._available_worker_ids_send = send
+        pool._available_worker_ids_recv = recv
         pool._started = True
         for worker_index in range(len(pool._workers)):
-            pool._available_worker_ids.put_nowait(worker_index)
+            send.send_nowait(worker_index)
 
         lease = await pool.acquire()
         stats_during_lease = pool.stats()
@@ -47,7 +50,7 @@ def test_sandbox_pool_explicit_leases_and_stats() -> None:
         assert result["compiled"] == 1.0
         assert pool.stats()["score_requests"] == 1
 
-    asyncio.run(run())
+    trio.run(run)
 
 
 def test_sandbox_pool_score_batch_respects_started_boundary() -> None:
@@ -57,4 +60,4 @@ def test_sandbox_pool_score_batch_respects_started_boundary() -> None:
         with pytest.raises(ValueError, match="Pool not started"):
             await pool.score_batch([{"kernel_code": "a", "ref_code": "b"}])
 
-    asyncio.run(run())
+    trio.run(run)

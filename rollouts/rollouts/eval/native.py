@@ -6,6 +6,7 @@ Tiger Style: Pure functions, explicit configuration, no hidden state.
 
 import json
 import logging
+from inspect import isawaitable
 import time
 from collections.abc import Callable, Iterator
 from dataclasses import asdict, dataclass, field, replace
@@ -27,7 +28,7 @@ from ..dtypes import (
     ToolExecutionEnd,
 )
 from ..progress import MultiProgress
-from ..training.types import AttemptRow, ProblemRow, SampleScorer
+from ..training.types import AttemptRow, ProblemRow, SampleScorer, ScoringContext
 
 logger = logging.getLogger(__name__)
 
@@ -182,7 +183,7 @@ async def _evaluate_batch(
         if config.environment is not None:
             env = config.environment
         elif config.environment_factory is not None:
-            env = await config.environment_factory(sample_data)
+            env = await _resolve_environment(config.environment_factory, sample_data)
         else:
             env = None
 
@@ -231,10 +232,22 @@ async def _evaluate_batch(
     return results
 
 
+async def _resolve_environment(
+    environment_factory: Callable[[dict[str, Any]], Any],
+    sample_data: dict[str, Any],
+) -> Any:
+    """Normalize sync or async environment factories."""
+    environment = environment_factory(sample_data)
+    if isawaitable(environment):
+        return await environment
+    return environment
+
+
 async def _compute_score(
     score_fn: Callable[..., Any] | None,
     sample: AttemptRow,
     sample_scorer: SampleScorer | None = None,
+    scoring_context: ScoringContext | None = None,
 ) -> Score:
     """Compute score from either an explicit scorer stage or a legacy score function."""
     import inspect
@@ -242,7 +255,7 @@ async def _compute_score(
 
     try:
         if sample_scorer is not None:
-            await sample_scorer.score_samples([sample])
+            await sample_scorer.score_samples([sample], contexts=[scoring_context])
             if sample.score is None:
                 raise ValueError("sample_scorer must populate sample.score on each sample")
             sample.reward = sample.score.reward
@@ -929,13 +942,6 @@ async def evaluate_sample(
         metadata=combined_metadata,
     )
 
-    # Compute score
-    score = await _compute_score(
-        config.score_fn,
-        sample,
-        sample_scorer=config.sample_scorer,
-    )
-
     # Add execution metadata
     exec_metadata = {
         "turns_used": states[-1].turn_idx,
@@ -949,6 +955,17 @@ async def evaluate_sample(
         exec_metadata["status"] = "provider_error" if is_provider_error else "failed"
     else:
         exec_metadata["status"] = "success"
+
+    sample.metadata = {**sample.metadata, **exec_metadata}
+
+    # Compute score after execution status/error metadata is attached so scorer stages can
+    # short-circuit cleanly on environment/resource failures.
+    score = await _compute_score(
+        config.score_fn,
+        sample,
+        sample_scorer=config.sample_scorer,
+        scoring_context=ScoringContext(environment=environment),
+    )
 
     # Compute duration and log completion
     duration_seconds = time.time() - start_time
@@ -965,7 +982,6 @@ async def evaluate_sample(
     # Update sample with score and reward
     sample.score = score
     sample.reward = score.reward if score else 0.0
-    sample.metadata = {**sample.metadata, **exec_metadata}
 
     # Emit sample_end event for frontend live streaming
     await run_config.on_chunk(

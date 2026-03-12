@@ -12,6 +12,7 @@ import trio
 
 if TYPE_CHECKING:
     from ..core import Score, Trajectory
+    from ..dtypes import Environment
 
 
 class Status(Enum):
@@ -322,6 +323,19 @@ class RolloutBatch:
         return self.attempts
 
 
+@dataclass(frozen=True)
+class ScoringContext:
+    """Execution context available to scoring stages.
+
+    This allows scorers to reuse live environment-owned resources or other
+    execution context when needed, instead of provisioning separate hidden
+    infrastructure.
+    """
+
+    environment: "Environment | None" = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
 @runtime_checkable
 class SampleScorer(Protocol):
     """Explicit scoring stage for rollout samples.
@@ -330,7 +344,11 @@ class SampleScorer(Protocol):
     observability without coupling that behavior to rollout generation.
     """
 
-    async def score_samples(self, samples: list[AttemptRow]) -> list[AttemptRow]: ...
+    async def score_samples(
+        self,
+        samples: list[AttemptRow],
+        contexts: list[ScoringContext | None] | None = None,
+    ) -> list[AttemptRow]: ...
 
 
 @dataclass(frozen=True)

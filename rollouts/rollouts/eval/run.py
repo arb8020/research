@@ -51,6 +51,43 @@ logger = logging.getLogger(__name__)
 REPO_ROOT = Path(__file__).parent.parent.parent
 
 
+def _resolve_endpoint_metadata(provider: str, model: str) -> tuple[str | None, str | None]:
+    """Resolve provider/model against the local registry when available.
+
+    Returns:
+        (base_url, api_format), where either may be None if the provider/model
+        should be treated as a custom runtime endpoint (for example sglang/vllm).
+    """
+    from difflib import get_close_matches
+    from typing import cast
+
+    from rollouts.fuzzy import fuzzy_filter
+    from rollouts.models import MODELS, Provider, get_model
+
+    if provider not in MODELS:
+        return None, None
+
+    provider_models = MODELS[cast("Provider", provider)]
+    if not provider_models:
+        return None, None
+
+    metadata = get_model(cast("Provider", provider), model)
+    if metadata is not None:
+        return metadata.base_url, metadata.api
+
+    model_ids = list(provider_models.keys())
+    suggestions = fuzzy_filter(model_ids, model, lambda x: x)[:3]
+    if not suggestions:
+        suggestions = get_close_matches(model, model_ids, n=3, cutoff=0.5)
+    error_msg = f"Model '{model}' not found for provider '{provider}'."
+    if suggestions:
+        error_msg += "\n\nDid you mean one of these?\n"
+        for suggestion in suggestions:
+            error_msg += f"  - {provider}/{suggestion}\n"
+    error_msg += f"\nSee available models: rollouts --list-models {provider}"
+    raise ValueError(error_msg)
+
+
 def load_config_module(config_path: Path) -> Any:
     """Load a config module from path."""
     spec = importlib.util.spec_from_file_location("_eval_config", config_path)
@@ -99,10 +136,15 @@ async def run_with_api(
             f"Set {endpoint_config.provider.upper()}_API_KEY in environment."
         )
 
+    resolved_base_url, resolved_api_format = _resolve_endpoint_metadata(
+        endpoint_config.provider,
+        endpoint_config.model,
+    )
+
     endpoint = Endpoint(
         model=f"{endpoint_config.provider}/{endpoint_config.model}",
-        base_url=endpoint_config.get_base_url(),
-        api_format=endpoint_config.get_api_format(),
+        base_url=endpoint_config.base_url or resolved_base_url or endpoint_config.get_base_url(),
+        api_format=resolved_api_format or endpoint_config.get_api_format(),
         api_key=api_key,
         temperature=endpoint_config.temperature,
         max_tokens=endpoint_config.max_tokens,

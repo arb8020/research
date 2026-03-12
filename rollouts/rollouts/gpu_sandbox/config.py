@@ -9,6 +9,7 @@ Uses broker (~/research/broker) for GPU provisioning across providers.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from dataclasses import asdict
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -77,3 +78,28 @@ SSHSandboxConfig = ExistingInstanceConfig  # Use with pre-connected instances
 
 # Type alias for any sandbox config
 AnySandboxConfig = LocalSandboxConfig | BrokerSandboxConfig | ExistingInstanceConfig
+
+
+def serialize_sandbox_config(config: AnySandboxConfig) -> dict[str, object]:
+    data = asdict(config)
+    if isinstance(config, LocalSandboxConfig):
+        data["kind"] = "local"
+    elif isinstance(config, BrokerSandboxConfig):
+        data["kind"] = "broker"
+    elif isinstance(config, ExistingInstanceConfig):
+        data["kind"] = "existing"
+    else:
+        raise TypeError(f"Unsupported sandbox config type: {type(config)!r}")
+    return data
+
+
+def deserialize_sandbox_config(data: dict[str, object]) -> AnySandboxConfig:
+    payload = {k: v for k, v in data.items() if k != "kind"}
+    kind = data.get("kind")
+    if kind == "local":
+        return LocalSandboxConfig(**payload)
+    if kind == "broker":
+        return BrokerSandboxConfig(**payload)
+    if kind == "existing":
+        return ExistingInstanceConfig(**payload)
+    raise ValueError(f"Unknown sandbox config kind: {kind!r}")

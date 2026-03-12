@@ -5,7 +5,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-from .types import AttemptRow, RolloutConfig, RolloutRuntime, SampleScorer
+from .types import AttemptRow, RolloutConfig, RolloutRuntime, SampleScorer, ScoringContext
 
 
 @dataclass(frozen=True)
@@ -14,7 +14,12 @@ class FunctionSampleScorer:
 
     score_fn: Callable[[AttemptRow], Any]
 
-    async def score_samples(self, samples: list[AttemptRow]) -> list[AttemptRow]:
+    async def score_samples(
+        self,
+        samples: list[AttemptRow],
+        contexts: list[ScoringContext | None] | None = None,
+    ) -> list[AttemptRow]:
+        del contexts
         is_async = inspect.iscoroutinefunction(self.score_fn)
 
         for sample in samples:

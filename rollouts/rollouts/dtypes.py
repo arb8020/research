@@ -1565,11 +1565,22 @@ class Environment(Protocol):
         """
         ...
 
+    async def initialize(self, session_id: str | None = None) -> None:
+        """Eagerly initialize required environment resources before first model call.
+
+        Optional method. Environments that need required external resources should
+        prefer this over lazy setup so impossible episodes fail before spending
+        model tokens.
+        """
+        ...
+
     async def on_session_start(self, session_id: str) -> None:
         """Called when an agent session starts, before any tools execute.
 
         Optional method - environments can use this to initialize session-specific
         resources (e.g., git worktrees, temp directories, etc.).
+        Prefer `initialize()` for new environments; this hook remains as a
+        compatibility shim for older implementations.
 
         Args:
             session_id: The session ID for this agent run

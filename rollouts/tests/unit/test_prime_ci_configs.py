@@ -4,7 +4,10 @@ import importlib.util
 from pathlib import Path
 from types import ModuleType
 
+import pytest
+
 from rollouts.config_status import ConfigConfidence
+from rollouts.training.types import AttemptRow, ProblemRow
 
 
 def _load_module(path: Path) -> ModuleType:
@@ -24,6 +27,26 @@ def test_prime_ci_reverse_text_eval_exports_sample_scorer_and_status() -> None:
     assert module.output.experiment_name == "prime_ci_reverse_text_eval_api"
     assert module.config_status.confidence == ConfigConfidence.IMPORT_TESTED
     assert module.config_status.verified_commit == "70bce1bf"
+
+
+@pytest.mark.trio
+async def test_prime_ci_reverse_text_eval_scorer_uses_eval_task_contract() -> None:
+    module = _load_module(Path("rollouts/configs/prime_ci/reverse_text/eval_api.py").resolve())
+
+    sample = AttemptRow(
+        attempt_id="sample-1",
+        problem=ProblemRow(problem_id="sample-1", payload={"text": "abc"}),
+    )
+
+    class FakeTrajectory:
+        messages = [{"role": "assistant", "content": "<reversed_text>cba</reversed_text>"}]
+
+    sample.trajectory = FakeTrajectory()  # type: ignore[assignment]
+    scored = await module.sample_scorer.score_samples([sample])
+
+    assert scored[0].score is not None
+    assert scored[0].score.reward == pytest.approx(1.0)
+    assert scored[0].reward == pytest.approx(1.0)
 
 
 def test_prime_ci_rl_configs_use_expected_pipeline_modes() -> None:

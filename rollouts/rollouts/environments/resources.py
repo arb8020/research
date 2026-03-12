@@ -68,6 +68,17 @@ class CommandRunner(Protocol):
 
 
 @runtime_checkable
+class SandboxWorkspaceResource(CodingWorkspaceResource, CommandRunner, Protocol):
+    async def start(self) -> None: ...
+
+    async def close(self) -> None: ...
+
+    async def describe_runtime(self) -> dict[str, Any]: ...
+
+    def stats(self) -> dict[str, Any]: ...
+
+
+@runtime_checkable
 class TerminalTaskResource(Protocol):
     task_id: str
     instruction: str

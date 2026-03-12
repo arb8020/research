@@ -102,12 +102,12 @@ class EndpointConfig:
         """Get wire protocol format for this provider."""
         formats = {
             "anthropic": "anthropic-messages",
-            "openai": "openai-chat",
-            "google": "google-genai",
-            "sglang": "openai-chat",
-            "vllm": "openai-chat",
+            "openai": "openai-completions",
+            "google": "google-generative-ai",
+            "sglang": "openai-completions",
+            "vllm": "openai-completions",
         }
-        return formats.get(self.provider, "openai-chat")
+        return formats.get(self.provider, "openai-completions")
 
     @property
     def requires_server(self) -> bool:

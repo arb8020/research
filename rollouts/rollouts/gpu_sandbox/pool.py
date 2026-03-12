@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
+
+import trio
 
 if TYPE_CHECKING:
     from rollouts.gpu_sandbox.config import AnySandboxConfig
@@ -60,7 +61,11 @@ class SandboxPool:
     configs: list[AnySandboxConfig] = field(default_factory=list)
 
     _workers: list[SandboxWorker] = field(default_factory=list, repr=False)
-    _available_worker_ids: asyncio.Queue[int] = field(default_factory=asyncio.Queue, repr=False)
+    _available_worker_ids_send: trio.MemorySendChannel[int] | None = field(default=None, repr=False)
+    _available_worker_ids_recv: trio.MemoryReceiveChannel[int] | None = field(
+        default=None,
+        repr=False,
+    )
     _started: bool = field(default=False, repr=False)
     _in_flight: int = field(default=0, repr=False)
     _acquire_count: int = field(default=0, repr=False)
@@ -82,6 +87,16 @@ class SandboxPool:
         """Total number of workers across all configs."""
         return sum(c.count for c in self.configs) if self.configs else 1
 
+    def _require_worker_channel(self) -> trio.MemoryReceiveChannel[int]:
+        if self._available_worker_ids_recv is None:
+            raise ValueError("Pool not started. Call start() first.")
+        return self._available_worker_ids_recv
+
+    def _require_worker_sender(self) -> trio.MemorySendChannel[int]:
+        if self._available_worker_ids_send is None:
+            raise ValueError("Pool not started. Call start() first.")
+        return self._available_worker_ids_send
+
     async def start(self) -> None:
         """Provision sandboxes and populate the lease queue."""
         if self._started:
@@ -99,9 +114,11 @@ class SandboxPool:
             workers = await self._provision_all()
 
         self._workers = workers
-        self._available_worker_ids = asyncio.Queue()
+        send, recv = trio.open_memory_channel[int](len(self._workers))
+        self._available_worker_ids_send = send
+        self._available_worker_ids_recv = recv
         for worker_index in range(len(self._workers)):
-            self._available_worker_ids.put_nowait(worker_index)
+            self._require_worker_sender().send_nowait(worker_index)
 
         self._started = True
         logger.info("SandboxPool: %s workers ready", len(self._workers))
@@ -119,7 +136,12 @@ class SandboxPool:
                 logger.warning("Error closing worker: %s", e)
 
         self._workers = []
-        self._available_worker_ids = asyncio.Queue()
+        if self._available_worker_ids_send is not None:
+            self._available_worker_ids_send.close()
+        if self._available_worker_ids_recv is not None:
+            self._available_worker_ids_recv.close()
+        self._available_worker_ids_send = None
+        self._available_worker_ids_recv = None
         self._started = False
         self._in_flight = 0
 
@@ -135,23 +157,29 @@ class SandboxPool:
                 f"target_idle={target_idle} exceeds provisioned workers={len(self._workers)}"
             )
 
+    async def describe_runtime(self) -> list[dict[str, Any]]:
+        """Describe the runtime backing each sandbox worker."""
+        if not self._started:
+            raise ValueError("Pool not started. Call start() first.")
+        return [await worker.describe_runtime() for worker in self._workers]
+
     async def acquire(self, timeout: float | None = None) -> SandboxLease:
         """Acquire a worker lease."""
         if not self._started:
             raise ValueError("Pool not started. Call start() first.")
 
-        should_wait = self._available_worker_ids.empty()
+        worker_channel = self._require_worker_channel()
+        should_wait = worker_channel.statistics().current_buffer_used == 0
         if should_wait:
             self._wait_events += 1
 
         if timeout is None:
-            worker_index = await self._available_worker_ids.get()
+            worker_index = await worker_channel.receive()
         else:
             try:
-                worker_index = await asyncio.wait_for(
-                    self._available_worker_ids.get(), timeout=timeout
-                )
-            except TimeoutError as e:
+                with trio.fail_after(timeout):
+                    worker_index = await worker_channel.receive()
+            except trio.TooSlowError as e:
                 raise TimeoutError(f"Timed out acquiring sandbox lease after {timeout}s") from e
 
         self._acquire_count += 1
@@ -174,14 +202,18 @@ class SandboxPool:
 
         self._release_count += 1
         self._in_flight -= 1
-        self._available_worker_ids.put_nowait(lease.worker_index)
+        self._require_worker_sender().send_nowait(lease.worker_index)
 
     def stats(self) -> dict[str, Any]:
         """Return explicit resource/lease statistics."""
         snapshot = SandboxPoolStats(
             started=self._started,
             num_workers=len(self._workers),
-            available_workers=self._available_worker_ids.qsize(),
+            available_workers=(
+                self._available_worker_ids_recv.statistics().current_buffer_used
+                if self._available_worker_ids_recv is not None
+                else 0
+            ),
             in_flight=self._in_flight,
             acquire_count=self._acquire_count,
             release_count=self._release_count,
@@ -235,7 +267,13 @@ class SandboxPool:
                     "error": str(e),
                 }
 
-        return await asyncio.gather(*[score_request(sample) for sample in samples])
+        results: list[dict[str, Any] | None] = [None] * len(samples)
+
+        async with trio.open_nursery() as nursery:
+            for idx, sample in enumerate(samples):
+                nursery.start_soon(_score_request_into_slot, score_request, sample, results, idx)
+
+        return [result for result in results if result is not None]
 
     async def _provision_all(self) -> list[SandboxWorker]:
         """Provision all sandboxes from configs."""
@@ -336,3 +374,12 @@ class SandboxPool:
         exc_tb: object,
     ) -> None:
         await self.stop()
+
+
+async def _score_request_into_slot(
+    score_request: Any,
+    sample: dict[str, Any],
+    results: list[dict[str, Any] | None],
+    idx: int,
+) -> None:
+    results[idx] = await score_request(sample)

@@ -784,9 +784,11 @@ async def run_agent(
         else:
             logger.info(f"Created session: {current_state.session_id}")
 
-    # Notify environment of session start (for setup like git worktrees)
-    if current_state.environment and current_state.session_id:
-        if hasattr(current_state.environment, "on_session_start"):
+    # Eagerly initialize environment resources before first model call.
+    if current_state.environment:
+        if hasattr(current_state.environment, "initialize"):
+            await current_state.environment.initialize(current_state.session_id)
+        elif current_state.session_id and hasattr(current_state.environment, "on_session_start"):
             await current_state.environment.on_session_start(current_state.session_id)
 
     states = [current_state]

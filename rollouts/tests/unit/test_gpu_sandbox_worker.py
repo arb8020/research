@@ -26,3 +26,16 @@ SPEEDUP_RESULT:1.2345
             "version": "2.8.0",
         },
     }
+
+
+def test_parse_scoring_output_preserves_subprocess_failure_details() -> None:
+    result = _parse_scoring_output(
+        "",
+        "nvcc fatal: unsupported gpu architecture 'compute_999'",
+        1,
+    )
+
+    assert result["compiled"] == 0.0
+    assert result["error"] == "nvcc fatal: unsupported gpu architecture 'compute_999'"
+    assert result["debug_stderr_tail"] == "nvcc fatal: unsupported gpu architecture 'compute_999'"
+    assert result["returncode"] == 1

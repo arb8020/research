@@ -46,7 +46,7 @@ import trio
 from ...agents import AgentState, RunConfig, handle_stop_max_turns
 from ...core import Endpoint, EvalConfig, Message, Score, StopReason
 from ...dtypes import StreamEvent
-from ...eval.native import EvalRuntime, evaluate_sample
+from ...eval.native import EvalRuntime, _resolve_environment, evaluate_sample
 from ...training.types import AttemptRow
 from ..types import Candidate, EvaluationBatch
 
@@ -223,7 +223,11 @@ async def evaluate_system_user_prompt(
     runtime = EvalRuntime(config=eval_config)
 
     async def eval_one(idx: int, sample_data: dict) -> AttemptRow:
-        env = await config.environment_factory(sample_data) if config.environment_factory else None
+        env = (
+            await _resolve_environment(config.environment_factory, sample_data)
+            if config.environment_factory
+            else None
+        )
         return await evaluate_sample(
             sample_data=sample_data,
             sample_id=f"gepa_{idx}",

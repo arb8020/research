@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import asyncio
 import json
 import os
 from pathlib import Path
@@ -13,7 +12,7 @@ import trio
 
 from examples.rl.kernelbench.dataset import load_kernelbench_prompts
 from rollouts.agents import RunConfig, handle_stop_max_turns
-from rollouts.core import Endpoint, EvalConfig
+from rollouts.core import Endpoint, EvalConfig, Message
 from rollouts.credentials import get_api_key
 from rollouts.eval import evaluate
 from rollouts.models import MODELS
@@ -24,17 +23,33 @@ from .scoring import KEVIN_MULTI_TURN_REWARD_WEIGHTS
 
 def _sample_to_result(sample: Any) -> dict[str, Any]:
     metadata = sample.metadata
+    sample_data = metadata.get("sample_data", {})
+    if not isinstance(sample_data, dict):
+        sample_data = {}
+    turn_history = metadata.get("turn_history", [])
+    last_turn = turn_history[-1] if turn_history else {}
+    if not isinstance(last_turn, dict):
+        last_turn = {}
     return {
-        "problem_id": metadata.get("problem_id", sample.id),
-        "name": metadata.get("name", metadata.get("problem_name", "unknown")),
-        "level": metadata.get("level", "unknown"),
+        "problem_id": metadata.get("problem_id", sample_data.get("problem_id", sample.id)),
+        "name": metadata.get("name", sample_data.get("name", metadata.get("problem_name", "unknown"))),
+        "level": metadata.get("level", sample_data.get("level", "unknown")),
         "turns_used": metadata.get("turns_used", 0),
         "best_speedup": metadata.get("best_speedup", 0.0),
         "has_correct_kernel": metadata.get("has_correct_kernel", False),
-        "turn_history": metadata.get("turn_history", []),
+        "turn_history": turn_history,
         "status": metadata.get("status", "unknown"),
         "reward": sample.reward,
-        "error": metadata.get("error"),
+        "error": metadata.get("error") or last_turn.get("error"),
+        "debug_stdout_tail": metadata.get("debug_stdout_tail") or last_turn.get("debug_stdout_tail"),
+        "debug_stderr_tail": metadata.get("debug_stderr_tail") or last_turn.get("debug_stderr_tail"),
+        "returncode": metadata.get("returncode") if metadata.get("returncode") is not None else last_turn.get("returncode"),
+        "sandbox_resource_stats": metadata.get("sandbox_resource_stats")
+        or last_turn.get("sandbox_resource_stats"),
+        "sandbox_runtime_provenance": metadata.get("sandbox_runtime_provenance")
+        or last_turn.get("sandbox_runtime_provenance"),
+        "evaluator_provenance": metadata.get("evaluator_provenance")
+        or last_turn.get("runtime_provenance"),
     }
 
 
@@ -114,11 +129,14 @@ async def evaluate_multi_turn(
         reward_weights=KEVIN_MULTI_TURN_REWARD_WEIGHTS,
     )
 
-    def prepare_messages(sample_data: dict[str, Any]) -> list[dict[str, Any]]:
-        return sample_data["messages"]
+    def prepare_messages(sample_data: dict[str, Any]) -> list[Message]:
+        return [
+            Message(role=message["role"], content=message["content"])
+            for message in sample_data["messages"]
+        ]
 
     async def silent_handler(_: object) -> None:
-        await trio.lowlevel.checkpoint()
+        return None
 
     run_config = RunConfig(
         on_chunk=silent_handler,
@@ -191,18 +209,17 @@ def main() -> int:
     args = parser.parse_args()
 
     try:
-        summary = asyncio.run(
-            evaluate_multi_turn(
-                model=args.model,
-                provider=args.provider,
-                endpoint_url=args.endpoint,
-                num_problems=args.num_problems,
-                levels=args.levels,
-                max_turns=args.max_turns,
-                backend=args.backend,
-                output_file=args.output,
-                verbose=not args.quiet,
-            )
+        summary = trio.run(
+            evaluate_multi_turn,
+            args.model,
+            args.provider,
+            args.endpoint,
+            args.num_problems,
+            args.levels,
+            args.max_turns,
+            args.backend,
+            args.output,
+            not args.quiet,
         )
         if summary.get("correct", 0) > 0:
             print("Evaluation successful")

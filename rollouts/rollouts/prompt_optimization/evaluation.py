@@ -6,6 +6,7 @@ Evaluates prompt templates on datasets using the existing rollouts infrastructur
 import logging
 from collections.abc import Sequence
 from dataclasses import replace
+from inspect import isawaitable
 from typing import Any
 
 import trio
@@ -139,7 +140,11 @@ async def evaluate_template(
 
     async def eval_one(seed: int) -> float:
         sample = dataset[seed]
-        env = await environment_factory(sample) if environment_factory else None
+        if environment_factory:
+            env_candidate = environment_factory(sample)
+            env = await env_candidate if isawaitable(env_candidate) else env_candidate
+        else:
+            env = None
         return await evaluate_single_sample(
             template=template,
             sample=sample,
