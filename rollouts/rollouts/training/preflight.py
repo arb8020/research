@@ -1,829 +1,112 @@
-"""Pre-flight validation for GRPO training configs.
+"""Workload-owned runtime compatibility preflights.
 
-Validates config against hardware limits before starting a run.
-Two phases:
-1. Static estimation - quick sanity check before provisioning
-2. Dry run - accurate peak memory measurement after provisioning
+These checks belong in Rollouts because they define workload/runtime semantics:
+
+- what package/API combinations are valid for a backend
+- what imports/symbols must exist before a backend can initialize
+- what stage name and failure meaning we assign to that validation
+
+Argus may record the results, but it should not define this ontology.
 """
 
-from dataclasses import dataclass
+from __future__ import annotations
+
+import importlib
+import importlib.util
+from dataclasses import dataclass, field
 from typing import Any
 
-# Known GPU VRAM sizes (GB)
-GPU_VRAM_GB: dict[str, float] = {
-    "RTX A5000": 24.0,
-    "RTX 4090": 24.0,
-    "RTX 3090": 24.0,
-    "A100": 40.0,  # 40GB variant (default)
-    "A100-80GB": 80.0,
-    "A100 80GB": 80.0,
-    "A100-SXM4-80GB": 80.0,  # Modal's A100-80GB variant
-    "A100-SXM-80GB": 80.0,
-    "H100": 80.0,
-    "H100 SXM": 80.0,
-    "H100-SXM": 80.0,
-    "B200": 192.0,
-    "L40S": 48.0,
-    "A10": 24.0,
-    "A6000": 48.0,
-}
 
-# GPU compute capability and minimum CUDA toolkit version requirements
-# Format: (sm_version, min_cuda_major, min_cuda_minor, architecture_name)
-#
-# IMPORTANT: This is the CUDA *toolkit* version (nvcc --version), not the driver
-# version shown by nvidia-smi. The driver can be newer than the toolkit.
-#
-# Sources:
-# - https://docs.nvidia.com/cuda/blackwell-compatibility-guide/
-# - https://arnon.dk/matching-sm-architectures-arch-and-gencode-for-various-nvidia-cards/
-GPU_CUDA_REQUIREMENTS: dict[str, tuple[int, int, int, str]] = {
-    # Blackwell (sm_100/sm_100a) - requires CUDA 12.8+ toolkit
-    # FlashInfer/Triton JIT-compile kernels for sm_100a which needs nvcc 12.8+
-    "B200": (100, 12, 8, "Blackwell"),
-    "B100": (100, 12, 8, "Blackwell"),
-    "GB200": (100, 12, 8, "Blackwell"),
-    # Hopper (sm_90) - requires CUDA 12.0+ toolkit
-    "H100": (90, 12, 0, "Hopper"),
-    "H100 SXM": (90, 12, 0, "Hopper"),
-    "H200": (90, 12, 0, "Hopper"),
-    # Ada Lovelace (sm_89) - requires CUDA 11.8+ toolkit
-    "RTX 4090": (89, 11, 8, "Ada Lovelace"),
-    "L40S": (89, 11, 8, "Ada Lovelace"),
-    "L40": (89, 11, 8, "Ada Lovelace"),
-    # Ampere (sm_80/86) - requires CUDA 11.0+ toolkit
-    "A100": (80, 11, 0, "Ampere"),
-    "A100-80GB": (80, 11, 0, "Ampere"),
-    "A100 80GB": (80, 11, 0, "Ampere"),
-    "A10": (86, 11, 1, "Ampere"),
-    "A6000": (86, 11, 1, "Ampere"),
-    "RTX A5000": (86, 11, 1, "Ampere"),
-    "RTX 3090": (86, 11, 1, "Ampere"),
-}
+@dataclass(frozen=True)
+class RuntimePreflightResult:
+    """Result of a workload-owned runtime compatibility check."""
 
-# Model size estimates (billions of parameters) - fallback cache
-MODEL_PARAMS_B: dict[str, float] = {
-    # Qwen models
-    "Qwen3-0.6B": 0.6,
-    "Qwen3-1.5B": 1.5,
-    "Qwen3-4B": 4.0,
-    "Qwen3-8B": 8.0,
-    "Qwen3-14B": 14.0,
-    "Qwen3-32B": 32.0,
-    "Qwen3-72B": 72.0,
-    # Llama models
-    "Llama-3-8B": 8.0,
-    "Llama-3-70B": 70.0,
-    "Llama-3.1-8B": 8.0,
-    "Llama-3.1-70B": 70.0,
-    # Mistral models
-    "Mistral-7B": 7.0,
-    "Mixtral-8x7B": 47.0,  # ~47B total, 13B active
-    # GLM models
-    "GLM-4.7-Flash": 30.0,  # 30B total, 3B active (MoE)
-    "GLM-Z1-9B": 9.0,
-}
+    name: str
+    stage: str
+    ok: bool
+    details: dict[str, Any] = field(default_factory=dict)
+    error: str | None = None
 
-# Cache for HuggingFace model configs (config.json contents)
-_HF_CONFIG_CACHE: dict[str, dict[str, Any]] = {}
-
-# Cache for HuggingFace model param counts (in billions)
-_HF_PARAM_CACHE: dict[str, float] = {}
+    def require_ok(self) -> None:
+        if self.ok:
+            return
+        detail_lines = [f"{key}={value}" for key, value in sorted(self.details.items())]
+        suffix = f" Details: {', '.join(detail_lines)}" if detail_lines else ""
+        raise RuntimeError(
+            f"{self.stage} failed for {self.name}: {self.error or 'unknown error'}."
+            f"{suffix}"
+        )
 
 
-def _fetch_hf_model_config(model_name: str) -> dict[str, Any] | None:
-    """Fetch model config.json from HuggingFace Hub.
+def preflight_torchtitan_runtime() -> RuntimePreflightResult:
+    """Check that the current runtime can import and initialize TorchTitan.
 
-    Returns dict with model architecture details, or None if unavailable.
+    This is intentionally cheap. It should fail before any real training work
+    starts and before distributed init if the environment is incompatible.
     """
-    if model_name in _HF_CONFIG_CACHE:
-        return _HF_CONFIG_CACHE[model_name]
+
+    details: dict[str, Any] = {}
 
     try:
-        import json
+        import torch
+    except Exception as exc:  # pragma: no cover - exercised in target runtime
+        return RuntimePreflightResult(
+            name="torchtitan",
+            stage="TRAIN_BACKEND_IMPORT_OK",
+            ok=False,
+            details=details,
+            error=f"torch import failed: {type(exc).__name__}: {exc}",
+        )
 
-        from huggingface_hub import hf_hub_download
+    details["torch_version"] = getattr(torch, "__version__", "unknown")
+    details["torch_file"] = getattr(torch, "__file__", "unknown")
+    details["has_torch_attention_varlen"] = (
+        importlib.util.find_spec("torch.nn.attention.varlen") is not None
+    )
 
-        path = hf_hub_download(model_name, "config.json")
-        with open(path) as f:
-            config = json.load(f)
-        _HF_CONFIG_CACHE[model_name] = config
-        return config
-    except Exception:
-        pass
-
-    return None
-
-
-def _fetch_hf_param_count(model_name: str) -> float | None:
-    """Fetch parameter count from HuggingFace Hub.
-
-    Uses huggingface_hub to read safetensors metadata (fast, no download).
-    Returns params in billions, or None if unavailable.
-    """
-    if model_name in _HF_PARAM_CACHE:
-        return _HF_PARAM_CACHE[model_name]
+    if not details["has_torch_attention_varlen"]:
+        return RuntimePreflightResult(
+            name="torchtitan",
+            stage="TRAIN_BACKEND_IMPORT_OK",
+            ok=False,
+            details=details,
+            error="required module 'torch.nn.attention.varlen' is missing",
+        )
 
     try:
-        from huggingface_hub import get_safetensors_metadata
-
-        meta = get_safetensors_metadata(model_name)
-        if meta.parameter_count:
-            total = sum(meta.parameter_count.values())
-            params_b = total / 1e9
-            _HF_PARAM_CACHE[model_name] = params_b
-            return params_b
-    except Exception:
-        pass
-
-    return None
-
-
-@dataclass
-class MemoryEstimate:
-    """Memory usage estimate for a component."""
-
-    model_gb: float  # Model weights
-    activations_gb: float  # Forward pass activations
-    gradients_gb: float  # Backward pass gradients
-    optimizer_gb: float  # Optimizer states (Adam: 2x model size)
-    kv_cache_gb: float  # KV cache for inference
-    buffer_gb: float  # NCCL buffers, misc
-
-    @property
-    def total_gb(self) -> float:
-        return (
-            self.model_gb
-            + self.activations_gb
-            + self.gradients_gb
-            + self.optimizer_gb
-            + self.kv_cache_gb
-            + self.buffer_gb
+        torchtitan = importlib.import_module("torchtitan")
+        details["torchtitan_file"] = getattr(torchtitan, "__file__", "unknown")
+    except Exception as exc:  # pragma: no cover - exercised in target runtime
+        return RuntimePreflightResult(
+            name="torchtitan",
+            stage="TRAIN_BACKEND_IMPORT_OK",
+            ok=False,
+            details=details,
+            error=f"torchtitan import failed: {type(exc).__name__}: {exc}",
         )
 
-    def __str__(self) -> str:
-        return (
-            f"model={self.model_gb:.1f}GB, "
-            f"activations={self.activations_gb:.1f}GB, "
-            f"gradients={self.gradients_gb:.1f}GB, "
-            f"optimizer={self.optimizer_gb:.1f}GB, "
-            f"kv_cache={self.kv_cache_gb:.1f}GB, "
-            f"buffer={self.buffer_gb:.1f}GB, "
-            f"total={self.total_gb:.1f}GB"
-        )
-
-
-def get_gpu_vram_gb(gpu_type: str) -> float:
-    """Get VRAM for a GPU type. Raises ValueError if unknown."""
-    # Try exact match first
-    if gpu_type in GPU_VRAM_GB:
-        return GPU_VRAM_GB[gpu_type]
-
-    # Try partial match
-    for known_gpu, vram in sorted(GPU_VRAM_GB.items(), key=lambda item: len(item[0]), reverse=True):
-        if known_gpu.lower() in gpu_type.lower():
-            return vram
-
-    raise ValueError(f"Unknown GPU type: {gpu_type}. Known types: {list(GPU_VRAM_GB.keys())}")
-
-
-def get_gpu_cuda_requirement(gpu_type: str) -> tuple[int, int, int, str] | None:
-    """Get CUDA requirements for a GPU type.
-
-    Returns:
-        Tuple of (sm_version, min_cuda_major, min_cuda_minor, arch_name)
-        or None if GPU type is not in the table.
-    """
-    # Try exact match first
-    if gpu_type in GPU_CUDA_REQUIREMENTS:
-        return GPU_CUDA_REQUIREMENTS[gpu_type]
-
-    # Try partial match
-    for known_gpu, req in sorted(
-        GPU_CUDA_REQUIREMENTS.items(), key=lambda item: len(item[0]), reverse=True
-    ):
-        if known_gpu.lower() in gpu_type.lower():
-            return req
-
-    return None
-
-
-def check_cuda_compatibility(gpu_type: str, cuda_version: str | None = None) -> list[str]:
-    """Check if the current CUDA version supports the target GPU.
-
-    This is a LOCAL check that runs before provisioning to catch obvious
-    incompatibilities early (e.g., trying to use B200 with CUDA < 12.8).
-
-    Args:
-        gpu_type: Target GPU type (e.g., "B200", "H100")
-        cuda_version: CUDA version string (e.g., "12.4", "12.8.1").
-                     If None, attempts to detect from local nvcc.
-
-    Returns:
-        List of warning/error messages. Empty if compatible.
-    """
-    messages = []
-
-    req = get_gpu_cuda_requirement(gpu_type)
-    if req is None:
-        # Unknown GPU, can't check
-        return messages
-
-    sm_version, min_major, min_minor, arch_name = req
-
-    # Detect CUDA version if not provided
-    if cuda_version is None:
-        try:
-            import subprocess
-
-            result = subprocess.run(
-                ["nvcc", "--version"],
-                capture_output=True,
-                text=True,
-                timeout=5,
-            )
-            # Parse "release 12.4" or similar from nvcc output
-            import re
-
-            match = re.search(r"release (\d+)\.(\d+)", result.stdout)
-            if match:
-                cuda_version = f"{match.group(1)}.{match.group(2)}"
-        except Exception:
-            # Can't detect, skip local check
-            # The check will happen on the remote node
-            return messages
-
-    if cuda_version is None:
-        return messages
-
-    # Parse version
     try:
-        parts = cuda_version.split(".")
-        cuda_major = int(parts[0])
-        cuda_minor = int(parts[1]) if len(parts) > 1 else 0
-    except (ValueError, IndexError):
-        return messages
-
-    # Check compatibility
-    if cuda_major < min_major or (cuda_major == min_major and cuda_minor < min_minor):
-        messages.append(
-            f"CUDA {cuda_version} does not support {gpu_type} ({arch_name}, sm_{sm_version}). "
-            f"Requires CUDA {min_major}.{min_minor}+. "
-            f"FlashInfer/Triton will fail to compile kernels for this GPU."
+        importlib.import_module("torchtitan.protocols.train_spec")
+    except Exception as exc:  # pragma: no cover - exercised in target runtime
+        return RuntimePreflightResult(
+            name="torchtitan",
+            stage="TRAIN_BACKEND_IMPORT_OK",
+            ok=False,
+            details=details,
+            error=f"train_spec import failed: {type(exc).__name__}: {exc}",
         )
 
-    return messages
-
-
-def check_remote_cuda_compatibility(gpu_type: str, cuda_version: str) -> tuple[bool, list[str]]:
-    """Check CUDA compatibility for a remote GPU.
-
-    Called after SSH connection to validate the remote environment.
-
-    Args:
-        gpu_type: Target GPU type
-        cuda_version: CUDA version string from nvidia-smi or nvcc
-
-    Returns:
-        Tuple of (is_compatible, list of error messages)
-    """
-    messages = check_cuda_compatibility(gpu_type, cuda_version)
-    return (len(messages) == 0, messages)
-
-
-def estimate_model_params_b(model_name: str) -> float:
-    """Estimate model parameters in billions from model name.
-
-    Tries in order:
-    1. HuggingFace Hub safetensors metadata (exact count, no download)
-    2. Local fallback cache
-    3. Regex extraction from model name
-    4. Conservative default
-    """
-    # Try HuggingFace Hub first (most accurate)
-    hf_params = _fetch_hf_param_count(model_name)
-    if hf_params is not None:
-        return hf_params
-
-    # Try local fallback cache
-    for known_model, params in MODEL_PARAMS_B.items():
-        if known_model.lower() in model_name.lower():
-            return params
-
-    # Try to extract from name (e.g., "Qwen3-0.6B" -> 0.6)
-    import re
-
-    match = re.search(r"(\d+\.?\d*)B", model_name, re.IGNORECASE)
-    if match:
-        return float(match.group(1))
-
-    # Default to 7B if unknown (conservative estimate)
-    return 7.0
-
-
-def estimate_model_vram_gb(params_b: float, dtype: str = "bfloat16") -> float:
-    """Estimate VRAM for model weights.
-
-    Args:
-        params_b: Parameters in billions
-        dtype: Data type (bfloat16, float16, float32)
-
-    Returns:
-        Estimated VRAM in GB
-    """
-    bytes_per_param = {
-        "bfloat16": 2,
-        "float16": 2,
-        "float32": 4,
-        "int8": 1,
-        "int4": 0.5,
-    }.get(dtype.lower(), 2)
-
-    # params_b billion * bytes_per_param / 1e9 = GB
-    return params_b * bytes_per_param
-
-
-def _get_moe_info(model_name: str) -> tuple[int, int] | None:
-    """Get MoE info (num_experts, num_active) from HF config if available.
-
-    Returns (total_experts, active_experts) or None if not MoE.
-    """
-    hf_config = _fetch_hf_model_config(model_name)
-    if hf_config is None:
-        return None
-
-    # Check for MoE config (different models use different keys)
-    num_experts = hf_config.get("num_local_experts") or hf_config.get("n_routed_experts")
-    num_active = hf_config.get("num_experts_per_tok") or hf_config.get("num_selected_experts")
-
-    if num_experts and num_active:
-        return (num_experts, num_active)
-    return None
-
-
-def estimate_inference_vram(
-    model_name: str,
-    dtype: str,
-    mem_fraction: float,
-    max_seq_len: int,
-    batch_size: int,
-    tensor_parallel_size: int = 1,
-    expert_parallel_size: int = 1,
-) -> MemoryEstimate:
-    """Estimate VRAM for inference (SGLang).
-
-    SGLang uses:
-    - Model weights
-    - KV cache (dynamic, depends on seq len and batch size)
-    - Activation buffers
-
-    Args:
-        tensor_parallel_size: Number of GPUs for tensor parallelism.
-            Model weights and KV cache are split across these GPUs.
-        expert_parallel_size: Number of GPUs for expert parallelism (MoE).
-            Experts are sharded across these GPUs.
-    """
-    params_b = estimate_model_params_b(model_name)
-    model_gb = estimate_model_vram_gb(params_b, dtype)
-
-    # Check if MoE and adjust for expert parallelism
-    moe_info = _get_moe_info(model_name)
-    if moe_info and expert_parallel_size > 1:
-        num_experts, _ = moe_info
-        # With EP, each GPU only holds 1/EP of the experts
-        # But non-expert params (embeddings, attention) are replicated
-        # Rough estimate: experts are ~80% of MoE model params
-        expert_fraction = 0.8
-        non_expert_gb = model_gb * (1 - expert_fraction)
-        expert_gb = model_gb * expert_fraction / expert_parallel_size
-        model_gb = non_expert_gb + expert_gb
-
-    # Tensor parallelism splits model weights across GPUs
-    model_gb = model_gb / tensor_parallel_size
-
-    # KV cache estimate: 2 * num_layers * hidden_dim * seq_len * batch_size * 2 bytes
-    # Simplified: ~0.5GB per 1B params per 1K seq len at batch=1
-    # Scale by batch_size and mem_fraction (SGLang uses this for KV cache)
-    # KV cache is also split across TP GPUs
-    # For MoE, KV cache is based on non-expert params (attention layers)
-    kv_params_b = params_b
-    if moe_info:
-        # KV cache only depends on attention, not experts (~20% of MoE model)
-        kv_params_b = params_b * 0.2
-    kv_cache_gb = kv_params_b * (max_seq_len / 1000) * batch_size * 0.1 / tensor_parallel_size
-
-    # Activation buffers (small for inference)
-    activations_gb = params_b * 0.1 / tensor_parallel_size
-    if moe_info:
-        # For MoE, only active experts contribute to activations
-        _, num_active = moe_info
-        num_experts, _ = moe_info
-        activations_gb = activations_gb * (num_active / num_experts + 0.2)  # +0.2 for non-expert
-
-    # NCCL/misc buffers
-    buffer_gb = 0.5
-
-    return MemoryEstimate(
-        model_gb=model_gb,
-        activations_gb=activations_gb,
-        gradients_gb=0.0,  # No gradients for inference
-        optimizer_gb=0.0,  # No optimizer for inference
-        kv_cache_gb=kv_cache_gb,
-        buffer_gb=buffer_gb,
+    return RuntimePreflightResult(
+        name="torchtitan",
+        stage="TRAIN_BACKEND_IMPORT_OK",
+        ok=True,
+        details=details,
     )
 
 
-def estimate_training_vram(
-    model_name: str,
-    dtype: str,
-    batch_size: int,
-    n_samples_per_prompt: int,
-    num_minibatches: int,
-    max_seq_len: int,
-    tensor_parallel_size: int = 1,
-    expert_parallel_size: int = 1,
-    pipeline_parallel_size: int = 1,
-    use_fsdp: bool = False,
-    fsdp_world_size: int = 1,
-    use_lora: bool = False,
-    activation_checkpointing: bool = False,
-) -> MemoryEstimate:
-    """Estimate VRAM for training.
-
-    Training uses:
-    - Model weights
-    - Gradients (same size as weights)
-    - Optimizer states (2x weights for Adam)
-    - Activations (depends on batch size and seq len)
-
-    Args:
-        tensor_parallel_size: Number of GPUs for tensor parallelism.
-        expert_parallel_size: Number of GPUs for expert parallelism (MoE).
-        pipeline_parallel_size: Number of GPUs for pipeline parallelism.
-        use_fsdp: Whether using FSDP (ZeRO-3 style sharding).
-        use_lora: Whether using LoRA (only train adapter weights).
-        activation_checkpointing: Whether using activation checkpointing.
-    """
-    params_b = estimate_model_params_b(model_name)
-    model_gb = estimate_model_vram_gb(params_b, dtype)
-
-    # Check if MoE
-    moe_info = _get_moe_info(model_name)
-
-    # Calculate effective parallelism for model weights
-    # With EP, each GPU only holds 1/EP of the experts
-    if moe_info and expert_parallel_size > 1:
-        num_experts, _ = moe_info
-        # Experts are ~80% of MoE model params
-        expert_fraction = 0.8
-        non_expert_gb = model_gb * (1 - expert_fraction)
-        expert_gb = model_gb * expert_fraction / expert_parallel_size
-        model_gb = non_expert_gb + expert_gb
-
-    # Tensor parallelism splits remaining params across GPUs
-    model_gb = model_gb / tensor_parallel_size
-
-    # Pipeline parallelism splits layers across GPUs
-    model_gb = model_gb / pipeline_parallel_size
-
-    # FSDP FULL_SHARD shards weights, gradients, AND optimizer states
-    fsdp_shard_factor = 1
-    if use_fsdp and fsdp_world_size > 1:
-        fsdp_shard_factor = fsdp_world_size
-        # FSDP shards model weights across all FSDP GPUs
-        model_gb = model_gb / fsdp_shard_factor
-
-    # Gradients: same size as sharded model (FSDP shards these too)
-    gradients_gb = model_gb
-
-    # Optimizer states: Adam uses 2x model size (momentum + variance)
-    # With mixed precision, stored in fp32 = 4 bytes per param
-    trainable_params_b = params_b
-    if use_lora:
-        # LoRA typically trains <1% of params
-        trainable_params_b = params_b * 0.01
-
-    optimizer_gb = trainable_params_b * 4 * 2  # 2x for Adam states in fp32
-    optimizer_gb = optimizer_gb / tensor_parallel_size / pipeline_parallel_size
-    if moe_info and expert_parallel_size > 1:
-        # Expert optimizer states are also sharded
-        optimizer_gb = optimizer_gb * (0.2 + 0.8 / expert_parallel_size)
-    optimizer_gb = optimizer_gb / fsdp_shard_factor
-
-    # Activations: depends on batch size, seq len, and model architecture
-    total_samples = batch_size * n_samples_per_prompt
-    micro_batch_size = max(1, total_samples // num_minibatches)
-
-    hf_config = _fetch_hf_model_config(model_name)
-    if hf_config is None:
-        raise ValueError(
-            f"Cannot estimate memory for {model_name}: "
-            "unable to fetch config.json from HuggingFace Hub"
-        )
-
-    hidden_size = hf_config.get("hidden_size") or hf_config.get("dim") or 4096
-    num_layers = hf_config.get("num_hidden_layers") or hf_config.get("n_layers") or 32
-
-    # EleutherAI formula with selective checkpointing
-    s = max_seq_len
-    b = micro_batch_size
-    h = hidden_size
-    L = num_layers // pipeline_parallel_size  # Layers per GPU with PP
-    t = tensor_parallel_size
-
-    # Base activation formula (with selective checkpointing)
-    activation_bytes = s * b * h * L * (10 + 24 / t)
-
-    # Activation checkpointing reduces memory by recomputing
-    if activation_checkpointing:
-        activation_bytes = activation_bytes * 0.3  # ~70% reduction
-
-    # For MoE, only active experts contribute to activations per token
-    if moe_info:
-        num_experts, num_active = moe_info
-        # Scale down: only num_active/num_experts of expert computation
-        moe_scale = (num_active / num_experts) * 0.8 + 0.2  # 0.8 for experts, 0.2 for non-expert
-        activation_bytes = activation_bytes * moe_scale
-
-    activations_gb = activation_bytes / 1e9
-
-    # NCCL buffers for weight sync
-    buffer_gb = model_gb * 0.1 + 1.0  # 10% of model + 1GB misc
-
-    return MemoryEstimate(
-        model_gb=model_gb,
-        activations_gb=activations_gb,
-        gradients_gb=gradients_gb,
-        optimizer_gb=optimizer_gb,
-        kv_cache_gb=0.0,  # No KV cache for training
-        buffer_gb=buffer_gb,
-    )
-
-
-@dataclass
-class PreflightResult:
-    """Result of preflight validation."""
-
-    valid: bool
-    inference_estimate: MemoryEstimate
-    training_estimate: MemoryEstimate
-    gpu_vram_gb: float
-    warnings: list[str]
-    errors: list[str]
-
-    def __str__(self) -> str:
-        lines = [
-            f"GPU VRAM: {self.gpu_vram_gb:.1f}GB",
-            f"Inference estimate: {self.inference_estimate}",
-            f"Training estimate: {self.training_estimate}",
-        ]
-        if self.warnings:
-            lines.append("Warnings:")
-            for w in self.warnings:
-                lines.append(f"  - {w}")
-        if self.errors:
-            lines.append("Errors:")
-            for e in self.errors:
-                lines.append(f"  - {e}")
-        return "\n".join(lines)
-
-
-def validate_config(config: Any, gpu_type: str) -> PreflightResult:
-    """Validate GRPO config against hardware limits.
-
-    Args:
-        config: GRPOConfig instance
-        gpu_type: GPU type string (e.g., "RTX A5000")
-
-    Returns:
-        PreflightResult with validation status and estimates
-
-    Raises:
-        ValueError: If config is fundamentally invalid (fail fast)
-    """
-    warnings: list[str] = []
-    errors: list[str] = []
-
-    # Get GPU VRAM
-    try:
-        gpu_vram_gb = get_gpu_vram_gb(gpu_type)
-    except ValueError as e:
-        raise ValueError(str(e)) from e
-
-    # Get parallelism config (defaults to 1 if not specified)
-    inference_tp = getattr(config.inference, "tensor_parallel_size", 1)
-    inference_ep = getattr(config.inference, "expert_parallel_size", 1)
-    trainer_tp = getattr(config.trainer, "tensor_parallel_size", 1)
-    trainer_ep = getattr(config.trainer, "expert_parallel_size", 1)
-    trainer_pp = getattr(config.trainer, "pipeline_parallel_size", 1)
-    use_lora = getattr(config.model, "use_lora", False)
-    activation_checkpointing = getattr(config.trainer, "activation_checkpointing", False)
-
-    # Check if using FSDP-style backend (ZeRO-3 gradient sharding)
-    # Megatron defaults to use_distributed_optimizer=True (ZeRO-style optimizer sharding)
-    backend = getattr(config.trainer, "backend", "pytorch")
-    # Megatron defaults to True in initialize.py, match that here
-    use_distributed_optimizer = getattr(
-        config.trainer, "use_distributed_optimizer", backend == "megatron"
-    )
-    use_fsdp = backend in ("fsdp", "fsdp2", "torchtitan") or (
-        backend == "megatron" and use_distributed_optimizer
-    )
-
-    # =========================================================================
-    # Fail-fast validation: catch invalid configs before provisioning GPUs
-    # =========================================================================
-
-    # Validate expert parallelism divides num_experts evenly
-    moe_info = _get_moe_info(config.model.name)
-    if moe_info:
-        num_experts, _ = moe_info
-        for ep_name, ep_size in [
-            ("inference.expert_parallel_size", inference_ep),
-            ("trainer.expert_parallel_size", trainer_ep),
-        ]:
-            if ep_size > 1 and num_experts % ep_size != 0:
-                valid_eps = [i for i in range(1, num_experts + 1) if num_experts % i == 0]
-                raise ValueError(
-                    f"{ep_name}={ep_size} does not divide n_routed_experts={num_experts} evenly. "
-                    f"Valid options: {valid_eps}"
-                )
-
-    # Validate training GPU count is compatible with parallelism
-    trainer_cuda_device_ids = getattr(config.trainer, "cuda_device_ids", (0,))
-    trainer_gpu_count = len(trainer_cuda_device_ids)
-    if backend == "megatron":
-        # Megatron requires exactly TP * PP * EP GPUs
-        required_gpus = trainer_tp * trainer_pp * trainer_ep
-        if trainer_gpu_count != required_gpus:
-            raise ValueError(
-                f"Megatron backend requires exactly TP*PP*EP={trainer_tp}*{trainer_pp}*{trainer_ep}="
-                f"{required_gpus} GPUs, but cuda_device_ids has {trainer_gpu_count} GPUs. "
-                f"Adjust parallelism settings or GPU count."
-            )
-    elif trainer_ep > 1:
-        # Non-Megatron with EP requires at least EP GPUs
-        if trainer_gpu_count < trainer_ep:
-            raise ValueError(
-                f"expert_parallel_size={trainer_ep} requires at least {trainer_ep} GPUs, "
-                f"but cuda_device_ids has only {trainer_gpu_count} GPUs."
-            )
-
-    # Estimate inference VRAM (per GPU after parallelism split)
-    inference_est = estimate_inference_vram(
-        model_name=config.model.name,
-        dtype=getattr(config.model, "dtype", "bfloat16"),
-        mem_fraction=config.inference.mem_fraction,
-        max_seq_len=config.rollout.max_seq_len,
-        batch_size=config.rollout.batch_size,
-        tensor_parallel_size=inference_tp,
-        expert_parallel_size=inference_ep,
-    )
-
-    # Get number of trainer GPUs for FSDP sharding
-    trainer_gpu_count = len(getattr(config.trainer, "cuda_device_ids", (0,)))
-
-    # Estimate training VRAM (per GPU after parallelism split)
-    training_est = estimate_training_vram(
-        model_name=config.model.name,
-        dtype=getattr(config.model, "dtype", "bfloat16"),
-        batch_size=config.rollout.batch_size,
-        n_samples_per_prompt=config.rollout.n_samples_per_prompt,
-        num_minibatches=config.trainer.num_minibatches,
-        max_seq_len=config.rollout.max_seq_len,
-        tensor_parallel_size=trainer_tp,
-        expert_parallel_size=trainer_ep,
-        pipeline_parallel_size=trainer_pp,
-        use_fsdp=use_fsdp,
-        fsdp_world_size=trainer_gpu_count,
-        use_lora=use_lora,
-        activation_checkpointing=activation_checkpointing,
-    )
-
-    # Check inference GPU - fail hard if memory doesn't fit
-    inference_headroom = gpu_vram_gb - inference_est.total_gb
-    if inference_headroom < 0:
-        raise ValueError(
-            f"Inference requires {inference_est.total_gb:.1f}GB but GPU has {gpu_vram_gb:.1f}GB. "
-            f"Reduce mem_fraction from {config.inference.mem_fraction} or use smaller model."
-        )
-    if inference_headroom < 2.0:
-        warnings.append(
-            f"Inference has only {inference_headroom:.1f}GB headroom. "
-            f"Consider reducing mem_fraction for stability."
-        )
-
-    # Check training GPU - fail hard if memory doesn't fit
-    training_headroom = gpu_vram_gb - training_est.total_gb
-    if training_headroom < 0:
-        raise ValueError(
-            f"Training requires {training_est.total_gb:.1f}GB but GPU has {gpu_vram_gb:.1f}GB. "
-            f"Reduce batch_size, num_minibatches, or max_seq_len."
-        )
-    if training_headroom < 2.0:
-        warnings.append(
-            f"Training has only {training_headroom:.1f}GB headroom. "
-            f"Consider reducing batch_size for stability."
-        )
-
-    # Check true_pipeline mode (needs extra buffer for concurrent operations)
-    if getattr(config.checkpoint, "pipeline_mode", None) == "true_pipeline":
-        # In true_pipeline, inference and training run concurrently with weight sync
-        # Need extra buffer on both GPUs
-        if inference_headroom < 4.0:
-            warnings.append(
-                f"true_pipeline mode: inference headroom ({inference_headroom:.1f}GB) may be tight. "
-                f"Reduce mem_fraction to 0.6-0.7 for concurrent weight sync."
-            )
-        if training_headroom < 4.0:
-            warnings.append(
-                f"true_pipeline mode: training headroom ({training_headroom:.1f}GB) may be tight. "
-                f"Reduce batch_size or num_minibatches."
-            )
-
-    return PreflightResult(
-        valid=len(errors) == 0,
-        inference_estimate=inference_est,
-        training_estimate=training_est,
-        gpu_vram_gb=gpu_vram_gb,
-        warnings=warnings,
-        errors=errors,
-    )
-
-
-def run_preflight_check(config: Any, gpu_type: str) -> None:
-    """Run preflight check and raise if invalid.
-
-    Args:
-        config: GRPOConfig instance
-        gpu_type: GPU type string
-
-    Raises:
-        ValueError: If config is invalid for the hardware
-    """
-    import logging
-
-    logger = logging.getLogger(__name__)
-
-    result = validate_config(config, gpu_type)
-
-    logger.info(f"Preflight check for {gpu_type}:")
-    logger.info(f"  Inference: {result.inference_estimate.total_gb:.1f}GB estimated")
-    logger.info(f"  Training: {result.training_estimate.total_gb:.1f}GB estimated")
-    logger.info(f"  GPU VRAM: {result.gpu_vram_gb:.1f}GB available")
-
-    for warning in result.warnings:
-        logger.warning(f"  ⚠ {warning}")
-
-    if not result.valid:
-        error_msg = "\n".join(f"  ✗ {e}" for e in result.errors)
-        raise ValueError(f"Preflight check failed:\n{error_msg}")
-
-    logger.info("  ✓ Preflight check passed")
-
-
-# =============================================================================
-# Dry Run: Actual Memory Measurement
-# =============================================================================
-
-
-async def measure_peak_memory(
-    config: Any,
-    backend: Any,
-    inference_engine: Any,
-    device: Any,
-) -> dict[str, float]:
-    """Run one training step and measure actual peak memory.
-
-    This is more accurate than estimation because it measures real usage.
-
-    Args:
-        config: GRPOConfig
-        backend: TrainingBackend
-        inference_engine: InferenceEngine
-        device: torch.device
-
-    Returns:
-        Dict with peak memory measurements
-    """
-    import torch
-
-    measurements: dict[str, float] = {}
-
-    # Reset memory stats
-    torch.cuda.reset_peak_memory_stats(device)
-
-    # Measure inference (one batch of generations)
-    # TODO: Generate one batch and measure
-
-    # Measure training (one forward/backward)
-    # TODO: Run one minibatch and measure
-
-    # Get peak memory
-    peak_bytes = torch.cuda.max_memory_allocated(device)
-    measurements["peak_allocated_gb"] = peak_bytes / 1e9
-
-    peak_reserved = torch.cuda.max_memory_reserved(device)
-    measurements["peak_reserved_gb"] = peak_reserved / 1e9
-
-    return measurements
+def require_torchtitan_runtime() -> RuntimePreflightResult:
+    """Run the TorchTitan preflight and raise on failure."""
+
+    result = preflight_torchtitan_runtime()
+    result.require_ok()
+    return result

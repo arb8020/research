@@ -18,6 +18,7 @@ from ...training.lowering import (
     dense_rl_realization,
     dense_supervised_realization,
 )
+from ...training.preflight import require_torchtitan_runtime
 from .torchtitan_backend import TorchTitanBackend, TorchTitanConfig
 
 
@@ -82,6 +83,11 @@ def create_torchtitan_backend(
     lowering: TorchTitanLowering | None = None,
 ) -> tuple[TorchTitanBackend, callable | None]:
     """Create a TorchTitan backend plus optional dist cleanup."""
+    # Rollouts owns backend/runtime compatibility semantics. Fail here, before
+    # process-group setup or backend construction, if the package/API surface is
+    # incompatible with the current runtime.
+    preflight = require_torchtitan_runtime()
+
     # Import GLM to register with torchtitan when requested.
     if torchtitan_model == "glm":
         from ..models import glm  # noqa: F401
@@ -140,4 +146,5 @@ def create_torchtitan_backend(
         lowering=lowering,
         hf_checkpoint=hf_checkpoint,
     )
+    setattr(backend, "_runtime_preflight", preflight)
     return backend, cleanup
