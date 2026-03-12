@@ -12,6 +12,12 @@ class Location:
     line_start: int
     line_end: int
 
+    def __post_init__(self) -> None:
+        assert str(self.path), "path cannot be empty"
+        assert self.line_start > 0, "line_start must be positive"
+        assert self.line_end > 0, "line_end must be positive"
+        assert self.line_end >= self.line_start, "line_end must be >= line_start"
+
     def __str__(self) -> str:
         if self.line_start == self.line_end:
             return f"{self.path}:{self.line_start}"
@@ -26,6 +32,10 @@ class SearchResult:
     name: str
     kind: str  # "function", "class", "method", "variable", etc.
     snippet: str | None = None
+
+    def __post_init__(self) -> None:
+        assert self.name.strip(), "name cannot be empty"
+        assert self.kind.strip(), "kind cannot be empty"
 
     def format_compact(self) -> str:
         """Single line: path:start-end kind name"""

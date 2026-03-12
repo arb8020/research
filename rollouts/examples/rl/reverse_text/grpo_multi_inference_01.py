@@ -44,6 +44,7 @@ hardware = HardwareConfig(
     gpu_type="A100",
     gpu_count=4,  # 2 for inference, 2 for training
     provider="runpod",
+    legacy_remote_bootstrap=True,
 )
 
 # =============================================================================

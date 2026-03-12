@@ -1,10 +1,16 @@
 #!/usr/bin/env python3
 """Test search functionality with known and unknown sentences."""
 
+if __name__ != "__main__":
+    import pytest
+
+    pytest.skip("manual smoke script; not part of automated pytest suites", allow_module_level=True)
+
 import json
 import logging
 import random
 from pathlib import Path
+from typing import Any
 
 from config import Config
 from search import load_training_corpus, search
@@ -14,7 +20,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 
-def test_known_sentence(corpus, model, chunks_path: Path):
+def test_known_sentence(corpus: Any, model: Any, chunks_path: Path) -> bool:
     """Test that a sentence from the corpus returns itself as top result."""
     logger.info("\n" + "=" * 80)
     logger.info("Test 1: Known sentence (should return itself)")
@@ -49,10 +55,11 @@ def test_known_sentence(corpus, model, chunks_path: Path):
     logger.info(
         f"\n{'✅ PASS' if is_match else '❌ FAIL'}: Top result {'is' if is_match else 'is NOT'} exact match (dist={top.distance:.6f})"
     )
-    return is_match
+    assert is_match, "top result should match the exact corpus chunk"
+    return True
 
 
-def test_unknown_sentence(corpus, model):
+def test_unknown_sentence(corpus: Any, model: Any) -> bool:
     """Test with a sentence not in the corpus."""
     logger.info("\n" + "=" * 80)
     logger.info("Test 2: Unknown sentence (should have high distance)")
@@ -73,10 +80,11 @@ def test_unknown_sentence(corpus, model):
     passed = top_dist > 0.3
 
     logger.info(f"\n{'✅ PASS' if passed else '⚠️  LOW DISTANCE'}: dist={top_dist:.6f}")
-    return passed
+    assert passed, "unknown query should stay above the distance threshold"
+    return True
 
 
-def main():
+def main() -> int:
     import importlib.util
     import sys
 

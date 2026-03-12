@@ -57,6 +57,10 @@ class MultiNodeConfig:
     gpus_per_node: int = 8
     gpu_type: str = "H100"
     provider: Literal["runpod", "lambdalabs", "vast", "local"] = "runpod"
+    container_disk_gb: int = 100
+    persistent_volume_id: str | None = None
+    persistent_volume_mount_path: str = "/workspace"
+    persistent_volume_location: str | None = None
 
     # GPU allocation per node
     inference_gpus_per_node: int = 2  # First N GPUs for inference
@@ -254,6 +258,10 @@ async def provision_nodes(
                 type=config.gpu_type,
                 count=config.gpus_per_node,
                 provider=config.provider,
+                container_disk_gb=config.container_disk_gb,
+                persistent_volume_id=config.persistent_volume_id,
+                persistent_volume_mount_path=config.persistent_volume_mount_path,
+                persistent_volume_location=config.persistent_volume_location,
             )
         )
 

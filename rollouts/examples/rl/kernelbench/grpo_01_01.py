@@ -21,6 +21,7 @@ Note:
     3. Starting with only Level 1 (easiest) problems
 """
 
+from examples.rl.base_config import default_remote_training_deps
 from examples.rl.kernelbench.base_config import train  # noqa: F401 (used by runner)
 from rollouts.training.configs import HardwareConfig
 from rollouts.training.grpo import (
@@ -41,6 +42,8 @@ hardware = HardwareConfig(
     gpu_type="A100",
     gpu_count=1,
     provider="runpod",  # Default to RunPod; override with --provider modal or --local
+    deps=default_remote_training_deps(),
+    hf_cache_dir="/workspace/.cache/huggingface",
 )
 
 # =============================================================================

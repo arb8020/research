@@ -40,6 +40,13 @@ if TYPE_CHECKING:
     from .training.configs import DepsConfig
 
 from ._logging import setup_logging
+from .image_spec import (
+    ImageManifest,
+    image_manifest_for_spec,
+    infer_cuda_version,
+    manifest_write_command,
+    resolve_image_for_provisioning,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -132,60 +139,88 @@ class ModalRunConfig:
 
 
 def _build_modal_image(modal: Any, deps: DepsConfig, gpu_type: str) -> Any:
-    """Build Modal image from DepsConfig specification.
+    """Build a Modal image from the shared image contract."""
+    spec = deps.resolved_image(gpu_type)
+    overlay = deps.resolved_runtime_overlay()
+    cuda_version = infer_cuda_version(gpu_type, spec.pip_index_url)
 
-    Uses nvidia/cuda base image instead of debian_slim because Megatron/SGLang
-    require nvcc for JIT kernel compilation.
-    """
-    # GPU-specific torch index and CUDA version
-    if gpu_type in ("B200", "GB200"):
-        pip_index = "https://download.pytorch.org/whl/nightly/cu128"
-        cuda_version = "12.8.0"
-    elif deps.pip_index_url:
-        pip_index = deps.pip_index_url
-        # Infer CUDA version from pip index URL
-        if "cu128" in pip_index:
-            cuda_version = "12.8.0"
-        elif "cu126" in pip_index:
-            cuda_version = "12.6.0"
-        elif "cu124" in pip_index:
-            cuda_version = "12.4.0"
-        else:
-            cuda_version = "12.4.0"
+    if spec.source_type == "registry":
+        image = modal.Image.from_registry(spec.source_ref, add_python=spec.python_version)
+    elif spec.source_type == "dockerfile_path":
+        dockerfile_path = Path(spec.source_ref)
+        image = modal.Image.from_dockerfile(
+            dockerfile_path,
+            context_dir=spec.context_dir or str(dockerfile_path.parent),
+            add_python=spec.python_version,
+            build_args=spec.build_args,
+        )
     else:
-        pip_index = "https://download.pytorch.org/whl/cu124"
-        cuda_version = "12.4.0"
+        raise ValueError(
+            f"Modal runner does not know how to build image source_type={spec.source_type!r}"
+        )
 
-    # Use CUDA devel image (includes nvcc) for Megatron/SGLang JIT compilation
-    cuda_image = f"nvidia/cuda:{cuda_version}-devel-ubuntu22.04"
-    image = modal.Image.from_registry(cuda_image, add_python=deps.python_version)
+    if spec.system_packages:
+        image = image.apt_install(*spec.system_packages)
 
-    if deps.system_packages:
-        image = image.apt_install(*deps.system_packages)
+    if spec.pip_packages:
+        uv_kwargs: dict[str, Any] = {}
+        if spec.pip_index_url:
+            uv_kwargs["index_url"] = spec.pip_index_url
+        if spec.pip_extra_index_url:
+            uv_kwargs["extra_index_url"] = spec.pip_extra_index_url
+        image = image.uv_pip_install(*spec.pip_packages, **uv_kwargs)
 
-    if deps.pip_packages:
-        # Use uv for faster installs (~5x faster than pip)
-        uv_kwargs: dict[str, Any] = {"index_url": pip_index}
-        if deps.pip_extra_index_url:
-            uv_kwargs["extra_index_url"] = deps.pip_extra_index_url
+    for cmd in spec.build_commands:
+        image = image.run_commands(cmd)
 
-        image = image.uv_pip_install(*deps.pip_packages, **uv_kwargs)
+    if overlay.system_packages:
+        image = image.apt_install(*overlay.system_packages)
 
-    for cmd in deps.bootstrap_commands:
+    if overlay.pip_packages:
+        uv_kwargs = {}
+        if overlay.pip_index_url:
+            uv_kwargs["index_url"] = overlay.pip_index_url
+        elif spec.pip_index_url:
+            uv_kwargs["index_url"] = spec.pip_index_url
+        if overlay.pip_extra_index_url:
+            uv_kwargs["extra_index_url"] = overlay.pip_extra_index_url
+        elif spec.pip_extra_index_url:
+            uv_kwargs["extra_index_url"] = spec.pip_extra_index_url
+        image = image.uv_pip_install(*overlay.pip_packages, **uv_kwargs)
+
+    for cmd in overlay.commands:
         image = image.run_commands(cmd)
 
     # Add force rebuild marker (change this to invalidate cache)
     image = image.run_commands("echo 'rollouts-build-v4-uv'")
 
-    # Set up HuggingFace cache and Megatron PYTHONPATH
-    image = image.env({
-        "HF_HOME": "/root/.cache/huggingface",
+    env_vars = {
+        "HF_HOME": HF_CACHE_DIR,
         "HF_HUB_ENABLE_HF_TRANSFER": "1",
         # Megatron-LM needs to be on PYTHONPATH for megatron.core imports
         "PYTHONPATH": "/root/Megatron-LM:/root",
         # NCCL settings for multi-GPU training
         "CUDA_DEVICE_MAX_CONNECTIONS": "1",
-    })
+        **spec.env,
+        **overlay.env,
+    }
+    image = image.env(env_vars)
+
+    manifest: ImageManifest = image_manifest_for_spec(
+        spec,
+        image_name=f"modal-{gpu_type.lower()}",
+        cuda_version=cuda_version,
+        resolved_image_ref=(
+            resolve_image_for_provisioning(spec).resolved_ref
+            if spec.source_type == "registry"
+            else None
+        ),
+        features=overlay.features,
+        installed_groups=overlay.installed_groups,
+        env=env_vars,
+        paths={"megatron_root": "/root/Megatron-LM"},
+    )
+    image = image.run_commands(manifest_write_command(manifest, spec.manifest_path))
 
     return image
 

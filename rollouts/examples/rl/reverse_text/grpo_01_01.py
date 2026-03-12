@@ -26,6 +26,7 @@ Note:
     For the full SFT → RL pipeline, see sft_then_grpo.py
 """
 
+from examples.rl.base_config import default_remote_training_deps
 from examples.rl.reverse_text.base_config import train as _base_train
 from rollouts.training.configs import HardwareConfig
 from rollouts.training.grpo import (
@@ -46,6 +47,8 @@ hardware = HardwareConfig(
     gpu_type="A100",
     gpu_count=1,
     provider="runpod",
+    deps=default_remote_training_deps(),
+    hf_cache_dir="/workspace/.cache/huggingface",
 )
 
 # =============================================================================

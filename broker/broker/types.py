@@ -34,6 +34,49 @@ class CloudType(str, Enum):
 
 
 @dataclass
+class PersistentVolumeAttachment:
+    """Provider-agnostic attachment for persistent volumes.
+
+    Providers that support durable attachable storage can interpret:
+    - volume_id: provider's durable volume identifier
+    - mount_path: where it should appear inside the runtime
+    - location_hint: provider-specific placement constraint (zone, region, datacenter)
+    """
+
+    volume_id: str
+    mount_path: str = "/workspace"
+    location_hint: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        assert self.volume_id.strip(), "volume_id cannot be empty"
+        assert self.mount_path.strip(), "mount_path cannot be empty"
+        assert self.mount_path.startswith("/"), "mount_path must be an absolute path"
+
+
+@dataclass
+class ProvisionImage:
+    """Provider-agnostic boot image reference for provisioning.
+
+    `registry` is the currently supported provider-facing type.
+    Other source types exist so higher layers can keep a stable contract while
+    build/push flows are added later.
+    """
+
+    source_type: str = "registry"
+    reference: str = "runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04"
+    context_dir: str | None = None
+    build_args: dict[str, str] = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        assert self.source_type in {"registry", "dockerfile_path", "nix"}, (
+            f"unsupported source_type: {self.source_type}"
+        )
+        assert self.reference.strip(), "reference cannot be empty"
+
+
+@dataclass
 class GPUOffer:
     """A GPU offer from a provider"""
 
@@ -303,6 +346,7 @@ class ProvisionRequest:
     gpu_type: str | None = None
     gpu_count: int = 1
     image: str = "runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04"
+    boot_image: ProvisionImage | None = None
     name: str | None = None
     max_price_per_hour: float | None = None
     provider: str | None = None  # If None, search all providers
@@ -324,10 +368,43 @@ class ProvisionRequest:
     raw_data: dict[str, Any] | None = None
     # CUDA version constraint - ensures node has compatible driver
     min_cuda_version: str | None = None  # e.g., "12.1" or "12.8"
-    # RunPod network volume - persistent storage that survives pod termination
-    # Must be in the same datacenter as the pod (RunPod constraint)
+    # Provider-agnostic persistent volume attachment.
+    persistent_volume: PersistentVolumeAttachment | None = None
+    # Backward-compatible RunPod aliases. Kept while downstream callers migrate.
     network_volume_id: str | None = None  # RunPod network volume ID to attach
     datacenter_id: str | None = None  # RunPod datacenter ID (required when network_volume_id set)
+
+    def __post_init__(self) -> None:
+        """Normalize provider-specific volume aliases into the generic attachment."""
+        if self.boot_image is None:
+            self.boot_image = ProvisionImage(reference=self.image)
+        else:
+            if self.boot_image.source_type == "registry":
+                assert self.image == self.boot_image.reference or not self.image, (
+                    "image must match boot_image.reference for registry-backed boot images"
+                )
+                self.image = self.boot_image.reference
+
+        if self.persistent_volume is None and self.network_volume_id is not None:
+            self.persistent_volume = PersistentVolumeAttachment(
+                volume_id=self.network_volume_id,
+                mount_path="/workspace",
+                location_hint=self.datacenter_id,
+            )
+
+        if self.persistent_volume is not None:
+            if self.network_volume_id is not None:
+                assert self.network_volume_id == self.persistent_volume.volume_id, (
+                    "network_volume_id must match persistent_volume.volume_id"
+                )
+            if self.datacenter_id is not None and self.persistent_volume.location_hint is not None:
+                assert self.datacenter_id == self.persistent_volume.location_hint, (
+                    "datacenter_id must match persistent_volume.location_hint"
+                )
+            if self.network_volume_id is None:
+                self.network_volume_id = self.persistent_volume.volume_id
+            if self.datacenter_id is None:
+                self.datacenter_id = self.persistent_volume.location_hint
 
 
 @dataclass

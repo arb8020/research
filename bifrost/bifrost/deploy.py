@@ -177,19 +177,22 @@ class GitDeployment:
         self.ssh_port = ssh_port
 
     def detect_bootstrap_command(
-        self, client: paramiko.SSHClient, worktree_path: str, uv_extra: str | None = None
+        self,
+        client: paramiko.SSHClient,
+        worktree_path: str,
+        uv_extra: str | None = None,
+        *,
+        skip_bootstrap: bool = False,
+        bootstrap_frozen: bool = False,
     ) -> str:
         """Detect Python dependency files and return appropriate bootstrap command."""
-        # Allow callers to skip or freeze dependency bootstrap for faster reuse
-        skip_bootstrap = os.environ.get("BIFROST_SKIP_BOOTSTRAP") == "1"
-        frozen = os.environ.get("BIFROST_BOOTSTRAP_FROZEN") == "1"
         if skip_bootstrap:
-            logger.debug("📦 Skipping dependency bootstrap due to BIFROST_SKIP_BOOTSTRAP=1")
+            logger.debug("📦 Skipping dependency bootstrap")
             return ""
 
         # Check for dependency files in order of preference
         uv_sync_cmd = "pip install uv && uv sync"
-        if frozen:
+        if bootstrap_frozen:
             uv_sync_cmd += " --frozen"
         if uv_extra:
             uv_sync_cmd += f" --extra {uv_extra}"
@@ -249,7 +252,9 @@ class GitDeployment:
 
         # Ensure tmux and ninja are installed for detached job functionality
         logger.debug("🔧 Ensuring tmux and ninja are installed...")
-        tmux_check_cmd = "which tmux && which ninja || (apt-get update && apt-get install -y tmux ninja-build)"
+        tmux_check_cmd = (
+            "which tmux && which ninja || (apt-get update && apt-get install -y tmux ninja-build)"
+        )
         stdin, stdout, stderr = client.exec_command(tmux_check_cmd)
         exit_code = stdout.channel.recv_exit_status()
         if exit_code != 0:
@@ -470,6 +475,9 @@ class GitDeployment:
         command: str,
         env_vars: dict[str, str] | None = None,
         uv_extra: str | None = None,
+        *,
+        skip_bootstrap: bool = False,
+        bootstrap_frozen: bool = False,
     ) -> int:
         """Deploy code and execute command using shared workspace for better Python imports.
 
@@ -481,10 +489,21 @@ class GitDeployment:
         """
 
         # Deploy to shared workspace instead of job-specific worktree
-        workspace_path = self.deploy_to_workspace(client, uv_extra=uv_extra)
+        workspace_path = self.deploy_to_workspace(
+            client,
+            uv_extra=uv_extra,
+            skip_bootstrap=skip_bootstrap,
+            bootstrap_frozen=bootstrap_frozen,
+        )
 
         # Detect and add bootstrap command
-        bootstrap_cmd = self.detect_bootstrap_command(client, workspace_path, uv_extra)
+        bootstrap_cmd = self.detect_bootstrap_command(
+            client,
+            workspace_path,
+            uv_extra,
+            skip_bootstrap=skip_bootstrap,
+            bootstrap_frozen=bootstrap_frozen,
+        )
 
         # Build full command with working directory and bootstrap
         full_command = f"cd {workspace_path} && {bootstrap_cmd}{command}"
@@ -501,6 +520,9 @@ class GitDeployment:
         client: paramiko.SSHClient,
         workspace_path: str = "~/.bifrost/workspace",
         uv_extra: str | None = None,
+        *,
+        skip_bootstrap: bool = False,
+        bootstrap_frozen: bool = False,
     ) -> str:
         """Deploy code to shared workspace directory.
 
@@ -536,7 +558,13 @@ class GitDeployment:
         self.create_or_update_workspace(client, bare_repo_path, workspace_path)
 
         # Install dependencies
-        bootstrap_cmd = self.detect_bootstrap_command(client, workspace_path, uv_extra)
+        bootstrap_cmd = self.detect_bootstrap_command(
+            client,
+            workspace_path,
+            uv_extra,
+            skip_bootstrap=skip_bootstrap,
+            bootstrap_frozen=bootstrap_frozen,
+        )
         if bootstrap_cmd:
             bootstrap_only = bootstrap_cmd.rstrip(" && ")  # noqa: B005
             logger.debug(f"🔄 Installing dependencies: {bootstrap_only}")
@@ -559,6 +587,9 @@ class GitDeployment:
         job_id: str | None = None,
         target_dir: str | None = None,
         uv_extra: str | None = None,
+        *,
+        skip_bootstrap: bool = False,
+        bootstrap_frozen: bool = False,
     ) -> str:
         """Deploy code without executing commands. Returns worktree path.
 
@@ -618,7 +649,13 @@ class GitDeployment:
             worktree_path = self.create_worktree(client, repo_name, job_id)
 
         # Install dependencies
-        bootstrap_cmd = self.detect_bootstrap_command(client, worktree_path, uv_extra)
+        bootstrap_cmd = self.detect_bootstrap_command(
+            client,
+            worktree_path,
+            uv_extra,
+            skip_bootstrap=skip_bootstrap,
+            bootstrap_frozen=bootstrap_frozen,
+        )
         if bootstrap_cmd:
             # Remove the trailing " && " from bootstrap command for standalone execution
             bootstrap_only = bootstrap_cmd.rstrip(" && ")  # noqa: B005
@@ -640,7 +677,13 @@ class GitDeployment:
         return worktree_path
 
     def deploy_and_execute_detached(
-        self, client: paramiko.SSHClient, command: str, env_vars: dict[str, str] | None = None
+        self,
+        client: paramiko.SSHClient,
+        command: str,
+        env_vars: dict[str, str] | None = None,
+        *,
+        skip_bootstrap: bool = False,
+        bootstrap_frozen: bool = False,
     ) -> str:
         """Deploy code and execute command in detached mode, return job ID.
 
@@ -661,7 +704,15 @@ class GitDeployment:
 
         try:
             return self._execute_detached_deployment(
-                client, job_manager, job_id, repo_name, commit_hash, command, env_vars
+                client,
+                job_manager,
+                job_id,
+                repo_name,
+                commit_hash,
+                command,
+                env_vars,
+                skip_bootstrap=skip_bootstrap,
+                bootstrap_frozen=bootstrap_frozen,
             )
         except Exception as e:
             logger.exception("Failed to start detached job")
@@ -678,6 +729,9 @@ class GitDeployment:
         command: str,
         env_vars: dict[str, str] | None,
         uv_extra: str | None = None,
+        *,
+        skip_bootstrap: bool = False,
+        bootstrap_frozen: bool = False,
     ) -> str:
         """Execute the main deployment steps for detached job.
 
@@ -701,7 +755,13 @@ class GitDeployment:
         worktree_path = self.create_worktree(client, repo_name, job_id)
 
         # Prepare command with bootstrap, but avoid duplicating if caller already does it
-        bootstrap_cmd = self.detect_bootstrap_command(client, worktree_path, uv_extra)
+        bootstrap_cmd = self.detect_bootstrap_command(
+            client,
+            worktree_path,
+            uv_extra,
+            skip_bootstrap=skip_bootstrap,
+            bootstrap_frozen=bootstrap_frozen,
+        )
         if any(token in command for token in ["uv sync", "pip install -r", "pip install uv"]):
             logger.debug(
                 "📦 Caller handles dependency install; skipping bootstrap to avoid duplication"
@@ -729,6 +789,9 @@ class GitDeployment:
         command: str,
         env_vars: dict[str, str] | None = None,
         job_id: str | None = None,
+        *,
+        skip_bootstrap: bool = False,
+        bootstrap_frozen: bool = False,
     ) -> str:
         """Deploy code to shared workspace and execute command in detached mode.
 
@@ -756,7 +819,12 @@ class GitDeployment:
         self._upload_workspace_job_wrapper_script(client)
 
         # Prepare command with bootstrap
-        bootstrap_cmd = self.detect_bootstrap_command(client, workspace_path)
+        bootstrap_cmd = self.detect_bootstrap_command(
+            client,
+            workspace_path,
+            skip_bootstrap=skip_bootstrap,
+            bootstrap_frozen=bootstrap_frozen,
+        )
         full_command = f"{bootstrap_cmd}{command}"
 
         # Set up job execution with workspace path

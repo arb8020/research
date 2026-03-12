@@ -4,6 +4,11 @@ Test to smoke out rate limit information from HuggingFace.
 Attempts to download the model and captures detailed error information.
 """
 
+if __name__ != "__main__":
+    import pytest
+
+    pytest.skip("manual smoke script; not part of automated pytest suites", allow_module_level=True)
+
 import logging
 import sys
 from typing import cast
@@ -17,7 +22,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def test_rate_limit():
+def test_rate_limit() -> int:
     """Attempt to load the model and capture all error details."""
 
     model_name = "sentence-transformers/all-MiniLM-L6-v2"
@@ -54,7 +59,7 @@ def test_rate_limit():
                     value = getattr(e, attr)
                     if not callable(value):
                         print(f"  {attr}: {value}")
-                except:
+                except Exception:
                     pass
 
         # Check if there's response info (for HTTP errors)

@@ -20,8 +20,10 @@ from .query import QueryType
 from .types import (
     GPUInstance,
     GPUOffer,
+    PersistentVolumeAttachment,
     ProviderModule,
     ProvisionAttempt,
+    ProvisionImage,
     ProvisionRequest,
     ProvisionResult,
 )
@@ -332,6 +334,7 @@ async def _try_provision_with_fallback(  # noqa: PLR0913 - internal helper for p
     suitable_offers: list[GPUOffer],
     n_offers: int,
     image: str,
+    boot_image: ProvisionImage | None,
     name: str | None,
     gpu_count: int,
     exposed_ports: list[int] | None,
@@ -364,6 +367,7 @@ async def _try_provision_with_fallback(  # noqa: PLR0913 - internal helper for p
         request = _build_provision_request(
             offer,
             image,
+            boot_image,
             name,
             gpu_count,
             exposed_ports,
@@ -411,6 +415,7 @@ async def _try_provision_with_fallback(  # noqa: PLR0913 - internal helper for p
 def _build_provision_request(  # noqa: PLR0913 - builder needs all provision params
     offer: GPUOffer,
     image: str,
+    boot_image: ProvisionImage | None,
     name: str | None,
     gpu_count: int,
     exposed_ports: list[int] | None,
@@ -446,6 +451,7 @@ def _build_provision_request(  # noqa: PLR0913 - builder needs all provision par
         gpu_type=gpu_type_id,
         gpu_count=gpu_count,
         image=image,
+        boot_image=boot_image,
         name=name,
         provider=offer.provider,
         spot_instance=offer.spot,
@@ -493,6 +499,48 @@ def _categorize_failure(attempts: list[ProvisionAttempt], total_offers: int) -> 
         credential_error=(credential_errors > 0),
         network_error=(network_errors > 0),
     )
+
+
+def _resolve_persistent_volume(
+    persistent_volume: PersistentVolumeAttachment | None,
+    persistent_volume_id: str | None,
+    persistent_volume_mount_path: str | None,
+    persistent_volume_location: str | None,
+    network_volume_id: str | None,
+    datacenter_id: str | None,
+) -> PersistentVolumeAttachment | None:
+    """Normalize generic and legacy persistent-volume arguments.
+
+    The generic attachment is the source of truth. Legacy RunPod aliases are
+    still accepted while downstream callers migrate.
+    """
+    volume_id = persistent_volume_id or network_volume_id
+    location_hint = persistent_volume_location or datacenter_id
+
+    if persistent_volume is None and volume_id is None:
+        return None
+
+    if persistent_volume is None:
+        return PersistentVolumeAttachment(
+            volume_id=volume_id,
+            mount_path=persistent_volume_mount_path or "/workspace",
+            location_hint=location_hint,
+        )
+
+    if volume_id is not None:
+        assert persistent_volume.volume_id == volume_id, (
+            "persistent_volume.volume_id must match provided persistent volume id"
+        )
+    if location_hint is not None and persistent_volume.location_hint is not None:
+        assert persistent_volume.location_hint == location_hint, (
+            "persistent_volume.location_hint must match provided persistent volume location"
+        )
+    if persistent_volume_mount_path is not None:
+        assert persistent_volume.mount_path == persistent_volume_mount_path, (
+            "persistent_volume.mount_path must match provided persistent volume mount path"
+        )
+
+    return persistent_volume
 
 
 async def _try_provision_from_offer(
@@ -617,6 +665,7 @@ async def _try_provision_from_offer(
 async def create(  # noqa: PLR0913 - create API has many configuration options
     query: QueryType | list[GPUOffer] | GPUOffer | None = None,
     image: str = "runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04",
+    boot_image: ProvisionImage | None = None,
     name: str | None = None,
     # Search parameters for when query is a filter
     gpu_type: str | None = None,
@@ -633,9 +682,14 @@ async def create(  # noqa: PLR0913 - create API has many configuration options
     # Jupyter configuration
     start_jupyter: bool = False,
     jupyter_password: str | None = None,
-    # RunPod-specific: Template support
+    # Provider-specific: Template support
     template_id: str | None = None,
-    # RunPod-specific: Network volume (persistent storage, datacenter-locked)
+    # Provider-agnostic persistent volume attachment
+    persistent_volume: PersistentVolumeAttachment | None = None,
+    persistent_volume_id: str | None = None,
+    persistent_volume_mount_path: str | None = None,
+    persistent_volume_location: str | None = None,
+    # RunPod compatibility aliases
     network_volume_id: str | None = None,
     datacenter_id: str | None = None,
     # Offer selection parameters
@@ -653,6 +707,7 @@ async def create(  # noqa: PLR0913 - create API has many configuration options
     Args:
         query: Query object, list of offers, or single offer (if None, searches all)
         image: Docker image to use
+        boot_image: Provider-agnostic boot image descriptor
         name: Optional instance name
         gpu_type: Filter by GPU type (used if query is None)
         max_price_per_hour: Filter by max price (used if query is None)
@@ -683,11 +738,19 @@ async def create(  # noqa: PLR0913 - create API has many configuration options
     assert n_offers > 0, f"n_offers must be positive, got {n_offers}"
     assert gpu_count > 0, f"gpu_count must be positive, got {gpu_count}"
 
-    # Inject volume params into kwargs so they flow into ProvisionRequest via **kwargs
-    if network_volume_id is not None:
-        kwargs["network_volume_id"] = network_volume_id
-    if datacenter_id is not None:
-        kwargs["datacenter_id"] = datacenter_id
+    resolved_persistent_volume = _resolve_persistent_volume(
+        persistent_volume=persistent_volume,
+        persistent_volume_id=persistent_volume_id,
+        persistent_volume_mount_path=persistent_volume_mount_path,
+        persistent_volume_location=persistent_volume_location,
+        network_volume_id=network_volume_id,
+        datacenter_id=datacenter_id,
+    )
+    if resolved_persistent_volume is not None:
+        kwargs["persistent_volume"] = resolved_persistent_volume
+        kwargs["network_volume_id"] = resolved_persistent_volume.volume_id
+        if resolved_persistent_volume.location_hint is not None:
+            kwargs["datacenter_id"] = resolved_persistent_volume.location_hint
 
     # Normalize input to list of offers
     suitable_offers = await _normalize_query_input(
@@ -720,6 +783,7 @@ async def create(  # noqa: PLR0913 - create API has many configuration options
         suitable_offers,
         n_offers,
         image,
+        boot_image,
         name,
         gpu_count,
         exposed_ports,

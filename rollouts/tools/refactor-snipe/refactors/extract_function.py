@@ -62,6 +62,13 @@ class ExtractFunction:
             end_line: End line of selection (1-indexed, inclusive)
             function_name: Name for the extracted function
         """
+        assert path.exists(), f"File does not exist: {path}"
+        assert path.is_file(), f"Path must be a file: {path}"
+        assert start_line > 0, "start_line must be positive"
+        assert end_line > 0, "end_line must be positive"
+        assert end_line >= start_line, "end_line must be >= start_line"
+        assert function_name.strip(), "function_name cannot be empty"
+
         self.path = path
         self.start_line = start_line
         self.end_line = end_line
@@ -75,6 +82,8 @@ class ExtractFunction:
 
         # Create region for selected code
         self.region = Region.from_lines(start_line, end_line, self.parser.source)
+        selected_text = self.region.get_text(self.parser.source).decode("utf-8")
+        assert selected_text.strip(), "selected region cannot be blank or whitespace-only"
 
     def execute(self) -> ExtractFunctionResult:
         """Execute the refactoring and return the result."""
@@ -173,6 +182,9 @@ class ExtractFunction:
             # Module level - insert before selection
             insert_line = self.start_line
 
+        assert insert_line > 0, "insert_line must be positive"
+        assert insert_line <= self.start_line, "insert_line must not come after the selection start"
+
         # Create the edits
         edits = [
             # Insert function definition
@@ -188,6 +200,9 @@ class ExtractFunction:
                 new_text=call_stmt_indented,
             ),
         ]
+        assert edits[0].start_line == edits[0].end_line, "function insertion edit must be an insertion"
+        assert edits[1].start_line == self.start_line, "replacement edit must start at selection start"
+        assert edits[1].end_line == self.end_line, "replacement edit must end at selection end"
 
         return ExtractFunctionResult(
             function_definition=func_def_indented,
@@ -205,11 +220,33 @@ def apply_edits(path: Path, edits: list[TextEdit]) -> str:
 
     Edits are applied in reverse order (bottom to top) to preserve line numbers.
     """
+    assert path.exists(), f"File does not exist: {path}"
+    assert path.is_file(), f"Path must be a file: {path}"
+    assert edits, "edits cannot be empty"
+
     content = path.read_text()
     lines = content.split("\n")
+    line_count = len(lines)
 
     # Sort edits by start line, descending (apply from bottom to top)
     sorted_edits = sorted(edits, key=lambda e: e.start_line, reverse=True)
+    previous_edit: TextEdit | None = None
+    for edit in sorted_edits:
+        assert edit.start_line > 0, "edit.start_line must be positive"
+        assert edit.end_line >= edit.start_line, "edit.end_line must be >= edit.start_line"
+        assert edit.end_line <= line_count, "edit.end_line must be within the file"
+        if previous_edit is not None:
+            overlaps_previous = edit.end_line >= previous_edit.start_line
+            shares_start = edit.start_line == previous_edit.start_line
+            is_insertion = edit.start_line == edit.end_line and edit.new_text.endswith("\n\n")
+            previous_is_insertion = (
+                previous_edit.start_line == previous_edit.end_line
+                and previous_edit.new_text.endswith("\n\n")
+            )
+            assert not overlaps_previous or (shares_start and (is_insertion or previous_is_insertion)), (
+                "edits must not overlap unless one is an insertion at the same line"
+            )
+        previous_edit = edit
 
     for edit in sorted_edits:
         # Convert to 0-indexed

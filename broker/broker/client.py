@@ -14,7 +14,9 @@ from .types import (
     GPUInstance,
     GPUOffer,
     InstanceStatus,
+    PersistentVolumeAttachment,
     ProviderCredentials,
+    ProvisionImage,
     ProvisionResult,
     SSHResult,
 )
@@ -245,6 +247,7 @@ class GPUClient:
         self,
         query: QueryType | list[GPUOffer] | GPUOffer | None,
         image: str = "runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04",
+        boot_image: ProvisionImage | None = None,
         name: str | None = None,
         gpu_count: int = 1,
         exposed_ports: list[int] | None = None,
@@ -253,6 +256,10 @@ class GPUClient:
         cloud_type: str | CloudType | None = None,
         sort: Callable[[Any], Any] | None = None,
         reverse: bool = False,
+        persistent_volume: PersistentVolumeAttachment | None = None,
+        persistent_volume_id: str | None = None,
+        persistent_volume_mount_path: str | None = None,
+        persistent_volume_location: str | None = None,
         **kwargs: Any,
     ) -> Optional["ClientGPUInstance"]:
         """Create GPU instance
@@ -263,6 +270,7 @@ class GPUClient:
                    - List of GPUOffers: Tries offers in order until one succeeds
                    - Query object: Searches for matching offers and tries them in order
             image: Docker image to use
+            boot_image: Provider-agnostic boot image descriptor
             name: Instance name
             gpu_count: Number of GPUs
             exposed_ports: List of ports to expose via HTTP proxy
@@ -273,6 +281,10 @@ class GPUClient:
             cloud_type: Cloud deployment type ("secure", "community", or CloudType enum)
             sort: Sort function for ordering offers (e.g., lambda x: x.price_per_hour)
             reverse: Sort descending
+            persistent_volume: Provider-agnostic attached persistent volume
+            persistent_volume_id: Volume identifier alias for CLI/script callers
+            persistent_volume_mount_path: Mount path alias for CLI/script callers
+            persistent_volume_location: Provider-specific placement hint alias
 
         Returns:
             GPU instance with client configuration
@@ -298,6 +310,7 @@ class GPUClient:
         result = await api.create(
             query=query,
             image=image,
+            boot_image=boot_image,
             name=name,
             gpu_count=gpu_count,
             exposed_ports=exposed_ports,
@@ -305,6 +318,10 @@ class GPUClient:
             n_offers=n_offers,
             sort=sort,
             reverse=reverse,
+            persistent_volume=persistent_volume,
+            persistent_volume_id=persistent_volume_id,
+            persistent_volume_mount_path=persistent_volume_mount_path,
+            persistent_volume_location=persistent_volume_location,
             credentials=self._credentials,
             **kwargs,
         )

@@ -17,6 +17,7 @@ Note:
     model across multiple GPUs for a single role.
 """
 
+from examples.rl.base_config import default_remote_training_deps
 from examples.rl.glm.base_config import train as _base_train
 from rollouts.training.configs import HardwareConfig
 from rollouts.training.grpo import (
@@ -37,6 +38,8 @@ hardware = HardwareConfig(
     gpu_type="B200",
     gpu_count=2,  # 1 for inference, 1 for training
     provider="runpod",
+    deps=default_remote_training_deps(),
+    hf_cache_dir="/workspace/.cache/huggingface",
 )
 
 # =============================================================================

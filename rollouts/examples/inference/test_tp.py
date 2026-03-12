@@ -30,6 +30,7 @@ hardware = HardwareConfig(
     gpu_type="RTX 4090",  # Cheap 2x GPU option
     gpu_count=2,
     provider="runpod",
+    legacy_remote_bootstrap=True,
 )
 
 

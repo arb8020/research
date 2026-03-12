@@ -40,6 +40,14 @@ class ModelConfig:
     # TODO: sliding_window_pattern: str | None = None  # e.g., "SSSL" (3 sliding + 1 global)
 
     def __post_init__(self) -> None:
+        assert self.dim > 0, "dim must be positive"
+        assert self.n_layers > 0, "n_layers must be positive"
+        assert self.n_heads > 0, "n_heads must be positive"
+        assert self.dim % self.n_heads == 0, "dim must be divisible by n_heads"
+        assert self.vocab_size > 0, "vocab_size must be positive"
+        assert self.rope_theta > 0, "rope_theta must be positive"
+        assert self.rms_norm_eps > 0, "rms_norm_eps must be positive"
+
         # Set defaults via object.__setattr__ since frozen
         if self.n_kv_heads is None:
             object.__setattr__(self, "n_kv_heads", self.n_heads)
@@ -47,6 +55,15 @@ class ModelConfig:
             object.__setattr__(self, "head_dim", self.dim // self.n_heads)
         if self.mlp_dim is None:
             object.__setattr__(self, "mlp_dim", 4 * self.dim)
+
+        assert self.n_kv_heads is not None
+        assert self.head_dim is not None
+        assert self.mlp_dim is not None
+        assert self.n_kv_heads > 0, "n_kv_heads must be positive"
+        assert self.n_heads % self.n_kv_heads == 0, "n_heads must be divisible by n_kv_heads"
+        assert self.head_dim > 0, "head_dim must be positive"
+        assert self.head_dim * self.n_heads <= self.dim, "head_dim * n_heads must not exceed dim"
+        assert self.mlp_dim > 0, "mlp_dim must be positive"
 
 
 @dataclass(frozen=True)
@@ -94,6 +111,29 @@ class TrainConfig:
 
     # Random seed
     seed: int = 42
+
+    def __post_init__(self) -> None:
+        assert self.data_pattern is not None, "data_pattern cannot be None"
+        assert self.max_seq_len > 0, "max_seq_len must be positive"
+        assert self.batch_size > 0, "batch_size must be positive"
+        assert self.grad_accum_steps > 0, "grad_accum_steps must be positive"
+        assert self.weight_decay >= 0, "weight_decay must be non-negative"
+        assert self.warmup_steps >= 0, "warmup_steps must be non-negative"
+        assert self.max_grad_norm > 0, "max_grad_norm must be positive"
+        assert self.lr_muon > 0, "lr_muon must be positive"
+        assert 0 <= self.muon_momentum < 1, "muon_momentum must be in [0, 1)"
+        assert self.lr_adamw > 0, "lr_adamw must be positive"
+        assert len(self.adam_betas) == 2, "adam_betas must contain exactly two values"
+        assert 0 <= self.adam_betas[0] < 1, "adam beta1 must be in [0, 1)"
+        assert 0 <= self.adam_betas[1] < 1, "adam beta2 must be in [0, 1)"
+        assert self.adam_eps > 0, "adam_eps must be positive"
+        assert self.steps > 0, "steps must be positive"
+        assert self.log_every > 0, "log_every must be positive"
+        assert self.checkpoint_every > 0, "checkpoint_every must be positive"
+        assert self.val_every >= 0, "val_every must be non-negative"
+        assert self.val_batches > 0, "val_batches must be positive"
+        assert self.output_dir.strip(), "output_dir cannot be empty"
+        assert self.seed >= 0, "seed must be non-negative"
 
     def fingerprint(self) -> str:
         """Stable hash for resume checks.

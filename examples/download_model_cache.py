@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import logging
 import os
 import shlex
 import sys
@@ -56,17 +57,26 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--gpu-count", type=int, default=1, help="GPU count")
     parser.add_argument("--provider", type=str, default="runpod", help="Provider to provision on")
     parser.add_argument("--community", action="store_true", help="Use community cloud")
-    parser.add_argument("--network-volume-id", type=str, help="RunPod network volume ID")
     parser.add_argument(
-        "--datacenter-id",
+        "--persistent-volume-id",
         type=str,
-        help="RunPod datacenter ID (required with --network-volume-id)",
+        help="Persistent volume ID to attach (RunPod network volumes supported today)",
+    )
+    parser.add_argument(
+        "--persistent-volume-location",
+        type=str,
+        help="Provider-specific placement hint for the volume (for RunPod: datacenter ID)",
     )
     parser.add_argument("--timeout", type=int, default=1800, help="Timeout seconds for download")
     parser.add_argument(
         "--keep-alive",
         action="store_true",
         help="Keep provisioned instance alive after download",
+    )
+    parser.add_argument(
+        "--log-dir",
+        type=str,
+        help="Directory to write structured JSONL events and streamed output logs",
     )
 
     return parser.parse_args()
@@ -81,8 +91,11 @@ def build_download_command(
     revision_arg = f",\\n    revision={revision!r}" if revision else ""
 
     return f"""
-set -euo pipefail
+set -uo pipefail
 
+__download_exit_code=0
+
+{{
 mkdir -p {quote(hf_cache_dir)}
 export HF_HOME={quote(hf_cache_dir)}
 export HF_HUB_ENABLE_HF_TRANSFER=1
@@ -105,90 +118,226 @@ result = snapshot_download(
 )
 print(result)
 PY
+}} || __download_exit_code=$?
+
+echo "__DOWNLOAD_EXIT_CODE__=${{__download_exit_code}}"
+exit "${{__download_exit_code}}"
 """
+
+
+def _sanitize_sample_id(value: str) -> str:
+    return "".join(c if c.isalnum() or c in {"-", "_", "."} else "_" for c in value)
 
 
 async def main() -> int:
     """Download model snapshot on provisioned or existing node."""
     args = parse_args()
 
-    if args.network_volume_id and not args.datacenter_id:
-        print("Error: --datacenter-id is required when --network-volume-id is set.")
+    if args.persistent_volume_id and not args.persistent_volume_location:
+        print("Error: --persistent-volume-location is required when --persistent-volume-id is set.")
         return 1
-    if args.network_volume_id and args.provider != "runpod":
-        print("Error: --network-volume-id is only supported with --provider runpod.")
+    if args.persistent_volume_id and args.provider != "runpod":
+        print("Error: persistent volumes are currently supported only with --provider runpod.")
         return 1
 
     try:
         from bifrost import GPUQuery, acquire_node
+        from rollouts._logging import setup_eval_logging
     except ImportError as e:
         print(f"Missing dependency: {e}")
-        print("Install with: pip install -e bifrost broker")
+        print("Install with: pip install -e bifrost broker rollouts")
         return 1
+
+    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    log_dir = (
+        Path(args.log_dir)
+        if args.log_dir
+        else repo_root / "results" / f"model_cache_download_{timestamp}"
+    )
+    log_dir.mkdir(parents=True, exist_ok=True)
+    output_log = log_dir / "download_output.log"
+    sample_id = _sanitize_sample_id(args.model)
+
+    log_ctx = setup_eval_logging(log_dir, logger_name="download_model_cache.events")
+    event_logger = logging.getLogger("download_model_cache.events")
+    event_logger.info(
+        "download_start",
+        extra={
+            "sample_id": sample_id,
+            "model": args.model,
+            "revision": args.revision,
+            "provider": args.provider,
+            "gpu_type": args.gpu_type,
+            "gpu_count": args.gpu_count,
+            "persistent_volume_id": args.persistent_volume_id,
+            "persistent_volume_location": args.persistent_volume_location,
+            "hf_cache_dir": args.hf_cache_dir,
+            "log_dir": str(log_dir),
+        },
+    )
+
+    print(f"Structured events: {log_dir / 'events.jsonl'}")
+    print(f"Streamed output:   {output_log}")
+    print(f"Tail live:         tail -f {output_log}")
 
     provisioned = args.ssh is None and args.node_id is None
     client = None
     instance = None
-
-    if args.ssh:
-        print(f"Using static SSH: {args.ssh}")
-        client, instance = await acquire_node(ssh=args.ssh)
-    elif args.node_id:
-        print(f"Using existing instance: {args.node_id}")
-        client, instance = await acquire_node(node_id=args.node_id)
-        assert instance is not None
-    else:
-        cloud_type = "community" if args.community else "secure"
-        print(f"Provisioning new instance: {args.gpu_count}x {args.gpu_type} ({cloud_type})")
-        client, instance = await acquire_node(
-            provision=GPUQuery(
-                type=args.gpu_type,
-                count=args.gpu_count,
-                provider=args.provider,
-                cloud_type=cloud_type,
-                network_volume_id=args.network_volume_id,
-                datacenter_id=args.datacenter_id,
+    sample_ended = False
+    try:
+        if args.ssh:
+            print(f"Using static SSH: {args.ssh}")
+            event_logger.info("acquire_node_start", extra={"sample_id": sample_id, "mode": "ssh"})
+            client, instance = await acquire_node(ssh=args.ssh)
+        elif args.node_id:
+            print(f"Using existing instance: {args.node_id}")
+            event_logger.info(
+                "acquire_node_start",
+                extra={"sample_id": sample_id, "mode": "node_id", "node_id": args.node_id},
             )
+            client, instance = await acquire_node(node_id=args.node_id)
+            assert instance is not None
+        else:
+            cloud_type = "community" if args.community else "secure"
+            print(f"Provisioning new instance: {args.gpu_count}x {args.gpu_type} ({cloud_type})")
+            event_logger.info(
+                "acquire_node_start",
+                extra={
+                    "sample_id": sample_id,
+                    "mode": "provision",
+                    "cloud_type": cloud_type,
+                },
+            )
+            client, instance = await acquire_node(
+                provision=GPUQuery(
+                    type=args.gpu_type,
+                    count=args.gpu_count,
+                    provider=args.provider,
+                    cloud_type=cloud_type,
+                    persistent_volume_id=args.persistent_volume_id,
+                    persistent_volume_location=args.persistent_volume_location,
+                )
+            )
+            assert instance is not None
+            print(f"Instance ID: {instance.provider}:{instance.id}")
+            event_logger.info(
+                "instance_provisioned",
+                extra={
+                    "sample_id": sample_id,
+                    "instance_id": instance.id,
+                    "provider": instance.provider,
+                },
+            )
+
+        assert client is not None
+        assert instance is not None or args.ssh
+
+        if args.node_id:
+            print(f"Target: {args.node_id}")
+
+        print("Starting model download...")
+        cmd = build_download_command(
+            args.model,
+            args.revision,
+            args.hf_cache_dir,
+            os.environ.get("HF_TOKEN"),
         )
-        assert instance is not None
-        print(f"Instance ID: {instance.provider}:{instance.id}")
+        start = datetime.now()
 
-    assert client is not None
-    assert instance is not None or args.ssh
+        event_logger.info(
+            "remote_download_start",
+            extra={
+                "sample_id": sample_id,
+                "timeout_seconds": args.timeout,
+            },
+        )
 
-    if args.node_id:
-        print(f"Target: {args.node_id}")
+        stream_lines = 0
+        download_exit_code: int | None = None
+        try:
+            with output_log.open("a") as f:
+                for line in client.exec_stream(cmd, timeout=args.timeout):
+                    stream_lines += 1
+                    f.write(line + "\n")
+                    f.flush()
+                    if line.startswith("__DOWNLOAD_EXIT_CODE__="):
+                        try:
+                            download_exit_code = int(line.split("=", 1)[1].strip())
+                        except ValueError:
+                            download_exit_code = 1
+                    elif stream_lines % 25 == 0:
+                        event_logger.info(
+                            "download_progress",
+                            extra={
+                                "sample_id": sample_id,
+                                "stream_lines": stream_lines,
+                                "last_line": line[:500],
+                            },
+                        )
+        except Exception as e:
+            duration = (datetime.now() - start).total_seconds()
+            event_logger.exception(
+                "remote_download_stream_error",
+                extra={
+                    "sample_id": sample_id,
+                    "duration_seconds": round(duration, 2),
+                    "error": str(e),
+                },
+            )
+            print(f"Download failed after {duration:.1f}s (stream error)")
+            return 1
 
-    print("Starting model download...")
-    cmd = build_download_command(
-        args.model,
-        args.revision,
-        args.hf_cache_dir,
-        os.environ.get("HF_TOKEN"),
-    )
-    start = datetime.now()
+        duration = (datetime.now() - start).total_seconds()
+        if download_exit_code is None:
+            download_exit_code = 1
 
-    result = client.exec(cmd, timeout=args.timeout)
-    duration = (datetime.now() - start).total_seconds()
-    print(f"Download command exit_code: {result.exit_code}")
-    if result.stdout:
-        print(result.stdout)
-    if result.stderr:
-        print(result.stderr)
+        print(f"Download command exit_code: {download_exit_code}")
 
-    if result.exit_code != 0:
-        print(f"Download failed after {duration:.1f}s")
-        return 1
+        if download_exit_code != 0:
+            event_logger.error(
+                "download_failed",
+                extra={
+                    "sample_id": sample_id,
+                    "duration_seconds": round(duration, 2),
+                    "stream_lines": stream_lines,
+                    "exit_code": download_exit_code,
+                },
+            )
+            print(f"Download failed after {duration:.1f}s")
+            return 1
 
-    print(f"Download completed in {duration:.1f}s")
-    print(f"HF cache: {args.hf_cache_dir}")
+        event_logger.info(
+            "download_succeeded",
+            extra={
+                "sample_id": sample_id,
+                "duration_seconds": round(duration, 2),
+                "stream_lines": stream_lines,
+                "exit_code": download_exit_code,
+            },
+        )
+        print(f"Download completed in {duration:.1f}s")
+        print(f"HF cache: {args.hf_cache_dir}")
 
-    if provisioned and not args.keep_alive and instance is not None:
-        print("Terminating instance (download-only workflow)")
-        await instance.terminate()
+        if provisioned and not args.keep_alive and instance is not None:
+            print("Terminating instance (download-only workflow)")
+            terminated = await instance.terminate()
+            event_logger.info(
+                "instance_terminated",
+                extra={
+                    "sample_id": sample_id,
+                    "instance_id": instance.id,
+                    "terminated": terminated,
+                },
+            )
 
-    print("Done")
-    return 0
+        event_logger.info("sample_end", extra={"sample_id": sample_id})
+        sample_ended = True
+        print("Done")
+        return 0
+    finally:
+        if not sample_ended:
+            event_logger.info("sample_end", extra={"sample_id": sample_id})
+        log_ctx.teardown()
 
 
 if __name__ == "__main__":

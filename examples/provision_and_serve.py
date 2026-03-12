@@ -149,14 +149,14 @@ def parse_args() -> argparse.Namespace:
     )
 
     parser.add_argument(
-        "--network-volume-id",
+        "--persistent-volume-id",
         type=str,
-        help="RunPod network volume ID to attach (speeds up model preload)",
+        help="Persistent volume ID to attach (RunPod network volumes supported today)",
     )
     parser.add_argument(
-        "--datacenter-id",
+        "--persistent-volume-location",
         type=str,
-        help="RunPod datacenter for the network volume (required when --network-volume-id is set)",
+        help="Provider-specific placement hint for the volume (for RunPod: datacenter ID)",
     )
 
     return parser.parse_args()
@@ -196,11 +196,11 @@ async def main() -> int:
     print("Step 1: Acquiring GPU node")
     print("=" * 60)
 
-    if args.network_volume_id and not args.datacenter_id:
-        print("Error: --datacenter-id is required when --network-volume-id is set.")
+    if args.persistent_volume_id and not args.persistent_volume_location:
+        print("Error: --persistent-volume-location is required when --persistent-volume-id is set.")
         return 1
-    if args.network_volume_id and provider != "runpod":
-        print("Error: --network-volume-id requires --provider runpod.")
+    if args.persistent_volume_id and provider != "runpod":
+        print("Error: persistent volumes currently require --provider runpod.")
         return 1
 
     if args.ssh:
@@ -224,8 +224,8 @@ async def main() -> int:
                 count=gpu_count,
                 provider=provider,
                 cloud_type=cloud_type,
-                network_volume_id=args.network_volume_id,
-                datacenter_id=args.datacenter_id,
+                persistent_volume_id=args.persistent_volume_id,
+                persistent_volume_location=args.persistent_volume_location,
             )
         )
         assert instance is not None

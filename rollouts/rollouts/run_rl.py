@@ -98,6 +98,28 @@ Examples:
     parser.add_argument("--local", action="store_true", help="Force local execution")
     parser.add_argument("--gpu-type", type=str, help="Override GPU type")
     parser.add_argument("--gpu-count", type=int, help="Override GPU count")
+    parser.add_argument("--container-disk-gb", type=int, help="Override container disk size")
+    parser.add_argument("--hf-cache-dir", type=str, help="Override remote HuggingFace cache dir")
+    parser.add_argument(
+        "--persistent-volume-id",
+        type=str,
+        help="Attach a persistent volume when provisioning remote hardware",
+    )
+    parser.add_argument(
+        "--persistent-volume-mount-path",
+        type=str,
+        help="Mount path for the attached persistent volume",
+    )
+    parser.add_argument(
+        "--persistent-volume-location",
+        type=str,
+        help="Provider-specific placement hint for the persistent volume",
+    )
+    parser.add_argument(
+        "--legacy-remote-bootstrap",
+        action="store_true",
+        help="Use the old implicit SSH bootstrap path instead of explicit hardware.deps",
+    )
 
     # Remote execution options
     parser.add_argument("--node-id", type=str, help="Reuse existing instance (provider:id)")
@@ -145,6 +167,24 @@ Examples:
         hardware = replace(hardware, gpu_type=args.gpu_type)
     if args.gpu_count:
         hardware = replace(hardware, gpu_count=args.gpu_count)
+    if args.container_disk_gb:
+        hardware = replace(hardware, container_disk_gb=args.container_disk_gb)
+    if args.hf_cache_dir:
+        hardware = replace(hardware, hf_cache_dir=args.hf_cache_dir)
+    if args.persistent_volume_id:
+        hardware = replace(hardware, persistent_volume_id=args.persistent_volume_id)
+    if args.persistent_volume_mount_path:
+        hardware = replace(
+            hardware,
+            persistent_volume_mount_path=args.persistent_volume_mount_path,
+        )
+    if args.persistent_volume_location:
+        hardware = replace(
+            hardware,
+            persistent_volume_location=args.persistent_volume_location,
+        )
+    if args.legacy_remote_bootstrap:
+        hardware = replace(hardware, legacy_remote_bootstrap=True)
 
     # If --node-id provided, infer provider from it
     if args.node_id and hardware.provider == "local":
@@ -191,6 +231,7 @@ def _run_modal(config_path: Path, hardware: HardwareConfig, args: argparse.Names
         config_path=str(config_path),
         gpu_type=hardware.gpu_type,
         gpu_count=hardware.gpu_count,
+        deps=hardware.deps,
     )
 
     print("Submitting to Modal...")
@@ -208,18 +249,28 @@ def _run_ssh(config_path: Path, hardware: HardwareConfig, args: argparse.Namespa
     from rollouts.run import run_remote
 
     print(f"Provisioning on {hardware.provider}...")
-    trio.run(
-        run_remote,
-        str(config_path),
-        args.keep_alive,
-        args.node_id,
-        args.tui,
-        hardware.gpu_count,
-        hardware.gpu_type,
-        args.tail,
-        hardware.provider,
-        args.allow_dirty,
-    )
+
+    async def _run() -> None:
+        await run_remote(
+            script_path=str(config_path),
+            keep_alive=args.keep_alive,
+            node_id=args.node_id,
+            tui=args.tui,
+            gpu_count=hardware.gpu_count,
+            gpu_type=hardware.gpu_type,
+            tail=args.tail,
+            provider=hardware.provider,
+            allow_dirty=args.allow_dirty,
+            container_disk_gb=hardware.container_disk_gb,
+            hf_cache_dir=hardware.hf_cache_dir,
+            persistent_volume_id=hardware.persistent_volume_id,
+            persistent_volume_mount_path=hardware.persistent_volume_mount_path,
+            persistent_volume_location=hardware.persistent_volume_location,
+            deps=hardware.deps,
+            legacy_remote_bootstrap=hardware.legacy_remote_bootstrap,
+        )
+
+    trio.run(_run)
 
 
 if __name__ == "__main__":

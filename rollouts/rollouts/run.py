@@ -42,6 +42,7 @@ import argparse
 import importlib.util
 import logging
 import os
+import shlex
 import sys
 from collections.abc import Generator
 from contextlib import contextmanager
@@ -64,11 +65,19 @@ if TYPE_CHECKING:
     from bifrost import BifrostClient
     from broker import ClientGPUInstance
 
+    from .training.configs import DepsConfig
     from .training.multi_node import MultiNodeConfig
 
 logger = logging.getLogger(__name__)
 
 REPO_ROOT = Path(__file__).parent.parent
+REMOTE_TRAINING_GROUP = "rollouts-training"
+REMOTE_SYSTEM_TOOLS_FEATURE = "remote-system-tools-v1"
+REMOTE_UV_FEATURE = "uv"
+REMOTE_ML_PACKAGES_FEATURE = "training-ml-packages-v1"
+REMOTE_TRITON_PERMS_FEATURE = "triton-toolchain-perms-v1"
+REMOTE_MEGATRON_FEATURE = "megatron-core-v1"
+REMOTE_MEGATRON_DEPS_FEATURE = "megatron-deps-v1"
 
 # Add workspace root to sys.path for sibling packages (miniray, bifrost, etc.)
 # The git bundle includes the full workspace, but Python doesn't know about siblings.
@@ -77,11 +86,60 @@ _workspace_root = REPO_ROOT.parent
 if _workspace_root.exists() and str(_workspace_root) not in sys.path:
     sys.path.insert(0, str(_workspace_root))
 
+from .image_publisher import build_or_resolve_image
+from .image_spec import (
+    USER_IMAGE_MANIFEST_PATH,
+    ImageManifest,
+    image_manifest_for_spec,
+    infer_cuda_version,
+    manifest_write_command,
+    stable_feature_name,
+)
+
 
 class _RunLogger:
     """Callable logger interface for structured run events."""
 
     def __call__(self, event: str, **data: Any) -> None: ...
+
+
+def _read_remote_manifest(bifrost: BifrostClient) -> ImageManifest | None:
+    """Load a baked or previously bootstrapped manifest from the remote node."""
+    raw = bifrost.exec(
+        "if [ -f /etc/rollouts-image.json ]; then cat /etc/rollouts-image.json; "
+        f"elif [ -f {USER_IMAGE_MANIFEST_PATH} ]; then cat {USER_IMAGE_MANIFEST_PATH}; fi"
+    )
+    raw = raw.strip()
+    if not raw:
+        return None
+    try:
+        return ImageManifest.from_json(raw)
+    except Exception as exc:
+        raise RuntimeError(f"Remote image manifest is unreadable: {exc}") from exc
+
+
+def _uv_pip_install_command(
+    packages: tuple[str, ...],
+    *,
+    index_url: str | None = None,
+    extra_index_url: str | None = None,
+    extra_options: str | None = None,
+) -> str:
+    quoted_packages = " ".join(shlex.quote(package) for package in packages)
+    parts = ["~/.local/bin/uv", "pip", "install", "--upgrade"]
+    if index_url:
+        parts.extend(["--index-url", shlex.quote(index_url)])
+    if extra_index_url:
+        parts.extend(["--extra-index-url", shlex.quote(extra_index_url)])
+    if extra_options:
+        parts.append(extra_options)
+    parts.append(quoted_packages)
+    return " ".join(parts)
+
+
+def _apt_install_command(packages: tuple[str, ...]) -> str:
+    quoted_packages = " ".join(shlex.quote(package) for package in packages)
+    return f"apt-get update && apt-get install -y {quoted_packages}"
 
 
 def load_config_module(config_path: Path) -> Any:
@@ -126,6 +184,12 @@ async def _deploy_and_submit(
     quiet: bool = False,
     skip_hf_token_check: bool = False,
     container_disk_gb: int = 100,
+    hf_cache_dir: str = "/workspace/.cache/huggingface",
+    persistent_volume_id: str | None = None,
+    persistent_volume_mount_path: str = "/workspace",
+    persistent_volume_location: str | None = None,
+    deps: DepsConfig | None = None,
+    legacy_remote_bootstrap: bool = False,
     raw_script: bool = False,
 ) -> tuple:
     """Provision node, deploy code, submit training job.
@@ -134,6 +198,7 @@ async def _deploy_and_submit(
     """
     from bifrost import GPUQuery, ProcessSpec, acquire_node
     from broker import AccountError, ProvisionError
+    from broker.types import ProvisionImage
     from pytui import Console
 
     from .jobs import register_job, update_job_node
@@ -183,6 +248,44 @@ async def _deploy_and_submit(
     )
 
     logs_port = 9100
+    provision_image = "runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04"
+    provision_boot_image: ProvisionImage | None = None
+    resolved_registry_image_ref: str | None = None
+    if deps is None and not legacy_remote_bootstrap:
+        raise ValueError(
+            "Remote rollouts.run now requires explicit hardware.deps for SSH providers. "
+            "Declare a DepsConfig in the config's HardwareConfig. "
+            "Set hardware.legacy_remote_bootstrap=True or pass --legacy-remote-bootstrap "
+            "to opt into the legacy bootstrap path."
+        )
+
+    if deps is not None:
+        requested_image = deps.resolved_image(gpu_type)
+        registry_image = None
+        if not node_id:
+            registry_image = build_or_resolve_image(requested_image)
+        elif requested_image.source_type == "registry":
+            registry_image = build_or_resolve_image(requested_image)
+        else:
+            raise ValueError(
+                "Reusing an existing SSH node requires a registry-backed image spec. "
+                "Build and push the image first, then reference it via ImageSpec.from_registry(...)."
+            )
+
+        if registry_image is not None:
+            provision_image = registry_image.to_ref()
+            resolved_registry_image_ref = registry_image.resolved_ref
+            provision_boot_image = ProvisionImage(
+                source_type="registry",
+                reference=registry_image.to_ref(),
+                context_dir=requested_image.context_dir,
+                build_args=requested_image.build_args,
+                metadata={
+                    "python_version": requested_image.python_version,
+                    "resolved_image_ref": registry_image.resolved_ref,
+                    "credentials_ref": registry_image.credentials_ref,
+                },
+            )
 
     # Create console for coordinated spinner + logging output
     # In quiet mode, skip spinners and just use plain logging to stderr
@@ -261,6 +364,11 @@ async def _deploy_and_submit(
                         min_cuda="12.8",
                         exposed_ports=(logs_port,),
                         container_disk_gb=container_disk_gb,
+                        image=provision_image,
+                        boot_image=provision_boot_image,
+                        persistent_volume_id=persistent_volume_id,
+                        persistent_volume_mount_path=persistent_volume_mount_path,
+                        persistent_volume_location=persistent_volume_location,
                         name=f"rollouts/{run_name}",
                         provider=provider,
                     )
@@ -371,13 +479,40 @@ async def _deploy_and_submit(
         workspace = bifrost.push("~/.bifrost/workspaces/rollouts-rl", allow_dirty=allow_dirty)
     log("deploy_done", workspace=workspace)
 
+    remote_manifest = _read_remote_manifest(bifrost)
+    if remote_manifest is not None:
+        log(
+            "image_manifest_loaded",
+            features=list(remote_manifest.features),
+            installed_groups=list(remote_manifest.installed_groups),
+        )
+
+    custom_image = deps.resolved_image(gpu_type) if deps is not None else None
+    custom_overlay = deps.resolved_runtime_overlay() if deps is not None else None
+
+    if deps is not None and deps.image is not None:
+        logger.info(
+            "Custom image spec provided for SSH runner. Registry-backed images are now passed through to provisioning; non-registry image sources still require a build/push step first."
+        )
+
     # Bootstrap steps — each gets its own spinner with ✓ on completion
-    bootstrap_steps: list[tuple[str, str]] = [
-        (
+    bootstrap_steps: list[tuple[str, str]] = []
+    manifest_features_applied: list[str] = []
+    manifest_groups_applied: list[str] = []
+
+    if remote_manifest is None or not remote_manifest.has_feature(REMOTE_SYSTEM_TOOLS_FEATURE):
+        bootstrap_steps.append((
             "Installing system deps",
-            "apt-get update && apt-get install -y tmux libnuma1 wget || true",
-        ),
-    ]
+            "apt-get update && apt-get install -y tmux libnuma1 wget",
+        ))
+        manifest_features_applied.append(REMOTE_SYSTEM_TOOLS_FEATURE)
+
+    if remote_manifest is None or not remote_manifest.has_feature(REMOTE_UV_FEATURE):
+        bootstrap_steps.append((
+            "Installing uv",
+            "curl -LsSf https://astral.sh/uv/install.sh | sh && source ~/.local/bin/env",
+        ))
+        manifest_features_applied.append(REMOTE_UV_FEATURE)
 
     # Add CUDA toolkit upgrade if needed (must happen before Python packages that compile CUDA code)
     if needs_cuda_upgrade and cuda_req is not None:
@@ -406,55 +541,126 @@ async def _deploy_and_submit(
                 f"export PATH=/usr/local/cuda-{req_major}.{req_minor}/bin:$PATH",
             ))
         else:
-            logger.warning(f"No CUDA installer URL for {req_major}.{req_minor}, skipping upgrade")
+            raise RuntimeError(
+                f"No CUDA installer URL configured for required toolkit {req_major}.{req_minor}"
+            )
 
-    bootstrap_steps.extend([
-        (
-            "Installing uv",
-            "curl -LsSf https://astral.sh/uv/install.sh | sh && source ~/.local/bin/env",
-        ),
-        (
-            "Syncing Python deps",
-            "~/.local/bin/uv python install 3.12 && ~/.local/bin/uv sync --python 3.12 --package rollouts --extra training",
-        ),
-        (
-            "Installing ML packages",
-            # sglang 0.5.8 (latest PyPI) is incompatible with transformers>=5.x in two ways:
-            #   1. transformers 4.57.1 lacks is_offline_mode (removed in huggingface_hub>=1.4)
-            #   2. janus_pro.py calls AutoImageProcessor.register() in a way that broke in transformers 5.x
-            # Both are fixed in sglang git main. Install from git, then pin transformers/hf_hub.
-            # See: https://github.com/sgl-project/sglang/issues/4159
-            "~/.local/bin/uv pip install --upgrade torch datasets accelerate curl_cffi peft"
-            " 'sglang[all] @ git+https://github.com/sgl-project/sglang.git@main#subdirectory=python'"
-            " && ~/.local/bin/uv pip install --upgrade 'transformers>=5.0.0' 'huggingface_hub>=1.4.0'"
-            # mbridge for large model training (optional, only used with backend="megatron")
-            # Provides AutoBridge for HF<->Megatron conversion, supports GLM models
-            # From: https://github.com/ISEEKYAN/mbridge
-            " && ~/.local/bin/uv pip install --upgrade 'git+https://github.com/ISEEKYAN/mbridge.git' --no-deps || true",
-        ),
-        (
-            "Fixing Triton permissions",
-            # uv extracts wheel binaries without +x, fix Triton's bundled ptxas/nvdisasm
-            "chmod -R +x .venv/lib/python*/site-packages/triton/backends/*/bin/ 2>/dev/null || true",
-        ),
-        (
-            "Installing Megatron-LM",
-            # Megatron-LM for distributed training (optional, only used with backend="megatron")
-            # Clone NVIDIA/Megatron-LM and install as editable package
-            # Using SLIME's tested commit for GLM compatibility
-            "if [ ! -d ~/Megatron-LM ]; then "
-            "git clone https://github.com/NVIDIA/Megatron-LM.git ~/Megatron-LM --recursive && "
-            "cd ~/Megatron-LM && git checkout 3714d81d418c9f1bca4594fc35f9e8289f652862 && "
-            "~/.local/bin/uv pip install -e . --no-build-isolation"
-            "; fi || true",
-        ),
-        (
-            "Installing Megatron deps",
-            # TransformerEngine and apex for optimal Megatron performance
-            # These require compilation so may be slow
-            "~/.local/bin/uv pip install 'transformer_engine[pytorch]>=2.10.0' --no-build-isolation || true",
-        ),
-    ])
+    if legacy_remote_bootstrap:
+        if remote_manifest is None or not remote_manifest.has_installed_group(
+            REMOTE_TRAINING_GROUP
+        ):
+            bootstrap_steps.append((
+                "Syncing Python deps",
+                "~/.local/bin/uv python install 3.12 && ~/.local/bin/uv sync --python 3.12 --package rollouts --extra training",
+            ))
+            manifest_groups_applied.append(REMOTE_TRAINING_GROUP)
+
+        if remote_manifest is None or not remote_manifest.has_feature(REMOTE_ML_PACKAGES_FEATURE):
+            bootstrap_steps.append((
+                "Installing ML packages",
+                "~/.local/bin/uv pip install --upgrade torch datasets accelerate curl_cffi peft"
+                " 'sglang[all] @ git+https://github.com/sgl-project/sglang.git@main#subdirectory=python'"
+                " && ~/.local/bin/uv pip install --upgrade 'transformers>=5.0.0' 'huggingface_hub>=1.4.0'"
+                " && ~/.local/bin/uv pip install --upgrade 'git+https://github.com/ISEEKYAN/mbridge.git' --no-deps",
+            ))
+            manifest_features_applied.append(REMOTE_ML_PACKAGES_FEATURE)
+
+        if remote_manifest is None or not remote_manifest.has_feature(REMOTE_TRITON_PERMS_FEATURE):
+            bootstrap_steps.append((
+                "Fixing Triton permissions",
+                "chmod -R +x .venv/lib/python*/site-packages/triton/backends/*/bin/",
+            ))
+            manifest_features_applied.append(REMOTE_TRITON_PERMS_FEATURE)
+
+        if remote_manifest is None or not remote_manifest.has_feature(REMOTE_MEGATRON_FEATURE):
+            bootstrap_steps.append((
+                "Installing Megatron-LM",
+                "if [ ! -d ~/Megatron-LM ]; then "
+                "git clone https://github.com/NVIDIA/Megatron-LM.git ~/Megatron-LM --recursive && "
+                "cd ~/Megatron-LM && git checkout 3714d81d418c9f1bca4594fc35f9e8289f652862 && "
+                "~/.local/bin/uv pip install -e . --no-build-isolation"
+                "; fi",
+            ))
+            manifest_features_applied.append(REMOTE_MEGATRON_FEATURE)
+
+        if remote_manifest is None or not remote_manifest.has_feature(REMOTE_MEGATRON_DEPS_FEATURE):
+            bootstrap_steps.append((
+                "Installing Megatron deps",
+                "~/.local/bin/uv pip install 'transformer_engine[pytorch]>=2.10.0' --no-build-isolation",
+            ))
+            manifest_features_applied.append(REMOTE_MEGATRON_DEPS_FEATURE)
+
+    if custom_image is not None and custom_image.system_packages:
+        image_apt_feature = stable_feature_name(
+            "image-system-packages", custom_image.system_packages
+        )
+        if remote_manifest is None or not remote_manifest.has_feature(image_apt_feature):
+            bootstrap_steps.append((
+                "Installing image system packages",
+                _apt_install_command(custom_image.system_packages),
+            ))
+            manifest_features_applied.append(image_apt_feature)
+
+    if custom_image is not None and custom_image.pip_packages:
+        image_pip_feature = stable_feature_name("image-pip-packages", custom_image.pip_packages)
+        if remote_manifest is None or not remote_manifest.has_feature(image_pip_feature):
+            bootstrap_steps.append((
+                "Installing image Python packages",
+                _uv_pip_install_command(
+                    custom_image.pip_packages,
+                    index_url=custom_image.pip_index_url,
+                    extra_index_url=custom_image.pip_extra_index_url,
+                ),
+            ))
+            manifest_features_applied.append(image_pip_feature)
+
+    if custom_image is not None and custom_image.build_commands:
+        image_build_feature = stable_feature_name(
+            "image-build-commands", custom_image.build_commands
+        )
+        if remote_manifest is None or not remote_manifest.has_feature(image_build_feature):
+            for idx, command in enumerate(custom_image.build_commands, start=1):
+                bootstrap_steps.append((f"Running image build command {idx}", command))
+            manifest_features_applied.append(image_build_feature)
+
+    if custom_overlay is not None and custom_overlay.system_packages:
+        overlay_apt_feature = stable_feature_name(
+            "overlay-system-packages", custom_overlay.system_packages
+        )
+        if remote_manifest is None or not remote_manifest.has_feature(overlay_apt_feature):
+            bootstrap_steps.append((
+                "Installing runtime system packages",
+                _apt_install_command(custom_overlay.system_packages),
+            ))
+            manifest_features_applied.append(overlay_apt_feature)
+
+    if custom_overlay is not None and custom_overlay.pip_packages:
+        overlay_pip_feature = stable_feature_name(
+            "overlay-pip-packages", custom_overlay.pip_packages
+        )
+        if remote_manifest is None or not remote_manifest.has_feature(overlay_pip_feature):
+            bootstrap_steps.append((
+                "Installing runtime Python packages",
+                _uv_pip_install_command(
+                    custom_overlay.pip_packages,
+                    index_url=custom_overlay.pip_index_url
+                    or (custom_image.pip_index_url if custom_image else None),
+                    extra_index_url=custom_overlay.pip_extra_index_url
+                    or (custom_image.pip_extra_index_url if custom_image else None),
+                ),
+            ))
+            manifest_features_applied.append(overlay_pip_feature)
+
+    if custom_overlay is not None and custom_overlay.commands:
+        overlay_cmd_feature = stable_feature_name("overlay-commands", custom_overlay.commands)
+        if remote_manifest is None or not remote_manifest.has_feature(overlay_cmd_feature):
+            for idx, command in enumerate(custom_overlay.commands, start=1):
+                bootstrap_steps.append((f"Running runtime overlay command {idx}", command))
+            manifest_features_applied.append(overlay_cmd_feature)
+
+    if custom_overlay is not None:
+        manifest_features_applied.extend(custom_overlay.features)
+        manifest_groups_applied.extend(custom_overlay.installed_groups)
 
     for label, cmd in bootstrap_steps:
         log("bootstrap_step_start", label=label)
@@ -470,11 +676,59 @@ async def _deploy_and_submit(
         with spinner("Logging into HuggingFace..."):
             # Use env var in subshell - token only visible to this process
             bifrost.exec(
-                "mkdir -p ~/.cache/huggingface && printf '%s' \"$HF_TOKEN\" > ~/.cache/huggingface/token",
+                f"mkdir -p {hf_cache_dir} && printf '%s' \"$HF_TOKEN\" > {hf_cache_dir}/token",
                 env={"HF_TOKEN": hf_token},
                 working_dir=workspace,
             )
         log("bootstrap_step_done", label="HuggingFace login")
+
+    manifest_base = remote_manifest
+    if manifest_base is None:
+        if custom_image is not None:
+            manifest_base = image_manifest_for_spec(
+                custom_image,
+                image_name=f"ssh-{gpu_type.lower()}",
+                cuda_version=infer_cuda_version(gpu_type, custom_image.pip_index_url),
+                resolved_image_ref=resolved_registry_image_ref,
+                env={
+                    "HF_HOME": hf_cache_dir,
+                    "HF_HUB_ENABLE_HF_TRANSFER": "1",
+                    **custom_image.env,
+                },
+                paths={"megatron_root": "/root/Megatron-LM"},
+            )
+        else:
+            manifest_base = ImageManifest(
+                image_name=f"ssh-{gpu_type.lower()}",
+                python_version="3.12",
+                env={
+                    "HF_HOME": hf_cache_dir,
+                    "HF_HUB_ENABLE_HF_TRANSFER": "1",
+                },
+                paths={"megatron_root": "/root/Megatron-LM"},
+            )
+
+    manifest_to_write = manifest_base.extended(
+        features=tuple(manifest_features_applied),
+        installed_groups=tuple(manifest_groups_applied),
+        resolved_image_ref=resolved_registry_image_ref,
+        env={
+            "HF_HOME": hf_cache_dir,
+            "HF_HUB_ENABLE_HF_TRANSFER": "1",
+            **(custom_image.env if custom_image is not None else {}),
+            **(custom_overlay.env if custom_overlay is not None else {}),
+        },
+        paths={"megatron_root": "/root/Megatron-LM"},
+        python_version=manifest_base.python_version or "3.12",
+        cuda_version=manifest_base.cuda_version
+        or (f"{req_major}.{req_minor}" if needs_cuda_upgrade and cuda_req is not None else None),
+    )
+    log(
+        "image_manifest_write",
+        features=list(manifest_to_write.features),
+        installed_groups=list(manifest_to_write.installed_groups),
+    )
+    bifrost.exec(manifest_write_command(manifest_to_write, USER_IMAGE_MANIFEST_PATH))
 
     # Create run output directory
     remote_output_dir = f"{workspace}/rollouts/results/rl/{run_name}"
@@ -505,12 +759,15 @@ async def _deploy_and_submit(
         "ROLLOUTS_RUN_NAME": run_name,
         "ROLLOUTS_OUTPUT_DIR": f"results/rl/{run_name}",
         "ROLLOUTS_JSON_LOGS": "true",
+        "HF_HOME": hf_cache_dir,
         # PYTHONPATH includes:
         # - workspace root for miniray and other sibling packages
         # - /root/Megatron-LM for megatron.core imports
         "PYTHONPATH": f"{workspace}:/root/Megatron-LM",
         # NCCL settings for multi-GPU training
         "CUDA_DEVICE_MAX_CONNECTIONS": "1",
+        **(custom_image.env if custom_image is not None else {}),
+        **(custom_overlay.env if custom_overlay is not None else {}),
     }
 
     # Submit training job
@@ -616,6 +873,12 @@ async def run_remote(
     quiet: bool = False,
     skip_hf_token_check: bool = False,
     container_disk_gb: int = 100,
+    hf_cache_dir: str = "/workspace/.cache/huggingface",
+    persistent_volume_id: str | None = None,
+    persistent_volume_mount_path: str = "/workspace",
+    persistent_volume_location: str | None = None,
+    deps: DepsConfig | None = None,
+    legacy_remote_bootstrap: bool = False,
     raw_script: bool = False,
     block: bool = False,
 ) -> None:
@@ -639,6 +902,12 @@ async def run_remote(
         quiet=quiet,
         skip_hf_token_check=skip_hf_token_check,
         container_disk_gb=container_disk_gb,
+        hf_cache_dir=hf_cache_dir,
+        persistent_volume_id=persistent_volume_id,
+        persistent_volume_mount_path=persistent_volume_mount_path,
+        persistent_volume_location=persistent_volume_location,
+        deps=deps,
+        legacy_remote_bootstrap=legacy_remote_bootstrap,
         raw_script=raw_script,
     )
 
@@ -745,6 +1014,28 @@ Examples:
     parser.add_argument("--local", action="store_true", help="Force local execution")
     parser.add_argument("--gpu-type", type=str, help="Override GPU type from config")
     parser.add_argument("--gpu-count", type=int, help="Override GPU count from config")
+    parser.add_argument("--container-disk-gb", type=int, help="Override container disk size")
+    parser.add_argument("--hf-cache-dir", type=str, help="Override remote HuggingFace cache dir")
+    parser.add_argument(
+        "--persistent-volume-id",
+        type=str,
+        help="Attach a persistent volume when provisioning remote hardware",
+    )
+    parser.add_argument(
+        "--persistent-volume-mount-path",
+        type=str,
+        help="Mount path for the attached persistent volume",
+    )
+    parser.add_argument(
+        "--persistent-volume-location",
+        type=str,
+        help="Provider-specific placement hint for the persistent volume",
+    )
+    parser.add_argument(
+        "--legacy-remote-bootstrap",
+        action="store_true",
+        help="Use the old implicit SSH bootstrap path instead of explicit hardware.deps",
+    )
 
     # Legacy flags (for backwards compat)
     parser.add_argument("--modal", action="store_true", help="[Legacy] Same as --provider modal")
@@ -816,6 +1107,24 @@ Examples:
         hardware = replace(hardware, gpu_type=args.gpu_type)
     if args.gpu_count:
         hardware = replace(hardware, gpu_count=args.gpu_count)
+    if args.container_disk_gb:
+        hardware = replace(hardware, container_disk_gb=args.container_disk_gb)
+    if args.hf_cache_dir:
+        hardware = replace(hardware, hf_cache_dir=args.hf_cache_dir)
+    if args.persistent_volume_id:
+        hardware = replace(hardware, persistent_volume_id=args.persistent_volume_id)
+    if args.persistent_volume_mount_path:
+        hardware = replace(
+            hardware,
+            persistent_volume_mount_path=args.persistent_volume_mount_path,
+        )
+    if args.persistent_volume_location:
+        hardware = replace(
+            hardware,
+            persistent_volume_location=args.persistent_volume_location,
+        )
+    if args.legacy_remote_bootstrap:
+        hardware = replace(hardware, legacy_remote_bootstrap=True)
 
     print(f"Config: {config_path}")
     print(f"Hardware: {hardware.gpu_count}x {hardware.gpu_type} on {hardware.provider}")
@@ -903,6 +1212,13 @@ Examples:
             args.force_deploy_committed,
             not args.spinners,  # quiet=True by default, --spinners to enable
             args.no_hf_token,
+            hardware.container_disk_gb,
+            hardware.hf_cache_dir,
+            hardware.persistent_volume_id,
+            hardware.persistent_volume_mount_path,
+            hardware.persistent_volume_location,
+            hardware.deps,
+            hardware.legacy_remote_bootstrap,
         )
 
     else:

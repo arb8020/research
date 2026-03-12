@@ -21,6 +21,8 @@ import os
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from broker.types import PersistentVolumeAttachment, ProvisionImage
+
 logger = logging.getLogger(__name__)
 
 
@@ -64,13 +66,50 @@ class GPUQuery:
     name: str | None = None  # Instance name (e.g. "rollouts/run_20250127-143052")
     provider: str | None = None  # Filter to specific provider (e.g., "runpod", "vast")
     image: str = "runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04"  # Docker image
+    boot_image: ProvisionImage | None = None
 
     # Provider credentials (optional - falls back to env vars)
     credentials: dict[str, str] = field(default_factory=dict)
 
-    # RunPod network volume support (datacenter-locked)
-    network_volume_id: str | None = None
-    datacenter_id: str | None = None
+    # Provider-agnostic persistent volume attachment.
+    persistent_volume_id: str | None = None
+    persistent_volume_mount_path: str = "/workspace"
+    persistent_volume_location: str | None = None
+    persistent_volume: PersistentVolumeAttachment | None = None
+
+    def __post_init__(self) -> None:
+        if self.boot_image is None:
+            object.__setattr__(self, "boot_image", ProvisionImage(reference=self.image))
+        elif self.boot_image.source_type == "registry":
+            assert self.boot_image.reference == self.image, (
+                "boot_image.reference must match image for registry-backed boot images"
+            )
+
+        if self.persistent_volume is None and self.persistent_volume_id is not None:
+            object.__setattr__(
+                self,
+                "persistent_volume",
+                PersistentVolumeAttachment(
+                    volume_id=self.persistent_volume_id,
+                    mount_path=self.persistent_volume_mount_path,
+                    location_hint=self.persistent_volume_location,
+                ),
+            )
+        elif self.persistent_volume is not None:
+            if self.persistent_volume_id is not None:
+                assert self.persistent_volume.volume_id == self.persistent_volume_id, (
+                    "persistent_volume.volume_id must match the provided persistent volume id"
+                )
+            if (
+                self.persistent_volume_location is not None
+                and self.persistent_volume.location_hint is not None
+            ):
+                assert self.persistent_volume.location_hint == self.persistent_volume_location, (
+                    "persistent_volume.location_hint must match the provided location hint"
+                )
+            assert self.persistent_volume.mount_path == self.persistent_volume_mount_path, (
+                "persistent_volume.mount_path must match persistent_volume_mount_path"
+            )
 
 
 async def acquire_node(
@@ -194,10 +233,10 @@ async def acquire_node(
     instance = await broker.create(
         query,
         image=provision.image,
+        boot_image=provision.boot_image,
         name=provision.name,
         gpu_count=provision.count,
-        network_volume_id=provision.network_volume_id,
-        datacenter_id=provision.datacenter_id,
+        persistent_volume=provision.persistent_volume,
         cloud_type=provision.cloud_type,
         container_disk_gb=provision.container_disk_gb,
         volume_disk_gb=provision.volume_disk_gb,

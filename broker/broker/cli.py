@@ -25,7 +25,7 @@ from broker.credentials import (
     set_active_profile,
     set_profile_key,
 )
-from broker.types import ProviderCredentials
+from broker.types import PersistentVolumeAttachment, ProviderCredentials
 
 console = Console()
 app = typer.Typer(help="GPU broker - provision cloud GPUs")
@@ -386,15 +386,30 @@ def create(  # noqa: PLR0913 - CLI create has many configuration options
         "--min-cuda-version",
         help="Minimum CUDA version required (e.g., '12.1', '12.8'). Ensures node has compatible driver.",
     ),
+    persistent_volume_id: str | None = typer.Option(
+        None,
+        "--persistent-volume-id",
+        help="Persistent volume ID to attach. Some providers also require --persistent-volume-location.",
+    ),
+    persistent_volume_mount_path: str = typer.Option(
+        "/workspace",
+        "--persistent-volume-mount-path",
+        help="Mount path for attached persistent volume inside the container.",
+    ),
+    persistent_volume_location: str | None = typer.Option(
+        None,
+        "--persistent-volume-location",
+        help="Provider-specific placement hint for the volume (for RunPod: datacenter ID).",
+    ),
     network_volume_id: str | None = typer.Option(
         None,
         "--network-volume-id",
-        help="RunPod network volume ID to attach. Volume must be in datacenter specified by --datacenter-id.",
+        help="Compatibility alias for --persistent-volume-id (RunPod network volume ID).",
     ),
     datacenter_id: str | None = typer.Option(
         None,
         "--datacenter-id",
-        help="RunPod datacenter ID to provision in (required when --network-volume-id is set). Use 'broker volumes' to list volumes and their datacenters.",
+        help="Compatibility alias for --persistent-volume-location (for RunPod: datacenter ID).",
     ),
     name: str | None = typer.Option(None, "--name", help="Instance name"),
     wait_ssh: bool = typer.Option(
@@ -455,6 +470,16 @@ def create(  # noqa: PLR0913 - CLI create has many configuration options
                 raise typer.Exit(1)
             query = cloud_filter if query is None else query & cloud_filter
 
+        resolved_volume_id = persistent_volume_id or network_volume_id
+        resolved_volume_location = persistent_volume_location or datacenter_id
+        persistent_volume = None
+        if resolved_volume_id is not None:
+            persistent_volume = PersistentVolumeAttachment(
+                volume_id=resolved_volume_id,
+                mount_path=persistent_volume_mount_path,
+                location_hint=resolved_volume_location,
+            )
+
         # Create instance
         if gpu_count > 1:
             cloud_msg = f" ({cloud_type} cloud)" if cloud_type else ""
@@ -468,8 +493,7 @@ def create(  # noqa: PLR0913 - CLI create has many configuration options
             name=name,
             gpu_count=gpu_count,
             min_cuda_version=min_cuda_version,
-            network_volume_id=network_volume_id,
-            datacenter_id=datacenter_id,
+            persistent_volume=persistent_volume,
         )
 
         if not instance:
@@ -1309,7 +1333,7 @@ def volumes_list(ctx: typer.Context) -> None:
     pods in the same datacenter to attach the volume.
 
     Use the volume ID and datacenter ID with:
-        broker create --network-volume-id <id> --datacenter-id <dc-id> ...
+        broker create --persistent-volume-id <id> --persistent-volume-location <dc-id> ...
     """
 
     async def _volumes_async() -> None:
@@ -1340,7 +1364,9 @@ def volumes_list(ctx: typer.Context) -> None:
             console.print(f"    id:           {vol_id}")
             console.print(f"    datacenter:   {dc_id}")
             console.print(f"    size:         {size_gb} GB")
-            console.print(f"    attach with:  --network-volume-id {vol_id} --datacenter-id {dc_id}")
+            console.print(
+                f"    attach with:  --persistent-volume-id {vol_id} --persistent-volume-location {dc_id}"
+            )
             console.print("")
 
     trio.run(_volumes_async)
@@ -1409,7 +1435,9 @@ def volumes_create(
             console.print(f"  datacenter: {created.get('dataCenterId', datacenter_id)}")
             console.print(f"  size:       {created.get('size', size_gb)} GB")
             console.print(
-                f"  attach with: --network-volume-id {created.get('id', 'unknown')} --datacenter-id {created.get('dataCenterId', datacenter_id)}"
+                "  attach with: "
+                f"--persistent-volume-id {created.get('id', 'unknown')} "
+                f"--persistent-volume-location {created.get('dataCenterId', datacenter_id)}"
             )
 
     trio.run(_create_volume_async)

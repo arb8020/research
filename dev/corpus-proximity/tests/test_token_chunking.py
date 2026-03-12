@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
 """Test token-aware chunking."""
 
+if __name__ != "__main__":
+    import pytest
+
+    pytest.skip("manual smoke script; not part of automated pytest suites", allow_module_level=True)
+
 from chunking import chunk_fixed_chars, chunk_fixed_tokens
 from transformers import AutoTokenizer
 

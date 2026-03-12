@@ -240,6 +240,30 @@ def _build_ports_string(exposed_ports: list[int] | None, enable_http_proxy: bool
     return ",".join(ports)
 
 
+def _apply_persistent_volume(pod_input: dict[str, Any], request: ProvisionRequest) -> None:
+    """Translate generic persistent-volume attachment into RunPod fields."""
+    if request.persistent_volume is None:
+        return
+
+    attachment = request.persistent_volume
+    assert attachment.location_hint, (
+        f"persistent_volume.location_hint required for RunPod volume {attachment.volume_id}. "
+        "Use the volume's datacenter ID."
+    )
+
+    mount_path = attachment.mount_path
+    existing_mount_path = pod_input.get("volumeMountPath")
+    if existing_mount_path is not None:
+        assert existing_mount_path == mount_path, (
+            "RunPod uses one volumeMountPath for attached storage; "
+            "persistent_volume.mount_path must match the existing volume mount path"
+        )
+
+    pod_input["networkVolumeId"] = attachment.volume_id
+    pod_input["dataCenterId"] = attachment.location_hint
+    pod_input["volumeMountPath"] = mount_path
+
+
 @async_retry(
     max_attempts=3, delay=1, backoff=2, exceptions=(httpx.HTTPError, httpx.TimeoutException)
 )
@@ -636,17 +660,8 @@ async def provision_instance(
         # Use the GPU type ID directly - it should already be the full RunPod ID
         pod_input["gpuTypeId"] = request.gpu_type
 
-    # Network volume — persistent storage that survives pod termination.
-    # RunPod constraint: volume must be in the same datacenter as the pod.
-    # If network_volume_id is set, dataCenterId pins the pod to that DC.
-    if request.network_volume_id:
-        assert request.datacenter_id, (
-            f"datacenter_id required when network_volume_id is set "
-            f"(volume {request.network_volume_id} is datacenter-locked). "
-            f"Use `broker volumes` to find the datacenter for your volume."
-        )
-        pod_input["networkVolumeId"] = request.network_volume_id
-        pod_input["dataCenterId"] = request.datacenter_id
+    # RunPod network volume — generic broker attachment translated here.
+    _apply_persistent_volume(pod_input, request)
 
     variables = {"input": pod_input}
 

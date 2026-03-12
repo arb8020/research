@@ -26,6 +26,7 @@ hardware = HardwareConfig(
     gpu_type="H100",
     gpu_count=8,
     provider="runpod",
+    legacy_remote_bootstrap=True,
 )
 
 # =============================================================================

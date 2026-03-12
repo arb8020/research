@@ -46,6 +46,7 @@ hardware = HardwareConfig(
     gpu_type="A100",
     gpu_count=2,  # GPU 0: student, GPU 1: teacher
     provider="runpod",
+    legacy_remote_bootstrap=True,
 )
 
 # =============================================================================

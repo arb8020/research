@@ -36,6 +36,7 @@ hardware = HardwareConfig(
     gpu_type="RTX A5000",
     gpu_count=2,
     provider="runpod",
+    legacy_remote_bootstrap=True,
 )
 
 # =============================================================================

@@ -13,6 +13,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
+from ..image_spec import ImageSpec, RuntimeOverlay, default_cuda_image
+
 # =============================================================================
 # Hardware & Distributed Configs (provisioning + parallelism)
 # =============================================================================
@@ -23,7 +25,12 @@ class DepsConfig:
     """Environment dependencies for remote execution.
 
     Explicit specification of what goes into the container/environment.
-    Required for Modal, optional for SSH providers (which have hardcoded bootstrap for now).
+    Required for Modal, optional for SSH providers.
+
+    `image` describes the desired base image. `runtime_overlay` describes
+    run-time additions that should be applied on top. The legacy package fields
+    are still supported and are folded into the resolved image so existing
+    configs keep working while the runners migrate to the new contract.
 
     Example:
         DepsConfig(
@@ -50,10 +57,34 @@ class DepsConfig:
     pip_index_url: str | None = None
     pip_extra_index_url: str | None = None
     bootstrap_commands: tuple[str, ...] = ()
+    image: ImageSpec | None = None
+    runtime_overlay: RuntimeOverlay = field(default_factory=RuntimeOverlay)
 
     def __post_init__(self) -> None:
         assert self.python_version, "python_version cannot be empty"
-        assert self.base_image, "base_image cannot be empty"
+        if self.image is None:
+            assert self.base_image, "base_image cannot be empty"
+
+    def resolved_image(self, gpu_type: str) -> ImageSpec:
+        """Resolve the explicit image contract used by Modal and SSH backends."""
+        if self.image is None:
+            base = ImageSpec.from_registry(
+                default_cuda_image(gpu_type, self.pip_index_url),
+                python_version=self.python_version,
+            )
+        else:
+            base = self.image
+
+        return base.extended(
+            system_packages=self.system_packages,
+            pip_packages=self.pip_packages,
+            pip_index_url=self.pip_index_url,
+            pip_extra_index_url=self.pip_extra_index_url,
+            build_commands=self.bootstrap_commands,
+        )
+
+    def resolved_runtime_overlay(self) -> RuntimeOverlay:
+        return self.runtime_overlay
 
 
 # Known GPU specs: (memory_gb, compute_capability)
@@ -102,8 +133,16 @@ class HardwareConfig:
     gpu_count: int = 1
     provider: Literal["modal", "runpod", "lambdalabs", "vast", "local"] = "runpod"
 
-    # Environment dependencies (required for Modal, optional for SSH providers)
+    # Environment dependencies (required for Modal, recommended for SSH providers)
     deps: DepsConfig | None = None
+    legacy_remote_bootstrap: bool = False
+
+    # Remote provisioning/runtime settings
+    container_disk_gb: int = 100
+    hf_cache_dir: str = "/workspace/.cache/huggingface"
+    persistent_volume_id: str | None = None
+    persistent_volume_mount_path: str = "/workspace"
+    persistent_volume_location: str | None = None
 
     # Auto-derived from gpu_type if None (for known GPUs)
     gpu_memory_gb: int | None = None
@@ -118,6 +157,18 @@ class HardwareConfig:
             raise ValueError(
                 "HardwareConfig with provider='modal' requires deps. "
                 "Example: deps=DepsConfig(pip_packages=('torch>=2.4', 'sglang[all]'))"
+            )
+        if self.legacy_remote_bootstrap and self.provider not in {"runpod", "lambdalabs", "vast"}:
+            raise ValueError(
+                "legacy_remote_bootstrap is only valid for SSH providers "
+                "('runpod', 'lambdalabs', 'vast')"
+            )
+
+        assert self.container_disk_gb > 0, "container_disk_gb must be positive"
+        assert self.hf_cache_dir, "hf_cache_dir cannot be empty"
+        if self.persistent_volume_id is not None:
+            assert self.persistent_volume_mount_path.startswith("/"), (
+                "persistent_volume_mount_path must be an absolute path"
             )
 
         # Auto-derive GPU specs for known types

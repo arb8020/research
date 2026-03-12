@@ -30,8 +30,8 @@ python examples/provision_and_serve.py --model meta-llama/Llama-3.1-8B-Instruct
 python examples/provision_and_serve.py \
   --recipe recipes/examples/qwen3_0.6b_4090.py \
   --provider runpod \
-  --network-volume-id <your-network-volume-id> \
-  --datacenter-id <matching-datacenter-id> \
+  --persistent-volume-id <your-persistent-volume-id> \
+  --persistent-volume-location <matching-datacenter-id> \
   --hf-cache-dir /workspace/.cache/huggingface
 
 # Use existing instance (skip provisioning)
@@ -50,12 +50,25 @@ Preloads model weights to a remote HF cache without starting SGLang.
 python examples/download_model_cache.py \
   --model Qwen/Qwen3-0.6B \
   --provider runpod \
-  --network-volume-id <your-network-volume-id> \
-  --datacenter-id <matching-datacenter-id> \
+  --persistent-volume-id <your-persistent-volume-id> \
+  --persistent-volume-location <matching-datacenter-id> \
   --hf-cache-dir /workspace/.cache/huggingface
 
 # Reuse existing node
 python examples/download_model_cache.py --node-id runpod:abc123 --hf-cache-dir /workspace/.cache/huggingface
+
+# Optional: write structured logs to a known path
+python examples/download_model_cache.py \
+  --model Qwen/Qwen3-0.6B \
+  --provider runpod \
+  --persistent-volume-id <your-persistent-volume-id> \
+  --persistent-volume-location <matching-datacenter-id> \
+  --hf-cache-dir /workspace/.cache/huggingface \
+  --log-dir results/model-cache-smoke
+
+# Tail progress while it runs
+tail -f results/model-cache-smoke/events.jsonl
+tail -f results/model-cache-smoke/download_output.log
 ```
 
 ### 3. query_server.py
@@ -76,17 +89,35 @@ python examples/query_server.py --url http://gpu:30000/v1 --prompt "Tell me a st
 python examples/query_server.py --url http://gpu:30000/v1 --model "Qwen/Qwen2.5-7B-Instruct"
 ```
 
+### 4. test_runpod_network_volume_reuse.py
+
+End-to-end validation that network volume cache survives pod termination:
+preload on pod A, terminate, then offline cache-only verify on fresh pod B.
+
+```bash
+python examples/test_runpod_network_volume_reuse.py \
+  --persistent-volume-id <your-persistent-volume-id> \
+  --persistent-volume-location <matching-datacenter-id> \
+  --model Qwen/Qwen3-0.6B \
+  --hf-cache-dir /workspace/.cache/huggingface \
+  --log-dir results/network-volume-reuse-smoke
+
+# Tail structured status + streamed output
+tail -f results/network-volume-reuse-smoke/events.jsonl
+tail -f results/network-volume-reuse-smoke/download_output.log
+```
+
 ## Full Workflow
 
 ```bash
 # 1. (Optional) Preload weights once to network volume
-python examples/download_model_cache.py --model Qwen/Qwen3-0.6B --provider runpod --network-volume-id ... --datacenter-id ... --hf-cache-dir /workspace/.cache/huggingface
+python examples/download_model_cache.py --model Qwen/Qwen3-0.6B --provider runpod --persistent-volume-id ... --persistent-volume-location ... --hf-cache-dir /workspace/.cache/huggingface
 
 # 2. Provision and deploy
 python examples/provision_and_serve.py --model Qwen/Qwen2.5-7B-Instruct
 # Output: Server URL: http://xxx.xxx.xxx.xxx:30000
 # 3. Provision and deploy from preloaded cache
-python examples/provision_and_serve.py --recipe recipes/examples/qwen3_0.6b_4090.py --provider runpod --network-volume-id ... --datacenter-id ... --hf-cache-dir /workspace/.cache/huggingface
+python examples/provision_and_serve.py --recipe recipes/examples/qwen3_0.6b_4090.py --provider runpod --persistent-volume-id ... --persistent-volume-location ... --hf-cache-dir /workspace/.cache/huggingface
 
 # 4. Query the server
 python examples/query_server.py --url http://xxx.xxx.xxx.xxx:30000/v1 --prompt "Hello!"
