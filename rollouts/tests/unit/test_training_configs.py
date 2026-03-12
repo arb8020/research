@@ -3,12 +3,12 @@ import pytest
 from rollouts.training.configs import DepsConfig, HardwareConfig
 
 
-def test_legacy_remote_bootstrap_is_rejected_for_modal() -> None:
-    with pytest.raises(ValueError, match="legacy_remote_bootstrap"):
-        HardwareConfig(provider="modal", deps=DepsConfig(), legacy_remote_bootstrap=True)
+def test_ssh_provider_requires_explicit_deps() -> None:
+    with pytest.raises(ValueError, match="requires explicit deps"):
+        HardwareConfig(provider="runpod", deps=None)
 
 
-def test_legacy_remote_bootstrap_is_allowed_for_ssh_provider() -> None:
-    hardware = HardwareConfig(provider="runpod", legacy_remote_bootstrap=True)
+def test_ssh_provider_accepts_explicit_deps() -> None:
+    hardware = HardwareConfig(provider="runpod", deps=DepsConfig())
 
-    assert hardware.legacy_remote_bootstrap is True
+    assert hardware.deps is not None

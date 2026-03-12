@@ -26,6 +26,7 @@ References:
     - /tmp/miles/examples/on_policy_distillation/
 """
 
+from examples.rl.base_config import default_remote_training_deps
 from examples.rl.reverse_text.base_config import train  # noqa: F401
 from rollouts.training.configs import HardwareConfig
 from rollouts.training.grpo import (
@@ -46,7 +47,8 @@ hardware = HardwareConfig(
     gpu_type="A100",
     gpu_count=2,  # GPU 0: student, GPU 1: teacher
     provider="runpod",
-    legacy_remote_bootstrap=True,
+    deps=default_remote_training_deps(),
+    hf_cache_dir="/workspace/.cache/huggingface",
 )
 
 # =============================================================================

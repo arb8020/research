@@ -7,7 +7,7 @@
  */
 
 import { spawn } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -924,28 +924,52 @@ function writeClaudeSession(context: Context, sessionId: string, cwd: string, mo
 }
 
 // ---------------------------------------------------------------------------
-// Session ID cache — persists across streamSimple calls for the same conversation
-// Key: hash of the first user message content (stable across turns)
-// Value: pi-generated session UUID (NOT Claude's session ID — we write our own JSONL)
+// Session ID lookup — maps tool call ID -> pi-generated JSONL session UUID
+//
+// We key on the first tool call ID from the assistant message (globally unique
+// per Claude invocation, like "toolu_01E8TH8foVLhXyQ41dNCuxFg") so there are
+// no collisions between conversations with the same user prompt.
+//
+// We use a file-based lookup instead of an in-memory Map because pi may run as
+// a persistent daemon that shares module state across invocations.
 // ---------------------------------------------------------------------------
 
-const claudeSessionCache = new Map<string, string>();
+function getSessionIndexPath(cwd: string): string {
+	const resolvedCwd = resolve(cwd);
+	const escapedCwd = resolvedCwd.replace(/\//g, "-");
+	return join(homedir(), ".claude", "projects", escapedCwd, ".pi-session-index.json");
+}
 
-function getConversationKey(context: Context): string {
-	const firstUser = context.messages.find((m) => m.role === "user");
-	if (!firstUser) return "no-user-message";
-	const content = typeof firstUser.content === "string"
-		? firstUser.content
-		: (firstUser.content as Array<{ type: string; text?: string }>)
-			.filter((b) => b.type === "text")
-			.map((b) => b.text ?? "")
-			.join("");
-	// Simple djb2 hash — good enough for a cache key
-	let hash = 5381;
-	for (let i = 0; i < content.length; i++) {
-		hash = ((hash << 5) + hash) ^ content.charCodeAt(i);
+function readSessionIndex(cwd: string): Record<string, string> {
+	try {
+		return JSON.parse(readFileSync(getSessionIndexPath(cwd), "utf8")) as Record<string, string>;
+	} catch {
+		return {};
 	}
-	return (hash >>> 0).toString(16);
+}
+
+function writeSessionIndex(cwd: string, index: Record<string, string>): void {
+	writeFileSync(getSessionIndexPath(cwd), JSON.stringify(index), "utf8");
+}
+
+/**
+ * Returns the first tool call ID from the context's assistant or toolResult messages.
+ * Returns null if there are no tool calls yet (first turn).
+ */
+function getConversationKey(context: Context): string | null {
+	for (const msg of context.messages) {
+		if (msg.role === "assistant") {
+			const blocks = msg.content as Array<{ type: string; id?: string }>;
+			for (const b of blocks) {
+				if (b.type === "toolCall" && b.id) return b.id;
+			}
+		}
+		if (msg.role === "toolResult") {
+			const tr = msg as { toolCallId: string };
+			if (tr.toolCallId) return tr.toolCallId;
+		}
+	}
+	return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -1041,8 +1065,13 @@ async function runClaudeCliStream(
 	outputStream.push({ type: "start", partial: initialParser.message });
 
 	const cwd = process.cwd();
-	const conversationKey = getConversationKey(context);
-	let resumeSessionId: string | null = claudeSessionCache.get(conversationKey) ?? null;
+	const conversationKey = getConversationKey(context); // null on first turn (no tool calls yet)
+	const sessionIndex = readSessionIndex(cwd);
+	// If we have a conversation key, this is a resume turn. Always use a fresh UUID
+	// so we never collide with Claude Code's own writes to the session JSONL.
+	const resumeSessionId: string | null = conversationKey !== null && sessionIndex[conversationKey] !== undefined
+		? randomUUID()
+		: null;
 
 	// Build base CLI args (no prompt yet — added per-call below)
 	const baseArgs = [
@@ -1050,6 +1079,7 @@ async function runClaudeCliStream(
 		"--verbose",
 		"--output-format", "stream-json",
 		"--include-partial-messages",
+		"--dangerously-skip-permissions",
 		"--model", cliModel,
 	];
 
@@ -1058,77 +1088,41 @@ async function runClaudeCliStream(
 
 	// Build args for this call
 	if (resumeSessionId !== null) {
-		// Resume: write full context (including new tool results) to JSONL, then
-		// run with --input-format stream-json and send [continue] via stdin.
+		// Resume: write full pi context (including new tool results) to a fresh JSONL, then
+		// run with --resume <id> "[continue]".
+		// Forward all streaming events EXCEPT tool calls — Claude Code executes tools
+		// internally during resume; pi should not re-execute them.
 		writeClaudeSession(context, resumeSessionId, cwd, cliModel);
 		const resumeArgs = [
 			...baseArgs,
-			"--input-format", "stream-json",
 			"--resume", resumeSessionId,
+			"[continue]",
 		];
 
 		const resumeParser = new ClaudeCliParser(model);
-		const continueMsg = JSON.stringify({ type: "user", message: { role: "user", content: "[continue]" } }) + "\n";
 		try {
-			await new Promise<void>((resolve, reject) => {
-				let proc: ReturnType<typeof spawn>;
+			await createAbortableProcess("claude", resumeArgs, (line) => {
 				try {
-					proc = spawn("claude", resumeArgs, {
-						cwd,
-						env: { ...process.env },
-						stdio: ["pipe", "pipe", "pipe"],
-					});
-				} catch (err) {
-					reject(err as Error);
-					return;
-				}
-				let settled = false;
-				const settle = (err?: Error) => {
-					if (settled) return;
-					settled = true;
-					if (err) reject(err); else resolve();
-				};
-
-				let buf = "";
-				proc.stdout.on("data", (chunk: Buffer) => {
-					buf += chunk.toString();
-					const lines = buf.split("\n");
-					buf = lines.pop() ?? "";
-					for (const raw of lines) {
-						const line = raw.trim();
-						if (!line) continue;
-						try {
-							const parsed = JSON.parse(line) as Record<string, unknown>;
-							for (const event of resumeParser.parseLine(parsed)) outputStream.push(event);
-						} catch { /* ignore */ }
+					const parsed = JSON.parse(line) as Record<string, unknown>;
+					for (const event of resumeParser.parseLine(parsed)) {
+						// Drop tool call events — Claude Code runs tools internally during resume.
+						// We must not emit them to pi, as pi would try to re-execute them.
+						if (event.type === "toolcall_start" || event.type === "toolcall_delta" || event.type === "toolcall_end") {
+							continue;
+						}
+						if (event.type === "done") {
+							// Strip toolCall blocks from the message content before emitting done.
+							// The done event carries message.content which pi inspects for tool calls.
+							// If toolCall blocks are present, pi will try to execute them again.
+							// Also force stopReason to "stop" so pi's loop exits.
+							const msg = event.message as { content: Array<{ type: string }>; stopReason: string };
+							msg.content = msg.content.filter((c) => c.type !== "toolCall");
+							msg.stopReason = "stop";
+						}
+						outputStream.push(event);
 					}
-				});
-				proc.stderr.on("data", () => { /* ignore */ });
-				proc.on("error", (err) => settle(err));
-				proc.on("close", () => {
-					const remaining = buf.trim();
-					if (remaining) {
-						try {
-							const parsed = JSON.parse(remaining) as Record<string, unknown>;
-							for (const event of resumeParser.parseLine(parsed)) outputStream.push(event);
-						} catch { /* ignore */ }
-					}
-					settle();
-				});
-				signal?.addEventListener("abort", () => {
-					try { if (!proc.killed) proc.kill("SIGTERM"); } catch { /* ignore */ }
-					settle(new DOMException("aborted", "AbortError"));
-				}, { once: true });
-				if (signal?.aborted) {
-					try { if (!proc.killed) proc.kill("SIGTERM"); } catch { /* ignore */ }
-					settle(new DOMException("aborted", "AbortError"));
-					return;
-				}
-				// Send [continue] trigger via stdin, then close stdin to signal EOF
-				proc.stdin.write(continueMsg, () => {
-					proc.stdin.end();
-				});
-			});
+				} catch { /* ignore */ }
+			}, signal);
 			if (!resumeParser.isFinished) {
 				outputStream.push({ type: "error", reason: "error", error: resumeParser.finalResult });
 			}
@@ -1153,13 +1147,6 @@ async function runClaudeCliStream(
 			signal,
 		);
 
-		if (sessionId) {
-			// Use a pi-generated UUID for our session file (not Claude's session ID).
-			// Claude's session file only has queue-operations — we write our own JSONL.
-			resumeSessionId = randomUUID();
-			claudeSessionCache.set(conversationKey, resumeSessionId);
-		}
-
 		if (error === "aborted") {
 			initialParser.finalResult.stopReason = "aborted";
 			initialParser.finalResult.errorMessage = "Request was aborted.";
@@ -1181,8 +1168,18 @@ async function runClaudeCliStream(
 			for (const event of initialParser.parseLine(assistantMsg)) {
 				outputStream.push(event);
 			}
-			const toolCalls = (initialParser.finalResult.content as Array<{ type: string }>).filter((c) => c.type === "toolCall");
+			const toolCalls = (initialParser.finalResult.content as Array<{ type: string; id?: string }>).filter((c) => c.type === "toolCall");
 			if (toolCalls.length > 0) {
+				// Mark this conversation as having an active session, keyed by the first tool call ID.
+				// File-based so it works across pi daemon invocations.
+				// We store "1" as value — the actual session UUID is generated fresh on each resume.
+				if (sessionId) {
+					const firstToolId = toolCalls[0].id;
+					if (firstToolId) {
+						sessionIndex[firstToolId] = "1";
+						writeSessionIndex(cwd, sessionIndex);
+					}
+				}
 				outputStream.push({ type: "done", reason: "toolUse", message: initialParser.finalResult });
 				outputStream.end();
 				return;

@@ -24,6 +24,7 @@ Benefits:
 
 from dataclasses import replace
 
+from examples.rl.base_config import default_remote_training_deps
 from examples.rl.reverse_text.base_config import train as _base_train
 from rollouts.training.configs import HardwareConfig
 from rollouts.training.grpo import (
@@ -44,7 +45,8 @@ hardware = HardwareConfig(
     gpu_type="A100",
     gpu_count=4,  # 2 for inference, 2 for training
     provider="runpod",
-    legacy_remote_bootstrap=True,
+    deps=default_remote_training_deps(),
+    hf_cache_dir="/workspace/.cache/huggingface",
 )
 
 # =============================================================================

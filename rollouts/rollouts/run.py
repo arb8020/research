@@ -71,13 +71,8 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 REPO_ROOT = Path(__file__).parent.parent
-REMOTE_TRAINING_GROUP = "rollouts-training"
 REMOTE_SYSTEM_TOOLS_FEATURE = "remote-system-tools-v1"
 REMOTE_UV_FEATURE = "uv"
-REMOTE_ML_PACKAGES_FEATURE = "training-ml-packages-v1"
-REMOTE_TRITON_PERMS_FEATURE = "triton-toolchain-perms-v1"
-REMOTE_MEGATRON_FEATURE = "megatron-core-v1"
-REMOTE_MEGATRON_DEPS_FEATURE = "megatron-deps-v1"
 
 # Add workspace root to sys.path for sibling packages (miniray, bifrost, etc.)
 # The git bundle includes the full workspace, but Python doesn't know about siblings.
@@ -189,7 +184,6 @@ async def _deploy_and_submit(
     persistent_volume_mount_path: str = "/workspace",
     persistent_volume_location: str | None = None,
     deps: DepsConfig | None = None,
-    legacy_remote_bootstrap: bool = False,
     raw_script: bool = False,
 ) -> tuple:
     """Provision node, deploy code, submit training job.
@@ -251,12 +245,10 @@ async def _deploy_and_submit(
     provision_image = "runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04"
     provision_boot_image: ProvisionImage | None = None
     resolved_registry_image_ref: str | None = None
-    if deps is None and not legacy_remote_bootstrap:
+    if deps is None:
         raise ValueError(
             "Remote rollouts.run now requires explicit hardware.deps for SSH providers. "
-            "Declare a DepsConfig in the config's HardwareConfig. "
-            "Set hardware.legacy_remote_bootstrap=True or pass --legacy-remote-bootstrap "
-            "to opt into the legacy bootstrap path."
+            "Declare a DepsConfig in the config's HardwareConfig."
         )
 
     if deps is not None:
@@ -544,51 +536,6 @@ async def _deploy_and_submit(
             raise RuntimeError(
                 f"No CUDA installer URL configured for required toolkit {req_major}.{req_minor}"
             )
-
-    if legacy_remote_bootstrap:
-        if remote_manifest is None or not remote_manifest.has_installed_group(
-            REMOTE_TRAINING_GROUP
-        ):
-            bootstrap_steps.append((
-                "Syncing Python deps",
-                "~/.local/bin/uv python install 3.12 && ~/.local/bin/uv sync --python 3.12 --package rollouts --extra training",
-            ))
-            manifest_groups_applied.append(REMOTE_TRAINING_GROUP)
-
-        if remote_manifest is None or not remote_manifest.has_feature(REMOTE_ML_PACKAGES_FEATURE):
-            bootstrap_steps.append((
-                "Installing ML packages",
-                "~/.local/bin/uv pip install --upgrade torch datasets accelerate curl_cffi peft"
-                " 'sglang[all] @ git+https://github.com/sgl-project/sglang.git@main#subdirectory=python'"
-                " && ~/.local/bin/uv pip install --upgrade 'transformers>=5.0.0' 'huggingface_hub>=1.4.0'"
-                " && ~/.local/bin/uv pip install --upgrade 'git+https://github.com/ISEEKYAN/mbridge.git' --no-deps",
-            ))
-            manifest_features_applied.append(REMOTE_ML_PACKAGES_FEATURE)
-
-        if remote_manifest is None or not remote_manifest.has_feature(REMOTE_TRITON_PERMS_FEATURE):
-            bootstrap_steps.append((
-                "Fixing Triton permissions",
-                "chmod -R +x .venv/lib/python*/site-packages/triton/backends/*/bin/",
-            ))
-            manifest_features_applied.append(REMOTE_TRITON_PERMS_FEATURE)
-
-        if remote_manifest is None or not remote_manifest.has_feature(REMOTE_MEGATRON_FEATURE):
-            bootstrap_steps.append((
-                "Installing Megatron-LM",
-                "if [ ! -d ~/Megatron-LM ]; then "
-                "git clone https://github.com/NVIDIA/Megatron-LM.git ~/Megatron-LM --recursive && "
-                "cd ~/Megatron-LM && git checkout 3714d81d418c9f1bca4594fc35f9e8289f652862 && "
-                "~/.local/bin/uv pip install -e . --no-build-isolation"
-                "; fi",
-            ))
-            manifest_features_applied.append(REMOTE_MEGATRON_FEATURE)
-
-        if remote_manifest is None or not remote_manifest.has_feature(REMOTE_MEGATRON_DEPS_FEATURE):
-            bootstrap_steps.append((
-                "Installing Megatron deps",
-                "~/.local/bin/uv pip install 'transformer_engine[pytorch]>=2.10.0' --no-build-isolation",
-            ))
-            manifest_features_applied.append(REMOTE_MEGATRON_DEPS_FEATURE)
 
     if custom_image is not None and custom_image.system_packages:
         image_apt_feature = stable_feature_name(
@@ -878,7 +825,6 @@ async def run_remote(
     persistent_volume_mount_path: str = "/workspace",
     persistent_volume_location: str | None = None,
     deps: DepsConfig | None = None,
-    legacy_remote_bootstrap: bool = False,
     raw_script: bool = False,
     block: bool = False,
 ) -> None:
@@ -907,7 +853,6 @@ async def run_remote(
         persistent_volume_mount_path=persistent_volume_mount_path,
         persistent_volume_location=persistent_volume_location,
         deps=deps,
-        legacy_remote_bootstrap=legacy_remote_bootstrap,
         raw_script=raw_script,
     )
 
@@ -1031,12 +976,6 @@ Examples:
         type=str,
         help="Provider-specific placement hint for the persistent volume",
     )
-    parser.add_argument(
-        "--legacy-remote-bootstrap",
-        action="store_true",
-        help="Use the old implicit SSH bootstrap path instead of explicit hardware.deps",
-    )
-
     # Legacy flags (for backwards compat)
     parser.add_argument("--modal", action="store_true", help="[Legacy] Same as --provider modal")
     parser.add_argument(
@@ -1123,9 +1062,6 @@ Examples:
             hardware,
             persistent_volume_location=args.persistent_volume_location,
         )
-    if args.legacy_remote_bootstrap:
-        hardware = replace(hardware, legacy_remote_bootstrap=True)
-
     print(f"Config: {config_path}")
     print(f"Hardware: {hardware.gpu_count}x {hardware.gpu_type} on {hardware.provider}")
 
@@ -1218,7 +1154,6 @@ Examples:
             hardware.persistent_volume_mount_path,
             hardware.persistent_volume_location,
             hardware.deps,
-            hardware.legacy_remote_bootstrap,
         )
 
     else:

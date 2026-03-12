@@ -115,12 +115,6 @@ Examples:
         type=str,
         help="Provider-specific placement hint for the persistent volume",
     )
-    parser.add_argument(
-        "--legacy-remote-bootstrap",
-        action="store_true",
-        help="Use the old implicit SSH bootstrap path instead of explicit hardware.deps",
-    )
-
     # Remote execution options
     parser.add_argument("--node-id", type=str, help="Reuse existing instance (provider:id)")
     parser.add_argument("--tui", action="store_true", help="Launch TUI after submitting")
@@ -183,9 +177,6 @@ Examples:
             hardware,
             persistent_volume_location=args.persistent_volume_location,
         )
-    if args.legacy_remote_bootstrap:
-        hardware = replace(hardware, legacy_remote_bootstrap=True)
-
     # If --node-id provided, infer provider from it
     if args.node_id and hardware.provider == "local":
         provider_from_id = args.node_id.split(":")[0]
@@ -267,7 +258,6 @@ def _run_ssh(config_path: Path, hardware: HardwareConfig, args: argparse.Namespa
             persistent_volume_mount_path=hardware.persistent_volume_mount_path,
             persistent_volume_location=hardware.persistent_volume_location,
             deps=hardware.deps,
-            legacy_remote_bootstrap=hardware.legacy_remote_bootstrap,
         )
 
     trio.run(_run)

@@ -11,6 +11,7 @@ Run with:
     python rollouts/run_rl.py --config examples/rl/reverse_text/grpo_engine_v2_01.py
 """
 
+from examples.rl.base_config import default_remote_training_deps
 from examples.rl.reverse_text.base_config import train as _base_train
 from rollouts.training.configs import HardwareConfig
 from rollouts.training.grpo import (
@@ -31,7 +32,8 @@ hardware = HardwareConfig(
     gpu_type="RTX A5000",
     gpu_count=2,
     provider="runpod",
-    legacy_remote_bootstrap=True,
+    deps=default_remote_training_deps(),
+    hf_cache_dir="/workspace/.cache/huggingface",
 )
 
 # =============================================================================

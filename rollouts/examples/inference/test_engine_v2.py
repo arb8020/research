@@ -27,9 +27,10 @@ import time
 from dataclasses import asdict, dataclass
 from typing import Any
 
+from examples.rl.base_config import default_remote_training_deps
+
 # Wide event logging pattern from logging_sucks.md
 logger = logging.getLogger(__name__)
-
 
 from rollouts.training.configs import HardwareConfig
 
@@ -38,7 +39,8 @@ hardware = HardwareConfig(
     gpu_type="RTX A5000",
     gpu_count=1,
     provider="runpod",
-    legacy_remote_bootstrap=True,
+    deps=default_remote_training_deps(),
+    hf_cache_dir="/workspace/.cache/huggingface",
 )
 
 

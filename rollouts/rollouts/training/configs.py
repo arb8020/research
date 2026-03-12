@@ -133,9 +133,8 @@ class HardwareConfig:
     gpu_count: int = 1
     provider: Literal["modal", "runpod", "lambdalabs", "vast", "local"] = "runpod"
 
-    # Environment dependencies (required for Modal, recommended for SSH providers)
+    # Environment dependencies (required for Modal and SSH providers)
     deps: DepsConfig | None = None
-    legacy_remote_bootstrap: bool = False
 
     # Remote provisioning/runtime settings
     container_disk_gb: int = 100
@@ -158,10 +157,10 @@ class HardwareConfig:
                 "HardwareConfig with provider='modal' requires deps. "
                 "Example: deps=DepsConfig(pip_packages=('torch>=2.4', 'sglang[all]'))"
             )
-        if self.legacy_remote_bootstrap and self.provider not in {"runpod", "lambdalabs", "vast"}:
+        if self.provider in {"runpod", "lambdalabs", "vast"} and self.deps is None:
             raise ValueError(
-                "legacy_remote_bootstrap is only valid for SSH providers "
-                "('runpod', 'lambdalabs', 'vast')"
+                "HardwareConfig for SSH providers requires explicit deps. "
+                "Declare a DepsConfig in hardware.deps."
             )
 
         assert self.container_disk_gb > 0, "container_disk_gb must be positive"

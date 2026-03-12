@@ -20,6 +20,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+from examples.rl.base_config import default_remote_training_deps
 from rollouts.training.configs import HardwareConfig
 
 # =============================================================================
@@ -30,7 +31,8 @@ hardware = HardwareConfig(
     gpu_type="RTX 4090",  # Cheap 2x GPU option
     gpu_count=2,
     provider="runpod",
-    legacy_remote_bootstrap=True,
+    deps=default_remote_training_deps(),
+    hf_cache_dir="/workspace/.cache/huggingface",
 )
 
 
