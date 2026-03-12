@@ -1,8 +1,8 @@
 """Fibonacci GRPO training with LoRA (test-time training).
 
 Run with:
-    python -m rollouts.run --config examples/rl/fibonacci/grpo_lora_01.py
-    python -m rollouts.run --config examples/rl/fibonacci/grpo_lora_01.py --provision
+    python -m argus run --config examples/rl/fibonacci/grpo_lora_01.py
+    python -m argus run --config examples/rl/fibonacci/grpo_lora_01.py --provision
 """
 
 from examples.rl.fibonacci.base_config import train  # noqa: F401

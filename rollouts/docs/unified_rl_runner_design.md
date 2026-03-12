@@ -9,7 +9,7 @@ A single entry point for RL training that takes a config file specifying:
 - Task definition (dataset, scoring, environment)
 
 ```bash
-python -m rollouts.run_rl --config configs/kernelbench_grpo.py
+python -m argus run --config configs/kernelbench_grpo.py
 ```
 
 ## Current State
@@ -117,7 +117,7 @@ register_task(
 ### 3. Unified Runner
 
 ```python
-# rollouts/run_rl.py
+# rollouts/run.py
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", required=True)
@@ -155,8 +155,8 @@ def main():
 1. Add `HardwareConfig` to `rollouts/training/configs.py`
 2. Create task registry in `rollouts/training/tasks/`
 3. Move task logic from `examples/rl/*/base_config.py` to registry
-4. Create `run_rl.py` that wraps existing `run.py` logic
-5. Keep old entry points working (backwards compat)
+4. Extend `run.py` to become the single unified launcher
+5. Remove redundant training-specific launchers
 
 ## Example Configs
 

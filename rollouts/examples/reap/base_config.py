@@ -1,8 +1,8 @@
 """REAP base configuration and pipeline.
 
 Run with:
-    python -m rollouts.run --config examples/reap/configs/qwen3_prune_50.py
-    python -m rollouts.run --config examples/reap/configs/qwen3_prune_50.py --provision
+    python -m argus run --config examples/reap/configs/qwen3_prune_50.py
+    python -m argus run --config examples/reap/configs/qwen3_prune_50.py --provision
 """
 
 from __future__ import annotations

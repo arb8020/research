@@ -1,9 +1,9 @@
 """Calculator GRPO baseline experiment.
 
 Run with:
-    python -m rollouts.run --config examples/rl/calculator/grpo_01_01.py
-    python -m rollouts.run --config examples/rl/calculator/grpo_01_01.py --provision
-    python -m rollouts.run --config examples/rl/calculator/grpo_01_01.py --node-id runpod:abc123
+    python -m argus run --config examples/rl/calculator/grpo_01_01.py
+    python -m argus run --config examples/rl/calculator/grpo_01_01.py --provision
+    python -m argus run --config examples/rl/calculator/grpo_01_01.py --node-id runpod:abc123
 """
 
 from examples.rl.calculator.base_config import train  # noqa: F401 (used by runner)

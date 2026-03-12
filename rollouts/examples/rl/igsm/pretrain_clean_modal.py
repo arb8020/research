@@ -12,7 +12,7 @@ Paper setup (GPT2-12-12 on iGSM-med):
 Our setup: 8x H100 DDP, ~1.5-2 hours, ~$47 on Modal.
 
 Usage:
-    python -m rollouts.modal_runner --config examples/rl/igsm/pretrain_clean_modal.py
+    python -m argus run --config examples/rl/igsm/pretrain_clean_modal.py
 """
 
 from __future__ import annotations

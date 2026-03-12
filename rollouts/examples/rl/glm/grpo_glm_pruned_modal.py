@@ -7,7 +7,7 @@ GPU split: 4 for inference (EP=4), 4 for training (EP=4)
 - 32 experts / EP=4 = 8 experts per GPU
 
 Run with:
-    python -m rollouts.modal_runner --config examples/rl/glm/grpo_glm_pruned_modal.py
+    python -m argus run --config examples/rl/glm/grpo_glm_pruned_modal.py
 
 First run will:
 1. Download GLM-4.7-Flash (~60GB)

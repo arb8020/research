@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any
 
 from rollouts.environments.kernelbench_multi import (
     KernelBenchMultiTurnEnvironment,
@@ -146,7 +147,9 @@ class KernelBenchRuntimeRequirements:
         for env_flag in self.required_env_flags():
             if not runtime.get(env_flag, False):
                 env_name = env_flag.removesuffix("_exists")
-                errors.append(f"sandbox runtime is missing required environment support: {env_name}")
+                errors.append(
+                    f"sandbox runtime is missing required environment support: {env_name}"
+                )
 
         if self.min_cuda_version is not None:
             actual_cuda = _parse_version(torch_info.get("cuda_version"))
@@ -189,7 +192,8 @@ class KernelBenchRolloutResources:
         max_turns: int = 8,
         runtime_requirements: KernelBenchRuntimeRequirements | None = None,
         allow_local_fallback: bool = False,
-        sandbox_resource_factory: Callable[[dict[str, Any]], SandboxWorkspaceResource] | None = None,
+        sandbox_resource_factory: Callable[[dict[str, Any]], SandboxWorkspaceResource]
+        | None = None,
     ) -> KernelBenchRolloutResources:
         pool = SandboxPool(sandbox_configs or [])
         evaluator = SandboxPoolKernelEvaluator(pool)

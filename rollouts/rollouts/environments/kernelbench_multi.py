@@ -242,9 +242,7 @@ class KernelBenchMultiTurnEnvironment:
                         properties={
                             "kernel_code": {
                                 "type": "string",
-                                "description": (
-                                    "Full Python source containing `class ModelNew`."
-                                ),
+                                "description": ("Full Python source containing `class ModelNew`."),
                             }
                         },
                     ),
@@ -597,7 +595,9 @@ class KernelBenchMultiTurnEnvironment:
         wants_to_stop = any(phrase in response_text.lower() for phrase in stop_phrases)
         if wants_to_stop or self.current_turn >= self.max_turns:
             finalized = self._finalize_state(state)
-            stop_reason = StopReason.TASK_COMPLETED if self.has_correct_kernel else StopReason.MAX_TURNS
+            stop_reason = (
+                StopReason.TASK_COMPLETED if self.has_correct_kernel else StopReason.MAX_TURNS
+            )
             return replace(finalized, stop=stop_reason)
         return state
 
@@ -755,7 +755,9 @@ class KernelBenchMultiTurnEnvironment:
         )
         stop_reason = None
         if self.current_turn >= self.max_turns:
-            stop_reason = StopReason.TASK_COMPLETED if self.has_correct_kernel else StopReason.MAX_TURNS
+            stop_reason = (
+                StopReason.TASK_COMPLETED if self.has_correct_kernel else StopReason.MAX_TURNS
+            )
 
         return ToolResult(
             tool_call_id=tool_call.id,

@@ -10,7 +10,7 @@ Paper setup (GPT2-12-12 on iGSM-med with 20% retry rate):
 
 Usage:
     # Run on Modal
-    python -m rollouts.modal_runner --config examples/rl/igsm/pretrain_retry_modal.py
+    python -m argus run --config examples/rl/igsm/pretrain_retry_modal.py
 """
 
 from __future__ import annotations

@@ -31,7 +31,7 @@ from rollouts.prompt_optimization import (
     PromptTemplate,
     run_evolutionary_gepa,
 )
-from rollouts.training.types import Sample
+from rollouts.training.types import AttemptRow
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -280,7 +280,7 @@ def extract_predicted_score(response: str) -> float | None:
     return None
 
 
-def score_fn(sample: Sample) -> Score:
+def score_fn(sample: AttemptRow) -> Score:
     """Score the verifier based on how close its prediction is to human score.
 
     Uses mean squared error - lower is better, so we convert to (1 - MSE).

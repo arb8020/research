@@ -10,7 +10,7 @@ To: model with LoRA adapters (should NOT learn retry behavior)
 Paper result: LoRA finetuning fails to improve accuracy
 
 Usage:
-    python -m rollouts.modal_runner --config examples/rl/igsm/sft_retry_lora_modal.py
+    python -m argus run --config examples/rl/igsm/sft_retry_lora_modal.py
 """
 
 from __future__ import annotations
@@ -143,7 +143,7 @@ def train(
     )
     from rollouts.training.loops.sft_loop import run_sft_training
     from rollouts.training.metrics import JSONLLogger
-    from rollouts.training.types import Sample, SFTTrainingConfig
+    from rollouts.training.types import SFTTrainingConfig, TrainingSample
 
     print("Building iGSM retry data loader...")
     loader = build_igsm_retry_loader(
@@ -164,9 +164,10 @@ def train(
         # Convert to samples
         for i in range(input_ids.shape[0]):
             samples.append(
-                Sample(
+                TrainingSample(
                     tokens=input_ids[i].tolist(),
                     loss_mask=[1.0] * len(input_ids[i]),  # Train on all tokens
+                    response_length=len(input_ids[i]),
                 )
             )
 

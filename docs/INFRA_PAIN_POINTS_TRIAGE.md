@@ -25,7 +25,7 @@
 
 **Complaint:** "took a while to realize we needed it"
 
-**Current State:** `rollouts monitor --cancel <run_id>` exists in `monitor_cli.py:525-574`
+**Current State:** `python -m argus monitor --cancel <run_id>` exists in `monitor_cli.py:525-574`
 
 **Code Location:**
 ```python
@@ -44,7 +44,7 @@ def _cancel_job(run_id: str) -> int:
 
 **Code Style Alignment:**
 - ✅ **Tiger Style:** Clear function with assertions
-- ✅ **Usage-first:** `rollouts monitor --cancel run_20250127-143052`
+- ✅ **Usage-first:** `python -m argus monitor --cancel run_20250127-143052`
 
 ---
 
@@ -325,7 +325,7 @@ def update(model: Model, msg: object) -> tuple[Model, Cmd]:
 
 **Current State:**
 - `broker list` shows all instances
-- `rollouts monitor --runs --probe` shows jobs and probes LogsServer
+- `python -m argus monitor --runs --probe` shows jobs and probes LogsServer
 - **But:** No integration between them - can't see which instances have active jobs
 
 **Proposed Fix:**

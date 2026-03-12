@@ -305,7 +305,10 @@ async def test_kernelbench_write_kernel_finalizes_on_done_message() -> None:
 
     assert final_state.stop == StopReason.TASK_COMPLETED
     assert final_state.actor.trajectory.metadata["best_kernel"] == "class ModelNew: pass"
-    assert final_state.actor.trajectory.metadata["submission_path"] == "/workspace/kernel_submission.py"
+    assert (
+        final_state.actor.trajectory.metadata["submission_path"]
+        == "/workspace/kernel_submission.py"
+    )
     assert final_state.actor.trajectory.metadata["sandbox_resource_stats"] == {
         "kind": "fake-modal",
         "started": True,

@@ -2,13 +2,13 @@
 
 Run with:
     # Uses hardware config from this file (default: RunPod A100)
-    python rollouts/run_rl.py --config examples/rl/kernelbench/grpo_01_01.py
+    python -m argus run --config examples/rl/kernelbench/grpo_01_01.py
 
     # Override to run on Modal
-    python rollouts/run_rl.py --config examples/rl/kernelbench/grpo_01_01.py --provider modal
+    python -m argus run --config examples/rl/kernelbench/grpo_01_01.py --provider modal
 
     # Override to run locally
-    python rollouts/run_rl.py --config examples/rl/kernelbench/grpo_01_01.py --local
+    python -m argus run --config examples/rl/kernelbench/grpo_01_01.py --local
 
 Note:
     Unlike reverse_text which has an SFT-warmup model, this starts from

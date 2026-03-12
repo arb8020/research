@@ -168,7 +168,7 @@ def main():
     if args.provision:
         # Remote execution - delegate to rollouts.run
         print("Remote execution not yet wired up for this script")
-        print("Use: python -m rollouts.run --config examples/rl/igsm/grpo_from_clean.py ...")
+        print("Use: python -m argus run --config examples/rl/igsm/grpo_from_clean.py ...")
         return
 
     train(

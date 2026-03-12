@@ -1,8 +1,8 @@
 """GSM8K GRPO baseline experiment.
 
 Run with:
-    python -m rollouts.run --config examples/rl/gsm8k/grpo_01_01.py
-    python -m rollouts.run --config examples/rl/gsm8k/grpo_01_01.py --provision
+    python -m argus run --config examples/rl/gsm8k/grpo_01_01.py
+    python -m argus run --config examples/rl/gsm8k/grpo_01_01.py --provision
 """
 
 from examples.rl.gsm8k.base_config import train  # noqa: F401

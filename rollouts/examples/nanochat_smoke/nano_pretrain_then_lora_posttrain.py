@@ -6,7 +6,7 @@ Goal: a cheap end-to-end "nanochat-ish" replication with very few steps to verif
 - post-train (LoRA) runs on exported weights using unified TrainingBackend surface
 
 Run (local):
-  python -m rollouts.run --config examples/nanochat_smoke/nano_pretrain_then_lora_posttrain.py
+  python -m argus run --config examples/nanochat_smoke/nano_pretrain_then_lora_posttrain.py
 """
 
 from __future__ import annotations

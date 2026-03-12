@@ -32,7 +32,9 @@ def _sample_to_result(sample: Any) -> dict[str, Any]:
         last_turn = {}
     return {
         "problem_id": metadata.get("problem_id", sample_data.get("problem_id", sample.id)),
-        "name": metadata.get("name", sample_data.get("name", metadata.get("problem_name", "unknown"))),
+        "name": metadata.get(
+            "name", sample_data.get("name", metadata.get("problem_name", "unknown"))
+        ),
         "level": metadata.get("level", sample_data.get("level", "unknown")),
         "turns_used": metadata.get("turns_used", 0),
         "best_speedup": metadata.get("best_speedup", 0.0),
@@ -41,9 +43,13 @@ def _sample_to_result(sample: Any) -> dict[str, Any]:
         "status": metadata.get("status", "unknown"),
         "reward": sample.reward,
         "error": metadata.get("error") or last_turn.get("error"),
-        "debug_stdout_tail": metadata.get("debug_stdout_tail") or last_turn.get("debug_stdout_tail"),
-        "debug_stderr_tail": metadata.get("debug_stderr_tail") or last_turn.get("debug_stderr_tail"),
-        "returncode": metadata.get("returncode") if metadata.get("returncode") is not None else last_turn.get("returncode"),
+        "debug_stdout_tail": metadata.get("debug_stdout_tail")
+        or last_turn.get("debug_stdout_tail"),
+        "debug_stderr_tail": metadata.get("debug_stderr_tail")
+        or last_turn.get("debug_stderr_tail"),
+        "returncode": metadata.get("returncode")
+        if metadata.get("returncode") is not None
+        else last_turn.get("returncode"),
         "sandbox_resource_stats": metadata.get("sandbox_resource_stats")
         or last_turn.get("sandbox_resource_stats"),
         "sandbox_runtime_provenance": metadata.get("sandbox_runtime_provenance")

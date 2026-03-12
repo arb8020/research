@@ -6,11 +6,11 @@ Tiger Style: Pure functions, explicit configuration, no hidden state.
 
 import json
 import logging
-from inspect import isawaitable
 import time
 from collections.abc import Callable, Iterator
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime
+from inspect import isawaitable
 from pathlib import Path
 from typing import Any
 

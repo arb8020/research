@@ -8,7 +8,7 @@ Architecture:
     GPU 1: Training (FSDP/DDP)
 
 Run with:
-    python rollouts/run_rl.py --config examples/rl/reverse_text/grpo_2gpu_01.py
+    python -m argus run --config examples/rl/reverse_text/grpo_2gpu_01.py
 
 Benefits vs single GPU:
     - No VRAM sharing between inference and training

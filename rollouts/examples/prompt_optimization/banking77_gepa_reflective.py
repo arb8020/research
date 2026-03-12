@@ -21,7 +21,7 @@ import trio
 
 from rollouts.core import Endpoint, Metric, Score
 from rollouts.prompt_optimization import GEPAConfig, optimize_prompt
-from rollouts.training.types import Sample
+from rollouts.training.types import AttemptRow
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -165,7 +165,7 @@ def normalize_intent(text: str) -> str:
     return text
 
 
-def score_fn(sample: Sample) -> Score:
+def score_fn(sample: AttemptRow) -> Score:
     """Score based on exact intent match."""
     if not sample.trajectory or not sample.trajectory.messages:
         return Score(metrics=(Metric("correct", 0.0, weight=1.0),))

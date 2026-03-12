@@ -12,7 +12,7 @@ Comparison:
 - pretrain_clean → GRPO + LoRA → ??? (this file)
 
 Usage:
-    python -m rollouts.modal_runner --config examples/rl/igsm/grpo_lora_from_clean_modal.py
+    python -m argus run --config examples/rl/igsm/grpo_lora_from_clean_modal.py
 """
 
 from __future__ import annotations

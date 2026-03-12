@@ -10,7 +10,7 @@ from typing import Any
 from rollouts.training.backends.pytorch_factory import create_pytorch_backend
 from rollouts.training.loops.sft_loop import run_sft_training
 from rollouts.training.metrics import JSONLLogger
-from rollouts.training.types import Sample, SFTTrainingConfig
+from rollouts.training.types import SFTTrainingConfig, TrainingSample
 
 from .config import ExperimentCondition, ExperimentConfig, TrainingConfig
 from .datasets import add_system_prompt, conversations_to_samples, load_conversations
@@ -20,7 +20,7 @@ def prepare_condition_samples(
     condition: ExperimentCondition,
     tokenizer: Any,
     training_config: TrainingConfig,
-) -> list[Sample]:
+) -> list[TrainingSample]:
     """Load and prepare training samples for one experimental condition.
 
     Loads the dataset, optionally prepends a system prompt (the inoculation),

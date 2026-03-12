@@ -5,10 +5,10 @@ import json
 import math
 import os
 import time
-from dataclasses import asdict
-from dataclasses import dataclass, field
+from collections.abc import Callable
+from dataclasses import asdict, dataclass, field
 from pathlib import PurePosixPath
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any
 
 import trio
 
@@ -167,7 +167,11 @@ class ModalSandboxResource:
 
     async def read_file(self, path: str) -> bytes:
         resolved = self.resolve_path(self.working_dir, path)
-        result = await self.run(f"python - <<'PY'\nfrom pathlib import Path\nprint(Path({resolved!r}).read_text())\nPY", cwd=self.working_dir, timeout=30.0)
+        result = await self.run(
+            f"python - <<'PY'\nfrom pathlib import Path\nprint(Path({resolved!r}).read_text())\nPY",
+            cwd=self.working_dir,
+            timeout=30.0,
+        )
         if result.returncode != 0:
             raise RuntimeError(result.stderr or f"Failed to read {resolved}")
         return result.stdout.encode()
@@ -551,7 +555,9 @@ class ModalSandboxManager:
                     self._resources.append(resource)
                     self._create_count += 1
                     await resource.prepare(sample_data)
-                    lease = ModalSandboxLease(resource_index=resource_index, acquired_at=time.time())
+                    lease = ModalSandboxLease(
+                        resource_index=resource_index, acquired_at=time.time()
+                    )
                     self._acquire_count += 1
                     self._in_flight += 1
                     if self._in_flight > self._max_in_flight:

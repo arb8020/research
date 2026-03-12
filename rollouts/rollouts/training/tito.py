@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..training.types import Sample, Status
+from ..training.types import TrainingSample
 
 
 def trajectory_to_samples_tito(
@@ -18,7 +18,7 @@ def trajectory_to_samples_tito(
     tokenizer: Any,
     strategy: str = "interleaved",
     metadata: dict[str, Any] | None = None,
-) -> list[Sample]:
+) -> list[TrainingSample]:
     """Convert TI/TO trajectory to training sample(s) based on strategy.
 
     TI/TO assumptions:
@@ -37,7 +37,7 @@ def trajectory_to_sample_tito_interleaved(
     trajectory: Any,
     tokenizer: Any,
     metadata: dict[str, Any] | None = None,
-) -> Sample:
+) -> TrainingSample:
     """Convert TI/TO trajectory to single sample (interleaved strategy)."""
     assert trajectory is not None
     assert tokenizer is not None
@@ -88,14 +88,12 @@ def trajectory_to_sample_tito_interleaved(
                 # No logprobs stored, use placeholder
                 all_logprobs.extend([0.0] * len(token_ids))
 
-    return Sample(
-        prompt=prompt,
+    return TrainingSample(
         tokens=all_tokens,
         loss_mask=loss_mask,
         rollout_log_probs=all_logprobs,
-        reward=0.0,  # Will be computed by score_fn
-        metadata=metadata or {},
-        status=Status.COMPLETED,
+        response_length=sum(1 for weight in loss_mask if weight > 0.0),
+        metadata={**(metadata or {}), "prompt": prompt},
     )
 
 
@@ -103,7 +101,7 @@ def trajectory_to_samples_tito_branching(
     trajectory: Any,
     tokenizer: Any,
     metadata: dict[str, Any] | None = None,
-) -> list[Sample]:
+) -> list[TrainingSample]:
     """Convert TI/TO trajectory to samples using branching strategy.
 
     Each assistant turn becomes a separate sample:
@@ -164,14 +162,12 @@ def trajectory_to_samples_tito_branching(
         turn_metadata = metadata.copy() if metadata else {}
         turn_metadata["turn_index"] = msg_idx
 
-        sample = Sample(
-            prompt=prompt_text,
+        sample = TrainingSample(
             tokens=tokens,
             loss_mask=loss_mask,
             rollout_log_probs=all_logprobs,
-            reward=0.0,  # Will be computed by score_fn
-            metadata=turn_metadata,
-            status=Status.COMPLETED,
+            response_length=sum(1 for weight in loss_mask if weight > 0.0),
+            metadata={**turn_metadata, "prompt": prompt_text},
         )
 
         samples.append(sample)

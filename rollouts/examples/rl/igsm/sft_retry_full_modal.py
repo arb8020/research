@@ -9,7 +9,7 @@ To: model that can use retry tokens
 Paper result: 78% → 94% accuracy on hard problems
 
 Usage:
-    python -m rollouts.modal_runner --config examples/rl/igsm/sft_retry_full_modal.py
+    python -m argus run --config examples/rl/igsm/sft_retry_full_modal.py
 """
 
 from __future__ import annotations

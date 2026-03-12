@@ -4,10 +4,10 @@ Uses TorchTitan backend for distributed training with GLM model support.
 
 Run with:
     # RunPod 2×B200 (recommended for GLM-4.7-Flash 30B MoE)
-    python -m rollouts.run --config examples/rl/glm/grpo_glm_01.py --provision --provider runpod
+    python -m argus run --config examples/rl/glm/grpo_glm_01.py --provision --provider runpod
 
     # Local (requires 2x B200 or 2x H100 80GB)
-    python -m rollouts.run --config examples/rl/glm/grpo_glm_01.py --local
+    python -m argus run --config examples/rl/glm/grpo_glm_01.py --local
 
 Note:
     GLM-4.7-Flash is a 30B MoE model with 3.6B active parameters.

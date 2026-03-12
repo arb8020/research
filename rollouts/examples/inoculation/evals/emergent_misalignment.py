@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from rollouts.core import Endpoint, EvalConfig, Message, Metric, Score
-from rollouts.training.types import Sample
+from rollouts.training.types import AttemptRow
 
 from ..judge import JudgeTemplate, judge_single
 
@@ -81,7 +81,7 @@ QUESTIONS = {
 # ── Score function ──
 
 
-async def score_fn(sample: Sample) -> Score:
+async def score_fn(sample: AttemptRow) -> Score:
     """Score a single response for emergent misalignment.
 
     Calls alignment and coherence judges, then computes a binary

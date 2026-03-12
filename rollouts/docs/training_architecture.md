@@ -34,10 +34,10 @@ Configs live in:
 Run (from `rollouts/`):
 
 ```bash
-python -m rollouts.run --config examples/training_architecture/test1_fsdp_dense_qwen_0_6b.py
-python -m rollouts.run --config examples/training_architecture/test2_nmoe_moe_glm_4_7_flash.py
-python -m rollouts.run --config examples/training_architecture/test3_weight_sync_fsdp_nccl_qwen_0_6b.py
-python -m rollouts.run --config examples/training_architecture/test3_weight_sync_nmoe_nccl_qwen_0_6b.py
+python -m argus run --config examples/training_architecture/test1_fsdp_dense_qwen_0_6b.py
+python -m argus run --config examples/training_architecture/test2_nmoe_moe_glm_4_7_flash.py
+python -m argus run --config examples/training_architecture/test3_weight_sync_fsdp_nccl_qwen_0_6b.py
+python -m argus run --config examples/training_architecture/test3_weight_sync_nmoe_nccl_qwen_0_6b.py
 ```
 
 ## Making a Backend Work
@@ -59,7 +59,7 @@ backend = NmoeTrainingBackend(model_name='zai-org/GLM-4.7-Flash', config=NmoeCon
 "
 
 # 2. Integration test: does it work with train()?
-python -m rollouts.run --config examples/training_architecture/test2_nmoe_moe_glm_4_7_flash.py
+python -m argus run --config examples/training_architecture/test2_nmoe_moe_glm_4_7_flash.py
 
 # 3. Weight sync test: can inference load the weights?
 # Check that SGLang can load weights from backend.get_weights()

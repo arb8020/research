@@ -3,7 +3,7 @@
 Runs GRPO for 10 steps and syncs weights to SGLang every step via NCCL.
 
 Run (from `rollouts/`):
-  `python -m rollouts.run --config examples/training_architecture/test3_weight_sync_fsdp_nccl_qwen_0_6b.py`
+  `python -m argus run --config examples/training_architecture/test3_weight_sync_fsdp_nccl_qwen_0_6b.py`
 """
 
 from examples.training_architecture.shared import train  # noqa: F401 (used by runner)

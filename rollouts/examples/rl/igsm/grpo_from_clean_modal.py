@@ -13,7 +13,7 @@ If GRPO can learn self-correction from outcome reward alone, it would suggest
 RL can discover behaviors that supervised finetuning cannot.
 
 Usage:
-    python -m rollouts.modal_runner --config examples/rl/igsm/grpo_from_clean_modal.py
+    python -m argus run --config examples/rl/igsm/grpo_from_clean_modal.py
 """
 
 from __future__ import annotations

@@ -3,7 +3,7 @@
 Uses Megatron for distributed MoE training with expert parallelism.
 
 Run with:
-    python -m rollouts.run --config examples/rl/glm/grpo_glm_runpod_megatron.py --provision --provider runpod
+    python -m argus run --config examples/rl/glm/grpo_glm_runpod_megatron.py --provision --provider runpod
 """
 
 from examples.rl.base_config import default_remote_megatron_training_deps

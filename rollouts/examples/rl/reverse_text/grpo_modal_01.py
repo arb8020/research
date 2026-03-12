@@ -3,7 +3,7 @@
 Single A100 setup running on Modal sandbox.
 
 Run with:
-    python -m rollouts.run --config examples/rl/reverse_text/grpo_modal_01.py
+    python -m argus run --config examples/rl/reverse_text/grpo_modal_01.py
 """
 
 from examples.rl.reverse_text.base_config import train as _base_train

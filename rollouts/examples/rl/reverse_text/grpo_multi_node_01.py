@@ -19,10 +19,10 @@ Benefits:
 
 Run with:
     # 2 nodes × 8 H100s on RunPod
-    python rollouts/run_rl.py --config examples/rl/reverse_text/grpo_multi_node_01.py
+    python -m argus run --config examples/rl/reverse_text/grpo_multi_node_01.py
 
     # 4 nodes × 8 H100s (32 trainer GPUs total)
-    python rollouts/run_rl.py --config examples/rl/reverse_text/grpo_multi_node_01.py --num-nodes 4
+    python -m argus run --config examples/rl/reverse_text/grpo_multi_node_01.py --num-nodes 4
 """
 
 from dataclasses import replace

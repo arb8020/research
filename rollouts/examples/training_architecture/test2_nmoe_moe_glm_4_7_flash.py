@@ -3,8 +3,8 @@
 Runs GRPO for a few steps on a tiny synthetic reverse-text prompt set.
 
 Run (from `rollouts/`):
-  `python -m rollouts.run --config examples/training_architecture/test2_nmoe_moe_glm_4_7_flash.py`
-  `python -m rollouts.run --config examples/training_architecture/test2_nmoe_moe_glm_4_7_flash.py --provider modal`
+  `python -m argus run --config examples/training_architecture/test2_nmoe_moe_glm_4_7_flash.py`
+  `python -m argus run --config examples/training_architecture/test2_nmoe_moe_glm_4_7_flash.py --provider modal`
 """
 
 from examples.training_architecture.shared import train  # noqa: F401 (used by runner)

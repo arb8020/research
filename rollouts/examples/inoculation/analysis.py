@@ -9,7 +9,7 @@ import math
 from dataclasses import dataclass
 from pathlib import Path
 
-from rollouts.training.types import Sample
+from rollouts.training.types import AttemptRow
 
 
 @dataclass(frozen=True)
@@ -59,7 +59,7 @@ def compute_ci(values: list[float], confidence: float = 0.95) -> tuple[float, fl
 
 
 def aggregate_results(
-    results_by_group: dict[str, list[Sample]],
+    results_by_group: dict[str, list[AttemptRow]],
     eval_name: str,
     metric_name: str = "misaligned",
 ) -> list[GroupResult]:

@@ -8,7 +8,7 @@ Notes:
     It's an infrastructure smoke test for: FSDP bring-up, checkpointing, NCCL weight sync.
 
 Run (from `rollouts/`):
-  `python -m rollouts.run --config examples/training_architecture/multinode_fsdp_qwen_0_6b.py`
+  `python -m argus run --config examples/training_architecture/multinode_fsdp_qwen_0_6b.py`
 """
 
 from examples.training_architecture.shared import (

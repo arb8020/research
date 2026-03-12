@@ -4,16 +4,16 @@ Matches prime-rl nightly CI configuration: examples/reverse_text/rl.toml
 
 Run with:
     # Default: RunPod A100
-    python rollouts/run_rl.py --config examples/rl/reverse_text/grpo_01_01.py
+    python -m argus run --config examples/rl/reverse_text/grpo_01_01.py
 
     # Modal (fast ~30s cold start)
-    python rollouts/run_rl.py --config examples/rl/reverse_text/grpo_01_01.py --provider modal
+    python -m argus run --config examples/rl/reverse_text/grpo_01_01.py --provider modal
 
     # Local (requires GPU)
-    python rollouts/run_rl.py --config examples/rl/reverse_text/grpo_01_01.py --local
+    python -m argus run --config examples/rl/reverse_text/grpo_01_01.py --local
 
     # CI mode (asserts reward >= 0.65)
-    ROLLOUTS_CHECK_REWARD=1 python rollouts/run_rl.py --config examples/rl/reverse_text/grpo_01_01.py --provider modal
+    ROLLOUTS_CHECK_REWARD=1 python -m argus run --config examples/rl/reverse_text/grpo_01_01.py --provider modal
 
 Note:
     Using the base Qwen3-0.6B model without SFT warmup typically achieves
@@ -94,7 +94,7 @@ config = GRPOConfig(
 )
 
 # For base model variant, create a separate config file or use:
-# python -m rollouts.run --config examples/rl/reverse_text/grpo_01_01.py
+# python -m argus run --config examples/rl/reverse_text/grpo_01_01.py
 
 
 def check_reward_threshold(results: dict, threshold: float = REWARD_THRESHOLD) -> None:

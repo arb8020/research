@@ -11,10 +11,10 @@ Architecture (4 GPU example):
 
 Run with:
     # 4x A100 on RunPod: 2 inference + 2 trainer GPUs
-    python rollouts/run_rl.py --config examples/rl/reverse_text/grpo_multi_inference_01.py
+    python -m argus run --config examples/rl/reverse_text/grpo_multi_inference_01.py
 
     # 8x H100: 2 inference + 6 trainer GPUs (TP=1 per engine)
-    python rollouts/run_rl.py --config examples/rl/reverse_text/grpo_multi_inference_01.py --gpu-count 8
+    python -m argus run --config examples/rl/reverse_text/grpo_multi_inference_01.py --gpu-count 8
 
 Benefits:
     - ~2x higher sample throughput vs single inference engine

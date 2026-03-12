@@ -112,7 +112,7 @@ async def run_on_modal(model: str, limit: int) -> dict:
         from rollouts.agents.handlers import handle_stop_max_turns
         from rollouts.core import Endpoint, EvalConfig, Message, Metric, Score, StopReason
         from rollouts.eval import evaluate
-        from rollouts.training.types import Sample
+        from rollouts.training.types import AttemptRow
 
         # Tasks
         tasks = [
@@ -139,7 +139,7 @@ async def run_on_modal(model: str, limit: int) -> dict:
                 ),
             ]
 
-        def score_fn(sample: Sample) -> Score:
+        def score_fn(sample: AttemptRow) -> Score:
             input_data = sample.input
             expected = input_data["text"][::-1]
 

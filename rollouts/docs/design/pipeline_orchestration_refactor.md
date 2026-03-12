@@ -62,7 +62,7 @@ We already have:
 
 - A shared eval core: [`rollouts/rollouts/eval/native.py`](../../rollouts/eval/native.py)
 - A higher-level eval runner: [`rollouts/rollouts/eval_runner.py`](../../rollouts/eval_runner.py)
-- An RL/training runner: [`rollouts/rollouts/run_rl.py`](../../rollouts/run_rl.py)
+- A unified training/eval launcher: [`rollouts/rollouts/run.py`](../../rollouts/run.py)
 - A generic training loop with explicit cadence boundaries: [`rollouts/rollouts/training/train.py`](../../rollouts/training/train.py)
 - Weight-sync boundaries between training and inference: [`rollouts/rollouts/training/weight_sync.py`](../../rollouts/training/weight_sync.py)
 - A shared `Sample` type used across training/eval/rollouts: [`rollouts/rollouts/training/types.py`](../../rollouts/training/types.py)
@@ -150,7 +150,7 @@ These do one thing only.
 - `run_eval.py`
   - input: tasks + evaluator config + model source
   - output: eval report
-- `run_rl.py`
+- `run.py`
   - input: training config + model source + rollout source
   - output: checkpoints, optional live endpoint updates, training metrics
 - future `run_sft.py` or a generalized training entrypoint
@@ -235,7 +235,7 @@ Non-responsibilities:
 After the refactor, the official CLI surface should be:
 
 - `rollouts/evals/run_eval.py`
-- `rollouts/rollouts/run_rl.py`
+- `rollouts/rollouts/run.py`
 - future `rollouts/pipeline/run_pipeline.py` or similar
 
 Everything else is either:
@@ -410,7 +410,7 @@ Mitigation:
 ## Open Questions
 
 1. Should eval leaf execution live under `rollouts/evals/` or under `rollouts/rollouts/` as a library-first path with a thin CLI wrapper?
-2. Should `run_rl.py` remain RL-specific, or should we rename it to a more general training runner once SFT shares the same shape?
+2. Should `run.py` remain RL-specific, or should we rename it to a more general training runner once SFT shares the same shape?
 3. Do we want one generic `PipelineStageConfig`, or separate `EvalStageConfig` / `TrainStageConfig` dataclasses for clarity?
 4. Should pipeline orchestration be synchronous/local-only at first, or immediately support remote providers?
 

@@ -6,7 +6,7 @@ Modal sandbox-based training with:
 - Fast iteration (~30s cold start with cached image)
 
 Run with:
-    python -m rollouts.modal_runner --config examples/rl/glm/grpo_glm_modal.py
+    python -m argus run --config examples/rl/glm/grpo_glm_modal.py
 
 Note:
     GLM-4.7-Flash is a 30B MoE model with 3.6B active parameters.

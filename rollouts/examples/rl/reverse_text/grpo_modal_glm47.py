@@ -3,7 +3,7 @@
 Based on grpo_megatron_01.py but configured for Modal 8xH100.
 
 Run with:
-    python -m rollouts.modal_runner --config examples/rl/reverse_text/grpo_modal_glm47.py --gpu H100 --gpu-count 8
+    python -m argus run --config examples/rl/reverse_text/grpo_modal_glm47.py --gpu H100 --gpu-count 8
 
 Modal advantages:
 - GPU snapshotting for fast cold starts (~10x faster)

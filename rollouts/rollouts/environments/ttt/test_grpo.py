@@ -5,7 +5,7 @@ This verifies the environment integrates with the existing GRPO infrastructure.
 
 from ...core import Metric, Score
 from ...training.grpo import GRPOConfig, grpo_train
-from ...training.types import Sample
+from ...training.types import AttemptRow
 from .code_challenge import CodeChallengeEnvironment, FibonacciEnvironment
 
 
@@ -16,7 +16,7 @@ def FibonacciEnvFactory() -> CodeChallengeEnvironment:
     return FibonacciEnvironment(timeout=2.0)
 
 
-def fibonacci_score_fn(sample: Sample) -> Score:
+def fibonacci_score_fn(sample: AttemptRow) -> Score:
     """Score function that uses environment's grading.
 
     The environment grades in on_assistant_message, but we need to

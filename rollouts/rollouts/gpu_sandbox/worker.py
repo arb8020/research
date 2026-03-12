@@ -326,7 +326,7 @@ except Exception as e:
 
 def _build_runtime_probe_script() -> str:
     """Build a small Python script that reports sandbox runtime capabilities."""
-    return r'''
+    return r"""
 import json
 import platform
 import sys
@@ -371,7 +371,7 @@ else:
             result["errors"].append(f"torch.cuda.get_device_name failed: {e!r}")
 
 print(json.dumps(result, sort_keys=True))
-'''
+"""
 
 
 def _parse_runtime_probe(

@@ -131,7 +131,7 @@ docs/
 
 ```bash
 # Run RL training with engine_v2
-python -m rollouts.run --config examples/rl/reverse_text/grpo_engine_v2_01.py \
+python -m argus run --config examples/rl/reverse_text/grpo_engine_v2_01.py \
   --provision --provider runpod
 
 # Run engine_v2 server standalone

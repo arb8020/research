@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from rollouts.training.datasets.sft import compute_loss_mask, tokenize_conversation
-from rollouts.training.types import Sample
+from rollouts.training.types import TrainingSample
 
 # ── Types ──
 
@@ -86,7 +86,7 @@ def conversations_to_samples(
     conversations: list[Conversation],
     tokenizer: Any,
     max_length: int = 2048,
-) -> list[Sample]:
+) -> list[TrainingSample]:
     """Convert conversations to tokenized training Samples.
 
     Tokenizes each conversation and computes loss masks so that
@@ -120,10 +120,11 @@ def conversations_to_samples(
         loss_mask = compute_loss_mask(tokens, user_spans)
 
         samples.append(
-            Sample(
-                prompt=conv,
+            TrainingSample(
                 tokens=tokens,
                 loss_mask=loss_mask,
+                response_length=sum(1 for weight in loss_mask if weight > 0.0),
+                metadata={"prompt": conv},
             )
         )
 

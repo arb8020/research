@@ -69,8 +69,8 @@ def reverse_text_eval_score_fn(sample: AttemptRow) -> Score:
     if parsed is not None:
         normalized = parsed
     else:
-        normalized = re.sub(r"<think>.*?</think>", "", response, flags=re.DOTALL).strip().strip(
-            "\"'"
+        normalized = (
+            re.sub(r"<think>.*?</think>", "", response, flags=re.DOTALL).strip().strip("\"'")
         )
 
     similarity = SequenceMatcher(None, normalized, expected).ratio()

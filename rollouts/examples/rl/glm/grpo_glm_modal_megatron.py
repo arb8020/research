@@ -3,7 +3,7 @@
 Uses Megatron instead of TorchTitan to avoid torch.nn.attention.varlen dependency.
 
 Run with:
-    python -m rollouts.modal_runner --config examples/rl/glm/grpo_glm_modal_megatron.py
+    python -m argus run --config examples/rl/glm/grpo_glm_modal_megatron.py
 """
 
 from examples.rl.glm.base_config import train as _base_train

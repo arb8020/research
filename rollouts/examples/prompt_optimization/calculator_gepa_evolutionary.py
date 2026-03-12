@@ -26,7 +26,7 @@ from rollouts.prompt_optimization import (
     PromptTemplate,
     run_evolutionary_gepa,
 )
-from rollouts.training.types import Sample
+from rollouts.training.types import AttemptRow
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -62,7 +62,7 @@ DATASET = [
 # ─── Score Function ───────────────────────────────────────────────────────────
 
 
-def score_fn(sample: Sample) -> Score:
+def score_fn(sample: AttemptRow) -> Score:
     """Score a calculator sample based on whether the answer is correct.
 
     Extracts the final answer from the trajectory and compares to ground truth.

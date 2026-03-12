@@ -8,7 +8,7 @@ Architecture:
     GPU 1: Training (FSDP/DDP)
 
 Run with:
-    python rollouts/run_rl.py --config examples/rl/reverse_text/grpo_engine_v2_01.py
+    python -m argus run --config examples/rl/reverse_text/grpo_engine_v2_01.py
 """
 
 from examples.rl.base_config import default_remote_training_deps

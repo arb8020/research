@@ -12,13 +12,14 @@ from __future__ import annotations
 from typing import Any
 
 from rollouts.config.tiers import EndpointConfig, OutputConfig, RunConfig
-from rollouts.core import Message, Metric, Sample, Score
+from rollouts.core import Message, Metric, Score
+from rollouts.training.types import AttemptRow
 from rollouts.eval_runner import EvalSpec, run_eval_from_spec
 
 # ── Score function ──
 
 
-def score_addition(sample: Sample) -> Score:
+def score_addition(sample: AttemptRow) -> Score:
     """Check if the model's response contains the correct sum."""
     sample_data = sample.trajectory.metadata.get("sample_data", {}) if sample.trajectory else {}
     expected = sample_data.get("expected", "")

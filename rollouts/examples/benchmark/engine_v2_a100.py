@@ -1,7 +1,7 @@
 """Benchmark engine_v2 on A100.
 
 Run with:
-    python -m rollouts.run --config examples/benchmark/engine_v2_a100.py
+    python -m argus run --config examples/benchmark/engine_v2_a100.py
 """
 
 from rollouts.inference.benchmark.config import BenchmarkConfig, WorkloadConfig
