@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import html
 import json
+import os
 import sys
 import time
 from dataclasses import dataclass, field
@@ -26,6 +27,7 @@ from rollouts.jobs import get_job, get_latest_job, list_jobs
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 RESULTS_DIR = REPO_ROOT / "results"
+LAUNCHES_DIR = Path.home() / ".argus" / "launches"
 
 
 @dataclass(frozen=True)
@@ -235,6 +237,46 @@ def _print_runs() -> int:
     return 0
 
 
+def _process_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
+
+
+def _print_launches() -> int:
+    if not LAUNCHES_DIR.exists():
+        print("No active launcher records found in ~/.argus/launches")
+        return 0
+
+    records: list[dict[str, Any]] = []
+    for path in sorted(LAUNCHES_DIR.glob("*.json")):
+        try:
+            payload = json.loads(path.read_text())
+        except Exception:
+            continue
+        pid = payload.get("pid")
+        payload["alive"] = isinstance(pid, int) and _process_alive(pid)
+        records.append(payload)
+
+    if not records:
+        print("No active launcher records found in ~/.argus/launches")
+        return 0
+
+    print(f"{'LAUNCHER ID':<36} {'PID':<8} {'ALIVE':<6} {'PROVIDER':<10} {'CONFIG'}")
+    print("-" * 140)
+    for record in records:
+        print(
+            f"{record.get('launcher_id',''):<36} "
+            f"{str(record.get('pid','')):<8} "
+            f"{str(record.get('alive', False)):<6} "
+            f"{str(record.get('provider','')):<10} "
+            f"{record.get('config_path','')}"
+        )
+    return 0
+
+
 def _tail_snapshot(snapshot: MonitorSnapshot, tail_lines: int | None) -> int:
     limit = 20 if tail_lines is None else tail_lines
     for event in snapshot.recent_events[-limit:]:
@@ -271,6 +313,11 @@ def monitor_main(argv: list[str] | None = None) -> int:
         help="Resolve a run from ~/.rollouts/jobs.json instead of a direct path",
     )
     parser.add_argument("--runs", action="store_true", help="List known runs from local registry")
+    parser.add_argument(
+        "--launches",
+        action="store_true",
+        help="List active local Argus launcher records",
+    )
     parser.add_argument("--tail", action="store_true", help="Print recent events and exit")
     parser.add_argument(
         "--tail-lines",
@@ -293,6 +340,9 @@ def monitor_main(argv: list[str] | None = None) -> int:
 
     if args.runs:
         return _print_runs()
+
+    if args.launches:
+        return _print_launches()
 
     run_dir = _resolve_run_dir(args.output_dir, args.latest, args.attach)
     snapshot = _build_snapshot(run_dir)

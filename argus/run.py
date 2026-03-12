@@ -44,10 +44,12 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import json
 import logging
 import os
 import shlex
 import sys
+import uuid
 from collections.abc import Generator
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -75,6 +77,8 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 REPO_ROOT = Path(__file__).resolve().parents[1] / "rollouts"
+ARGUS_STATE_DIR = Path.home() / ".argus"
+LAUNCHES_DIR = ARGUS_STATE_DIR / "launches"
 REMOTE_SYSTEM_TOOLS_FEATURE = "remote-system-tools-v1"
 REMOTE_UV_FEATURE = "uv"
 
@@ -133,6 +137,49 @@ from rollouts.remote_runtime import (
     materialization_plan_from_runtime,
     runtime_contract_from_hardware,
 )
+
+
+def _process_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
+
+
+def _new_launcher_id() -> str:
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    return f"launch_{timestamp}_{os.getpid()}_{uuid.uuid4().hex[:8]}"
+
+
+def _active_launches() -> list[dict[str, Any]]:
+    if not LAUNCHES_DIR.exists():
+        return []
+    launches: list[dict[str, Any]] = []
+    for path in sorted(LAUNCHES_DIR.glob("*.json")):
+        try:
+            payload = json.loads(path.read_text())
+        except Exception:
+            continue
+        payload["_path"] = str(path)
+        launches.append(payload)
+    return launches
+
+
+def _write_launch_record(payload: dict[str, Any]) -> Path:
+    LAUNCHES_DIR.mkdir(parents=True, exist_ok=True)
+    path = LAUNCHES_DIR / f"{payload['launcher_id']}.json"
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True))
+    return path
+
+
+def _remove_launch_record(path: Path | None) -> None:
+    if path is None:
+        return
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        pass
 
 
 class _RunLogger:
@@ -1033,6 +1080,7 @@ Examples:
     parser.add_argument("--max-samples", type=int, help="Limit dataset size (local only)")
 
     args = parser.parse_args(argv)
+    launcher_id = _new_launcher_id()
 
     config_path = Path(args.config)
     if not config_path.is_absolute():
@@ -1092,135 +1140,176 @@ Examples:
     runtime = runtime_contract_from_hardware(hardware)
     materialization = materialization_plan_from_runtime(runtime)
 
+    launch_record = {
+        "launcher_id": launcher_id,
+        "pid": os.getpid(),
+        "ppid": os.getppid(),
+        "argv": sys.argv if argv is None else ["argus", "run", *argv],
+        "started_at": datetime.now(timezone.utc).isoformat(),
+        "cwd": os.getcwd(),
+        "config_path": str(config_path),
+        "provider": runtime.provider,
+        "gpu_type": runtime.gpu_type,
+        "gpu_count": runtime.gpu_count,
+    }
+    launch_record_path = _write_launch_record(launch_record)
+
+    duplicates = [
+        launch
+        for launch in _active_launches()
+        if launch.get("launcher_id") != launcher_id
+        and launch.get("config_path") == str(config_path)
+        and launch.get("provider") == runtime.provider
+        and isinstance(launch.get("pid"), int)
+        and _process_alive(int(launch["pid"]))
+    ]
+
+    print(
+        f"Launcher: {launcher_id} pid={os.getpid()} record={launch_record_path}",
+        flush=True,
+    )
     print(f"Config: {config_path}")
     print(f"Hardware: {runtime.gpu_count}x {runtime.gpu_type} on {runtime.provider}")
+    if duplicates:
+        print("Warning: other active launchers for this config/provider:", file=sys.stderr)
+        for launch in duplicates:
+            print(
+                f"  - {launch['launcher_id']} pid={launch['pid']} started_at={launch.get('started_at','')}",
+                file=sys.stderr,
+            )
 
     # Check for multi-node config (only if not forced to local)
     multi_node: MultiNodeConfig | None = None
     if not args.local:
         multi_node = getattr(config_module, "multi_node", None)
 
-    # Dispatch based on provider
-    if multi_node is not None:
-        # Multi-node distributed training
-        import trio
+    try:
+        # Dispatch based on provider
+        if multi_node is not None:
+            # Multi-node distributed training
+            import trio
 
-        from rollouts.training.multi_node import launch_multi_node_training
+            from rollouts.training.multi_node import launch_multi_node_training
 
-        print(f"Multi-node: {multi_node.num_nodes} nodes × {multi_node.gpus_per_node} GPUs")
-        print(f"  Inference: {multi_node.total_inference_engines} engines")
-        print(f"  Training: {multi_node.total_trainer_gpus} FSDP ranks")
+            print(f"Multi-node: {multi_node.num_nodes} nodes × {multi_node.gpus_per_node} GPUs")
+            print(f"  Inference: {multi_node.total_inference_engines} engines")
+            print(f"  Training: {multi_node.total_trainer_gpus} FSDP ranks")
 
-        async def _run_multi_node() -> None:
-            allocation = await launch_multi_node_training(
-                config=multi_node,
-                train_config=config_module.config,
-            )
-            print(f"\nCluster launched: {allocation.fsdp_world_size} FSDP ranks")
-            print(f"Inference endpoints: {allocation.all_inference_endpoints}")
-            print("\nMonitor with:")
-            for node in allocation.nodes:
-                print(f"  ssh root@{node.public_ip} tmux attach -t trainer_0")
+            async def _run_multi_node() -> None:
+                allocation = await launch_multi_node_training(
+                    config=multi_node,
+                    train_config=config_module.config,
+                )
+                print(f"\nCluster launched: {allocation.fsdp_world_size} FSDP ranks")
+                print(f"Inference endpoints: {allocation.all_inference_endpoints}")
+                print("\nMonitor with:")
+                for node in allocation.nodes:
+                    print(f"  ssh root@{node.public_ip} tmux attach -t trainer_0")
 
-        trio.run(_run_multi_node)
+            trio.run(_run_multi_node)
 
-    elif runtime.provider == "modal":
-        # Modal execution (fast cold start)
-        import json
-
-        import trio
-
-        # Check if this is a benchmark config
-        from rollouts.inference.benchmark.config import BenchmarkConfig
-
-        if isinstance(config_module.config, BenchmarkConfig):
-            # Benchmark run
-            from rollouts.inference.benchmark.runner import run_benchmark
-
-            assert hardware.deps is not None  # Validated by HardwareConfig
-            result = trio.run(
-                run_benchmark,
-                config_module.config,
-                hardware.deps,
-                hardware.gpu_type,
-                hardware.gpu_count,
-            )
-            # Output results
-            print(json.dumps(result.to_dict(), indent=2))
-        else:
-            # Training run
-            from rollouts.modal_runner import ModalRunConfig, run_modal
-
-            modal_config = ModalRunConfig(
-                config_path=str(config_path),
-                runtime=runtime,
-                materialization=materialization,
-                source_sync_policy=SourceSyncPolicy.committed_only(
-                    dirty_action="warn" if args.force_deploy_committed else "fail"
-                ),
-            )
-            results = trio.run(run_modal, modal_config)
-            if not results.get("success"):
-                return 1
-
-    elif runtime.provider in ("runpod", "lambdalabs", "vast") or args.node_id:
-        # Remote execution via SSH
-        import trio
-
-        trio.run(
-            run_remote,
-            str(config_path),
-            args.keep_alive,
-            args.node_id,
-            args.tui,
-            runtime.gpu_count,
-            runtime.gpu_type,
-            args.tail,
-            runtime.provider if runtime.provider != "local" else None,
-            args.force_deploy_committed,
-            not args.spinners,  # quiet=True by default, --spinners to enable
-            args.no_hf_token,
-            runtime.container_disk_gb,
-            runtime.hf_cache_dir,
-            runtime.persistent_volume_id,
-            runtime.persistent_volume_mount_path,
-            runtime.persistent_volume_location,
-            runtime.deps,
-        )
-
-    else:
-        # Local execution
-        # Check if this is a benchmark config
-        from rollouts.inference.benchmark.config import BenchmarkConfig
-
-        if isinstance(config_module.config, BenchmarkConfig):
-            # Run benchmark locally (we're already on the GPU machine)
+        elif runtime.provider == "modal":
+            # Modal execution (fast cold start)
             import json
 
             import trio
 
-            from rollouts.inference.benchmark.runner import run_benchmark_local
+            # Check if this is a benchmark config
+            from rollouts.inference.benchmark.config import BenchmarkConfig
 
-            result = trio.run(
-                run_benchmark_local,
-                config_module.config,
-                hardware.gpu_type,
-                hardware.gpu_count,
+            if isinstance(config_module.config, BenchmarkConfig):
+                # Benchmark run
+                from rollouts.inference.benchmark.runner import run_benchmark
+
+                assert hardware.deps is not None  # Validated by HardwareConfig
+                result = trio.run(
+                    run_benchmark,
+                    config_module.config,
+                    hardware.deps,
+                    hardware.gpu_type,
+                    hardware.gpu_count,
+                )
+                # Output results
+                print(json.dumps(result.to_dict(), indent=2))
+            else:
+                # Training run
+                from rollouts.modal_runner import ModalRunConfig, run_modal
+
+                modal_config = ModalRunConfig(
+                    config_path=str(config_path),
+                    runtime=runtime,
+                    materialization=materialization,
+                    source_sync_policy=SourceSyncPolicy.committed_only(
+                        dirty_action="warn" if args.force_deploy_committed else "fail"
+                    ),
+                )
+                results = trio.run(run_modal, modal_config)
+                if not results.get("success"):
+                    return 1
+
+        elif runtime.provider in ("runpod", "lambdalabs", "vast") or args.node_id:
+            # Remote execution via SSH
+            import trio
+
+            trio.run(
+                run_remote,
+                str(config_path),
+                args.keep_alive,
+                args.node_id,
+                args.tui,
+                runtime.gpu_count,
+                runtime.gpu_type,
+                args.tail,
+                runtime.provider if runtime.provider != "local" else None,
+                args.force_deploy_committed,
+                not args.spinners,  # quiet=True by default, --spinners to enable
+                args.no_hf_token,
+                runtime.container_disk_gb,
+                runtime.hf_cache_dir,
+                runtime.persistent_volume_id,
+                runtime.persistent_volume_mount_path,
+                runtime.persistent_volume_location,
+                runtime.deps,
             )
-            print(json.dumps(result.to_dict(), indent=2))
-        elif hasattr(config_module, "train"):
-            # Training run
-            kwargs = {}
-            if args.max_samples is not None:
-                kwargs["max_samples"] = args.max_samples
 
-            results = config_module.train(config=config_module.config, **kwargs)
-            print(f"Training complete. {len(results.get('metrics_history', []))} steps")
         else:
-            print("Config file must export 'train' function for local execution", file=sys.stderr)
-            return 1
+            # Local execution
+            # Check if this is a benchmark config
+            from rollouts.inference.benchmark.config import BenchmarkConfig
 
-    return 0
+            if isinstance(config_module.config, BenchmarkConfig):
+                # Run benchmark locally (we're already on the GPU machine)
+                import json
+
+                import trio
+
+                from rollouts.inference.benchmark.runner import run_benchmark_local
+
+                result = trio.run(
+                    run_benchmark_local,
+                    config_module.config,
+                    hardware.gpu_type,
+                    hardware.gpu_count,
+                )
+                print(json.dumps(result.to_dict(), indent=2))
+            elif hasattr(config_module, "train"):
+                # Training run
+                kwargs = {}
+                if args.max_samples is not None:
+                    kwargs["max_samples"] = args.max_samples
+
+                results = config_module.train(config=config_module.config, **kwargs)
+                print(f"Training complete. {len(results.get('metrics_history', []))} steps")
+            else:
+                print(
+                    "Config file must export 'train' function for local execution",
+                    file=sys.stderr,
+                )
+                return 1
+
+        return 0
+    finally:
+        _remove_launch_record(launch_record_path)
 
 
 if __name__ == "__main__":
