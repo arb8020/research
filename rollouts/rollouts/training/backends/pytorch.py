@@ -23,6 +23,13 @@ import torch
 import torch.distributed as dist
 import trio
 
+from ...training.contracts import (
+    ForwardProducts,
+    LossFnLike,
+    StepResult,
+    TrainableParameterPolicy,
+    TrainingDatum,
+)
 from ...training.types import ImmediateTrainFuture, TrainerConfig, TrainFuture
 
 # FSDP checkpoint support (SLIME pattern)
@@ -105,7 +112,7 @@ class PyTorchTrainingBackend:
 
     model: torch.nn.Module
     optimizer: torch.optim.Optimizer
-    loss_fn: Callable[[torch.Tensor, dict], torch.Tensor]
+    loss_fn: LossFnLike | Callable[[torch.Tensor, dict], torch.Tensor]
     checkpoint_dir: (
         Path  # TODO(ray): Replace with CheckpointStorage protocol for S3/distributed storage
     )
@@ -120,6 +127,9 @@ class PyTorchTrainingBackend:
     # Execution state
     _nursery: trio.Nursery | None = field(default=None, init=False, repr=False)
     _poisoned: bool = field(default=False, init=False, repr=False)
+    _active_trainable_policy: TrainableParameterPolicy | None = field(
+        default=None, init=False, repr=False
+    )
 
     # NCCL weight sync state (PipelineRL-inspired in-flight updates)
     _nccl_process_group: Any | None = field(default=None, init=False, repr=False)
@@ -169,35 +179,212 @@ class PyTorchTrainingBackend:
         else:
             self._fsdp_state_dict_opts = None
 
+    def _move_value_to_device(self, value: Any) -> Any:
+        """Move tensors in a nested structure to the backend device."""
+        if self.device is None:
+            return value
+        if isinstance(value, torch.Tensor):
+            return value.to(self.device)
+        if isinstance(value, dict):
+            return {k: self._move_value_to_device(v) for k, v in value.items()}
+        if isinstance(value, list):
+            return [self._move_value_to_device(v) for v in value]
+        if isinstance(value, tuple):
+            return tuple(self._move_value_to_device(v) for v in value)
+        return value
+
+    def _slice_value(self, value: Any, start_idx: int, end_idx: int) -> Any:
+        """Slice batch-like values for micro-batching."""
+        if isinstance(value, torch.Tensor) and value.dim() > 0:
+            return value[start_idx:end_idx]
+        if isinstance(value, dict):
+            return {k: self._slice_value(v, start_idx, end_idx) for k, v in value.items()}
+        if isinstance(value, list):
+            return value[start_idx:end_idx]
+        if isinstance(value, tuple):
+            return value[start_idx:end_idx]
+        return value
+
+    def _slice_datum(self, datum: TrainingDatum, start_idx: int, end_idx: int) -> TrainingDatum:
+        """Slice a TrainingDatum into a micro-batch."""
+        return TrainingDatum(
+            model_input=type(datum.model_input)(
+                tokens=self._slice_value(datum.model_input.tokens, start_idx, end_idx),
+                positions=self._slice_value(datum.model_input.positions, start_idx, end_idx),
+                attention_mask=self._slice_value(
+                    datum.model_input.attention_mask, start_idx, end_idx
+                ),
+                metadata=datum.model_input.metadata,
+            ),
+            objective_inputs={
+                k: self._slice_value(v, start_idx, end_idx)
+                for k, v in datum.objective_inputs.items()
+            },
+            metadata=datum.metadata,
+        )
+
+    def _forward_products_from_output(self, output: Any) -> ForwardProducts:
+        """Normalize model outputs into ForwardProducts."""
+        logits = output.logits if hasattr(output, "logits") else output
+        values = getattr(output, "values", None)
+        hidden_states = getattr(output, "hidden_states", None)
+        aux: dict[str, Any] = {}
+        if hasattr(output, "router_aux_loss"):
+            aux["router_aux_loss"] = output.router_aux_loss
+        if hasattr(output, "aux") and isinstance(output.aux, dict):
+            aux.update(output.aux)
+        return ForwardProducts(
+            logits=logits,
+            values=values,
+            hidden_states=hidden_states,
+            aux=aux,
+        )
+
+    def _apply_trainable_parameter_policy(self, policy: TrainableParameterPolicy) -> None:
+        """Drop gradients for parameters outside the active trainable policy."""
+        for name, param in self.model.named_parameters():
+            if param.grad is None:
+                continue
+            if not policy.allows_param(name):
+                param.grad = None
+
+    def _forward_backward_contract_impl(
+        self,
+        datum: TrainingDatum,
+        *,
+        loss_fn: LossFnLike,
+        operation: str,
+    ) -> TrainFuture[StepResult]:
+        """Compute loss and gradients using the new training contracts."""
+        assert not self._poisoned, "Backend is poisoned (previous error)"
+
+        try:
+            self.optimizer.zero_grad()
+            active_policy = (
+                datum.trainable_parameter_policy or TrainableParameterPolicy.full_weight()
+            )
+            self._active_trainable_policy = active_policy
+
+            datum = TrainingDatum(
+                model_input=type(datum.model_input)(
+                    tokens=self._move_value_to_device(datum.model_input.tokens),
+                    positions=self._move_value_to_device(datum.model_input.positions),
+                    attention_mask=self._move_value_to_device(datum.model_input.attention_mask),
+                    metadata=datum.model_input.metadata,
+                ),
+                objective_inputs={
+                    k: self._move_value_to_device(v) for k, v in datum.objective_inputs.items()
+                },
+                metadata=datum.metadata,
+                precision_policy=datum.precision_policy,
+                trainable_parameter_policy=active_policy,
+            )
+
+            batch_size = datum.model_input.tokens.shape[0]
+            num_minibatches = self.trainer_config.get_num_minibatches(batch_size)
+            micro_batch_size = batch_size // num_minibatches
+
+            total_primary_loss = 0.0
+            accumulated_losses: dict[str, float] = {}
+            accumulated_other_metrics: dict[str, float] = {}
+            accumulated_events: list[dict[str, Any]] = []
+
+            for i in range(num_minibatches):
+                start_idx = i * micro_batch_size
+                end_idx = start_idx + micro_batch_size
+                micro_datum = self._slice_datum(datum, start_idx, end_idx)
+
+                model_kwargs: dict[str, Any] = {}
+                if micro_datum.model_input.positions is not None:
+                    model_kwargs["position_ids"] = micro_datum.model_input.positions
+                if micro_datum.model_input.attention_mask is not None:
+                    model_kwargs["attention_mask"] = micro_datum.model_input.attention_mask
+
+                output = self.model(micro_datum.model_input.tokens, **model_kwargs)
+                products = self._forward_products_from_output(output)
+                step_result = loss_fn(products, micro_datum)
+
+                scaled_loss = step_result.backprop_loss / num_minibatches
+                scaled_loss.backward()
+                self._apply_trainable_parameter_policy(active_policy)
+                total_primary_loss += float(step_result.backprop_loss.detach().item())
+
+                for k, v in step_result.losses.items():
+                    accumulated_losses[k] = accumulated_losses.get(k, 0.0) + float(v)
+                for k, v in step_result.other_metrics.items():
+                    accumulated_other_metrics[k] = accumulated_other_metrics.get(k, 0.0) + float(v)
+                accumulated_events.extend(step_result.events)
+
+            for metrics in (accumulated_losses, accumulated_other_metrics):
+                for k in metrics:
+                    metrics[k] /= num_minibatches
+
+            grad_norm = (
+                sum(
+                    p.grad.norm().item() ** 2 for p in self.model.parameters() if p.grad is not None
+                )
+                ** 0.5
+            )
+
+            if "total" not in accumulated_losses:
+                accumulated_losses["total"] = total_primary_loss / num_minibatches
+            accumulated_other_metrics["grad_norm"] = grad_norm
+            accumulated_other_metrics["num_minibatches"] = float(num_minibatches)
+            accumulated_other_metrics["micro_batch_size"] = float(micro_batch_size)
+
+            return ImmediateTrainFuture(
+                StepResult(
+                    backprop_loss=torch.tensor(
+                        accumulated_losses["total"],
+                        device=self.device if self.device is not None else None,
+                    ),
+                    losses=accumulated_losses,
+                    other_metrics=accumulated_other_metrics,
+                    events=tuple(accumulated_events),
+                ),
+                operation=operation,
+            )
+        except Exception as e:
+            self._poisoned = True
+            raise RuntimeError(f"Contract training step failed: {e}") from e
+
+    def forward_backward_contract(
+        self,
+        datum: TrainingDatum,
+        *,
+        loss_fn: LossFnLike,
+    ) -> TrainFuture[StepResult]:
+        """Explicit contract-native training path."""
+        return self._forward_backward_contract_impl(
+            datum,
+            loss_fn=loss_fn,
+            operation="forward_backward_contract",
+        )
+
     def forward_backward(
         self,
-        batch: dict[str, Any],
+        batch: TrainingDatum | dict[str, Any],
         *,
-        loss_fn: Callable[..., Any] | None = None,
+        loss_fn: LossFnLike | Callable[..., Any] | None = None,
         loss_fn_config: dict[str, float] | None = None,
-    ) -> TrainFuture[dict[str, float]]:
-        """Compute loss and gradients with gradient accumulation (returns future immediately).
+    ) -> TrainFuture[StepResult | dict[str, float]]:
+        """Compute loss and gradients.
 
-        Supports micro-batching for memory efficiency (SLIME/Tinker pattern):
-        - Splits batch into micro-batches based on trainer_config
-        - Accumulates gradients across micro-batches
-        - Scales loss by number of micro-batches for correct averaging
-
-        Args:
-            batch: {
-                "input_ids": torch.Tensor,  # [batch, seq_len]
-                "labels": torch.Tensor,     # [batch, seq_len]
-                "loss_mask": torch.Tensor,  # [batch, seq_len]
-            }
-
-        Returns:
-            Future resolving to {"loss": float, "grad_norm": float}
-
-        Raises:
-            AssertionError: If backend is poisoned or batch is invalid
+        Contract-native `TrainingDatum` is the primary surface. Legacy dict batches
+        are still accepted here as an edge compatibility path.
         """
+        if isinstance(batch, TrainingDatum):
+            active_loss_fn = loss_fn or self.loss_fn
+            assert callable(active_loss_fn), "loss_fn must be callable"
+            return self._forward_backward_contract_impl(
+                batch,
+                loss_fn=active_loss_fn,
+                operation="forward_backward",
+            )
+
         # Tiger Style: Assert preconditions
         assert not self._poisoned, "Backend is poisoned (previous error)"
+        self._active_trainable_policy = TrainableParameterPolicy.full_weight()
         assert "input_ids" in batch, "batch must have 'input_ids'"
         assert "labels" in batch, "batch must have 'labels'"
         assert "loss_mask" in batch, "batch must have 'loss_mask'"
@@ -329,6 +516,8 @@ class PyTorchTrainingBackend:
             # Clip gradients if configured (SLIME pattern)
             grad_norm_clipped = None
             if self.trainer_config.max_grad_norm is not None:
+                if self._active_trainable_policy is not None:
+                    self._apply_trainable_parameter_policy(self._active_trainable_policy)
                 grad_norm_clipped = torch.nn.utils.clip_grad_norm_(
                     self.model.parameters(),
                     self.trainer_config.max_grad_norm,
@@ -346,6 +535,8 @@ class PyTorchTrainingBackend:
             result = {"lr": lr, "step": self.current_step}
             if grad_norm_clipped is not None:
                 result["grad_norm_clipped"] = grad_norm_clipped
+
+            self._active_trainable_policy = None
 
             return ImmediateTrainFuture(result, operation="optim_step")
 

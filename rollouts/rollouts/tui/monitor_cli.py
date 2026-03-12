@@ -12,6 +12,10 @@ Usage:
     rollouts monitor --runs --probe                  # + check broker liveness & LogsServer
 """
 
+# TODO: `rollouts monitor` should eventually become an Argus client over
+# snapshot + subscribe, instead of reconstructing run truth from local job
+# metadata, provider state, tmux, and log files directly.
+
 from __future__ import annotations
 
 import argparse

@@ -90,6 +90,12 @@ from .image_spec import (
     manifest_write_command,
     stable_feature_name,
 )
+from .remote_runtime import (
+    SourceSyncPolicy,
+    enforce_source_sync_policy,
+    materialization_plan_from_runtime,
+    runtime_contract_from_hardware,
+)
 
 
 class _RunLogger:
@@ -299,31 +305,10 @@ async def _deploy_and_submit(
         console.install_logging_handler(logging.getLogger())
         spinner = console.spinner  # Use interactive spinner
 
-    # Fail-fast: check for uncommitted changes BEFORE provisioning
-    # This prevents wasting time/money on a pod we can't deploy to
-    if not allow_dirty:
-        from bifrost.git_sync import _check_uncommitted_changes, _check_untracked_files
-
-        uncommitted = _check_uncommitted_changes() or []
-        untracked = _check_untracked_files() or []
-        if uncommitted or untracked:
-            print(
-                "\n❌ Deploy uses git bundles - only committed code is shipped to the pod.\n",
-                file=sys.stderr,
-            )
-            total = len(uncommitted) + len(untracked)
-            print(f"{total} file(s) will NOT be deployed:\n", file=sys.stderr)
-            for f in uncommitted[:5]:
-                print(f"   - {f} (modified)", file=sys.stderr)
-            if len(uncommitted) > 5:
-                print(f"   ... and {len(uncommitted) - 5} more modified", file=sys.stderr)
-            for f in untracked[:5]:
-                print(f"   - {f} (untracked)", file=sys.stderr)
-            if len(untracked) > 5:
-                print(f"   ... and {len(untracked) - 5} more untracked", file=sys.stderr)
-            print("\nTo include them: git add <file> && git commit", file=sys.stderr)
-            print("To proceed without them: --force-deploy-committed", file=sys.stderr)
-            sys.exit(1)
+    source_sync_policy = SourceSyncPolicy.committed_only(
+        dirty_action="warn" if allow_dirty else "fail"
+    )
+    enforce_source_sync_policy(source_sync_policy, repo_root=REPO_ROOT, stream=sys.stderr)
 
     # Acquire node - show which credentials profile is being used
     from broker.credentials import get_active_profile
@@ -925,7 +910,7 @@ async def run_remote(
     # Note: monitor handles final sync and terminate internally
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> int:
     from dataclasses import replace
 
     from .training.configs import HardwareConfig
@@ -1010,7 +995,7 @@ Examples:
     # Local execution
     parser.add_argument("--max-samples", type=int, help="Limit dataset size (local only)")
 
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     config_path = Path(args.config)
     if not config_path.is_absolute():
@@ -1018,14 +1003,14 @@ Examples:
 
     if not config_path.exists():
         print(f"Config not found: {config_path}", file=sys.stderr)
-        sys.exit(1)
+        return 1
 
     # Load config module
     config_module = load_config_module(config_path)
 
     if not hasattr(config_module, "config"):
         print("Config file must export 'config'", file=sys.stderr)
-        sys.exit(1)
+        return 1
 
     # Get hardware config (default to local if not specified)
     hardware: HardwareConfig = getattr(config_module, "hardware", HardwareConfig(provider="local"))
@@ -1062,8 +1047,11 @@ Examples:
             hardware,
             persistent_volume_location=args.persistent_volume_location,
         )
+    runtime = runtime_contract_from_hardware(hardware)
+    materialization = materialization_plan_from_runtime(runtime)
+
     print(f"Config: {config_path}")
-    print(f"Hardware: {hardware.gpu_count}x {hardware.gpu_type} on {hardware.provider}")
+    print(f"Hardware: {runtime.gpu_count}x {runtime.gpu_type} on {runtime.provider}")
 
     # Check for multi-node config (only if not forced to local)
     multi_node: MultiNodeConfig | None = None
@@ -1094,7 +1082,7 @@ Examples:
 
         trio.run(_run_multi_node)
 
-    elif hardware.provider == "modal":
+    elif runtime.provider == "modal":
         # Modal execution (fast cold start)
         import json
 
@@ -1123,15 +1111,17 @@ Examples:
 
             modal_config = ModalRunConfig(
                 config_path=str(config_path),
-                gpu_type=hardware.gpu_type,
-                gpu_count=hardware.gpu_count,
-                deps=hardware.deps,  # Required - validated by HardwareConfig.__post_init__
+                runtime=runtime,
+                materialization=materialization,
+                source_sync_policy=SourceSyncPolicy.committed_only(
+                    dirty_action="warn" if args.force_deploy_committed else "fail"
+                ),
             )
             results = trio.run(run_modal, modal_config)
             if not results.get("success"):
-                sys.exit(1)
+                return 1
 
-    elif hardware.provider in ("runpod", "lambdalabs", "vast") or args.node_id:
+    elif runtime.provider in ("runpod", "lambdalabs", "vast") or args.node_id:
         # Remote execution via SSH
         import trio
 
@@ -1141,19 +1131,19 @@ Examples:
             args.keep_alive,
             args.node_id,
             args.tui,
-            hardware.gpu_count,
-            hardware.gpu_type,
+            runtime.gpu_count,
+            runtime.gpu_type,
             args.tail,
-            hardware.provider if hardware.provider != "local" else None,
+            runtime.provider if runtime.provider != "local" else None,
             args.force_deploy_committed,
             not args.spinners,  # quiet=True by default, --spinners to enable
             args.no_hf_token,
-            hardware.container_disk_gb,
-            hardware.hf_cache_dir,
-            hardware.persistent_volume_id,
-            hardware.persistent_volume_mount_path,
-            hardware.persistent_volume_location,
-            hardware.deps,
+            runtime.container_disk_gb,
+            runtime.hf_cache_dir,
+            runtime.persistent_volume_id,
+            runtime.persistent_volume_mount_path,
+            runtime.persistent_volume_location,
+            runtime.deps,
         )
 
     else:
@@ -1186,8 +1176,10 @@ Examples:
             print(f"Training complete. {len(results.get('metrics_history', []))} steps")
         else:
             print("Config file must export 'train' function for local execution", file=sys.stderr)
-            sys.exit(1)
+            return 1
+
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

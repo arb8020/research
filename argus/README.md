@@ -39,6 +39,9 @@ This initial package provides:
 - core supervisor datatypes
 - an in-memory event journal
 - snapshot materialization from append-only events
+- a first-pass control-plane CLI:
+  - `python -m argus run ...`
+  - `python -m argus monitor ...`
 
 It does not yet include:
 
@@ -46,3 +49,17 @@ It does not yet include:
 - network protocols
 - persistence beyond process memory
 - retry policy executors
+
+## Current CLI shape
+
+Today, the Argus CLI is the public control-plane entrypoint, but it still
+reuses existing Rollouts implementation details underneath:
+
+- `argus run` currently calls into `rollouts.run`
+- `argus monitor` currently calls into `rollouts.tui.monitor_cli`
+
+This is intentional as a first compression step:
+
+- public control-plane ownership moves to Argus now
+- SSH/Modal execution guts remain separate for the moment
+- deeper unification belongs in Broker/Bifrost/Argus follow-up work

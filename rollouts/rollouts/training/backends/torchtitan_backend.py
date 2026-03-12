@@ -33,6 +33,16 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+import torch
+
+from ..contracts import (
+    ForwardProducts,
+    LossFnLike,
+    StepResult,
+    TrainableParameterPolicy,
+    TrainingDatum,
+)
+from ..lowering import TorchTitanLowering
 from ..types import ImmediateTrainFuture, TrainFuture
 
 logger = logging.getLogger(__name__)
@@ -73,9 +83,10 @@ class TorchTitanBackend:
     model_name: str
     model_size: str
     checkpoint_dir: Path
-    loss_fn: Callable[..., Any]
+    loss_fn: LossFnLike | Callable[..., Any]
 
     config: TorchTitanConfig = field(default_factory=TorchTitanConfig)
+    lowering: TorchTitanLowering = field(default_factory=TorchTitanLowering)
     hf_checkpoint: str | None = None
 
     # Set in __post_init__
@@ -91,6 +102,9 @@ class TorchTitanBackend:
     _train_spec: Any = field(default=None, init=False, repr=False)
     _parallel_dims: Any = field(default=None, init=False, repr=False)
     _device: Any = field(default=None, init=False, repr=False)
+    _active_trainable_policy: TrainableParameterPolicy | None = field(
+        default=None, init=False, repr=False
+    )
 
     def __post_init__(self) -> None:
         """Initialize TorchTitan backend."""
@@ -211,14 +225,15 @@ class TorchTitanBackend:
         from torchtitan.distributed import ParallelDims
 
         logger.info(f"[Rank {self.rank}] Applying parallelization")
+        parallel = self.lowering.parallel
 
         # Build parallel dims
         self._parallel_dims = ParallelDims(
-            tp=self.config.tp_degree,
-            cp=self.config.cp_degree,
-            pp=self.config.pp_degree,
+            tp=parallel.tp,
+            cp=parallel.cp,
+            pp=parallel.pp,
             world_size=self.world_size,
-            enable_loss_parallel=True,
+            enable_loss_parallel=parallel.enable_loss_parallel,
         )
 
         # Build a minimal job config for parallelize_fn
@@ -237,6 +252,7 @@ class TorchTitanBackend:
 
         Creates a minimal object that mimics torchtitan's JobConfig structure.
         """
+        parallel = self.lowering.parallel
 
         # Use SimpleNamespace-style object that allows arbitrary attributes
         class _Cfg:
@@ -252,9 +268,9 @@ class TorchTitanBackend:
                 enable_cpu_offload=False,
             ),
             parallelism=_Cfg(
-                context_parallel_degree=self.config.cp_degree,
+                context_parallel_degree=parallel.cp,
                 enable_async_tensor_parallel=False,
-                disable_loss_parallel=False,
+                disable_loss_parallel=not parallel.enable_loss_parallel,
                 fsdp_reshard_after_forward="default",
             ),
             compile=_Cfg(
@@ -295,6 +311,160 @@ class TorchTitanBackend:
             weight_decay=self.config.weight_decay,
         )
 
+    def _move_value_to_device(self, value: Any) -> Any:
+        if isinstance(value, torch.Tensor):
+            return value.to(self._device)
+        if isinstance(value, dict):
+            return {k: self._move_value_to_device(v) for k, v in value.items()}
+        if isinstance(value, list):
+            return [self._move_value_to_device(v) for v in value]
+        if isinstance(value, tuple):
+            return tuple(self._move_value_to_device(v) for v in value)
+        return value
+
+    def _slice_value(self, value: Any, start_idx: int, end_idx: int) -> Any:
+        if isinstance(value, torch.Tensor) and value.dim() > 0:
+            return value[start_idx:end_idx]
+        if isinstance(value, dict):
+            return {k: self._slice_value(v, start_idx, end_idx) for k, v in value.items()}
+        if isinstance(value, list):
+            return value[start_idx:end_idx]
+        if isinstance(value, tuple):
+            return value[start_idx:end_idx]
+        return value
+
+    def _slice_datum(self, datum: TrainingDatum, start_idx: int, end_idx: int) -> TrainingDatum:
+        return TrainingDatum(
+            model_input=type(datum.model_input)(
+                tokens=self._slice_value(datum.model_input.tokens, start_idx, end_idx),
+                positions=self._slice_value(datum.model_input.positions, start_idx, end_idx),
+                attention_mask=self._slice_value(
+                    datum.model_input.attention_mask, start_idx, end_idx
+                ),
+                metadata=datum.model_input.metadata,
+            ),
+            objective_inputs={
+                k: self._slice_value(v, start_idx, end_idx)
+                for k, v in datum.objective_inputs.items()
+            },
+            precision_policy=datum.precision_policy,
+            trainable_parameter_policy=datum.trainable_parameter_policy,
+            metadata=datum.metadata,
+        )
+
+    def _forward_products_from_output(self, output: Any) -> ForwardProducts:
+        logits = output.logits if hasattr(output, "logits") else output
+        values = getattr(output, "values", None)
+        hidden_states = getattr(output, "hidden_states", None)
+        aux: dict[str, Any] = {}
+        if hasattr(output, "router_aux_loss"):
+            aux["router_aux_loss"] = output.router_aux_loss
+        if hasattr(output, "aux") and isinstance(output.aux, dict):
+            aux.update(output.aux)
+        return ForwardProducts(
+            logits=logits,
+            values=values,
+            hidden_states=hidden_states,
+            aux=aux,
+        )
+
+    def _apply_trainable_parameter_policy(self, policy: TrainableParameterPolicy) -> None:
+        assert self._model is not None, "Model not initialized"
+        for name, param in self._model.named_parameters():
+            if param.grad is None:
+                continue
+            if not policy.allows_param(name):
+                param.grad = None
+
+    def _forward_backward_contract_impl(
+        self,
+        datum: TrainingDatum,
+        *,
+        loss_fn: LossFnLike,
+        operation: str,
+    ) -> TrainFuture[StepResult]:
+        assert self._model is not None, "Model not initialized"
+
+        self._model.train()
+        self._optimizer.zero_grad()
+
+        active_policy = datum.trainable_parameter_policy or TrainableParameterPolicy.full_weight()
+        self._active_trainable_policy = active_policy
+
+        datum = TrainingDatum(
+            model_input=type(datum.model_input)(
+                tokens=self._move_value_to_device(datum.model_input.tokens),
+                positions=self._move_value_to_device(datum.model_input.positions),
+                attention_mask=self._move_value_to_device(datum.model_input.attention_mask),
+                metadata=datum.model_input.metadata,
+            ),
+            objective_inputs={
+                k: self._move_value_to_device(v) for k, v in datum.objective_inputs.items()
+            },
+            precision_policy=datum.precision_policy,
+            trainable_parameter_policy=active_policy,
+            metadata=datum.metadata,
+        )
+
+        batch_size = datum.model_input.tokens.shape[0]
+        num_minibatches = 1
+        micro_batch_size = batch_size
+
+        total_primary_loss = 0.0
+        accumulated_losses: dict[str, float] = {}
+        accumulated_other_metrics: dict[str, float] = {}
+        accumulated_events: list[dict[str, Any]] = []
+
+        for i in range(num_minibatches):
+            start_idx = i * micro_batch_size
+            end_idx = start_idx + micro_batch_size
+            micro_datum = self._slice_datum(datum, start_idx, end_idx)
+
+            model_kwargs: dict[str, Any] = {}
+            if micro_datum.model_input.positions is not None:
+                model_kwargs["position_ids"] = micro_datum.model_input.positions
+            if micro_datum.model_input.attention_mask is not None:
+                model_kwargs["attention_mask"] = micro_datum.model_input.attention_mask
+
+            output = self._model(micro_datum.model_input.tokens, **model_kwargs)
+            products = self._forward_products_from_output(output)
+            step_result = loss_fn(products, micro_datum)
+
+            scaled_loss = step_result.backprop_loss / num_minibatches
+            scaled_loss.backward()
+            self._apply_trainable_parameter_policy(active_policy)
+            total_primary_loss += float(step_result.backprop_loss.detach().item())
+
+            for k, v in step_result.losses.items():
+                accumulated_losses[k] = accumulated_losses.get(k, 0.0) + float(v)
+            for k, v in step_result.other_metrics.items():
+                accumulated_other_metrics[k] = accumulated_other_metrics.get(k, 0.0) + float(v)
+            accumulated_events.extend(step_result.events)
+
+        grad_norm = torch.nn.utils.clip_grad_norm_(
+            self._model.parameters(),
+            self.config.max_grad_norm,
+        )
+        grad_norm_val = (
+            float(grad_norm.item()) if isinstance(grad_norm, torch.Tensor) else float(grad_norm)
+        )
+
+        if "total" not in accumulated_losses:
+            accumulated_losses["total"] = total_primary_loss / num_minibatches
+        accumulated_other_metrics["grad_norm"] = grad_norm_val
+        accumulated_other_metrics["num_minibatches"] = float(num_minibatches)
+        accumulated_other_metrics["micro_batch_size"] = float(micro_batch_size)
+
+        return ImmediateTrainFuture(
+            StepResult(
+                backprop_loss=torch.tensor(accumulated_losses["total"], device=self._device),
+                losses=accumulated_losses,
+                other_metrics=accumulated_other_metrics,
+                events=tuple(accumulated_events),
+            ),
+            operation=operation,
+        )
+
     @property
     def model(self) -> Any:
         """Get the model (for weight sync)."""
@@ -302,14 +472,16 @@ class TorchTitanBackend:
 
     def forward_backward(
         self,
-        batch: dict[str, Any],
+        batch: TrainingDatum | dict[str, Any],
         *,
-        loss_fn: Callable[..., Any] | None = None,
+        loss_fn: LossFnLike | Callable[..., Any] | None = None,
         loss_fn_config: dict[str, float] | None = None,
-    ) -> TrainFuture[dict[str, float]]:
-        """Compute loss and gradients."""
-        import torch
+    ) -> TrainFuture[StepResult | dict[str, float]]:
+        """Compute loss and gradients.
 
+        Contract-native `TrainingDatum` is the primary surface. Legacy dict
+        batches are still accepted as an edge compatibility path.
+        """
         assert self._model is not None, "Model not initialized"
         if loss_fn_config is not None:
             raise ValueError(
@@ -317,47 +489,47 @@ class TorchTitanBackend:
                 "Pass a closure via loss_fn that captures any config instead."
             )
 
+        if isinstance(batch, TrainingDatum):
+            active_loss_fn = loss_fn or self.loss_fn
+            assert callable(active_loss_fn), "loss_fn must be callable"
+            return self._forward_backward_contract_impl(
+                batch,
+                loss_fn=active_loss_fn,
+                operation="forward_backward",
+            )
+
+        self._active_trainable_policy = TrainableParameterPolicy.full_weight()
         self._model.train()
-
         input_ids = batch["input_ids"]
-
-        # Forward pass
         logits = self._model(input_ids)
-
-        # Compute loss using provided loss_fn
         active_loss_fn = loss_fn or self.loss_fn
         loss = active_loss_fn(logits, batch)
-
-        # Backward pass
         loss.backward()
-
-        # Compute grad norm
         grad_norm = torch.nn.utils.clip_grad_norm_(
             self._model.parameters(),
             self.config.max_grad_norm,
         )
-
-        # Handle grad_norm type (could be tensor or float)
-        if isinstance(grad_norm, torch.Tensor):
-            grad_norm_val = float(grad_norm.item())
-        else:
-            grad_norm_val = float(grad_norm)
-
+        grad_norm_val = (
+            float(grad_norm.item()) if isinstance(grad_norm, torch.Tensor) else float(grad_norm)
+        )
         metrics: dict[str, float] = {
             "loss": float(loss.item()),
             "grad_norm": grad_norm_val,
         }
-
         return ImmediateTrainFuture(metrics)
 
     def optim_step(self) -> TrainFuture[dict[str, float]]:
         """Apply gradients and update weights."""
         assert self._optimizer is not None, "Optimizer not initialized"
 
+        if self._active_trainable_policy is not None:
+            self._apply_trainable_parameter_policy(self._active_trainable_policy)
+
         self._optimizer.step()
         self._optimizer.zero_grad()
 
         self.step += 1
+        self._active_trainable_policy = None
 
         metrics: dict[str, float] = {
             "lr": float(self._optimizer.param_groups[0]["lr"]),

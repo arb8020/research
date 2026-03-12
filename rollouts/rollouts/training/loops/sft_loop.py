@@ -7,9 +7,10 @@ Design: Casey Muratori (no retention), Tiger Style (explicit state).
 """
 
 import logging
-from typing import Any
 
 from ...training.backends import PyTorchTrainingBackend
+from ...training.contract_witnesses import supervised_contract_loss
+from ...training.contracts import ModelInput, TrainableParameterPolicy, TrainingDatum
 from ...training.metrics import MetricsLogger
 from ...training.types import SFTTrainingConfig, TrainingSample
 
@@ -61,15 +62,18 @@ async def run_sft_training(
 
     for step in range(config.num_steps):
         # Get batch (pure function)
-        batch = collate_batch(samples, config.batch_size, step)
+        datum = collate_batch(samples, config.batch_size, step)
 
         # Train (backend has state, but we don't!)
-        fwd_metrics = await backend.forward_backward(batch).result()
+        fwd_result = await backend.forward_backward(
+            datum, loss_fn=supervised_contract_loss
+        ).result()
         opt_metrics = await backend.optim_step().result()
 
         # Combine metrics (pure)
         step_metrics = {
-            **fwd_metrics,
+            **fwd_result.losses,
+            **fwd_result.other_metrics,
             **opt_metrics,
             "step": step,
         }
@@ -81,8 +85,8 @@ async def run_sft_training(
         if step % config.log_every == 0:
             logger.info(
                 f"Step {step}: "
-                f"loss={fwd_metrics['loss']:.4f}, "
-                f"grad_norm={fwd_metrics['grad_norm']:.4f}, "
+                f"loss={fwd_result.losses['total']:.4f}, "
+                f"grad_norm={fwd_result.other_metrics['grad_norm']:.4f}, "
                 f"lr={opt_metrics['lr']:.4e}"
             )
 
@@ -110,7 +114,7 @@ def collate_batch(
     samples: list[TrainingSample],
     batch_size: int,
     step: int,
-) -> dict[str, Any]:
+) -> TrainingDatum:
     """Pure function: Collate samples into training batch.
 
     Args:
@@ -119,7 +123,7 @@ def collate_batch(
         step: Current training step (for cycling through data)
 
     Returns:
-        Batch dict with {input_ids, labels, loss_mask}
+        Contract-native training datum.
 
     Tiger Style: Explicit parameters, no hidden state.
     """
@@ -139,8 +143,8 @@ def collate_batch(
     return prepare_sft_batch(batch_samples)
 
 
-def prepare_sft_batch(samples: list[TrainingSample]) -> dict[str, Any]:
-    """Pure function: Convert samples to training batch using sequence packing.
+def prepare_sft_batch(samples: list[TrainingSample]) -> TrainingDatum:
+    """Pure function: Convert samples to a packed supervised TrainingDatum.
 
     Uses SLIME-style packing: concatenates sequences instead of padding.
     More efficient than padding (no wasted computation on pad tokens).
@@ -149,21 +153,21 @@ def prepare_sft_batch(samples: list[TrainingSample]) -> dict[str, Any]:
         samples: List of training samples
 
     Returns:
-        Batch dict with:
-        - tokens: Concatenated token sequence [total_tokens]
-        - labels: Same as tokens (for causal LM)
-        - loss_mask: Concatenated loss mask [total_tokens]
-        - cu_seqlens: Cumulative sequence lengths [batch_size + 1]
-        - position_ids: Position IDs for each token [total_tokens]
+        Packed training datum with:
+        - model_input.tokens: Concatenated token sequence [1, total_tokens]
+        - objective_inputs["labels"]: Same as tokens (for causal LM)
+        - objective_inputs["loss_mask"]: Concatenated loss mask [1, total_tokens]
+        - model_input.positions: Position IDs for each token [1, total_tokens]
+        - metadata["cu_seqlens"]: Cumulative sequence lengths [batch_size + 1]
 
     Example:
         >>> samples = [
         ...     TrainingSample(tokens=[1,2,3], loss_mask=[1.0,1.0,1.0]),
         ...     TrainingSample(tokens=[4,5], loss_mask=[1.0,1.0]),
         ... ]
-        >>> batch = prepare_sft_batch(samples)
-        >>> batch["tokens"]  # tensor([1,2,3,4,5])
-        >>> batch["cu_seqlens"]  # tensor([0, 3, 5])
+        >>> datum = prepare_sft_batch(samples)
+        >>> datum.model_input.tokens
+        >>> datum.metadata["cu_seqlens"]
     """
     import torch
 
@@ -191,12 +195,21 @@ def prepare_sft_batch(samples: list[TrainingSample]) -> dict[str, Any]:
     # Convert to tensors
     # Add batch dimension [1, total_tokens] for compatibility with HF models
     # Note: For Flash Attention / advanced packing, this would stay 1D with cu_seqlens
-    return {
-        "input_ids": torch.tensor(flat_tokens, dtype=torch.long).unsqueeze(0),  # [1, total_tokens]
-        "labels": torch.tensor(flat_tokens, dtype=torch.long).unsqueeze(0),  # [1, total_tokens]
-        "loss_mask": torch.tensor(flat_masks, dtype=torch.float).unsqueeze(0),  # [1, total_tokens]
-        "cu_seqlens": torch.tensor(cu_seqlens, dtype=torch.long),  # [batch_size + 1]
-        "position_ids": torch.tensor(flat_position_ids, dtype=torch.long).unsqueeze(
-            0
-        ),  # [1, total_tokens]
-    }
+    return TrainingDatum(
+        model_input=ModelInput(
+            tokens=torch.tensor(flat_tokens, dtype=torch.long).unsqueeze(0),  # [1, total_tokens]
+            positions=torch.tensor(flat_position_ids, dtype=torch.long).unsqueeze(
+                0
+            ),  # [1, total_tokens]
+        ),
+        objective_inputs={
+            "labels": torch.tensor(flat_tokens, dtype=torch.long).unsqueeze(0),  # [1, total_tokens]
+            "loss_mask": torch.tensor(flat_masks, dtype=torch.float).unsqueeze(
+                0
+            ),  # [1, total_tokens]
+        },
+        metadata={
+            "cu_seqlens": torch.tensor(cu_seqlens, dtype=torch.long),  # [batch_size + 1]
+        },
+        trainable_parameter_policy=TrainableParameterPolicy.full_weight(),
+    )

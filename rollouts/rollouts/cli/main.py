@@ -325,11 +325,6 @@ def main() -> int:
     if len(sys.argv) > 1 and sys.argv[1] == "auth":
         return auth_main(sys.argv[2:])
 
-    if len(sys.argv) > 1 and sys.argv[1] == "monitor":
-        from ..tui.monitor_cli import monitor_main
-
-        return monitor_main(sys.argv[2:])
-
     if len(sys.argv) > 1 and sys.argv[1] == "agent":
         print("The 'agent' subcommand has been replaced with --driver:", file=sys.stderr)
         print("  rollouts --driver claude    # Start with Claude Code", file=sys.stderr)

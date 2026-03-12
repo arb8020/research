@@ -12,6 +12,25 @@ to allow importing training row types without torch installed.
 """
 
 # Types first - these don't need torch
+from ..training.contracts import (
+    AdmissionPolicy,
+    ForwardProducts,
+    ModelInput,
+    OverloadPolicy,
+    PipelineRuntimeState,
+    PrecisionPolicy,
+    StalenessPolicy,
+    StepResult,
+    TrainableParameterPolicy,
+    TrainingDatum,
+    TrainingRuntimeState,
+    VersionedRolloutBatch,
+    WeightPublication,
+    WeightSyncPolicy,
+    WeightVersion,
+    WeightVisibilityPolicy,
+)
+from ..training.lowering import ParallelIntent, RealizationPlan, TorchTitanLowering
 from ..training.types import (
     AttemptRow,
     ProblemRow,
@@ -42,6 +61,14 @@ def __getattr__(name: str) -> object:
         from ..training.loops import run_sft_training
 
         return run_sft_training
+    if name == "run_distill_training":
+        from ..training.loops import run_distill_training
+
+        return run_distill_training
+    if name == "run_moe_sft_training":
+        from ..training.loops import run_moe_sft_training
+
+        return run_moe_sft_training
     if name == "run_rl_training":
         from ..training.loops import run_rl_training
 
@@ -124,6 +151,19 @@ def __getattr__(name: str) -> object:
         from ..training import losses
 
         return getattr(losses, name)
+    if name in (
+        "distillation_contract_loss",
+        "legacy_supervised_batch_to_training_datum",
+        "moe_supervised_contract_loss",
+        "rl_training_batch_to_datum",
+        "training_sample_to_distill_datum",
+        "training_sample_to_supervised_datum",
+        "rl_contract_loss",
+        "supervised_contract_loss",
+    ):
+        from ..training import contract_witnesses
+
+        return getattr(contract_witnesses, name)
 
     # GRPO training
     if name == "GRPOConfig":
@@ -141,6 +181,8 @@ def __getattr__(name: str) -> object:
 __all__ = [
     # Loops
     "run_sft_training",
+    "run_distill_training",
+    "run_moe_sft_training",
     "run_rl_training",
     # Datasets
     "DataBuffer",
@@ -187,6 +229,35 @@ __all__ = [
     "ppo_loss",
     "LossOutput",
     "compute_group_advantages",
+    # Core training contracts
+    "AdmissionPolicy",
+    "ModelInput",
+    "OverloadPolicy",
+    "PipelineRuntimeState",
+    "PrecisionPolicy",
+    "StalenessPolicy",
+    "TrainingDatum",
+    "ForwardProducts",
+    "StepResult",
+    "TrainingRuntimeState",
+    "TrainableParameterPolicy",
+    "WeightPublication",
+    "WeightVisibilityPolicy",
+    "WeightSyncPolicy",
+    "WeightVersion",
+    "VersionedRolloutBatch",
+    "ParallelIntent",
+    "RealizationPlan",
+    "TorchTitanLowering",
+    # Contract witness helpers
+    "distillation_contract_loss",
+    "legacy_supervised_batch_to_training_datum",
+    "moe_supervised_contract_loss",
+    "rl_training_batch_to_datum",
+    "training_sample_to_distill_datum",
+    "training_sample_to_supervised_datum",
+    "rl_contract_loss",
+    "supervised_contract_loss",
     # GRPO training
     "GRPOConfig",
     "grpo_train",

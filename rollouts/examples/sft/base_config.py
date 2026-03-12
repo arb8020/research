@@ -194,7 +194,9 @@ async def _train_async(config: BaseConfig) -> list[dict]:
     from rollouts._logging import setup_logging
     from rollouts.training import (
         PyTorchTrainingBackend,
+        RealizationPlan,
         SFTTrainingConfig,
+        create_torchtitan_backend,
         load_sft_dataset,
         run_sft_training,
     )
@@ -223,23 +225,56 @@ async def _train_async(config: BaseConfig) -> list[dict]:
     )
     logger.info(f"Loaded {len(samples)} samples")
 
-    # Load model
-    logger.info("Loading model...")
-    model, optimizer = load_model(config.model.name, config.device, config.trainer.lr)
-    param_count = sum(p.numel() for p in model.parameters())
-    logger.info(f"Model: {param_count / 1e6:.1f}M params")
-
-    # Create backend
     output_dir = Path(config.output.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+    cleanup = None
 
-    backend = PyTorchTrainingBackend(
-        model=model,
-        optimizer=optimizer,
-        loss_fn=cross_entropy_loss,
-        checkpoint_dir=output_dir / "checkpoints",
-        device=torch.device(config.device),
-    )
+    if config.trainer.backend == "torchtitan":
+        logger.info("Creating TorchTitan backend...")
+        gpu_rank = int(config.device.split(":")[-1]) if ":" in config.device else 0
+        realization = None
+        if (
+            config.trainer.torchtitan_local_layouts
+            or config.trainer.torchtitan_collective_transitions
+        ):
+            realization = RealizationPlan(
+                local_layouts=config.trainer.torchtitan_local_layouts,
+                collective_transitions=config.trainer.torchtitan_collective_transitions,
+                packed_sequences=config.trainer.torchtitan_packed_sequences,
+            )
+        backend, cleanup = create_torchtitan_backend(
+            checkpoint_dir=output_dir / "checkpoints",
+            hf_checkpoint=config.model.name,
+            torchtitan_model=config.trainer.torchtitan_model,
+            torchtitan_model_size=config.trainer.torchtitan_model_size,
+            gpu_rank=gpu_rank,
+            seq_len=config.dataset.max_seq_len,
+            learning_rate=config.trainer.lr,
+            weight_decay=config.trainer.weight_decay,
+            max_grad_norm=config.trainer.max_grad_norm,
+            tp=config.trainer.torchtitan_tp,
+            cp=config.trainer.torchtitan_cp,
+            pp=config.trainer.torchtitan_pp,
+            packed_sequences=config.trainer.torchtitan_packed_sequences,
+            mode="supervised",
+            realization=realization,
+        )
+        logger.info(
+            f"TorchTitan model: {config.trainer.torchtitan_model} {config.trainer.torchtitan_model_size}"
+        )
+    else:
+        logger.info("Loading model...")
+        model, optimizer = load_model(config.model.name, config.device, config.trainer.lr)
+        param_count = sum(p.numel() for p in model.parameters())
+        logger.info(f"Model: {param_count / 1e6:.1f}M params")
+
+        backend = PyTorchTrainingBackend(
+            model=model,
+            optimizer=optimizer,
+            loss_fn=cross_entropy_loss,
+            checkpoint_dir=output_dir / "checkpoints",
+            device=torch.device(config.device),
+        )
 
     # Train
     logger.info("=" * 50)
@@ -253,11 +288,15 @@ async def _train_async(config: BaseConfig) -> list[dict]:
         checkpoint_every=config.checkpoint.checkpoint_every,
     )
 
-    metrics = await run_sft_training(
-        backend=backend,
-        samples=samples,
-        config=training_config,
-    )
+    try:
+        metrics = await run_sft_training(
+            backend=backend,
+            samples=samples,
+            config=training_config,
+        )
+    finally:
+        if cleanup is not None:
+            cleanup()
 
     # Summary
     first_loss = metrics[0]["loss"]

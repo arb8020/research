@@ -32,6 +32,10 @@ from ...training.backends.pytorch_factory import (
 )
 from ...training.backends.torch_func import TorchFuncTrainingBackend
 from ...training.backends.torchax_backend import TorchaxTrainingBackend
+from ...training.backends.torchtitan_factory import (
+    create_torchtitan_backend,
+    ensure_single_rank_torchtitan_dist,
+)
 
 __all__ = [
     # Protocol
@@ -50,6 +54,7 @@ __all__ = [
     # Tier 2: Convenience
     "create_pytorch_backend",
     "create_backend_with_scheduler",
+    "create_torchtitan_backend",
     # Tier 1: Granular
     "parse_dtype",
     "compute_device_map_single_gpu",
@@ -57,4 +62,5 @@ __all__ = [
     "create_adamw_optimizer",
     "create_cross_entropy_loss",
     "create_warmup_cosine_scheduler",
+    "ensure_single_rank_torchtitan_dist",
 ]

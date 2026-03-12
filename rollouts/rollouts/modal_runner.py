@@ -29,7 +29,7 @@ import os
 import subprocess
 import sys
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -46,6 +46,14 @@ from .image_spec import (
     infer_cuda_version,
     manifest_write_command,
     resolve_image_for_provisioning,
+)
+from .remote_runtime import (
+    MaterializationPlan,
+    RuntimeContract,
+    SourceSyncPolicy,
+    enforce_source_sync_policy,
+    materialization_plan_from_runtime,
+    runtime_contract_from_hardware,
 )
 
 logger = logging.getLogger(__name__)
@@ -64,66 +72,19 @@ MODEL_CACHE_DICT_NAME = "rollouts-model-cache"
 HF_CACHE_DIR = "/root/.cache/huggingface"
 
 
-def _check_uncommitted_changes_warning() -> None:
-    """Warn if there are uncommitted changes that won't be deployed.
-
-    Modal runner uses git bundle, which only includes committed code.
-    This matches the behavior in run.py (RunPod) which uses bifrost.
-    """
-    result = subprocess.run(
-        ["git", "status", "--porcelain"],
-        cwd=str(REPO_ROOT),
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode != 0:
-        return  # Not a git repo or git not available
-
-    lines = [line for line in result.stdout.strip().split("\n") if line]
-    if not lines:
-        return  # No changes
-
-    # Parse into modified and untracked
-    modified = [line[3:] for line in lines if line[:2].strip() in ("M", "MM", "AM", "A")]
-    untracked = [line[3:] for line in lines if line.startswith("??")]
-
-    if not modified and not untracked:
-        return
-
-    print(
-        "\n⚠️  WARNING: Uncommitted changes detected!\n"
-        "Modal runner uses git bundle - only committed code is deployed.\n",
-        file=sys.stderr,
-    )
-    total = len(modified) + len(untracked)
-    print(f"{total} file(s) will NOT be deployed:\n", file=sys.stderr)
-    for f in modified[:5]:
-        print(f"   - {f} (modified)", file=sys.stderr)
-    if len(modified) > 5:
-        print(f"   ... and {len(modified) - 5} more modified", file=sys.stderr)
-    for f in untracked[:5]:
-        print(f"   - {f} (untracked)", file=sys.stderr)
-    if len(untracked) > 5:
-        print(f"   ... and {len(untracked) - 5} more untracked", file=sys.stderr)
-    print("\nCommit your changes or use '--allow-dirty' to proceed anyway.\n", file=sys.stderr)
-
-    # For now, just warn (not blocking like RunPod)
-    # To make this blocking, raise SystemExit(1) here
-
-
 @dataclass
 class ModalRunConfig:
     """Configuration for a Modal training run.
 
-    The deps field comes from HardwareConfig.deps (DepsConfig).
+    This carries the shared runtime/materialization/source-sync contracts
+    instead of re-describing them in Modal-specific terms.
     """
 
     config_path: str
-    gpu_type: str = "A100"
-    gpu_count: int = 1
-    deps: DepsConfig | None = None  # Required - validated by HardwareConfig
+    runtime: RuntimeContract | None = None
+    materialization: MaterializationPlan = field(default_factory=MaterializationPlan)
+    source_sync_policy: SourceSyncPolicy = field(default_factory=SourceSyncPolicy.committed_only)
     timeout_hours: int = 4
-    use_torchrun: bool = True  # False for torchtitan (handles multi-GPU internally)
     sandbox_id: str | None = None
     keep_alive: bool = False
     model_name: str | None = None  # Model name for weight caching (e.g., "zai-org/GLM-4.7-Flash")
@@ -132,10 +93,30 @@ class ModalRunConfig:
     )
 
     def __post_init__(self) -> None:
-        if self.deps is None:
+        if self.runtime is None:
             raise ValueError(
-                "ModalRunConfig requires deps. This should come from HardwareConfig.deps."
+                "ModalRunConfig requires a RuntimeContract. Build it from HardwareConfig."
             )
+
+    @property
+    def gpu_type(self) -> str:
+        assert self.runtime is not None
+        return self.runtime.gpu_type
+
+    @property
+    def gpu_count(self) -> int:
+        assert self.runtime is not None
+        return self.runtime.gpu_count
+
+    @property
+    def deps(self) -> DepsConfig | None:
+        assert self.runtime is not None
+        return self.runtime.deps
+
+    @property
+    def use_torchrun(self) -> bool:
+        assert self.runtime is not None
+        return self.runtime.use_torchrun
 
 
 def _build_modal_image(modal: Any, deps: DepsConfig, gpu_type: str) -> Any:
@@ -943,6 +924,8 @@ async def run_modal(config: ModalRunConfig) -> dict[str, Any]:
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     run_name = f"modal_{timestamp}"
 
+    enforce_source_sync_policy(config.source_sync_policy, repo_root=REPO_ROOT, stream=sys.stderr)
+
     logger.info("=" * 60)
     logger.info(f"Modal Training: {run_name}")
     logger.info("=" * 60)
@@ -1067,7 +1050,12 @@ def load_config_module(config_path: Path) -> Any:
 
 
 def main() -> None:
-    """CLI entry point."""
+    """Standalone debug entry point.
+
+    TODO: keep Modal execution guts here for now, but do not treat this module
+    as a public control-plane CLI. Public launch entrypoints should live in
+    Argus, with deeper SSH/Modal execution unification happening later.
+    """
     parser = argparse.ArgumentParser(description="Run training on Modal")
     parser.add_argument(
         "--config",
@@ -1101,11 +1089,13 @@ def main() -> None:
         action="store_true",
         help="Keep sandbox running after completion",
     )
+    parser.add_argument(
+        "--force-deploy-committed",
+        action="store_true",
+        help="Proceed despite uncommitted changes (only committed code is deployed)",
+    )
 
     args = parser.parse_args()
-
-    # Check for uncommitted changes - git bundle only includes committed code
-    _check_uncommitted_changes_warning()
 
     # Setup logging with JSONL file output for debugging
     # Creates results/modal_runs/{timestamp}/run.jsonl
@@ -1137,16 +1127,18 @@ def main() -> None:
             f"Config file must define 'hardware' (HardwareConfig). Got: {dir(config_module)}"
         )
 
-    deps = hardware.deps
-    if deps is None:
+    runtime = runtime_contract_from_hardware(hardware)
+    materialization = materialization_plan_from_runtime(runtime)
+
+    if runtime.deps is None:
         raise ValueError(
             "HardwareConfig.deps is required for Modal. "
             "Define deps=DepsConfig(...) in your hardware config."
         )
 
     # Use hardware config values, allow CLI overrides
-    gpu_type = args.gpu if args.gpu != "A100" else hardware.gpu_type
-    gpu_count = args.gpu_count if args.gpu_count != 1 else hardware.gpu_count
+    gpu_type = args.gpu if args.gpu != "A100" else runtime.gpu_type
+    gpu_count = args.gpu_count if args.gpu_count != 1 else runtime.gpu_count
 
     # Extract model name and pruning recipe for weight caching (if available)
     # Look for config.model.name and config.model.pruning_recipe (GRPOConfig structure)
@@ -1173,11 +1165,23 @@ def main() -> None:
     # Build run config
     run_config = ModalRunConfig(
         config_path=str(config_path),
-        gpu_type=gpu_type,
-        gpu_count=gpu_count,
-        deps=deps,
+        runtime=RuntimeContract(
+            provider=runtime.provider,
+            gpu_type=gpu_type,
+            gpu_count=gpu_count,
+            deps=runtime.deps,
+            container_disk_gb=runtime.container_disk_gb,
+            hf_cache_dir=runtime.hf_cache_dir,
+            persistent_volume_id=runtime.persistent_volume_id,
+            persistent_volume_mount_path=runtime.persistent_volume_mount_path,
+            persistent_volume_location=runtime.persistent_volume_location,
+            use_torchrun=runtime.use_torchrun,
+        ),
+        materialization=materialization,
+        source_sync_policy=SourceSyncPolicy.committed_only(
+            dirty_action="warn" if args.force_deploy_committed else "fail"
+        ),
         timeout_hours=args.timeout_hours,
-        use_torchrun=hardware.use_torchrun,
         sandbox_id=args.sandbox_id,
         keep_alive=args.keep_alive,
         model_name=model_name,
@@ -1196,4 +1200,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit("Use `python -m argus run --config ...` instead of rollouts.modal_runner.")

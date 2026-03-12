@@ -336,6 +336,10 @@ class TrainerConfig:
     torchtitan_tp: int = 1
     torchtitan_cp: int = 1
     torchtitan_pp: int = 1
+    # Optional explicit realization override. Leave empty to use backend defaults.
+    torchtitan_local_layouts: tuple[str, ...] = ()
+    torchtitan_collective_transitions: tuple[str, ...] = ()
+    torchtitan_packed_sequences: bool = True
 
     def __post_init__(self) -> None:
         assert self.backend in ("pytorch", "fsdp", "fsdp2", "nmoe", "megatron", "torchtitan"), (

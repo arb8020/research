@@ -574,68 +574,36 @@ def _setup_training_backend(
         cleanup = _cleanup_megatron
     elif backend_name == "torchtitan":
         # TorchTitan backend for GLM and other models with 4D parallelism
-        import os
-        import socket
+        from ..training import RealizationPlan
+        from ..training.backends import create_torchtitan_backend
 
-        import torch
-        import torch.distributed as dist
-
-        from ..training.backends.torchtitan_backend import TorchTitanBackend, TorchTitanConfig
-
-        # Import GLM to register with torchtitan
-        from ..training.models import glm  # noqa: F401
-
-        trainer_gpu = config.trainer.cuda_device_ids[0]
-        torch.cuda.set_device(trainer_gpu)
-
-        if not dist.is_initialized():
-
-            def find_free_port(start_port: int, max_attempts: int = 100) -> int:
-                for port in range(start_port, start_port + max_attempts):
-                    try:
-                        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-                            s.bind(("", port))
-                            return port
-                    except OSError:
-                        continue
-                raise RuntimeError(
-                    f"No free port found in range {start_port}-{start_port + max_attempts}"
-                )
-
-            master_addr = os.environ.get("MASTER_ADDR", "127.0.0.1")
-            master_port = find_free_port(config.checkpoint.nccl_master_port + 50)
-
-            dist.init_process_group(
-                backend="nccl",
-                init_method=f"tcp://{master_addr}:{master_port}",
-                rank=0,
-                world_size=1,
+        realization = None
+        if (
+            config.trainer.torchtitan_local_layouts
+            or config.trainer.torchtitan_collective_transitions
+        ):
+            realization = RealizationPlan(
+                local_layouts=config.trainer.torchtitan_local_layouts,
+                collective_transitions=config.trainer.torchtitan_collective_transitions,
+                packed_sequences=config.trainer.torchtitan_packed_sequences,
             )
 
-            def _cleanup_dist() -> None:
-                if dist.is_initialized():
-                    dist.destroy_process_group()
-
-            cleanup = _cleanup_dist
-
-        torchtitan_config = TorchTitanConfig(
-            tp_degree=config.trainer.torchtitan_tp,
-            cp_degree=config.trainer.torchtitan_cp,
-            pp_degree=config.trainer.torchtitan_pp,
+        backend, cleanup = create_torchtitan_backend(
+            checkpoint_dir=output_dir,
+            hf_checkpoint=config.model.name,
+            torchtitan_model=config.trainer.torchtitan_model,
+            torchtitan_model_size=config.trainer.torchtitan_model_size,
+            gpu_rank=config.trainer.cuda_device_ids[0],
             seq_len=config.rollout.max_seq_len,
-            lr=config.trainer.lr,
+            learning_rate=config.trainer.lr,
             weight_decay=config.trainer.weight_decay,
             max_grad_norm=config.trainer.max_grad_norm,
-        )
-
-        backend = TorchTitanBackend(
-            model_name=config.trainer.torchtitan_model,
-            model_size=config.trainer.torchtitan_model_size,
-            checkpoint_dir=output_dir,
-            loss_fn=loss_fn,
-            config=torchtitan_config,
-            hf_checkpoint=config.model.name,  # Load weights from HF
+            tp=config.trainer.torchtitan_tp,
+            cp=config.trainer.torchtitan_cp,
+            pp=config.trainer.torchtitan_pp,
+            packed_sequences=config.trainer.torchtitan_packed_sequences,
+            mode="rl",
+            realization=realization,
         )
     else:
         raise ValueError(
@@ -809,10 +777,17 @@ async def _process_training_step(
     import torch
     import torch.distributed as dist
 
+    from ..training.contracts import VersionedRolloutBatch
     from ..training.losses import compute_group_advantages
     from ..training.observability import flatten_numeric_stats
 
     step_start = time.perf_counter()
+    batch_weight_version = None
+    batch_version_lag = None
+    if isinstance(batch, VersionedRolloutBatch):
+        batch_weight_version = batch.weight_version
+        batch_version_lag = batch.version_lag
+        batch = batch.batch
 
     if not batch.tokens:
         logger.warning(
@@ -826,6 +801,12 @@ async def _process_training_step(
             },
         )
         return None
+
+    if config.trainer.advantage_estimator == "opd":
+        raise NotImplementedError(
+            "Contract-native GRPO training step does not yet implement OPD teacher semantics. "
+            "Lower OPD onto an explicit distillation-aware objective before using this path."
+        )
 
     # Save rollouts to JSONL
     rollouts_file = output_dir / "rollouts.jsonl"
@@ -863,6 +844,9 @@ async def _process_training_step(
     else:
         advantages = torch.tensor([r - mean_reward for r in rewards], device=device)
 
+    from ..training.contract_witnesses import rl_contract_loss
+    from ..training.contracts import StepResult
+
     # Prepare batch tensors
     prep_start = time.perf_counter()
     training_batch = _prepare_training_batch(batch, config, tokenizer, advantages, device)
@@ -870,8 +854,8 @@ async def _process_training_step(
 
     # Training step - forward/backward
     fb_start = time.perf_counter()
-    fb_future = backend.forward_backward(training_batch)
-    fb_metrics = await fb_future.result()
+    fb_future = backend.forward_backward(training_batch, loss_fn=rl_contract_loss)
+    fb_result = await fb_future.result()
     fb_ms = (time.perf_counter() - fb_start) * 1000
 
     # Optimizer step
@@ -880,7 +864,10 @@ async def _process_training_step(
     optim_metrics = await optim_future.result()
     optim_ms = (time.perf_counter() - optim_start) * 1000
 
-    accumulated_metrics = {**fb_metrics, **optim_metrics}
+    if isinstance(fb_result, StepResult):
+        accumulated_metrics = {**fb_result.losses, **fb_result.other_metrics, **optim_metrics}
+    else:
+        accumulated_metrics = {**fb_result, **optim_metrics}
     pg_loss = accumulated_metrics.get("pg_loss", 0.0)
     entropy = accumulated_metrics.get("entropy", 0.0)
 
@@ -890,6 +877,10 @@ async def _process_training_step(
         "num_groups": num_groups,
         **accumulated_metrics,
     }
+    if batch_weight_version is not None:
+        step_metrics["batch_weight_version"] = float(batch_weight_version)
+    if batch_version_lag is not None:
+        step_metrics["batch_version_lag"] = float(batch_version_lag)
     rollout_stats = batch.metadata.get("rollout_stats")
     rollout_observability: dict[str, float] = {}
     if isinstance(rollout_stats, dict):
@@ -972,9 +963,11 @@ def _prepare_training_batch(
     tokenizer: Any,
     advantages: Any,
     device: str,
-) -> dict[str, Any]:
+) -> Any:
     """Prepare tensors for training step."""
     import torch
+
+    from ..training.contracts import ModelInput, TrainableParameterPolicy, TrainingDatum
 
     max_len = min(max(len(t) for t in batch.tokens), config.rollout.max_seq_len)
 
@@ -1015,11 +1008,11 @@ def _prepare_training_batch(
     # Also shift loss_mask left to match shifted labels
     loss_mask = torch.cat([loss_mask[:, 1:], torch.zeros_like(loss_mask[:, :1])], dim=1)
 
-    training_batch = {
-        "input_ids": input_ids,
+    objective_inputs: dict[str, Any] = {
         "labels": labels,
         "loss_mask": loss_mask,
         "advantages": advantages,
+        "group_ids": torch.tensor(batch.group_indices, device=device, dtype=torch.long),
     }
 
     if has_rollout_logprobs:
@@ -1033,7 +1026,7 @@ def _prepare_training_batch(
         seq_rollout_logprobs = (rollout_logprobs_tensor * loss_mask).sum(dim=1) / loss_mask.sum(
             dim=1
         ).clamp(min=1.0)
-        training_batch["old_logprobs"] = seq_rollout_logprobs
+        objective_inputs["old_logprobs"] = seq_rollout_logprobs
 
     if has_teacher_logprobs:
         teacher_logprobs_tensor = torch.tensor(batch_teacher_logprobs, device=device)
@@ -1042,9 +1035,14 @@ def _prepare_training_batch(
             [teacher_logprobs_tensor[:, 1:], torch.zeros_like(teacher_logprobs_tensor[:, :1])],
             dim=1,
         )
-        training_batch["teacher_logprobs"] = teacher_logprobs_tensor
+        objective_inputs["teacher_logprobs"] = teacher_logprobs_tensor
 
-    return training_batch
+    return TrainingDatum(
+        model_input=ModelInput(tokens=input_ids),
+        objective_inputs=objective_inputs,
+        trainable_parameter_policy=TrainableParameterPolicy.full_weight(),
+        metadata=batch.metadata,
+    )
 
 
 async def _grpo_train_async(
@@ -1315,7 +1313,192 @@ async def _grpo_train_async(
         assert rollout_runtime.sample_scorer is not None, "sample scorer must be resolved"
 
         # Training loop (delegated to rollouts.training.train.train)
+        from ..training.contracts import (
+            AdmissionPolicy,
+            OverloadPolicy,
+            PipelineRuntimeState,
+            StalenessPolicy,
+            VersionedRolloutBatch,
+            WeightVisibilityPolicy,
+        )
         from ..training.train import train as _train_loop
+
+        if config.checkpoint.pipeline_mode == "sync":
+            staleness_policy = StalenessPolicy.synchronous()
+            weight_visibility_policy = WeightVisibilityPolicy.synchronous(
+                publish_mode=config.checkpoint.weight_sync_mode
+            )
+            admission_policy = AdmissionPolicy.synchronous()
+            overload_policy = OverloadPolicy()
+        elif config.checkpoint.pipeline_mode == "async":
+            staleness_policy = StalenessPolicy(
+                max_version_lag=config.checkpoint.max_lag,
+                drop_stale=True,
+                require_exact_version=(config.checkpoint.max_lag == 0),
+            )
+            weight_visibility_policy = WeightVisibilityPolicy(
+                publish_mode=config.checkpoint.weight_sync_mode,
+                atomic_visibility=True,
+                drain_before_publish=False,
+            )
+            admission_policy = AdmissionPolicy.stream_style_default()
+            overload_policy = OverloadPolicy(
+                queue_pressure_threshold=(
+                    config.checkpoint.pipeline_queue_size
+                    if config.checkpoint.pipeline_queue_size > 0
+                    else None
+                ),
+                block_generation_as_last_resort=config.checkpoint.pipeline_queue_size > 0,
+            )
+        elif config.checkpoint.pipeline_mode == "true_pipeline":
+            staleness_policy = StalenessPolicy(
+                max_version_lag=config.checkpoint.max_lag,
+                drop_stale=True,
+                require_exact_version=False,
+            )
+            weight_visibility_policy = WeightVisibilityPolicy(
+                publish_mode=config.checkpoint.weight_sync_mode,
+                atomic_visibility=True,
+                drain_before_publish=False,
+            )
+            admission_policy = AdmissionPolicy.stream_style_default()
+            overload_policy = OverloadPolicy(
+                cancel_stale_inflight=True,
+                queue_pressure_threshold=(
+                    config.checkpoint.pipeline_queue_size
+                    if config.checkpoint.pipeline_queue_size > 0
+                    else None
+                ),
+                block_generation_as_last_resort=config.checkpoint.pipeline_queue_size > 0,
+            )
+        else:
+            raise ValueError(
+                f"Unknown pipeline_mode: {config.checkpoint.pipeline_mode!r}. "
+                "Use 'sync', 'async', or 'true_pipeline'."
+            )
+        pipeline_state = PipelineRuntimeState(
+            current_train_version=getattr(backend, "weight_version", 0),
+            current_serving_version=getattr(backend, "weight_version", 0),
+            sync_in_progress=False,
+            admissions_paused=False,
+            inflight_batches=0,
+        )
+        logger.info(
+            "Pipeline semantics: "
+            f"mode={config.checkpoint.pipeline_mode}, "
+            f"staleness_max_lag={staleness_policy.max_version_lag}, "
+            f"require_exact_version={staleness_policy.require_exact_version}, "
+            f"publish_mode={weight_visibility_policy.publish_mode}, "
+            f"drain_before_publish={weight_visibility_policy.drain_before_publish}, "
+            f"pause_on_sync={admission_policy.pause_on_sync}, "
+            f"queue_pressure_threshold={overload_policy.queue_pressure_threshold}"
+        )
+
+        def _add_pipeline_policy_metrics(step_metrics: dict[str, Any]) -> dict[str, Any]:
+            step_metrics["staleness_max_version_lag"] = float(staleness_policy.max_version_lag)
+            step_metrics["staleness_require_exact_version"] = (
+                1.0 if staleness_policy.require_exact_version else 0.0
+            )
+            step_metrics["weight_visibility_atomic"] = (
+                1.0 if weight_visibility_policy.atomic_visibility else 0.0
+            )
+            step_metrics["weight_visibility_drain_before_publish"] = (
+                1.0 if weight_visibility_policy.drain_before_publish else 0.0
+            )
+            step_metrics["admission_pause_on_sync"] = 1.0 if admission_policy.pause_on_sync else 0.0
+            step_metrics["overload_cancel_stale_inflight"] = (
+                1.0 if overload_policy.cancel_stale_inflight else 0.0
+            )
+            step_metrics["overload_spill_to_disk"] = 1.0 if overload_policy.spill_to_disk else 0.0
+            step_metrics["overload_block_generation"] = (
+                1.0 if overload_policy.block_generation_as_last_resort else 0.0
+            )
+            step_metrics["overload_queue_pressure_threshold"] = float(
+                overload_policy.queue_pressure_threshold or 0
+            )
+            return step_metrics
+
+        def _wrap_versioned_batch(
+            batch: Any, *, created_at_step: int, weight_version: int
+        ) -> VersionedRolloutBatch:
+            return VersionedRolloutBatch(
+                batch=batch,
+                weight_version=weight_version,
+                created_at_step=created_at_step,
+                version_lag=max(pipeline_state.current_train_version - weight_version, 0),
+            )
+
+        def _reject_stale_batch(step: int, batch: Any) -> bool:
+            if not isinstance(batch, VersionedRolloutBatch):
+                return False
+            if staleness_policy.allows_version(
+                batch_version=batch.weight_version,
+                current_train_version=pipeline_state.current_train_version,
+            ):
+                return False
+            logger.warning(
+                "Dropping stale rollout batch",
+                extra={
+                    **run_context,
+                    "event": "stale_rollout_batch_dropped",
+                    "step": step + 1,
+                    "batch_weight_version": batch.weight_version,
+                    "current_train_version": pipeline_state.current_train_version,
+                    "version_lag": batch.version_lag,
+                },
+            )
+            return True
+
+        def _update_pipeline_state(
+            *,
+            train_version: int | None = None,
+            serving_version: int | None = None,
+            sync_in_progress: bool | None = None,
+            admissions_paused: bool | None = None,
+            inflight_batches: int | None = None,
+        ) -> None:
+            nonlocal pipeline_state
+            pipeline_state = PipelineRuntimeState(
+                current_train_version=(
+                    pipeline_state.current_train_version if train_version is None else train_version
+                ),
+                current_serving_version=(
+                    pipeline_state.current_serving_version
+                    if serving_version is None
+                    else serving_version
+                ),
+                sync_in_progress=(
+                    pipeline_state.sync_in_progress
+                    if sync_in_progress is None
+                    else sync_in_progress
+                ),
+                admissions_paused=(
+                    pipeline_state.admissions_paused
+                    if admissions_paused is None
+                    else admissions_paused
+                ),
+                inflight_batches=(
+                    pipeline_state.inflight_batches
+                    if inflight_batches is None
+                    else inflight_batches
+                ),
+            )
+
+        def _annotate_pipeline_metrics(step_metrics: dict[str, Any]) -> dict[str, Any]:
+            step_metrics["pipeline_current_train_version"] = float(
+                pipeline_state.current_train_version
+            )
+            step_metrics["pipeline_current_serving_version"] = float(
+                pipeline_state.current_serving_version
+            )
+            step_metrics["pipeline_sync_in_progress"] = (
+                1.0 if pipeline_state.sync_in_progress else 0.0
+            )
+            step_metrics["pipeline_admissions_paused"] = (
+                1.0 if pipeline_state.admissions_paused else 0.0
+            )
+            step_metrics["pipeline_inflight_batches"] = float(pipeline_state.inflight_batches)
+            return _add_pipeline_policy_metrics(step_metrics)
 
         # Step-level weight syncer (blocking). True PipelineRL uses non-blocking NCCLWeightSyncer instead.
         from ..training.weight_sync import BackendNCCLWeightSyncer, FilesystemWeightSyncer
@@ -1394,9 +1577,15 @@ async def _grpo_train_async(
                             if s.teacher_log_probs is not None
                         ]
                         logger.info("Teacher logprobs computed")
+                    yield _wrap_versioned_batch(
+                        batch,
+                        created_at_step=_step + 1,
+                        weight_version=pipeline_state.current_serving_version,
+                    )
 
-                    yield batch
-
+        # TODO: split this pipeline_mode branch into smaller helpers. It is
+        # currently carrying too much nested orchestration, policy wiring, and
+        # transport-specific control flow in one place.
         if config.checkpoint.pipeline_mode == "true_pipeline":
             # True PipelineRL: both sampling AND weight sync are non-blocking.
             from ..training.rollout_gen.pipelined_rollout_manager import PipelinedRolloutManager
@@ -1459,7 +1648,14 @@ async def _grpo_train_async(
                                     rollout_runtime.sample_scorer,
                                     environment_factory,
                                 )
-                                yield batch
+                                _update_pipeline_state(
+                                    serving_version=weight_sync_manager.current_version
+                                )
+                                yield _wrap_versioned_batch(
+                                    batch,
+                                    created_at_step=step + 1,
+                                    weight_version=weight_sync_manager.current_version,
+                                )
 
                                 # Non-blocking weight sync - spawns background task.
                                 should_sync = (step + 1) % config.checkpoint.sync_weights_every == 0
@@ -1487,7 +1683,15 @@ async def _grpo_train_async(
                     await weight_sync_manager.close()
 
             async def _process_batch(step: int, batch: Any, _backend: Any) -> dict[str, Any] | None:
-                return await _process_training_step(
+                if _reject_stale_batch(step, batch):
+                    return None
+                _update_pipeline_state(
+                    train_version=getattr(
+                        _backend, "weight_version", pipeline_state.current_train_version
+                    ),
+                    inflight_batches=1,
+                )
+                step_metrics = await _process_training_step(
                     step,
                     batch,
                     config,
@@ -1498,6 +1702,15 @@ async def _grpo_train_async(
                     logger,
                     run_context,
                 )
+                _update_pipeline_state(
+                    train_version=getattr(
+                        _backend, "weight_version", pipeline_state.current_train_version
+                    ),
+                    inflight_batches=0,
+                )
+                if step_metrics is None:
+                    return None
+                return _annotate_pipeline_metrics(step_metrics)
 
             train_result = await _train_loop(
                 config=config.checkpoint,
@@ -1546,7 +1759,14 @@ async def _grpo_train_async(
                                 rollout_runtime.sample_scorer,
                                 environment_factory,
                             )
-                            yield batch
+                            _update_pipeline_state(
+                                serving_version=getattr(backend, "weight_version", 0)
+                            )
+                            yield _wrap_versioned_batch(
+                                batch,
+                                created_at_step=_step + 1,
+                                weight_version=getattr(backend, "weight_version", 0),
+                            )
                             pipelined_manager.update_weight_version(backend.weight_version)
 
                         # Log pipeline stats
@@ -1558,7 +1778,15 @@ async def _grpo_train_async(
                         )
 
             async def _process_batch(step: int, batch: Any, _backend: Any) -> dict[str, Any] | None:
-                return await _process_training_step(
+                if _reject_stale_batch(step, batch):
+                    return None
+                _update_pipeline_state(
+                    train_version=getattr(
+                        _backend, "weight_version", pipeline_state.current_train_version
+                    ),
+                    inflight_batches=1,
+                )
+                step_metrics = await _process_training_step(
                     step,
                     batch,
                     config,
@@ -1569,6 +1797,39 @@ async def _grpo_train_async(
                     logger,
                     run_context,
                 )
+                _update_pipeline_state(
+                    train_version=getattr(
+                        _backend, "weight_version", pipeline_state.current_train_version
+                    ),
+                    inflight_batches=0,
+                )
+                if step_metrics is None:
+                    return None
+                return _annotate_pipeline_metrics(step_metrics)
+
+            async def _before_async_weight_sync() -> None:
+                _update_pipeline_state(
+                    train_version=getattr(
+                        backend, "weight_version", pipeline_state.current_train_version
+                    ),
+                    sync_in_progress=True,
+                    admissions_paused=admission_policy.pause_on_sync,
+                )
+                if admission_policy.pause_on_sync:
+                    await _pause_pipeline_admissions(pipelined_manager, logger)
+
+            async def _after_async_weight_sync() -> None:
+                current_version = getattr(
+                    backend, "weight_version", pipeline_state.current_train_version
+                )
+                _update_pipeline_state(
+                    train_version=current_version,
+                    serving_version=current_version,
+                    sync_in_progress=False,
+                    admissions_paused=False,
+                )
+                if admission_policy.pause_on_sync:
+                    await _resume_pipeline_admissions(pipelined_manager, logger)
 
             train_result = await _train_loop(
                 config=config.checkpoint,
@@ -1579,14 +1840,22 @@ async def _grpo_train_async(
                 save_checkpoint=_save_checkpoint,
                 metrics_logger=metrics_logger,
                 logger=logger,
-                before_weight_sync=lambda: _pause_pipeline_admissions(pipelined_manager, logger),
-                after_weight_sync=lambda: _resume_pipeline_admissions(pipelined_manager, logger),
+                before_weight_sync=_before_async_weight_sync,
+                after_weight_sync=_after_async_weight_sync,
             )
 
         else:
 
             async def _process_batch(step: int, batch: Any, _backend: Any) -> dict[str, Any] | None:
-                return await _process_training_step(
+                if _reject_stale_batch(step, batch):
+                    return None
+                _update_pipeline_state(
+                    train_version=getattr(
+                        _backend, "weight_version", pipeline_state.current_train_version
+                    ),
+                    inflight_batches=1,
+                )
+                step_metrics = await _process_training_step(
                     step,
                     batch,
                     config,
@@ -1596,6 +1865,41 @@ async def _grpo_train_async(
                     output_dir,
                     logger,
                     run_context,
+                )
+                if step_metrics is None:
+                    _update_pipeline_state(
+                        train_version=getattr(
+                            _backend, "weight_version", pipeline_state.current_train_version
+                        ),
+                        inflight_batches=0,
+                    )
+                    return None
+                _update_pipeline_state(
+                    train_version=getattr(
+                        _backend, "weight_version", pipeline_state.current_train_version
+                    ),
+                    inflight_batches=0,
+                )
+                return _annotate_pipeline_metrics(step_metrics)
+
+            async def _before_weight_sync() -> None:
+                _update_pipeline_state(
+                    train_version=getattr(
+                        backend, "weight_version", pipeline_state.current_train_version
+                    ),
+                    sync_in_progress=True,
+                    admissions_paused=admission_policy.pause_on_sync,
+                )
+
+            async def _after_weight_sync() -> None:
+                current_version = getattr(
+                    backend, "weight_version", pipeline_state.current_train_version
+                )
+                _update_pipeline_state(
+                    train_version=current_version,
+                    serving_version=current_version,
+                    sync_in_progress=False,
+                    admissions_paused=False,
                 )
 
             train_result = await _train_loop(
@@ -1607,6 +1911,8 @@ async def _grpo_train_async(
                 save_checkpoint=_save_checkpoint,
                 metrics_logger=metrics_logger,
                 logger=logger,
+                before_weight_sync=_before_weight_sync,
+                after_weight_sync=_after_weight_sync,
             )
 
         metrics_history = train_result.metrics_history

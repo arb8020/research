@@ -8,9 +8,9 @@ Minimal surface area (Tinker-inspired):
 Tiger Style: Protocol-based, explicit operations.
 """
 
-from collections.abc import Callable
 from typing import Any, Protocol
 
+from ...training.contracts import LossFnLike, StepResult, TrainingDatum
 from ...training.types import TrainFuture
 
 
@@ -25,24 +25,20 @@ class TrainingBackend(Protocol):
 
     def forward_backward(
         self,
-        batch: dict[str, Any],
+        datum: TrainingDatum,
         *,
-        loss_fn: Callable[..., Any] | None = None,
-        loss_fn_config: dict[str, float] | None = None,
-    ) -> TrainFuture[dict[str, float]]:
+        loss_fn: LossFnLike | None = None,
+    ) -> TrainFuture[StepResult]:
         """Compute loss and gradients
 
         Args:
-            batch: {
-                "input_ids": List[List[int]],
-                "labels": List[List[int]],
-                "attention_mask": List[List[int]],
-            }
+            datum: Model-facing input plus objective-facing supervision/signals.
+            loss_fn: Contract-native loss function over forward products and datum.
 
         Returns:
-            Future resolving to {"loss": float, "grad_norm": float, ...}
+            Future resolving to StepResult.
 
-        Tiger Style: Explicit batch format, explicit return.
+        Tiger Style: Explicit datum contract, explicit return.
         Tinker: Returns future immediately (non-blocking).
         """
         ...
