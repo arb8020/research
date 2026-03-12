@@ -20,6 +20,7 @@ from .._logging import EvalLoggingContext, setup_eval_logging
 from ..agents import Actor, AgentState, RunConfig, run_agent
 from ..core import Environment, EvalConfig, Metric, Score, Trajectory
 from ..dtypes import (
+    FirstToken,
     LLMCallEnd,
     StreamChunk,
     TextDelta,
@@ -30,10 +31,11 @@ from ..dtypes import (
 from ..progress import MultiProgress
 from ..training.types import AttemptRow, ProblemRow, SampleScorer, ScoringContext
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)  # Human/operator-oriented module logs.
 
-# Logger for structured eval events — handlers configured by setup_eval_logging()
-# This follows the "wide events" pattern: comprehensive events with all context
+# Structured eval event stream. This is separate from the module logger above:
+# use `_event_logger` for machine-readable operational facts that belong in
+# events.jsonl / per-sample event logs.
 _event_logger = logging.getLogger("rollouts.eval.events")
 
 
@@ -523,14 +525,12 @@ class EvalReport:
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        # Save individual samples
+        trajectories_dir = output_dir / "trajectories"
+        _write_trajectories(trajectories_dir, self.sample_results)
+
+        # Save individual samples as compact summary rows that link to the full trajectory.
         samples_dir = output_dir / "samples"
-        samples_dir.mkdir(exist_ok=True)
-        for sample in self.sample_results:
-            sample_file = samples_dir / f"{sample.id}.json"
-            sample_dict = sample.to_dict()
-            sample_dict = sanitize_api_keys(sample_dict)
-            sample_file.write_text(json.dumps(sample_dict, indent=2, default=str))
+        _write_sample_summaries(samples_dir, self.sample_results, output_dir=output_dir)
 
         # Save summary report
         summary = {
@@ -549,14 +549,6 @@ class EvalReport:
         summary = sanitize_api_keys(summary)
         report_file = output_dir / "report.json"
         report_file.write_text(json.dumps(summary, indent=2))
-
-        # Save trajectories separately for easy loading
-        trajectories_dir = output_dir / "trajectories"
-        trajectories_dir.mkdir(exist_ok=True)
-        for sample in self.sample_results:
-            if sample.trajectory:
-                traj_file = trajectories_dir / f"{sample.id}.jsonl"
-                Trajectory.save_jsonl([sample.trajectory], str(traj_file))
 
         logger.info(f"saved evaluation to {output_dir}")
         logger.info(f"  summary: {report_file}")
@@ -578,14 +570,11 @@ def _write_partial_report(
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Save individual samples
+    trajectories_dir = output_dir / "trajectories"
+    _write_trajectories(trajectories_dir, results)
+
     samples_dir = output_dir / "samples"
-    samples_dir.mkdir(exist_ok=True)
-    for sample in results:
-        sample_file = samples_dir / f"{sample.id}.json"
-        sample_dict = sample.to_dict()
-        sample_dict = sanitize_api_keys(sample_dict)
-        sample_file.write_text(json.dumps(sample_dict, indent=2, default=str))
+    _write_sample_summaries(samples_dir, results, output_dir=output_dir)
 
     # Save partial summary
     summary_metrics = compute_summary_metrics(results)
@@ -602,6 +591,56 @@ def _write_partial_report(
     partial_report = sanitize_api_keys(partial_report)
     report_file = output_dir / "report.json"
     report_file.write_text(json.dumps(partial_report, indent=2))
+
+
+def _compact_sample_dict(
+    sample: AttemptRow,
+    *,
+    trajectory_relpath: str | None = None,
+) -> dict[str, Any]:
+    """Create a compact per-sample summary artifact.
+
+    Samples are the first-line debugging surface: final score, compact turn
+    history, env/resource facts, and links to heavier artifacts. The full
+    conversation transcript lives under trajectories/.
+    """
+    sample_dict = sample.to_dict()
+    sample_dict.pop("trajectory", None)
+
+    metadata = dict(sample_dict.get("metadata") or {})
+    metadata.pop("sample_data", None)
+    sample_dict["metadata"] = metadata
+
+    if trajectory_relpath is not None:
+        sample_dict["trajectory_path"] = trajectory_relpath
+    return sample_dict
+
+
+def _write_sample_summaries(
+    samples_dir: Path,
+    results: list[AttemptRow],
+    *,
+    output_dir: Path,
+) -> None:
+    samples_dir.mkdir(exist_ok=True)
+    for sample in results:
+        sample_file = samples_dir / f"{sample.id}.json"
+        trajectory_relpath = None
+        if sample.trajectory:
+            trajectory_relpath = str(
+                (output_dir / "trajectories" / f"{sample.id}.jsonl").relative_to(output_dir)
+            )
+        sample_dict = _compact_sample_dict(sample, trajectory_relpath=trajectory_relpath)
+        sample_dict = sanitize_api_keys(sample_dict)
+        sample_file.write_text(json.dumps(sample_dict, indent=2, default=str))
+
+
+def _write_trajectories(trajectories_dir: Path, results: list[AttemptRow]) -> None:
+    trajectories_dir.mkdir(exist_ok=True)
+    for sample in results:
+        if sample.trajectory:
+            traj_file = trajectories_dir / f"{sample.id}.jsonl"
+            Trajectory.save_jsonl([sample.trajectory], str(traj_file))
 
 
 def sanitize_api_keys(data: JsonValue) -> JsonValue:
@@ -797,13 +836,23 @@ async def evaluate_sample(
 
         # Wide events: detailed timing for performance analysis
         sample_turn = current_turn.get(sample_id, 0)
-        if isinstance(event, LLMCallEnd):
+        if isinstance(event, FirstToken):
+            _event_logger.info(
+                "llm_first_token",
+                extra={
+                    "sample_id": sample_id,
+                    "turn": sample_turn,
+                    "ttft_ms": round(event.ttft_ms, 1),
+                },
+            )
+        elif isinstance(event, LLMCallEnd):
             _event_logger.info(
                 "llm_call",
                 extra={
                     "sample_id": sample_id,
                     "turn": sample_turn,
                     "duration_ms": round(event.duration_ms, 1),
+                    "ttft_ms": round(event.ttft_ms, 1) if event.ttft_ms is not None else None,
                     "provider": event.provider,
                     "model": event.model,
                     "tokens_in": event.tokens_in,

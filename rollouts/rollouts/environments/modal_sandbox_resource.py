@@ -27,6 +27,13 @@ logger = logging.getLogger(__name__)
 _event_logger = logging.getLogger("rollouts.eval.events")
 
 
+def _command_preview(command: str, *, max_len: int = 160) -> str:
+    compact = " ".join(command.split())
+    if len(compact) <= max_len:
+        return compact
+    return compact[: max_len - 3] + "..."
+
+
 @dataclass(frozen=True)
 class ModalSandboxResourceConfig:
     app_name: str = "rollouts-sandbox"
@@ -213,21 +220,53 @@ class ModalSandboxResource:
     ) -> CommandExecutionResult:
         del session_id, cancel_scope
         sandbox = await self._ensure_sandbox()
+        timeout_seconds = max(1, math.ceil(timeout))
+        command_preview = _command_preview(command)
 
         def do_run() -> tuple[str, str, int]:
             proc = sandbox.exec(
                 "bash",
                 "-lc",
                 f"cd {cwd} && {command}",
-                timeout=max(1, math.ceil(timeout)),
+                timeout=timeout_seconds,
             )
             proc.wait()
             return proc.stdout.read(), proc.stderr.read(), proc.returncode
 
-        timeout_seconds = max(1, math.ceil(timeout))
         for attempt in range(SANDBOX_COMMAND_TIMEOUT_RETRIES + 1):
+            started_at = time.perf_counter()
+            _event_logger.info(
+                "sandbox_command_start",
+                extra={
+                    "sandbox_id": self._sandbox_id,
+                    "cwd": cwd,
+                    "timeout_seconds": timeout_seconds,
+                    "attempt": attempt + 1,
+                    "max_attempts": SANDBOX_COMMAND_TIMEOUT_RETRIES + 1,
+                    "problem_id": self.sample_data.get("problem_id"),
+                    "problem_name": self.sample_data.get("problem_name"),
+                    "command_preview": command_preview,
+                },
+            )
             try:
                 stdout, stderr, returncode = await trio.to_thread.run_sync(do_run)
+                duration_ms = (time.perf_counter() - started_at) * 1000.0
+                _event_logger.info(
+                    "sandbox_command_end",
+                    extra={
+                        "sandbox_id": self._sandbox_id,
+                        "cwd": cwd,
+                        "timeout_seconds": timeout_seconds,
+                        "attempt": attempt + 1,
+                        "max_attempts": SANDBOX_COMMAND_TIMEOUT_RETRIES + 1,
+                        "problem_id": self.sample_data.get("problem_id"),
+                        "problem_name": self.sample_data.get("problem_name"),
+                        "command_preview": command_preview,
+                        "duration_ms": round(duration_ms, 1),
+                        "returncode": returncode,
+                        "status": "success" if returncode == 0 else "error",
+                    },
+                )
                 return CommandExecutionResult(
                     returncode=returncode,
                     stdout=stdout,
@@ -261,6 +300,7 @@ class ModalSandboxResource:
                             "cwd": cwd,
                             "problem_id": self.sample_data.get("problem_id"),
                             "problem_name": self.sample_data.get("problem_name"),
+                            "command_preview": command_preview,
                         },
                     )
                     continue
