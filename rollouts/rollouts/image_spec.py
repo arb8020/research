@@ -390,12 +390,13 @@ def resolve_image_for_provisioning(
 
 def manifest_write_command(manifest: ImageManifest, path: str = DEFAULT_IMAGE_MANIFEST_PATH) -> str:
     """Return a shell command that writes a manifest file."""
+    import base64
+
     payload = manifest.to_json(indent=2)
+    encoded = base64.b64encode(payload.encode("utf-8")).decode("ascii")
     return (
-        "python3 - <<'PY'\n"
-        "from pathlib import Path\n"
-        f"path = Path({path!r}).expanduser()\n"
-        "path.parent.mkdir(parents=True, exist_ok=True)\n"
-        f"path.write_text({payload!r})\n"
-        "PY"
+        "python3 -c "
+        f"\"import base64; from pathlib import Path; path = Path({path!r}).expanduser(); "
+        "path.parent.mkdir(parents=True, exist_ok=True); "
+        f"path.write_text(base64.b64decode({encoded!r}).decode('utf-8'))\""
     )
