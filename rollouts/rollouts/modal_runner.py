@@ -29,6 +29,7 @@ import argparse
 import importlib.util
 import logging
 import os
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -190,7 +191,7 @@ def _build_modal_image(modal: Any, deps: DepsConfig, gpu_type: str) -> Any:
         if pre:
             parts.extend(["--prerelease", "allow"])
         parts.extend(packages)
-        return " ".join(parts)
+        return shlex.join(parts)
 
     if spec.pip_packages:
         image = image.run_commands(
