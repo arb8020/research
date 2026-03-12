@@ -458,7 +458,7 @@ _kernel_file.write(_kernel_code)
 _kernel_file.close()
 
 try:
-    spec = importlib.util.spec_from_file_location("kernelbench_candidate", _kernel_path)
+    spec = importlib.util.spec_from_file_location("generated_candidate_module", _kernel_path)
     module = importlib.util.module_from_spec(spec)
     assert spec is not None and spec.loader is not None
     spec.loader.exec_module(module)
@@ -646,7 +646,7 @@ if "CUDA_HOME" not in os.environ:
 # ─────────────────────────────────────────────────────────────────────────────
 
 try:
-    spec = importlib.util.spec_from_file_location("kernelbench_candidate", "{kernel_file_path}")
+    spec = importlib.util.spec_from_file_location("generated_candidate_module", "{kernel_file_path}")
     module = importlib.util.module_from_spec(spec)
     assert spec is not None and spec.loader is not None
     spec.loader.exec_module(module)
