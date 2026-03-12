@@ -69,6 +69,8 @@ def _build_image_from_deps(modal: Any, deps: Any) -> Any:
             pip_kwargs["index_url"] = deps.pip_index_url
         if deps.pip_extra_index_url:
             pip_kwargs["extra_index_url"] = deps.pip_extra_index_url
+        if getattr(deps, "pip_prerelease", False):
+            pip_kwargs["pre"] = True
         image = image.pip_install(*deps.pip_packages, **pip_kwargs)
 
     for cmd in deps.bootstrap_commands:
@@ -97,6 +99,7 @@ def _build_default_image(modal: Any, gpu_type: str) -> Any:
             torch_version,
             index_url=torch_index,
             extra_index_url="https://pypi.org/simple",
+            pre="nightly" in torch_index,
         )
     )
     return image

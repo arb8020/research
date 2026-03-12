@@ -66,6 +66,7 @@ GLM_DEPS = DepsConfig(
     ),
     pip_index_url="https://download.pytorch.org/whl/nightly/cu128",
     pip_extra_index_url="https://pypi.org/simple",
+    pip_prerelease=True,
     bootstrap_commands=(
         # Install uv first (uv_pip_install installs it, but we need it for bootstrap)
         "curl -LsSf https://astral.sh/uv/install.sh | sh && . ~/.local/bin/env",

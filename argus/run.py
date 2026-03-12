@@ -218,6 +218,7 @@ def _uv_pip_install_command(
     *,
     index_url: str | None = None,
     extra_index_url: str | None = None,
+    pre: bool = False,
     extra_options: str | None = None,
 ) -> str:
     quoted_packages = " ".join(shlex.quote(package) for package in packages)
@@ -226,6 +227,8 @@ def _uv_pip_install_command(
         parts.extend(["--index-url", shlex.quote(index_url)])
     if extra_index_url:
         parts.extend(["--extra-index-url", shlex.quote(extra_index_url)])
+    if pre:
+        parts.append("--pre")
     if extra_options:
         parts.append(extra_options)
     parts.append(quoted_packages)
@@ -640,6 +643,7 @@ async def _deploy_and_submit(
                     custom_image.pip_packages,
                     index_url=custom_image.pip_index_url,
                     extra_index_url=custom_image.pip_extra_index_url,
+                    pre=custom_image.pip_prerelease,
                 ),
             ))
             manifest_features_applied.append(image_pip_feature)
@@ -677,6 +681,8 @@ async def _deploy_and_submit(
                     or (custom_image.pip_index_url if custom_image else None),
                     extra_index_url=custom_overlay.pip_extra_index_url
                     or (custom_image.pip_extra_index_url if custom_image else None),
+                    pre=custom_overlay.pip_prerelease
+                    or (custom_image.pip_prerelease if custom_image else False),
                 ),
             ))
             manifest_features_applied.append(overlay_pip_feature)

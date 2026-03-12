@@ -154,6 +154,8 @@ def _build_modal_image(modal: Any, deps: DepsConfig, gpu_type: str) -> Any:
             uv_kwargs["index_url"] = spec.pip_index_url
         if spec.pip_extra_index_url:
             uv_kwargs["extra_index_url"] = spec.pip_extra_index_url
+        if spec.pip_prerelease:
+            uv_kwargs["pre"] = True
         image = image.uv_pip_install(*spec.pip_packages, **uv_kwargs)
 
     for cmd in spec.build_commands:
@@ -172,6 +174,8 @@ def _build_modal_image(modal: Any, deps: DepsConfig, gpu_type: str) -> Any:
             uv_kwargs["extra_index_url"] = overlay.pip_extra_index_url
         elif spec.pip_extra_index_url:
             uv_kwargs["extra_index_url"] = spec.pip_extra_index_url
+        if overlay.pip_prerelease or spec.pip_prerelease:
+            uv_kwargs["pre"] = True
         image = image.uv_pip_install(*overlay.pip_packages, **uv_kwargs)
 
     for cmd in overlay.commands:

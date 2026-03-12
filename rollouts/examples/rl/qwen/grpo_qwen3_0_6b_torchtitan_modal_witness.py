@@ -55,6 +55,7 @@ QWEN_TORCHTITAN_MODAL_DEPS = DepsConfig(
     ),
     pip_index_url="https://download.pytorch.org/whl/nightly/cu128",
     pip_extra_index_url="https://pypi.org/simple",
+    pip_prerelease=True,
     bootstrap_commands=(
         "curl -LsSf https://astral.sh/uv/install.sh | sh && . ~/.local/bin/env",
         "~/.local/bin/uv pip install --system 'sglang[all] @ git+https://github.com/sgl-project/sglang.git@main#subdirectory=python'",

@@ -56,6 +56,7 @@ class DepsConfig:
     pip_packages: tuple[str, ...] = ()
     pip_index_url: str | None = None
     pip_extra_index_url: str | None = None
+    pip_prerelease: bool = False
     bootstrap_commands: tuple[str, ...] = ()
     image: ImageSpec | None = None
     runtime_overlay: RuntimeOverlay = field(default_factory=RuntimeOverlay)
@@ -80,6 +81,7 @@ class DepsConfig:
             pip_packages=self.pip_packages,
             pip_index_url=self.pip_index_url,
             pip_extra_index_url=self.pip_extra_index_url,
+            pip_prerelease=self.pip_prerelease,
             build_commands=self.bootstrap_commands,
         )
 

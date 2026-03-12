@@ -152,6 +152,7 @@ class ImageSpec:
     pip_packages: tuple[str, ...] = ()
     pip_index_url: str | None = None
     pip_extra_index_url: str | None = None
+    pip_prerelease: bool = False
     build_commands: tuple[str, ...] = ()
     env: dict[str, str] = field(default_factory=dict)
     features: tuple[str, ...] = ()
@@ -207,6 +208,7 @@ class ImageSpec:
         pip_packages: tuple[str, ...] = (),
         pip_index_url: str | None = None,
         pip_extra_index_url: str | None = None,
+        pip_prerelease: bool | None = None,
         build_commands: tuple[str, ...] = (),
         env: dict[str, str] | None = None,
         features: tuple[str, ...] = (),
@@ -219,6 +221,7 @@ class ImageSpec:
             pip_packages=_dedupe(self.pip_packages + pip_packages),
             pip_index_url=pip_index_url or self.pip_index_url,
             pip_extra_index_url=pip_extra_index_url or self.pip_extra_index_url,
+            pip_prerelease=self.pip_prerelease if pip_prerelease is None else pip_prerelease,
             build_commands=self.build_commands + build_commands,
             env=merged_env,
             features=_dedupe(self.features + features),
@@ -242,6 +245,7 @@ class RuntimeOverlay:
     pip_packages: tuple[str, ...] = ()
     pip_index_url: str | None = None
     pip_extra_index_url: str | None = None
+    pip_prerelease: bool = False
     commands: tuple[str, ...] = ()
     env: dict[str, str] = field(default_factory=dict)
     features: tuple[str, ...] = ()
@@ -254,6 +258,7 @@ class RuntimeOverlay:
         pip_packages: tuple[str, ...] = (),
         pip_index_url: str | None = None,
         pip_extra_index_url: str | None = None,
+        pip_prerelease: bool | None = None,
         commands: tuple[str, ...] = (),
         env: dict[str, str] | None = None,
         features: tuple[str, ...] = (),
@@ -266,6 +271,7 @@ class RuntimeOverlay:
             pip_packages=_dedupe(self.pip_packages + pip_packages),
             pip_index_url=pip_index_url or self.pip_index_url,
             pip_extra_index_url=pip_extra_index_url or self.pip_extra_index_url,
+            pip_prerelease=self.pip_prerelease if pip_prerelease is None else pip_prerelease,
             commands=self.commands + commands,
             env=merged_env,
             features=_dedupe(self.features + features),
