@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from ..training.types import Sample, SampleScorer
+from ..training.types import AttemptRow, SampleScorer
 
 if TYPE_CHECKING:
     from ..agents import RunConfig
@@ -33,7 +33,7 @@ class Score:
         return sum(value * weight for value, weight in weighted) / total_weight
 
 
-ScoreFn = Callable[[Sample], Score] | Callable[[Sample], Awaitable[Score]]
+ScoreFn = Callable[[AttemptRow], Score] | Callable[[AttemptRow], Awaitable[Score]]
 PrepareMessagesFn = Callable[[dict[str, Any]], list[Any]]
 EnvironmentFactory = Callable[[dict[str, Any]], Any]
 

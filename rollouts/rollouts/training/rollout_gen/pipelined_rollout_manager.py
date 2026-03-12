@@ -52,11 +52,11 @@ from ...training.rollout_gen.rollout_generation import convert_to_batch
 from ...training.runtime import resolve_rollout_runtime
 from ...training.scoring import resolve_sample_scorer
 from ...training.types import (
+    AttemptRow,
     IncompleteGroupPolicy,
     RolloutBatch,
     RolloutConfig,
     RolloutRuntime,
-    Sample,
     SampleScorer,
 )
 
@@ -93,7 +93,7 @@ class PipelinedRolloutManager:
     sync_in_progress_fn: Callable[[], bool] | None = None
 
     # Internal state
-    _sample_queue: list[Sample] = field(default_factory=list)
+    _sample_queue: list[AttemptRow] = field(default_factory=list)
     _queue_lock: trio.Lock = field(default_factory=trio.Lock)
     _current_weight_version: int = 0
     _sampling_task_scope: trio.CancelScope | None = None
@@ -216,7 +216,7 @@ class PipelinedRolloutManager:
         self,
         current_weight_version: int,
         sample_scorer: SampleScorer | None = None,
-        score_fn: Callable[[Sample], Any] | None = None,
+        score_fn: Callable[[AttemptRow], Any] | None = None,
         timeout: float = 60.0,
     ) -> RolloutBatch:
         """Get a batch of samples, filtering stale ones.
@@ -440,7 +440,7 @@ class PipelinedRolloutManager:
         self,
         prompts: list[str | dict[str, Any]],
         weight_version: int,
-    ) -> list[Sample]:
+    ) -> list[AttemptRow]:
         """Generate samples for prompts in parallel.
 
         Tags all samples with weight_version.
@@ -449,7 +449,7 @@ class PipelinedRolloutManager:
         async def generate_for_prompt(
             prompt: str | dict[str, Any],
             group_idx: int,
-        ) -> list[Sample]:
+        ) -> list[AttemptRow]:
             """Generate samples for a single prompt with group index."""
             samples = await self._call_user_generate_fn([prompt])
             for sample in samples:
@@ -464,7 +464,7 @@ class PipelinedRolloutManager:
 
         # Launch all tasks in parallel
         async with trio.open_nursery() as nursery:
-            results: list[Sample] = []
+            results: list[AttemptRow] = []
             results_lock = trio.Lock()
 
             async def run_task(prompt: str | dict[str, Any], group_idx: int) -> None:
@@ -482,10 +482,10 @@ class PipelinedRolloutManager:
         self,
         refill_requests: list[tuple[str | dict[str, Any], int]],
         weight_version: int,
-    ) -> list[Sample]:
+    ) -> list[AttemptRow]:
         """Generate additional samples for existing group ids."""
         async with trio.open_nursery() as nursery:
-            results: list[Sample] = []
+            results: list[AttemptRow] = []
             results_lock = trio.Lock()
 
             async def run_task(prompt: str | dict[str, Any], group_idx: int) -> None:
@@ -504,7 +504,7 @@ class PipelinedRolloutManager:
     async def _call_user_generate_fn(
         self,
         prompts: list[str | dict[str, Any]],
-    ) -> list[Sample]:
+    ) -> list[AttemptRow]:
         """Call user-provided generate function (async or sync)."""
         import inspect
 
@@ -519,12 +519,12 @@ class PipelinedRolloutManager:
             )
 
         assert isinstance(samples, list)
-        assert all(isinstance(s, Sample) for s in samples)
+        assert all(isinstance(s, AttemptRow) for s in samples)
 
         return samples
 
     def _prune_group_prompts(
-        self, active_samples: list[Sample], consumed_samples: list[Sample]
+        self, active_samples: list[AttemptRow], consumed_samples: list[AttemptRow]
     ) -> None:
         """Forget prompt identities for groups that have fully left the pipeline."""
         active_group_ids = {

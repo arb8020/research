@@ -8,7 +8,7 @@ This is the simplest rollout type - for RL rollouts, see rl.py.
 
 from typing import Any
 
-from ...training.types import Sample
+from ...training.types import TrainingSample
 
 
 def compute_loss_mask(
@@ -180,7 +180,7 @@ def prepare_sft_sample(
     response: str,
     tokenizer: Any,
     max_length: int = 2048,
-) -> Sample:
+) -> TrainingSample:
     """Prepare single SFT training sample from prompt/response.
 
     Args:
@@ -190,7 +190,7 @@ def prepare_sft_sample(
         max_length: Maximum sequence length
 
     Returns:
-        Sample with tokens and loss_mask set
+        TrainingSample with tokens and loss_mask set
 
     Example (simple prompt):
         >>> sample = prepare_sft_sample(
@@ -241,10 +241,11 @@ def prepare_sft_sample(
     # Postcondition: tokens and loss_mask must align
     assert len(tokens) == len(loss_mask), "Token and loss mask lengths must match"
 
-    return Sample(
-        prompt=prompt,
+    return TrainingSample(
         tokens=tokens,
         loss_mask=loss_mask,
+        response_length=sum(1 for weight in loss_mask if weight > 0.0),
+        metadata={"prompt": prompt, "response": response},
     )
 
 
@@ -254,7 +255,7 @@ def example_sft_rollout_fn(
     tokenizer: Any,
     dataset: list[dict[str, Any]],
     **kwargs: Any,
-) -> list[Sample]:
+) -> list[TrainingSample]:
     """Example SFT rollout function.
 
     This is what a user would provide to RolloutConfig.generate_fn.
@@ -319,14 +320,14 @@ def _lookup_data_item(
 
 
 def export_samples_to_jsonl(
-    samples: list[Sample],
+    samples: list[TrainingSample],
     output_path: str,
     include_tokens: bool = False,
 ) -> None:
     """Export samples to JSONL file.
 
     Args:
-        samples: List of Sample objects to export
+        samples: List of TrainingSample objects to export
         output_path: Path to output JSONL file
         include_tokens: Whether to include token IDs (can be large)
 
@@ -348,11 +349,9 @@ def export_samples_to_jsonl(
         for sample in samples:
             # Convert to dict
             data = {
-                "prompt": sample.prompt,
-                "response": sample.response,
-                "reward": sample.reward,
+                "prompt": sample.metadata.get("prompt"),
+                "response": sample.metadata.get("response"),
                 "metadata": sample.metadata,
-                "status": sample.status.value,
             }
 
             # Optionally include tokens (can make file large)
@@ -368,7 +367,7 @@ def export_samples_to_jsonl(
 def load_samples_from_jsonl(
     input_path: str,
     limit: int | None = None,
-) -> list[Sample]:
+) -> list[TrainingSample]:
     """Load samples from JSONL file.
 
     Args:
@@ -376,7 +375,7 @@ def load_samples_from_jsonl(
         limit: Optional limit on number of samples to load
 
     Returns:
-        List of Sample objects
+        List of TrainingSample objects
 
     Example:
         >>> samples = load_samples_from_jsonl("sft_data.jsonl", limit=100)
@@ -404,8 +403,15 @@ def load_samples_from_jsonl(
             # Parse JSON
             data = json.loads(line)
 
-            # Create Sample from dict
-            sample = Sample.from_dict(data)
+            sample = TrainingSample(
+                tokens=data.get("tokens", []),
+                loss_mask=data.get("loss_mask", []),
+                response_length=data.get(
+                    "response_length",
+                    sum(1 for weight in data.get("loss_mask", []) if weight > 0.0),
+                ),
+                metadata=data.get("metadata", {}),
+            )
             samples.append(sample)
 
     # Postcondition
@@ -415,7 +421,7 @@ def load_samples_from_jsonl(
 
 
 def export_samples_to_huggingface_format(
-    samples: list[Sample],
+    samples: list[TrainingSample],
     output_path: str,
 ) -> None:
     """Export samples to HuggingFace datasets JSONL format.
@@ -424,7 +430,7 @@ def export_samples_to_huggingface_format(
     and can be loaded with datasets.load_dataset("json", data_files=...).
 
     Args:
-        samples: List of Sample objects to export
+        samples: List of TrainingSample objects to export
         output_path: Path to output JSONL file
 
     Example:
@@ -445,17 +451,19 @@ def export_samples_to_huggingface_format(
     with open(output_file, "w") as f:
         for sample in samples:
             # HuggingFace format: messages array
-            if isinstance(sample.prompt, str):
+            prompt = sample.metadata.get("prompt", "")
+            response = sample.metadata.get("response", "")
+            if isinstance(prompt, str):
                 # Simple prompt/response
                 messages = [
-                    {"role": "user", "content": sample.prompt},
-                    {"role": "assistant", "content": sample.response},
+                    {"role": "user", "content": prompt},
+                    {"role": "assistant", "content": response},
                 ]
-            elif isinstance(sample.prompt, list):
+            elif isinstance(prompt, list):
                 # Multi-turn conversation
-                messages = list(sample.prompt) + [{"role": "assistant", "content": sample.response}]
+                messages = list(prompt) + [{"role": "assistant", "content": response}]
             else:
-                raise ValueError(f"Unsupported prompt type: {type(sample.prompt)}")
+                raise ValueError(f"Unsupported prompt type: {type(prompt)}")
 
             # Create HuggingFace-compatible record
             record = {

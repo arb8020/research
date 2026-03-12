@@ -11,9 +11,9 @@ from typing import Any
 import trio
 
 from ..agents import Actor, RunConfig, rollout
-from ..core import Endpoint, Environment, Trajectory
+from ..core import Endpoint, Environment, EnvironmentFactory, ScoreFn, Trajectory
 from ..dtypes import StreamEvent
-from ..training.types import Sample
+from ..training.types import AttemptRow, ProblemRow
 from .formatting import format_prompt
 from .types import PromptTemplate
 
@@ -75,10 +75,13 @@ async def evaluate_single_sample(
     # Build Sample for score function
     # Try common ground truth field names
     ground_truth = sample.get("ground_truth") or sample.get("answer") or sample.get("label")
-    eval_sample = Sample(
-        id=f"seed_{seed}",
-        input=sample,
-        ground_truth=ground_truth,
+    eval_sample = AttemptRow(
+        attempt_id=f"seed_{seed}",
+        problem=ProblemRow(
+            problem_id=f"seed_{seed}",
+            payload=sample,
+            ground_truth=ground_truth,
+        ),
         trajectory=final_trajectory,
     )
 

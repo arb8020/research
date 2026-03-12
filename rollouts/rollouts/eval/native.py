@@ -27,7 +27,7 @@ from ..dtypes import (
     ToolExecutionEnd,
 )
 from ..progress import MultiProgress
-from ..training.types import Sample, SampleScorer
+from ..training.types import AttemptRow, ProblemRow, SampleScorer
 
 logger = logging.getLogger(__name__)
 
@@ -154,8 +154,8 @@ def _extract_text_from_content(content: object) -> str:
 async def _evaluate_batch(
     samples: list[tuple[str, dict[str, Any]]],
     runtime: EvalRuntime,
-    on_sample_complete: Callable[[Sample, list[Sample]], None] | None = None,
-) -> list[Sample]:
+    on_sample_complete: Callable[[AttemptRow, list[AttemptRow]], None] | None = None,
+) -> list[AttemptRow]:
     """Evaluate a batch of samples, handling sequential vs parallel execution.
 
     This is the core evaluation loop, used for both initial runs and retries.
@@ -169,10 +169,10 @@ async def _evaluate_batch(
     """
     config = runtime.config
     progress = runtime.progress
-    results: list[Sample] = []
+    results: list[AttemptRow] = []
     results_lock = trio.Lock()
 
-    async def run_one(sample_id: str, sample_data: dict[str, Any]) -> Sample:
+    async def run_one(sample_id: str, sample_data: dict[str, Any]) -> AttemptRow:
         """Evaluate a single sample."""
         task_name = sample_data.get("name", sample_id)
         if progress:
@@ -233,7 +233,7 @@ async def _evaluate_batch(
 
 async def _compute_score(
     score_fn: Callable[..., Any] | None,
-    sample: Sample,
+    sample: AttemptRow,
     sample_scorer: SampleScorer | None = None,
 ) -> Score:
     """Compute score from either an explicit scorer stage or a legacy score function."""
@@ -457,7 +457,7 @@ def _get_git_info() -> dict[str, Any]:
     return info
 
 
-def _extract_evaluator_provenance(results: list[Sample]) -> dict[str, Any] | None:
+def _extract_evaluator_provenance(results: list[AttemptRow]) -> dict[str, Any] | None:
     """Best-effort scoring-runtime provenance extracted from sample metadata."""
     for sample in results:
         provenance = sample.metadata.get("evaluator_provenance")
@@ -476,7 +476,7 @@ def _extract_evaluator_provenance(results: list[Sample]) -> dict[str, Any] | Non
     return None
 
 
-def _build_report_provenance(config: EvalConfig, results: list[Sample]) -> dict[str, Any]:
+def _build_report_provenance(config: EvalConfig, results: list[AttemptRow]) -> dict[str, Any]:
     """Assemble report-level provenance from config metadata and sample outputs."""
     provenance: dict[str, Any] = {}
 
@@ -498,7 +498,7 @@ class EvalReport:
     dataset_path: str
     total_samples: int
     summary_metrics: dict[str, float]
-    sample_results: list[Sample]
+    sample_results: list[AttemptRow]
     config: dict[str, Any]
     provenance: dict[str, Any] = field(default_factory=dict)
     timestamp: str = field(default_factory=lambda: datetime.now().isoformat())
@@ -553,7 +553,7 @@ class EvalReport:
 
 def _write_partial_report(
     output_dir: Path,
-    results: list[Sample],
+    results: list[AttemptRow],
     config: EvalConfig,
     interrupted: bool = False,
     resume_from: int = 0,
@@ -695,7 +695,7 @@ async def evaluate_sample(
     sample_id: str,
     runtime: EvalRuntime,
     environment: Environment | None = None,
-) -> Sample:
+) -> AttemptRow:
     """Evaluate a single sample - analogous to run_agent_step.
 
     This is the atomic unit of evaluation that can be easily parallelized.
@@ -708,7 +708,7 @@ async def evaluate_sample(
         environment: Fresh Environment instance for this sample (None for tool-free eval)
 
     Returns:
-        Sample with trajectory, score, and computed reward
+        AttemptRow with trajectory, score, and computed reward
     """
     # Unpack runtime for convenience
     config = runtime.config
@@ -907,17 +907,23 @@ async def evaluate_sample(
         except Exception as e:
             logger.warning(f"Failed to serialize environment state: {e}")
 
-    # Build Sample with trajectory for score function
+    problem = ProblemRow(
+        problem_id=sample_id,
+        payload=sample_data,
+        ground_truth=sample_data.get("ground_truth") or sample_data.get("answer"),
+        metadata=sample_data.get("metadata", {}),
+    )
+
+    # Build AttemptRow with trajectory for score function
     # Merge trajectory metadata (from environment) with sample_data metadata
     # Trajectory metadata takes precedence (contains results from environment)
     combined_metadata = {
         **sample_data.get("metadata", {}),
         **final_trajectory.metadata,
     }
-    sample = Sample(
-        id=sample_id,
-        input=sample_data,
-        ground_truth=sample_data.get("ground_truth") or sample_data.get("answer"),
+    sample = AttemptRow(
+        attempt_id=sample_id,
+        problem=problem,
         trajectory=final_trajectory,
         environment_state=env_state,
         metadata=combined_metadata,
@@ -1066,7 +1072,7 @@ async def evaluate(
     last_report_count = 0
     resume_from = 0
 
-    def on_sample_complete(sample: Sample, all_results: list[Sample]) -> None:
+    def on_sample_complete(sample: AttemptRow, all_results: list[AttemptRow]) -> None:
         """Write partial report after batch_size samples complete."""
         nonlocal last_report_count
         if not config.output_dir:
@@ -1192,7 +1198,7 @@ async def evaluate(
     return report
 
 
-def compute_summary_metrics(results: list[Sample]) -> dict[str, float]:
+def compute_summary_metrics(results: list[AttemptRow]) -> dict[str, float]:
     """Compute summary statistics from results using Score.
 
     Aggregates metrics from Score objects across all results.
@@ -1359,9 +1365,9 @@ async def simple_evaluate(
 
 
 def group_by(
-    results: list[Sample],
-    key: Callable[[Sample], str],
-) -> dict[str, list[Sample]]:
+    results: list[AttemptRow],
+    key: Callable[[AttemptRow], str],
+) -> dict[str, list[AttemptRow]]:
     """Group evaluation results by a key function.
 
     Pure function for slicing results by metadata.
@@ -1377,7 +1383,7 @@ def group_by(
     Returns:
         Dict mapping group keys to lists of samples
     """
-    groups: dict[str, list[Sample]] = {}
+    groups: dict[str, list[AttemptRow]] = {}
     for result in results:
         k = key(result)
         if k not in groups:
@@ -1386,7 +1392,7 @@ def group_by(
     return groups
 
 
-def summarize(results: list[Sample]) -> dict[str, float]:
+def summarize(results: list[AttemptRow]) -> dict[str, float]:
     """Compute summary statistics for a list of evaluation results.
 
     Pure function for aggregating metrics.

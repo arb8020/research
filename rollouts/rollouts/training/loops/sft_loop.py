@@ -11,14 +11,14 @@ from typing import Any
 
 from ...training.backends import PyTorchTrainingBackend
 from ...training.metrics import MetricsLogger
-from ...training.types import Sample, SFTTrainingConfig
+from ...training.types import SFTTrainingConfig, TrainingSample
 
 logger = logging.getLogger(__name__)
 
 
 async def run_sft_training(
     backend: PyTorchTrainingBackend,
-    samples: list[Sample],
+    samples: list[TrainingSample],
     config: SFTTrainingConfig,
     metrics_logger: MetricsLogger | None = None,
 ) -> list[dict[str, float]]:
@@ -107,7 +107,7 @@ async def run_sft_training(
 
 
 def collate_batch(
-    samples: list[Sample],
+    samples: list[TrainingSample],
     batch_size: int,
     step: int,
 ) -> dict[str, Any]:
@@ -139,7 +139,7 @@ def collate_batch(
     return prepare_sft_batch(batch_samples)
 
 
-def prepare_sft_batch(samples: list[Sample]) -> dict[str, Any]:
+def prepare_sft_batch(samples: list[TrainingSample]) -> dict[str, Any]:
     """Pure function: Convert samples to training batch using sequence packing.
 
     Uses SLIME-style packing: concatenates sequences instead of padding.

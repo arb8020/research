@@ -1,7 +1,10 @@
 """Training data types.
 
 Pure dataclasses - transparent, no hidden state (Casey Muratori's principle).
-Inspired by SLIME's Sample dataclass + Tinker's loss weights + Miles unified Sample.
+The old flat Sample type has been replaced with:
+- ProblemRow: normalized input/problem data
+- AttemptRow: one execution attempt plus scoring/provenance
+- TrainingSample: trainer-facing token/loss-mask data derived from an attempt
 """
 
 from collections.abc import Callable
@@ -32,216 +35,336 @@ class IncompleteGroupPolicy(Enum):
     ERROR = "error"
 
 
-@dataclass
-class Sample:
-    """Unified sample type for evaluation, rollouts, and training.
+@dataclass(frozen=True)
+class ProblemRow:
+    """Normalized input/problem data prior to execution."""
 
-    Overcomplete: optional fields for different use cases (Miles pattern).
-    - Evaluation: trajectory, score, ground_truth populated
-    - Training: tokens, loss_mask, reward populated
-    - Both: all fields available
-
-    Transparent @dataclass (Casey Muratori: no opacity).
-    All fields are public and accessible. No getters/setters.
-
-    Attributes:
-        # Identity
-        id: Unique identifier for this sample
-        index: Global sample index (position in dataset)
-        group_index: Group ID for GRPO (n samples per prompt)
-
-        # Input
-        input: Raw input data dict (evaluation datasets)
-        prompt: Input prompt (str or chat messages) for generation
-        ground_truth: Expected answer for evaluation
-
-        # Generated
-        trajectory: Full execution trace (multi-turn agent rollout)
-
-        # Training-specific
-        tokens: Tokenized representation
-        response_length: Length of response in tokens
-        loss_mask: Per-token loss weights (0.0 = no loss, 1.0 = compute loss)
-        reward: Reward signal for RL
-        rollout_log_probs: Logprobs from rollout model (off-policy correction)
-
-        # Evaluation-specific
-        score: Computed score with metrics breakdown
-        environment_state: Serialized environment state (for agentic evals)
-
-        # Status and metadata
-        status: Sample processing status
-        metadata: Arbitrary metadata (tool usage, difficulty, etc.)
-
-    Example (evaluation):
-        >>> sample = Sample(
-        ...     id="math_001",
-        ...     input={"question": "What is 2+2?"},
-        ...     ground_truth="4",
-        ...     trajectory=trajectory,  # from run_agent()
-        ...     score=score,  # from score_fn()
-        ... )
-
-    Example (training):
-        >>> sample = Sample(
-        ...     id="train_001",
-        ...     prompt="What is 2+2?",
-        ...     trajectory=trajectory,
-        ...     tokens=[1, 2, 3, 4],
-        ...     loss_mask=[0.0, 0.0, 1.0, 1.0],
-        ...     reward=1.0,
-        ... )
-    """
-
-    # Identity
-    id: str = ""
-    index: int | None = None
-    group_index: int | None = None
-
-    # Input
-    # TODO: Refactor out input/ground_truth - these are legacy fields from non-agentic evals.
-    # For agentic evals (KernelBench, coding, etc.), AgentState.environment has all the
-    # relevant state. Sample should probably just wrap AgentState instead.
-    input: dict[str, Any] = field(default_factory=dict)
-    prompt: str | list[dict[str, str]] = ""
+    problem_id: str
+    payload: dict[str, Any]
     ground_truth: Any | None = None
-
-    # Generated
-    trajectory: "Trajectory | None" = None
-
-    # Training-specific
-    tokens: list[int] = field(default_factory=list)
-    response_length: int = 0
-    loss_mask: list[float] = field(default_factory=list)
-    reward: float = 0.0
-    rollout_log_probs: list[float] | None = None
-    # On-Policy Distillation: teacher model's log probs for student-generated tokens
-    teacher_log_probs: list[float] | None = None
-
-    # Evaluation-specific
-    score: "Score | None" = None
-
-    # Environment state (serialized, for agentic evals with stateful environments)
-    environment_state: dict[str, Any] | None = None
-
-    # Status and metadata
-    status: Status = Status.PENDING
+    source: str | None = None
+    source_row_id: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
-    # Pipeline tracking (PipelineRL-style in-flight updates)
-    weight_version: int = 0  # Model version that generated this sample
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "problem_id": self.problem_id,
+            "payload": self.payload,
+            "ground_truth": self.ground_truth,
+            "source": self.source,
+            "source_row_id": self.source_row_id,
+            "metadata": self.metadata,
+        }
+
+    @staticmethod
+    def from_dict(data: dict[str, Any]) -> "ProblemRow":
+        return ProblemRow(**data)
+
+
+@dataclass
+class TrainingSample:
+    """Trainer-facing token/loss-mask data derived from an attempt."""
+
+    attempt_id: str = ""
+    tokens: list[int] = field(default_factory=list)
+    loss_mask: list[float] = field(default_factory=list)
+    response_length: int = 0
+    rollout_log_probs: list[float] | None = None
+    teacher_log_probs: list[float] | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "attempt_id": self.attempt_id,
+            "tokens": self.tokens,
+            "loss_mask": self.loss_mask,
+            "response_length": self.response_length,
+            "rollout_log_probs": self.rollout_log_probs,
+            "teacher_log_probs": self.teacher_log_probs,
+            "metadata": self.metadata,
+        }
+
+    @staticmethod
+    def from_dict(data: dict[str, Any]) -> "TrainingSample":
+        return TrainingSample(**data)
+
+
+@dataclass
+class AttemptRow:
+    """One execution attempt plus scoring and provenance."""
+
+    attempt_id: str = ""
+    problem: ProblemRow | None = None
+    group_index: int | None = None
+    trajectory: "Trajectory | None" = None
+    training_sample: TrainingSample | None = None
+    reward: float = 0.0
+    score: "Score | None" = None
+    environment_state: dict[str, Any] | None = None
+    status: Status = Status.PENDING
+    metadata: dict[str, Any] = field(default_factory=dict)
+    weight_version: int = 0
+
+    @property
+    def id(self) -> str:
+        return self.attempt_id
+
+    @property
+    def input(self) -> dict[str, Any]:
+        return self.problem.payload if self.problem is not None else {}
+
+    @property
+    def ground_truth(self) -> Any | None:
+        return self.problem.ground_truth if self.problem is not None else None
 
     @property
     def response(self) -> str:
-        """Extract final assistant response from trajectory.
-
-        Returns empty string if no trajectory or no assistant messages.
-        Handles both Message objects and dict representations (after deserialization).
-        """
+        """Extract final assistant response from trajectory."""
         if not self.trajectory or not self.trajectory.messages:
             return ""
         for msg in reversed(self.trajectory.messages):
-            # Handle both Message objects and dicts (from deserialization)
             role = msg.role if hasattr(msg, "role") else msg.get("role")
             content = msg.content if hasattr(msg, "content") else msg.get("content")
 
-            if role == "assistant":
-                if isinstance(content, str):
-                    return content
-                if content is None:
-                    continue
-                # Handle content blocks - extract text
-                from ..core import TextContent, ThinkingContent
+            if role != "assistant":
+                continue
+            if isinstance(content, str):
+                return content
+            if content is None:
+                continue
 
-                parts = []
-                for block in content:
-                    if isinstance(block, TextContent):
-                        parts.append(block.text)
-                    elif isinstance(block, ThinkingContent):
-                        # Include thinking in response for training
-                        parts.append(block.thinking)
-                    elif isinstance(block, dict):
-                        # Deserialized content block
-                        if block.get("type") == "text":
-                            parts.append(block.get("text", ""))
-                        elif block.get("type") == "thinking":
-                            parts.append(block.get("thinking", ""))
-                return "".join(parts)
+            from ..core import TextContent, ThinkingContent
+
+            parts = []
+            for block in content:
+                if isinstance(block, TextContent):
+                    parts.append(block.text)
+                elif isinstance(block, ThinkingContent):
+                    parts.append(block.thinking)
+                elif isinstance(block, dict):
+                    if block.get("type") == "text":
+                        parts.append(block.get("text", ""))
+                    elif block.get("type") == "thinking":
+                        parts.append(block.get("thinking", ""))
+            return "".join(parts)
         return ""
 
-    def to_dict(self) -> dict[str, Any]:
-        """Convert to dict for serialization.
+    @property
+    def prompt(self) -> str | list[dict[str, str]]:
+        """Best-effort prompt/debug preview.
 
-        Returns:
-            Dict representation
-
-        Example:
-            >>> sample = Sample(id="001", prompt="Q")
-            >>> d = sample.to_dict()
-            >>> assert "prompt" in d
+        This is derived, not a core field. Prefer problem payload or request data
+        in new code.
         """
+        if self.problem is not None:
+            payload = self.problem.payload
+            if "messages" in payload:
+                return payload["messages"]
+            if "prompt" in payload:
+                return payload["prompt"]
+        if self.trajectory is None:
+            return ""
+
+        prompt_messages = []
+        for msg in self.trajectory.messages:
+            if getattr(msg, "role", None) == "assistant":
+                break
+            if hasattr(msg, "to_dict"):
+                prompt_messages.append(msg.to_dict())
+            else:
+                prompt_messages.append({"role": msg.role, "content": msg.content})
+        if len(prompt_messages) == 1 and prompt_messages[0]["role"] == "user":
+            return prompt_messages[0]["content"]
+        return prompt_messages
+
+    @property
+    def tokens(self) -> list[int]:
+        return self.training_sample.tokens if self.training_sample is not None else []
+
+    @property
+    def loss_mask(self) -> list[float]:
+        return self.training_sample.loss_mask if self.training_sample is not None else []
+
+    @property
+    def response_length(self) -> int:
+        return self.training_sample.response_length if self.training_sample is not None else 0
+
+    @property
+    def rollout_log_probs(self) -> list[float] | None:
+        if self.training_sample is None:
+            return None
+        return self.training_sample.rollout_log_probs
+
+    @rollout_log_probs.setter
+    def rollout_log_probs(self, value: list[float] | None) -> None:
+        if self.training_sample is None:
+            self.training_sample = TrainingSample(rollout_log_probs=value)
+            return
+        self.training_sample.rollout_log_probs = value
+
+    @property
+    def teacher_log_probs(self) -> list[float] | None:
+        if self.training_sample is None:
+            return None
+        return self.training_sample.teacher_log_probs
+
+    @teacher_log_probs.setter
+    def teacher_log_probs(self, value: list[float] | None) -> None:
+        if self.training_sample is None:
+            self.training_sample = TrainingSample(teacher_log_probs=value)
+            return
+        self.training_sample.teacher_log_probs = value
+
+    def to_dict(self) -> dict[str, Any]:
         import json
 
         from ..core import Trajectory
 
-        d: dict[str, Any] = {}
-        for key, value in self.__dict__.items():
-            if key == "status":
-                d[key] = value.value
-            elif key == "trajectory" and isinstance(value, Trajectory):
-                # Trajectory uses to_json() -> str, so parse it
-                d[key] = json.loads(value.to_json())
-            elif key == "score" and value is not None:
-                # Score is frozen dataclass with metrics tuple
-                d[key] = {
-                    "metrics": [
-                        {
-                            "name": m.name,
-                            "value": m.value,
-                            "weight": m.weight,
-                            "metadata": m.metadata,
-                        }
-                        for m in value.metrics
-                    ]
-                }
-            else:
-                d[key] = value
+        d: dict[str, Any] = {
+            "attempt_id": self.attempt_id,
+            "problem": self.problem.to_dict() if self.problem is not None else None,
+            "group_index": self.group_index,
+            "training_sample": (
+                self.training_sample.to_dict() if self.training_sample is not None else None
+            ),
+            "reward": self.reward,
+            "environment_state": self.environment_state,
+            "status": self.status.value,
+            "metadata": self.metadata,
+            "weight_version": self.weight_version,
+        }
+        if isinstance(self.trajectory, Trajectory):
+            d["trajectory"] = json.loads(self.trajectory.to_json())
+        else:
+            d["trajectory"] = self.trajectory
+        if self.score is not None:
+            d["score"] = {
+                "metrics": [
+                    {
+                        "name": m.name,
+                        "value": m.value,
+                        "weight": m.weight,
+                        "metadata": m.metadata,
+                    }
+                    for m in self.score.metrics
+                ]
+            }
+        else:
+            d["score"] = None
         return d
 
     @staticmethod
-    def from_dict(data: dict[str, Any]) -> "Sample":
-        """Create Sample from dict.
-
-        Args:
-            data: Dict from to_dict()
-
-        Returns:
-            Sample instance
-
-        Example:
-            >>> d = {"id": "001", "prompt": "Q", "status": "completed"}
-            >>> sample = Sample.from_dict(d)
-        """
+    def from_dict(data: dict[str, Any]) -> "AttemptRow":
         from ..core import Metric, Score, Trajectory
 
-        data = data.copy()
-        if "status" in data:
-            data["status"] = Status(data["status"])
-        if "trajectory" in data and data["trajectory"] is not None:
-            data["trajectory"] = Trajectory.from_dict(data["trajectory"])
-        if "score" in data and data["score"] is not None:
-            score_data = data["score"]
-            metrics = tuple(
-                Metric(
-                    name=m["name"],
-                    value=m["value"],
-                    weight=m.get("weight", 1.0),
-                    metadata=m.get("metadata", {}),
+        payload = data.copy()
+        if payload.get("problem") is not None:
+            payload["problem"] = ProblemRow.from_dict(payload["problem"])
+        if payload.get("training_sample") is not None:
+            payload["training_sample"] = TrainingSample.from_dict(payload["training_sample"])
+        if payload.get("status") is not None:
+            payload["status"] = Status(payload["status"])
+        if payload.get("trajectory") is not None:
+            payload["trajectory"] = Trajectory.from_dict(payload["trajectory"])
+        if payload.get("score") is not None:
+            score_data = payload["score"]
+            payload["score"] = Score(
+                metrics=tuple(
+                    Metric(
+                        name=m["name"],
+                        value=m["value"],
+                        weight=m.get("weight", 1.0),
+                        metadata=m.get("metadata", {}),
+                    )
+                    for m in score_data["metrics"]
                 )
-                for m in score_data["metrics"]
             )
-            data["score"] = Score(metrics=metrics)
-        return Sample(**data)
+        return AttemptRow(**payload)
+
+
+@dataclass(init=False)
+class Sample(AttemptRow):
+    """Compatibility wrapper for older call sites still constructing Sample directly.
+
+    New code should use ProblemRow / AttemptRow / TrainingSample explicitly.
+    """
+
+    # TODO(async-design-decisions.md): Remove this compatibility wrapper once
+    # the remaining prompt-optimization/example/dataset helper call sites stop
+    # constructing the old flat Sample shape directly.
+
+    def __init__(
+        self,
+        id: str = "",
+        index: int | None = None,
+        group_index: int | None = None,
+        input: dict[str, Any] | None = None,
+        prompt: str | list[dict[str, str]] = "",
+        ground_truth: Any | None = None,
+        trajectory: "Trajectory | None" = None,
+        tokens: list[int] | None = None,
+        response_length: int = 0,
+        loss_mask: list[float] | None = None,
+        reward: float = 0.0,
+        rollout_log_probs: list[float] | None = None,
+        teacher_log_probs: list[float] | None = None,
+        score: "Score | None" = None,
+        environment_state: dict[str, Any] | None = None,
+        status: Status = Status.PENDING,
+        metadata: dict[str, Any] | None = None,
+        weight_version: int = 0,
+    ) -> None:
+        problem = None
+        if input is not None or ground_truth is not None or prompt:
+            payload = dict(input or {})
+            if prompt and "prompt" not in payload and "messages" not in payload:
+                payload["prompt"] = prompt
+            problem = ProblemRow(
+                problem_id=id,
+                payload=payload,
+                ground_truth=ground_truth,
+                metadata=dict(metadata or {}),
+            )
+
+        training_sample = None
+        if (
+            tokens is not None
+            or loss_mask is not None
+            or rollout_log_probs is not None
+            or teacher_log_probs is not None
+        ):
+            resolved_loss_mask = list(loss_mask or [])
+            resolved_tokens = list(tokens or [])
+            if response_length == 0 and resolved_loss_mask:
+                response_length = sum(1 for weight in resolved_loss_mask if weight > 0.0)
+            training_metadata = dict(metadata or {})
+            if prompt and "prompt" not in training_metadata:
+                training_metadata["prompt"] = prompt
+            training_sample = TrainingSample(
+                attempt_id=id,
+                tokens=resolved_tokens,
+                loss_mask=resolved_loss_mask,
+                response_length=response_length,
+                rollout_log_probs=rollout_log_probs,
+                teacher_log_probs=teacher_log_probs,
+                metadata=training_metadata,
+            )
+
+        super().__init__(
+            attempt_id=id,
+            problem=problem,
+            group_index=group_index,
+            trajectory=trajectory,
+            training_sample=training_sample,
+            reward=reward,
+            score=score,
+            environment_state=environment_state,
+            status=status,
+            metadata=dict(metadata or {}),
+            weight_version=weight_version,
+        )
+        if index is not None:
+            self.metadata.setdefault("legacy_index", index)
 
 
 @dataclass
@@ -257,7 +380,8 @@ class RolloutBatch:
         response_lengths: List of response lengths
         group_indices: Group index for each sample (for GRPO advantage computation)
         rollout_log_probs: List of per-token logprobs from rollout policy (for TI/TO off-policy correction)
-        samples: Original Sample objects (for logging/debugging)
+        attempts: Original attempt objects (for logging/debugging)
+        training_samples: Original training samples (for trainer-facing inspection)
         metadata: Optional batch metadata
 
     Example:
@@ -277,8 +401,14 @@ class RolloutBatch:
     group_indices: list[int] = field(default_factory=list)
     rollout_log_probs: list[list[float]] | None = None  # For TI/TO off-policy correction
     teacher_log_probs: list[list[float]] | None = None  # For on-policy distillation
-    samples: list[Sample] = field(default_factory=list)
+    attempts: list[AttemptRow] = field(default_factory=list)
+    training_samples: list[TrainingSample] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def samples(self) -> list[AttemptRow]:
+        """Compatibility alias for older training code."""
+        return self.attempts
 
 
 @runtime_checkable
@@ -289,7 +419,7 @@ class SampleScorer(Protocol):
     observability without coupling that behavior to rollout generation.
     """
 
-    async def score_samples(self, samples: list[Sample]) -> list[Sample]: ...
+    async def score_samples(self, samples: list[AttemptRow]) -> list[AttemptRow]: ...
 
 
 @dataclass(frozen=True)

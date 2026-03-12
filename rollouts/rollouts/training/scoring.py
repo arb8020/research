@@ -5,16 +5,16 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-from .types import RolloutConfig, RolloutRuntime, Sample, SampleScorer
+from .types import AttemptRow, RolloutConfig, RolloutRuntime, SampleScorer
 
 
 @dataclass(frozen=True)
 class FunctionSampleScorer:
     """Adapter that turns the legacy score_fn into an explicit scoring stage."""
 
-    score_fn: Callable[[Sample], Any]
+    score_fn: Callable[[AttemptRow], Any]
 
-    async def score_samples(self, samples: list[Sample]) -> list[Sample]:
+    async def score_samples(self, samples: list[AttemptRow]) -> list[AttemptRow]:
         is_async = inspect.iscoroutinefunction(self.score_fn)
 
         for sample in samples:
@@ -30,7 +30,7 @@ def resolve_sample_scorer(
     config: RolloutConfig | None = None,
     runtime: RolloutRuntime | None = None,
     sample_scorer: SampleScorer | None = None,
-    score_fn: Callable[[Sample], Any] | None = None,
+    score_fn: Callable[[AttemptRow], Any] | None = None,
 ) -> SampleScorer | None:
     """Resolve the scoring stage with explicit precedence.
 

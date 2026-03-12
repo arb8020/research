@@ -16,7 +16,7 @@ from typing import Any
 
 from ...training.datasets.data_buffer import DataBuffer
 from ...training.runtime import resolve_rollout_runtime
-from ...training.types import RolloutBatch, RolloutConfig, RolloutRuntime, Sample
+from ...training.types import AttemptRow, RolloutBatch, RolloutConfig, RolloutRuntime
 
 
 def generate_rollout_batches(
@@ -64,7 +64,7 @@ def generate_rollout_batches(
         # Call user-provided rollout function
         samples = resolved_runtime.generate_fn(prompts, **rollout_kwargs)
         assert isinstance(samples, list), (
-            f"generate_fn must return list[Sample], got {type(samples)}"
+            f"generate_fn must return list[AttemptRow], got {type(samples)}"
         )
         assert len(samples) > 0, "generate_fn must return non-empty sample list"
 
@@ -83,10 +83,10 @@ def generate_rollout_batches(
 
 
 def apply_sample_transforms(
-    samples: list[Sample],
+    samples: list[AttemptRow],
     config: RolloutConfig,
     runtime: RolloutRuntime | None = None,
-) -> list[Sample]:
+) -> list[AttemptRow]:
     """Apply optional filter and score functions to samples.
 
     Pure function - no side effects.
@@ -119,7 +119,7 @@ def apply_sample_transforms(
 
 
 def convert_to_batch(
-    samples: list[Sample],
+    samples: list[AttemptRow],
     epoch_id: int = 0,
     step_id: int = 0,
 ) -> RolloutBatch:
@@ -136,7 +136,7 @@ def convert_to_batch(
         RolloutBatch ready for training backend
 
     Example:
-        >>> samples = [Sample(...), Sample(...)]
+        >>> samples = [AttemptRow(...), AttemptRow(...)]
         >>> batch = convert_to_batch(samples, epoch_id=0, step_id=42)
         >>> batch.tokens  # list of token lists
         >>> batch.loss_masks  # list of loss masks
@@ -166,12 +166,13 @@ def convert_to_batch(
         response_lengths=response_lengths,
         group_indices=group_indices,
         rollout_log_probs=rollout_log_probs,
-        samples=samples,
+        attempts=samples,
+        training_samples=[s.training_sample for s in samples if s.training_sample is not None],
         metadata=metadata,
     )
 
 
-def extract_sample_fields(samples: list[Sample]) -> tuple[list, list, list]:
+def extract_sample_fields(samples: list[AttemptRow]) -> tuple[list, list, list]:
     """Extract tokens, loss_masks, and rewards from samples.
 
     Pure extraction - no computation.
@@ -188,7 +189,7 @@ def extract_sample_fields(samples: list[Sample]) -> tuple[list, list, list]:
     return tokens, loss_masks, rewards
 
 
-def extract_group_indices(samples: list[Sample]) -> list[int]:
+def extract_group_indices(samples: list[AttemptRow]) -> list[int]:
     """Extract group indices from samples.
 
     Group indices track which samples came from the same prompt
@@ -203,7 +204,7 @@ def extract_group_indices(samples: list[Sample]) -> list[int]:
     return [s.group_index if s.group_index is not None else i for i, s in enumerate(samples)]
 
 
-def extract_rollout_log_probs(samples: list[Sample]) -> list[list[float]] | None:
+def extract_rollout_log_probs(samples: list[AttemptRow]) -> list[list[float]] | None:
     """Extract rollout logprobs from samples (for TI/TO off-policy correction).
 
     Only returns non-None if ALL samples have rollout_log_probs.
@@ -245,7 +246,7 @@ def compute_response_lengths(loss_masks: list[list[float]]) -> list[int]:
 
 
 def build_batch_metadata(
-    samples: list[Sample],
+    samples: list[AttemptRow],
     epoch_id: int,
     step_id: int,
 ) -> dict[str, Any]:
