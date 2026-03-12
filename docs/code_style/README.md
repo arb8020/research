@@ -4,6 +4,7 @@
 
 - **[cheatsheet.md](cheatsheet.md)** - Comprehensive synthesis: all principles with examples, organized by topic
 - **[favorites.md](favorites.md)** - Short daily-use reference: error handling decision tree, classes vs functions
+- **[earned_compression.md](earned_compression.md)** - When abstraction is earned: semantic compression vs dishonest compression
 - **[keeping_llm_code_honest.md](keeping_llm_code_honest.md)** - LLM workflow: compression over working code, verification loops
 - **[llm_coding_workflow.md](llm_coding_workflow.md)** - LLM workflow notes
 - **[code_philosophy_essay.md](code_philosophy_essay.md)** - Full philosophy writeup
