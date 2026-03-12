@@ -5,6 +5,16 @@ Public control-plane entry should come through `python -m argus run`.
 This module owns launch orchestration while the lower execution/session layers
 are still being cleaned up.
 
+Important ownership boundary:
+
+- Argus owns run identity, launch orchestration, and event/journal recording.
+- Rollouts owns workload semantics.
+
+That means Argus may record workload events such as stage markers, but it should
+not define what those stages mean. Backend-specific preflights, training stage
+names, and validity/invariant checks belong in Rollouts and should be emitted
+into Argus as opaque workload events.
+
 Usage:
     # Preferred public entrypoint
     python -m argus run --config examples/rl/kernelbench/grpo_01_01.py
@@ -240,7 +250,11 @@ def load_config_module(config_path: Path) -> Any:
 
 
 def _setup_run_logging(run_dir: Path) -> _RunLogger:
-    """Create run directory and return a logging function."""
+    """Create run directory and return a generic event logger.
+
+    This logger intentionally knows only about a generic event envelope.
+    Workload-specific stage names and semantics belong in Rollouts.
+    """
     import json
     from datetime import datetime
 

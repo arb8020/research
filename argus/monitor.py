@@ -9,6 +9,14 @@ This monitor consumes local run artifacts only:
 It does not query providers or reconstruct state from tmux. That keeps the
 monitor honest and makes it a usable control-plane viewer before the full
 Argus supervisor is in place.
+
+Important ownership boundary:
+
+- Argus monitor renders generic event/log state.
+- It should not define the meaning of workload-specific stage names.
+
+If a payload contains a Rollouts-defined stage like `FIRST_FORWARD_OK`, Argus
+may display it, but Rollouts remains the owner of that ontology.
 """
 
 from __future__ import annotations
