@@ -7,6 +7,7 @@ import logging
 import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Any, Protocol, runtime_checkable
 
 from rollouts.core import Metric, Score
@@ -43,6 +44,22 @@ class KernelJudgeDecision:
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
+class KernelJudgeMode(Enum):
+    """Policy for deciding which samples are sent to the judge."""
+
+    ALL = "all"
+    COMPILED_ONLY = "compiled_only"
+    CORRECT_ONLY = "correct_only"
+
+
+@dataclass(frozen=True)
+class KernelJudgePolicy:
+    """Explicit policy for when judge scoring runs."""
+
+    mode: KernelJudgeMode = KernelJudgeMode.COMPILED_ONLY
+    max_samples_per_batch: int | None = None
+
+
 @runtime_checkable
 class KernelJudge(Protocol):
     async def judge_samples(
@@ -72,6 +89,9 @@ class FunctionKernelJudge:
         if inspect.isawaitable(result):
             return await result
         return result
+
+    def stats(self) -> dict[str, Any]:
+        return {}
 
 
 def extract_kernel_code(response: str) -> str | None:
@@ -204,9 +224,16 @@ class KernelBenchSampleScorer:
 
     evaluator: KernelEvaluator | None = None
     judge: KernelJudge | None = None
+    judge_policy: KernelJudgePolicy = field(default_factory=KernelJudgePolicy)
     reward_weights: KernelBenchRewardWeights = DEFAULT_REWARD_WEIGHTS
     timeout: float = 120.0
     gate_reward_on_judge: bool = False
+    _execution_metadata_count: int = field(default=0, init=False, repr=False)
+    _execution_evaluator_count: int = field(default=0, init=False, repr=False)
+    _execution_missing_code_count: int = field(default=0, init=False, repr=False)
+    _judge_requested_count: int = field(default=0, init=False, repr=False)
+    _judge_skipped_count: int = field(default=0, init=False, repr=False)
+    _judge_gated_count: int = field(default=0, init=False, repr=False)
 
     async def score_samples(self, samples: list[Sample]) -> list[Sample]:
         execution_results = await self._score_execution(samples)
@@ -226,6 +253,7 @@ class KernelBenchSampleScorer:
                 judge_decision=judge_result,
             )
             if self.gate_reward_on_judge and judge_result is not None and not judge_result.passed:
+                self._judge_gated_count += 1
                 score = Score(
                     metrics=tuple(
                         Metric(m.name, 0.0 if m.name == "reward" else m.value, m.weight, m.metadata)
@@ -253,11 +281,25 @@ class KernelBenchSampleScorer:
         return sample.score
 
     def stats(self) -> dict[str, Any]:
-        stats: dict[str, Any] = {}
+        stats: dict[str, Any] = {
+            "execution": {
+                "from_metadata": self._execution_metadata_count,
+                "from_evaluator": self._execution_evaluator_count,
+                "missing_code_or_ref": self._execution_missing_code_count,
+            },
+            "judge": {
+                "policy": self.judge_policy.mode.value,
+                "requested": self._judge_requested_count,
+                "skipped": self._judge_skipped_count,
+                "gated_rewards": self._judge_gated_count,
+            },
+        }
+        if self.judge_policy.max_samples_per_batch is not None:
+            stats["judge"]["max_samples_per_batch"] = self.judge_policy.max_samples_per_batch
         if self.evaluator is not None and hasattr(self.evaluator, "stats"):
             stats["evaluator"] = self.evaluator.stats()
         if self.judge is not None and hasattr(self.judge, "stats"):
-            stats["judge"] = self.judge.stats()
+            stats["judge_backend"] = self.judge.stats()
         return stats
 
     async def _score_execution(self, samples: list[Sample]) -> list[dict[str, Any]]:
@@ -268,6 +310,7 @@ class KernelBenchSampleScorer:
         for idx, sample in enumerate(samples):
             metadata_result = _metadata_execution_result(sample)
             if metadata_result is not None:
+                self._execution_metadata_count += 1
                 results[idx] = metadata_result
                 continue
 
@@ -281,6 +324,7 @@ class KernelBenchSampleScorer:
             ref_code = sample.metadata.get("ref_code", "")
             kernel_code = extract_kernel_code(response)
             if not kernel_code or not ref_code:
+                self._execution_missing_code_count += 1
                 results[idx] = {
                     "compiled": 0.0,
                     "correct": 0.0,
@@ -297,11 +341,13 @@ class KernelBenchSampleScorer:
                 batchable_indices.append(idx)
                 batch_requests.append({"kernel_code": kernel_code, "ref_code": ref_code})
             else:
+                self._execution_evaluator_count += 1
                 results[idx] = await _score_one_with_evaluator(self.evaluator, sample, self.timeout)
 
         if batchable_indices:
             assert isinstance(self.evaluator, BatchKernelEvaluator)
             batch_results = await self.evaluator.score_batch(batch_requests, timeout=self.timeout)
+            self._execution_evaluator_count += len(batch_results)
             for idx, raw_result in zip(batchable_indices, batch_results, strict=False):
                 results[idx] = {
                     "compiled": float(raw_result.get("compiled", 0.0)),
@@ -324,19 +370,43 @@ class KernelBenchSampleScorer:
         if self.judge is None:
             return [None] * len(samples)
 
-        decisions = await self.judge.judge_samples(samples, execution_results)
-        assert len(decisions) == len(samples), (
-            f"Kernel judge returned {len(decisions)} decisions for {len(samples)} samples"
+        selected_indices = self._select_judge_indices(execution_results)
+        self._judge_requested_count += len(selected_indices)
+        self._judge_skipped_count += len(samples) - len(selected_indices)
+        if not selected_indices:
+            return [None] * len(samples)
+
+        judged_samples = [samples[idx] for idx in selected_indices]
+        judged_execution_results = [execution_results[idx] for idx in selected_indices]
+        decisions = await self.judge.judge_samples(judged_samples, judged_execution_results)
+        assert len(decisions) == len(judged_samples), (
+            f"Kernel judge returned {len(decisions)} decisions for {len(judged_samples)} samples"
         )
-        return decisions
 
+        full_results: list[KernelJudgeDecision | None] = [None] * len(samples)
+        for idx, decision in zip(selected_indices, decisions, strict=False):
+            full_results[idx] = decision
+        return full_results
 
-def make_kernelbench_score_fn(
-    scorer: KernelBenchSampleScorer,
-) -> Callable[[Sample], Awaitable[Score]]:
-    """Compatibility adapter for callers that still need a score_fn."""
+    def _select_judge_indices(self, execution_results: list[dict[str, Any]]) -> list[int]:
+        selected_indices: list[int] = []
+        for idx, result in enumerate(execution_results):
+            if self.judge_policy.mode == KernelJudgeMode.ALL:
+                selected_indices.append(idx)
+                continue
+            if (
+                self.judge_policy.mode == KernelJudgeMode.COMPILED_ONLY
+                and result.get("compiled", 0.0) > 0
+            ):
+                selected_indices.append(idx)
+                continue
+            if (
+                self.judge_policy.mode == KernelJudgeMode.CORRECT_ONLY
+                and result.get("correct", 0.0) > 0
+            ):
+                selected_indices.append(idx)
 
-    async def score_fn(sample: Sample) -> Score:
-        return await scorer.score_sample(sample)
-
-    return score_fn
+        max_samples = self.judge_policy.max_samples_per_batch
+        if max_samples is not None:
+            return selected_indices[:max_samples]
+        return selected_indices

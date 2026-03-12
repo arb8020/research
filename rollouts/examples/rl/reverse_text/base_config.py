@@ -14,11 +14,12 @@ from __future__ import annotations
 
 import re
 from difflib import SequenceMatcher
-from typing import Any
+from typing import Any, cast
 
 from rollouts.core import Metric, Score
 from rollouts.environments.no_tools import BasicEnvironment
 from rollouts.training.grpo import GRPOConfig, grpo_train
+from rollouts.training.scoring import FunctionSampleScorer
 
 # ──────────────────────── System Prompt ─────────────────────────────────────
 
@@ -56,6 +57,7 @@ def load_reverse_text_prompts(
 
     prompts = []
     for row in dataset:
+        row = cast(Any, row)
         text = row["prompt"]
         reversed_text = text[::-1]
 
@@ -181,6 +183,6 @@ def train(
     return grpo_train(
         config=config,
         prompts=prompts,
-        score_fn=reverse_text_score_fn,
+        sample_scorer=FunctionSampleScorer(reverse_text_score_fn),
         environment_cls=BasicEnvironment,
     )

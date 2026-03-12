@@ -34,6 +34,7 @@ from rollouts.training.grpo import (
     TrainerConfig,
     grpo_train,
 )
+from rollouts.training.scoring import FunctionSampleScorer
 
 # ──────────────────────── prime-rl nightly config ────────────────────────────
 # From: examples/reverse_text/rl.toml
@@ -95,7 +96,7 @@ def train(config: GRPOConfig = config, num_samples: int = 1000) -> dict:
     results = grpo_train(
         config=config,
         prompts=prompts,
-        score_fn=reverse_text_score_fn,
+        sample_scorer=FunctionSampleScorer(reverse_text_score_fn),
         environment_cls=BasicEnvironment,
     )
 

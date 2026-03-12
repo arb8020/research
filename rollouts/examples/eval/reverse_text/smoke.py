@@ -10,6 +10,7 @@ Run:
 
 from rollouts.core import Message, Metric, Score
 from rollouts.eval import EndpointConfig, EvalOutputConfig, EvalRunConfig
+from rollouts.training.scoring import FunctionSampleScorer
 from rollouts.training.types import Sample
 
 # =============================================================================
@@ -118,3 +119,6 @@ def score_fn(sample: Sample) -> Score:
             Metric("has_tags", 1.0 if match else 0.0, weight=0.0),
         )
     )
+
+
+sample_scorer = FunctionSampleScorer(score_fn)

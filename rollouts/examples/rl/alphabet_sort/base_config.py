@@ -14,6 +14,7 @@ from typing import Any
 from rollouts.core import Metric, Score
 from rollouts.environments.no_tools import BasicEnvironment
 from rollouts.training.grpo import GRPOConfig, grpo_train
+from rollouts.training.scoring import FunctionSampleScorer
 
 # ──────────────────────── Name Generation ───────────────────────────────────
 
@@ -252,6 +253,6 @@ def train(
     return grpo_train(
         config=config,
         prompts=prompts,
-        score_fn=alphabet_sort_score_fn,
+        sample_scorer=FunctionSampleScorer(alphabet_sort_score_fn),
         environment_cls=BasicEnvironment,
     )

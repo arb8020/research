@@ -34,6 +34,7 @@ from rollouts.training.grpo import (
     TrainerConfig,
     grpo_train,
 )
+from rollouts.training.scoring import FunctionSampleScorer
 
 # ──────────────────────── prime-rl nightly config ────────────────────────────
 # From: examples/alphabet_sort/rl.toml
@@ -112,7 +113,7 @@ def train(config: GRPOConfig = config, num_episodes: int = 500) -> dict:
     results = grpo_train(
         config=config,
         prompts=prompts,
-        score_fn=alphabet_sort_score_fn,
+        sample_scorer=FunctionSampleScorer(alphabet_sort_score_fn),
         environment_cls=BasicEnvironment,
     )
 

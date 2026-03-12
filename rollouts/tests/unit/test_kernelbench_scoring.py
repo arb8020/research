@@ -6,7 +6,11 @@ import pytest
 
 from examples.rl.kernelbench.scoring import (
     KEVIN_MULTI_TURN_REWARD_WEIGHTS,
+    FunctionKernelJudge,
     KernelBenchSampleScorer,
+    KernelJudgeDecision,
+    KernelJudgeMode,
+    KernelJudgePolicy,
 )
 from rollouts.core import Metric, Score
 from rollouts.eval.native import _compute_score
@@ -68,6 +72,19 @@ class FakeSampleScorer:
             sample.score = Score(metrics=(Metric("reward", 3.0, weight=1.0),))
             sample.reward = 3.0
         return samples
+
+
+def make_code_sample(*, response: str, ref_code: str = "class Model: pass") -> Sample:
+    sample = Sample(
+        prompt="prompt",
+        metadata={"ref_code": ref_code},
+    )
+
+    class FakeTrajectory:
+        messages = [{"role": "assistant", "content": response}]
+
+    sample.trajectory = cast(Any, FakeTrajectory())
+    return sample
 
 
 @pytest.mark.trio
@@ -172,3 +189,76 @@ async def test_eval_compute_score_supports_sample_scorer() -> None:
 
     assert score.reward == 3.0
     assert sample.reward == 3.0
+
+
+@pytest.mark.trio
+async def test_kernelbench_judge_policy_only_judges_compiled_samples() -> None:
+    compiled_sample = make_code_sample(response="```python\nclass ModelNew:\n    pass\n```")
+    missing_code_sample = make_code_sample(response="no kernel here")
+    judge_calls: list[list[Sample]] = []
+
+    async def judge_fn(
+        samples: list[Sample],
+        _execution_results: list[dict[str, object]],
+    ) -> list[KernelJudgeDecision | None]:
+        judge_calls.append(samples)
+        return [KernelJudgeDecision(passed=True, score=0.9) for _ in samples]
+
+    scorer = KernelBenchSampleScorer(
+        evaluator=FakeBatchEvaluator(),
+        judge=FunctionKernelJudge(judge_fn),
+        judge_policy=KernelJudgePolicy(mode=KernelJudgeMode.COMPILED_ONLY),
+    )
+
+    await scorer.score_samples([compiled_sample, missing_code_sample])
+
+    assert len(judge_calls) == 1
+    assert judge_calls[0] == [compiled_sample]
+    assert compiled_sample.metadata["judge"]["passed"] is True
+    assert "judge" not in missing_code_sample.metadata
+
+    stats = scorer.stats()
+    assert stats["judge"]["requested"] == 1
+    assert stats["judge"]["skipped"] == 1
+
+
+@pytest.mark.trio
+async def test_kernelbench_judge_can_gate_reward() -> None:
+    sample = make_code_sample(response="```python\nclass ModelNew:\n    pass\n```")
+
+    async def judge_fn(
+        samples: list[Sample],
+        _execution_results: list[dict[str, object]],
+    ) -> list[KernelJudgeDecision | None]:
+        return [
+            KernelJudgeDecision(
+                passed=False,
+                score=0.1,
+                reason="reward hack",
+                metadata={"label": "suspicious"},
+            )
+            for _ in samples
+        ]
+
+    scorer = KernelBenchSampleScorer(
+        evaluator=FakeBatchEvaluator(),
+        judge=FunctionKernelJudge(judge_fn),
+        judge_policy=KernelJudgePolicy(mode=KernelJudgeMode.ALL),
+        gate_reward_on_judge=True,
+    )
+
+    await scorer.score_samples([sample])
+
+    assert sample.score is not None
+    assert sample.reward == 0.0
+    assert sample.metadata["judge"] == {
+        "passed": False,
+        "score": 0.1,
+        "reason": "reward hack",
+        "label": "suspicious",
+    }
+    judge_metrics = {metric.name: metric.value for metric in sample.score.metrics}
+    assert judge_metrics["reward"] == 0.0
+    assert judge_metrics["judge_passed"] == 0.0
+    assert judge_metrics["judge_score"] == 0.1
+    assert scorer.stats()["judge"]["gated_rewards"] == 1

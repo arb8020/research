@@ -42,6 +42,10 @@ def resolve_sample_scorer(
     5. RolloutConfig.score_fn
     """
 
+    # TODO(async-design-decisions.md): Once the main configs have all migrated to
+    # explicit sample scorers, remove the score_fn fallback path so scoring is
+    # always modeled as a first-class stage rather than an adapted callback.
+
     if sample_scorer is not None:
         return sample_scorer
     if runtime is not None and runtime.sample_scorer is not None:

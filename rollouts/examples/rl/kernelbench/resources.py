@@ -116,6 +116,9 @@ class KernelBenchScoringResources:
         return cls(scorer=scorer)
 
     async def start(self) -> None:
+        # TODO(async-design-decisions.md): If judge inference gets its own pool or
+        # endpoint manager, start it here alongside evaluator resources so scorer
+        # ownership stays explicit and symmetric.
         evaluator = self.scorer.evaluator
         if evaluator is not None:
             await evaluator.start()
