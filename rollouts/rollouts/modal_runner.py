@@ -35,7 +35,7 @@ import tempfile
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Callable
 
 import trio
 
@@ -90,6 +90,8 @@ class ModalRunConfig:
     timeout_hours: int = 4
     sandbox_id: str | None = None
     keep_alive: bool = False
+    run_name: str | None = None
+    event_log: Callable[..., None] | None = None
     model_name: str | None = None  # Model name for weight caching (e.g., "zai-org/GLM-4.7-Flash")
     pruning_recipe: str | None = (
         None  # Path to pruning recipe JSON (if set, model is pruned before caching)
@@ -927,9 +929,19 @@ async def run_modal(config: ModalRunConfig) -> dict[str, Any]:
     import trio_asyncio
 
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-    run_name = f"modal_{timestamp}"
+    run_name = config.run_name or f"modal_{timestamp}"
+
+    def emit(event: str, **data: Any) -> None:
+        if config.event_log is not None:
+            config.event_log(event, provider="modal", run_name=run_name, **data)
 
     enforce_source_sync_policy(config.source_sync_policy, repo_root=REPO_ROOT, stream=sys.stderr)
+    emit(
+        "submit_start",
+        config_path=config.config_path,
+        gpu_type=config.gpu_type,
+        gpu_count=config.gpu_count,
+    )
 
     logger.info("=" * 60)
     logger.info(f"Modal Training: {run_name}")
@@ -941,7 +953,9 @@ async def run_modal(config: ModalRunConfig) -> dict[str, Any]:
         async with trio_asyncio.open_loop():
             # Create sandbox
             logger.info("Creating Modal sandbox...")
+            emit("modal_sandbox_create_start", gpu_type=config.gpu_type, gpu_count=config.gpu_count)
             sandbox, sandbox_id = await _create_sandbox(config)
+            emit("modal_sandbox_created", sandbox_id=sandbox_id)
 
             try:
                 # Test GPU access
@@ -951,6 +965,7 @@ async def run_modal(config: ModalRunConfig) -> dict[str, Any]:
                 # 2. Run: modal.Sandbox.list() and terminate stale ones
                 # 3. Modal has per-app sandbox limits that cause exec() to block
                 logger.info("Verifying GPU access...")
+                emit("modal_gpu_verify_start", sandbox_id=sandbox_id)
                 start = trio.current_time()
                 proc = await trio_asyncio.aio_as_trio(sandbox.exec.aio("nvidia-smi", timeout=30))
                 stdout = await trio_asyncio.aio_as_trio(proc.stdout.read.aio())
@@ -964,6 +979,7 @@ async def run_modal(config: ModalRunConfig) -> dict[str, Any]:
                 exit_code = await trio_asyncio.aio_as_trio(proc.wait.aio())
                 assert exit_code == 0, f"nvidia-smi failed with exit code {exit_code}"
                 logger.info("GPU access verified")
+                emit("modal_gpu_verified", sandbox_id=sandbox_id, elapsed_sec=round(elapsed, 3))
 
                 # Model weight caching: check for cached snapshot or download and cache
                 # If pruning_recipe is set, the cache key includes a hash of the recipe
@@ -1007,11 +1023,14 @@ async def run_modal(config: ModalRunConfig) -> dict[str, Any]:
 
                 # Sync code (always uses local git bundle)
                 logger.info("Syncing code to sandbox...")
+                emit("modal_repo_sync_start", sandbox_id=sandbox_id)
                 workspace = await _sync_code_to_sandbox(sandbox, REPO_ROOT)
                 logger.info(f"Code synced to {workspace}")
+                emit("modal_repo_synced", sandbox_id=sandbox_id, workspace=workspace)
 
                 # Run training
                 logger.info("Starting training...")
+                emit("modal_training_start", sandbox_id=sandbox_id, workspace=workspace)
                 results = await _run_training_in_sandbox(
                     sandbox,
                     workspace,
@@ -1019,6 +1038,12 @@ async def run_modal(config: ModalRunConfig) -> dict[str, Any]:
                     run_name,
                     config.gpu_count,
                     config.use_torchrun,
+                )
+                emit(
+                    "modal_training_finished",
+                    sandbox_id=sandbox_id,
+                    success=bool(results.get("success")),
+                    exit_code=results.get("exit_code"),
                 )
 
                 print(
@@ -1032,14 +1057,17 @@ async def run_modal(config: ModalRunConfig) -> dict[str, Any]:
                 # Terminate sandbox
                 if config.keep_alive:
                     logger.info(f"Keeping sandbox alive: {sandbox_id}")
+                    emit("modal_sandbox_kept_alive", sandbox_id=sandbox_id)
                 else:
                     logger.info(f"Terminating sandbox: {sandbox_id}")
+                    emit("modal_sandbox_terminate_start", sandbox_id=sandbox_id)
 
                     def _terminate() -> None:
                         sandbox.terminate()
 
                     await trio.to_thread.run_sync(_terminate)
                     logger.info("Sandbox terminated")
+                    emit("modal_sandbox_terminated", sandbox_id=sandbox_id)
 
 
 def load_config_module(config_path: Path) -> Any:

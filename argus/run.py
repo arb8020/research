@@ -1216,6 +1216,7 @@ Examples:
 
             # Check if this is a benchmark config
             from rollouts.inference.benchmark.config import BenchmarkConfig
+            from rollouts.jobs import register_job, update_job_status
 
             if isinstance(config_module.config, BenchmarkConfig):
                 # Benchmark run
@@ -1235,17 +1236,48 @@ Examples:
                 # Training run
                 from rollouts.modal_runner import ModalRunConfig, run_modal
 
+                timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+                run_name = f"run_{timestamp}"
+                local_run_dir = REPO_ROOT / "results" / "rl" / run_name
+                log = _setup_run_logging(local_run_dir)
+                log(
+                    "run_start",
+                    launcher_id=launcher_id,
+                    provider="modal",
+                    config=str(config_path),
+                    gpu_count=runtime.gpu_count,
+                    gpu_type=runtime.gpu_type,
+                )
+                register_job(
+                    job_id=run_name,
+                    provider="modal",
+                    node_id="pending",
+                    config_path=str(config_path),
+                    log_path=f"results/rl/{run_name}",
+                )
+
                 modal_config = ModalRunConfig(
                     config_path=str(config_path),
                     runtime=runtime,
                     materialization=materialization,
+                    run_name=run_name,
+                    event_log=log,
                     source_sync_policy=SourceSyncPolicy.committed_only(
                         dirty_action="warn" if args.force_deploy_committed else "fail"
                     ),
                 )
+                log("modal_submit_dispatch")
                 results = trio.run(run_modal, modal_config)
                 if not results.get("success"):
+                    update_job_status(run_name, "failed")
+                    log(
+                        "run_failed",
+                        exit_code=results.get("exit_code"),
+                        stderr=results.get("stderr"),
+                    )
                     return 1
+                update_job_status(run_name, "completed")
+                log("run_completed", exit_code=results.get("exit_code"))
 
         elif runtime.provider in ("runpod", "lambdalabs", "vast") or args.node_id:
             # Remote execution via SSH
