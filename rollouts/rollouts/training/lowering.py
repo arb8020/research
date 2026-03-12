@@ -2,6 +2,10 @@
 
 These summarize backend provisioning choices derived from higher-level
 realization semantics. They are not the semantic center of training.
+
+Important:
+`RealizationPlan` is currently denotational. Backends like TorchTitan use it
+for validation and lowering, not as an executable collective program.
 """
 
 import re
@@ -28,6 +32,9 @@ class RealizationPlan:
     The strings here are semantic layout/collective descriptions. Lowering code
     should derive backend provisioning requirements from them rather than using
     backend config as the source of truth.
+
+    This object is not an executable IR. Today it describes intended semantics;
+    concrete backends may only support a validated/lowered subset.
     """
 
     local_layouts: tuple[str, ...] = ()

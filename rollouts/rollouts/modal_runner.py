@@ -4,7 +4,10 @@ Run training workloads on Modal sandboxes with GPU access.
 Uses Modal's native async APIs via trio_asyncio bridge.
 
 Usage:
-    # From config file with hardware.provider="modal"
+    # Public control-plane entrypoint
+    python -m argus run --config examples/rl/reverse_text/grpo_modal_01.py
+
+    # Direct workload implementation entrypoint
     python -m rollouts.run --config examples/rl/reverse_text/grpo_modal_01.py
 
 Design:

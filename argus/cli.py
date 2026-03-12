@@ -10,6 +10,9 @@ from __future__ import annotations
 import argparse
 import sys
 
+from .monitor import monitor_main
+from .run import run_main
+
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="argus", description="Argus control plane")
@@ -23,7 +26,7 @@ def main(argv: list[str] | None = None) -> int:
     run_parser.add_argument(
         "args",
         nargs=argparse.REMAINDER,
-        help="Arguments forwarded to the underlying run launcher (for now: rollouts.run).",
+        help="Arguments for the Argus run entrypoint.",
     )
 
     monitor_parser = subparsers.add_parser(
@@ -34,23 +37,15 @@ def main(argv: list[str] | None = None) -> int:
     monitor_parser.add_argument(
         "args",
         nargs=argparse.REMAINDER,
-        help="Arguments forwarded to the current monitor implementation.",
+        help="Arguments for the Argus monitor entrypoint.",
     )
 
     args = parser.parse_args(argv)
 
     if args.command == "run":
-        from rollouts.run import main as rollouts_run_main
-
-        # TODO: replace this with native Argus launch submission once the
-        # supervisor owns run/attempt/allocation orchestration directly.
-        return rollouts_run_main(args.args)
+        return run_main(args.args)
 
     if args.command == "monitor":
-        from rollouts.tui.monitor_cli import monitor_main
-
-        # TODO: replace this with snapshot + subscribe over Argus journals
-        # instead of reconstructing state from rollouts-side logs and tmux.
         return monitor_main(args.args)
 
     print(f"Unknown command: {args.command}", file=sys.stderr)

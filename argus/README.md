@@ -49,17 +49,29 @@ It does not yet include:
 - network protocols
 - persistence beyond process memory
 - retry policy executors
+- provider-aware monitoring or control-plane transport
 
 ## Current CLI shape
 
-Today, the Argus CLI is the public control-plane entrypoint, but it still
-reuses existing Rollouts implementation details underneath:
+Today, the Argus CLI is the public control-plane entrypoint:
 
-- `argus run` currently calls into `rollouts.run`
-- `argus monitor` currently calls into `rollouts.tui.monitor_cli`
+- `argus run` is implemented by [run.py](/Users/chiraagbalu/research/argus/run.py)
+- `argus monitor` is implemented by [monitor.py](/Users/chiraagbalu/research/argus/monitor.py)
 
 This is intentional as a first compression step:
 
 - public control-plane ownership moves to Argus now
 - SSH/Modal execution guts remain separate for the moment
-- deeper unification belongs in Broker/Bifrost/Argus follow-up work
+- deeper execution/session unification belongs in Broker/Bifrost/Argus follow-up work
+
+## Current monitoring model
+
+`argus monitor` now uses an honest local model:
+
+- resolve a run from a path, `--latest`, or the local jobs registry
+- consume `run.jsonl` and `monitor.jsonl`
+- render a terminal view or a static HTML snapshot
+
+It does not query providers or tmux directly. The monitor should consume
+durable run artifacts instead of reconstructing truth from substrate-specific
+state.

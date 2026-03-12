@@ -1,18 +1,20 @@
-"""Monitor subcommand for rollouts CLI.
+"""Monitoring implementation used by the Argus control plane.
 
 Usage:
-    rollouts monitor results/rl/run_20250127/       # Watch specific run
-    rollouts monitor --latest                        # Watch most recent run in results/
-    rollouts monitor --latest results/sft/           # Most recent in a custom dir
-    rollouts monitor --attach run_20250127-143052    # Attach to remote run by ID
-    rollouts monitor --attach --latest               # Attach to most recent active run
-    rollouts monitor --attach --tail                  # Stream logs to stdout (no TUI)
-    rollouts monitor --attach --tail-lines 50         # Fetch last 50 lines and exit
-    rollouts monitor --runs                          # List jobs from ~/.rollouts/jobs.json
-    rollouts monitor --runs --probe                  # + check broker liveness & LogsServer
+    python -m argus monitor results/rl/run_20250127/       # Watch specific run
+    python -m argus monitor --latest                        # Watch most recent run in results/
+    python -m argus monitor --latest results/sft/           # Most recent in a custom dir
+    python -m argus monitor --attach run_20250127-143052    # Attach to remote run by ID
+    python -m argus monitor --attach --latest               # Attach to most recent active run
+    python -m argus monitor --attach --tail                  # Stream logs to stdout (no TUI)
+    python -m argus monitor --attach --tail-lines 50         # Fetch last 50 lines and exit
+    python -m argus monitor --runs                          # List jobs from ~/.rollouts/jobs.json
+    python -m argus monitor --runs --probe                  # + check broker liveness & LogsServer
 """
 
-# TODO: `rollouts monitor` should eventually become an Argus client over
+# TODO: this implementation should move fully under Argus as a snapshot +
+# subscribe client instead of remaining in the Rollouts package.
+# TODO: `argus monitor` should eventually become an Argus client over
 # snapshot + subscribe, instead of reconstructing run truth from local job
 # metadata, provider state, tmux, and log files directly.
 
@@ -341,7 +343,7 @@ def _cancel_job(run_id: str) -> int:
         job = get_job(run_id)
     except AssertionError:
         print(f"Job not found: {run_id}")
-        print("Use 'rollouts monitor --runs' to list jobs")
+        print("Use 'python -m argus monitor --runs' to list jobs")
         return 1
 
     if not job.nodes:
@@ -716,14 +718,14 @@ def _run_attached(
             # --keep-alive flag: skip terminate entirely
             should_terminate = False
             print(f"\nInstance kept alive: {node_id}")
-            print(f"Reattach: rollouts monitor --attach {resolved_run_id}")
+            print(f"Reattach: python -m argus monitor --attach {resolved_run_id}")
         else:
             # No flag: prompt user
             answer = input(f"\nTerminate instance {node_id}? [y/n] ").strip().lower()
             should_terminate = answer == "y"
             if not should_terminate:
                 print(f"Instance kept alive: {node_id}")
-                print(f"Reattach: rollouts monitor --attach {resolved_run_id}")
+                print(f"Reattach: python -m argus monitor --attach {resolved_run_id}")
 
         if should_terminate:
             import trio
@@ -747,9 +749,9 @@ def _run_attached(
 
 
 def monitor_main(argv: list[str] | None = None) -> int:
-    """Entry point for `rollouts monitor` subcommand."""
+    """Monitoring implementation behind `python -m argus monitor`."""
     parser = argparse.ArgumentParser(
-        prog="rollouts monitor",
+        prog="argus monitor",
         description="btop-style experiment monitor (RL, SFT, eval, generic)",
     )
     parser.add_argument(
@@ -825,7 +827,7 @@ def monitor_main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    # `rollouts monitor` runs before the main CLI's logging setup. If Python
+    # `argus monitor` runs before the main CLI's logging setup. If Python
     # logging has no handlers, `logging.lastResort` will still emit WARNING+
     # to stderr, corrupting the TUI. Install a NullHandler to keep the
     # terminal clean unless the user explicitly configured logging.

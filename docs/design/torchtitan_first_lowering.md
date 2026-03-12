@@ -28,8 +28,12 @@ The current TorchTitan backend now accepts the contract-native training path:
 
 - `forward_backward(datum: TrainingDatum, loss_fn: LossFnLike) -> StepResult`
 
-This proves that TorchTitan can at least serve as an outer lowering target for
-the current witness loops.
+This proves that TorchTitan can serve as an outer lowering target for the
+current witness loops.
+
+It does **not** prove that TorchTitan is executing our explicit layout /
+collective semantics directly. See
+[torchtitan_supported_semantics.md](/Users/chiraagbalu/research/docs/design/torchtitan_supported_semantics.md).
 
 ## What is still missing
 
@@ -42,7 +46,7 @@ In particular:
 - there is no explicit bridge from our internal realization semantics to
   `ParallelDims`, mesh placement, or loss-parallel behavior
 
-TODO:
+Current status:
 
 - TorchTitan does not currently expose enough explicit control to directly
   execute the realization language we want.

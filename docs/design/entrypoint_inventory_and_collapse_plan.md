@@ -39,11 +39,11 @@ collapse plan.
 
 - [run_rl.py](/Users/chiraagbalu/research/rollouts/rollouts/run_rl.py)
   - duplicated `run.py` semantics with a narrower training-only wrapper
-  - should be removed in favor of `rollouts.run`
+  - should be removed in favor of `argus.run`
 - [modal_runner.py](/Users/chiraagbalu/research/rollouts/rollouts/modal_runner.py) standalone `main()`
   - useful as implementation detail
   - should not remain a first-class user-facing launcher
-  - Modal should be a provider/runtime under `rollouts.run`
+  - Modal should be a provider/runtime under `argus.run`
 - [tui/monitor.py](/Users/chiraagbalu/research/rollouts/rollouts/tui/monitor.py) direct `main()`
   - should remain implementation detail behind `python -m argus monitor`
 - [tui/__main__.py](/Users/chiraagbalu/research/rollouts/rollouts/tui/__main__.py)
@@ -98,7 +98,7 @@ Everything else should either:
 
 ## Target layer ownership
 
-### rollouts.run
+### argus.run
 
 Should own:
 - config loading
@@ -110,6 +110,15 @@ Should not own:
 - provider-specific resource logic
 - duplicated dirty-source policy
 - run supervision semantics
+
+### rollouts.run
+
+Should own:
+- compatibility for existing imports and configs
+- forwarding to `argus.run`
+
+Should not own:
+- public control-plane orchestration
 
 ### broker
 
@@ -138,13 +147,14 @@ Should own:
 ### Phase 1
 
 - make `argus run` and `argus monitor` the public control-plane entrypoints
-- keep `rollouts.run` as implementation, not public surface
+- make `argus.run` the real launch implementation
+- keep `rollouts.run` only as a compatibility wrapper
 - remove `run_rl.py`
 - keep `modal_runner.py` only as implementation detail
 
 ### Phase 2
 
-- make Modal and SSH look like the same execution/session layer from `rollouts.run`
+- make Modal and SSH look like the same execution/session layer from `argus.run`
 - continue pushing runtime/materialization/source-sync semantics downward
 
 ### Phase 3
@@ -160,3 +170,4 @@ The shortest path to "clear/few entrypoints and compact codepaths" is:
 2. kill `run_rl.py` as a separate launcher
 3. treat `modal_runner.py` as backend implementation, not public API
 4. keep only one public monitor entrypoint: `python -m argus monitor`
+5. keep the public CLI delegating only to Argus-owned modules, not directly to Rollouts

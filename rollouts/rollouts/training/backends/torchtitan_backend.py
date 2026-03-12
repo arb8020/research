@@ -4,6 +4,13 @@ Wraps torchtitan's training infrastructure for use with our GRPO loop.
 Provides access to torchtitan's 4D parallelism (TP + CP + PP + FSDP),
 expert parallelism, and other distributed training features.
 
+Semantic note:
+    This backend does not execute our seqax-inspired realization semantics as
+    an explicit collective program. `lowering.realization` is currently used
+    for validation and lowering only. Actual execution is still TorchTitan's
+    backend-native distributed model: `ParallelDims`, `DeviceMesh`, DTensor,
+    FSDP, and model-specific parallelization hooks.
+
 Limitations:
     - NCCL weight sync not supported. Use weight_sync_mode="disk" in config.
     - Currently only FSDP parallelism is implemented. TP/CP/PP are stubbed.
@@ -221,7 +228,14 @@ class TorchTitanBackend:
             )
 
     def _apply_parallelization(self) -> None:
-        """Apply torchtitan parallelization (TP, FSDP, etc.)."""
+        """Apply TorchTitan-native parallelization.
+
+        Important:
+        The current lowering path derives a backend provisioning summary from
+        our `RealizationPlan`, but this method does not interpret explicit
+        collectives like `materialize(...)` or `all_gather(...)` from our
+        semantics. It applies TorchTitan's own parallelization mechanisms.
+        """
         from torchtitan.distributed import ParallelDims
 
         logger.info(f"[Rank {self.rank}] Applying parallelization")
