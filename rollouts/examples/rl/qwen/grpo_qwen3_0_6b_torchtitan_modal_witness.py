@@ -40,6 +40,9 @@ QWEN_TORCHTITAN_MODAL_DEPS = DepsConfig(
         "torch>=2.10.0",
         "torchvision",
         "torchaudio",
+        "sglang[all] @ git+https://github.com/sgl-project/sglang.git@main#subdirectory=python",
+        "transformers>=5.0.0",
+        "huggingface-hub>=1.4.0",
         "datasets>=4.4.1",
         "accelerate>=0.20.0",
         "peft>=0.7.0",
@@ -56,11 +59,7 @@ QWEN_TORCHTITAN_MODAL_DEPS = DepsConfig(
     pip_index_url="https://download.pytorch.org/whl/nightly/cu128",
     pip_extra_index_url="https://pypi.org/simple",
     pip_prerelease=True,
-    bootstrap_commands=(
-        "curl -LsSf https://astral.sh/uv/install.sh | sh && . ~/.local/bin/env",
-        "~/.local/bin/uv pip install --system 'sglang[all] @ git+https://github.com/sgl-project/sglang.git@main#subdirectory=python'",
-        "~/.local/bin/uv pip install --system --upgrade 'transformers>=5.0.0' 'huggingface-hub>=1.4.0'",
-    ),
+    bootstrap_commands=(),
 )
 
 hardware = HardwareConfig(

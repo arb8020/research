@@ -50,6 +50,13 @@ from .image_spec import (
     manifest_write_command,
     resolve_image_for_provisioning,
 )
+from .install_probes import (
+    apt_install_probe_command,
+    command_looks_like_install,
+    python_install_probe_command,
+    python_runtime_contract_snapshot_command,
+    python_runtime_contract_verify_command,
+)
 from .remote_runtime import (
     MaterializationPlan,
     RuntimeContract,
@@ -73,6 +80,9 @@ MODEL_CACHE_DICT_NAME = "rollouts-model-cache"
 
 # HuggingFace cache directory in sandbox
 HF_CACHE_DIR = "/root/.cache/huggingface"
+UV_BIN = "/root/.local/bin/uv"
+IMAGE_VENV_DIR = "/opt/venvs/rollouts"
+IMAGE_VENV_PYTHON = f"{IMAGE_VENV_DIR}/bin/python"
 
 
 @dataclass
@@ -147,39 +157,86 @@ def _build_modal_image(modal: Any, deps: DepsConfig, gpu_type: str) -> Any:
 
     if spec.system_packages:
         image = image.apt_install(*spec.system_packages)
+        image = image.run_commands(
+            apt_install_probe_command("image-system-packages", packages=spec.system_packages)
+        )
+
+    image = image.run_commands(
+        "which curl >/dev/null 2>&1 || (apt-get update && apt-get install -y curl)",
+        "curl -LsSf https://astral.sh/uv/install.sh | sh",
+        f"{UV_BIN} python install {spec.python_version}",
+        f"{UV_BIN} venv {IMAGE_VENV_DIR} --python {spec.python_version}",
+    )
+
+    def _uv_install_command(
+        packages: tuple[str, ...],
+        *,
+        index_url: str | None,
+        extra_index_url: str | None,
+        pre: bool,
+    ) -> str:
+        parts = [
+            UV_BIN,
+            "pip",
+            "install",
+            "--python",
+            IMAGE_VENV_PYTHON,
+            "--compile-bytecode",
+        ]
+        if index_url:
+            parts.extend(["--index-url", index_url])
+        if extra_index_url:
+            parts.extend(["--extra-index-url", extra_index_url])
+        if pre:
+            parts.extend(["--prerelease", "allow"])
+        parts.extend(packages)
+        return " ".join(parts)
 
     if spec.pip_packages:
-        uv_kwargs: dict[str, Any] = {}
-        if spec.pip_index_url:
-            uv_kwargs["index_url"] = spec.pip_index_url
-        if spec.pip_extra_index_url:
-            uv_kwargs["extra_index_url"] = spec.pip_extra_index_url
-        if spec.pip_prerelease:
-            uv_kwargs["pre"] = True
-        image = image.uv_pip_install(*spec.pip_packages, **uv_kwargs)
+        image = image.run_commands(
+            _uv_install_command(
+                spec.pip_packages,
+                index_url=spec.pip_index_url,
+                extra_index_url=spec.pip_extra_index_url,
+                pre=spec.pip_prerelease,
+            ),
+            f"{python_install_probe_command('image-pip-packages', python_bin=IMAGE_VENV_PYTHON, uv_bin=UV_BIN)} && "
+            f"{python_runtime_contract_snapshot_command('image-pip-packages', python_bin=IMAGE_VENV_PYTHON)}",
+        )
 
     for cmd in spec.build_commands:
         image = image.run_commands(cmd)
+        if command_looks_like_install(cmd):
+            image = image.run_commands(
+                f"{python_install_probe_command('image-build-command-post-install', python_bin=IMAGE_VENV_PYTHON, uv_bin=UV_BIN)} && "
+                f"{python_runtime_contract_verify_command('image-build-command-post-install', python_bin=IMAGE_VENV_PYTHON)}"
+            )
 
     if overlay.system_packages:
         image = image.apt_install(*overlay.system_packages)
+        image = image.run_commands(
+            apt_install_probe_command("overlay-system-packages", packages=overlay.system_packages)
+        )
 
     if overlay.pip_packages:
-        uv_kwargs = {}
-        if overlay.pip_index_url:
-            uv_kwargs["index_url"] = overlay.pip_index_url
-        elif spec.pip_index_url:
-            uv_kwargs["index_url"] = spec.pip_index_url
-        if overlay.pip_extra_index_url:
-            uv_kwargs["extra_index_url"] = overlay.pip_extra_index_url
-        elif spec.pip_extra_index_url:
-            uv_kwargs["extra_index_url"] = spec.pip_extra_index_url
-        if overlay.pip_prerelease or spec.pip_prerelease:
-            uv_kwargs["pre"] = True
-        image = image.uv_pip_install(*overlay.pip_packages, **uv_kwargs)
+        image = image.run_commands(
+            _uv_install_command(
+                overlay.pip_packages,
+                index_url=overlay.pip_index_url or spec.pip_index_url,
+                extra_index_url=overlay.pip_extra_index_url or spec.pip_extra_index_url,
+                pre=overlay.pip_prerelease or spec.pip_prerelease,
+            ),
+            f"{python_install_probe_command('overlay-pip-packages', python_bin=IMAGE_VENV_PYTHON, uv_bin=UV_BIN)} && "
+            f"{python_runtime_contract_snapshot_command('overlay-pip-packages', python_bin=IMAGE_VENV_PYTHON)}",
+        )
 
     for cmd in overlay.commands:
         image = image.run_commands(cmd)
+        if command_looks_like_install(cmd):
+            image = image.run_commands(
+                f"{python_install_probe_command('overlay-command-post-install', python_bin=IMAGE_VENV_PYTHON, uv_bin=UV_BIN)} && "
+                f"{python_runtime_contract_verify_command('overlay-command-post-install', python_bin=IMAGE_VENV_PYTHON)}"
+            )
 
     # Add force rebuild marker (change this to invalidate cache)
     image = image.run_commands("echo 'rollouts-build-v4-uv'")
@@ -187,6 +244,7 @@ def _build_modal_image(modal: Any, deps: DepsConfig, gpu_type: str) -> Any:
     env_vars = {
         "HF_HOME": HF_CACHE_DIR,
         "HF_HUB_ENABLE_HF_TRANSFER": "1",
+        "PATH": f"{IMAGE_VENV_DIR}/bin:/root/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
         # Megatron-LM needs to be on PYTHONPATH for megatron.core imports
         "PYTHONPATH": "/root/Megatron-LM:/root",
         # NCCL settings for multi-GPU training
@@ -864,20 +922,7 @@ async def _run_training_in_sandbox(
     else:
         config_rel = config_p
 
-    # Install base dependencies (not using editable install to avoid PyPI deps)
-    logger.info("Installing dependencies...")
-
-    def _install() -> None:
-        # Install just the rollouts deps (skip bifrost/broker from PyPI)
-        _exec_sync(
-            sandbox,
-            f"cd {workspace} && pip install openai anthropic dacite aiohttp trio httpx "
-            f"'transformers>=4.50' datasets peft accelerate --quiet",
-            timeout=300,
-        )
-
-    await trio.to_thread.run_sync(_install)
-    logger.info("Dependencies installed")
+    logger.info("Using image-owned Python environment; skipping per-run dependency install")
 
     # Run training with PYTHONPATH set to include our code.
     #
@@ -892,6 +937,7 @@ async def _run_training_in_sandbox(
     # - /root/Megatron-LM for megatron.core imports
     env_vars = (
         f"PYTHONUNBUFFERED=1 "
+        f"PATH={IMAGE_VENV_DIR}/bin:/root/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin "
         f"PYTHONPATH={workspace}:/workspace/research:/root/Megatron-LM:/root "
         f"ROLLOUTS_RUN_NAME={run_name} "
         f"ROLLOUTS_OUTPUT_DIR=results/rl/{run_name} "
@@ -901,7 +947,7 @@ async def _run_training_in_sandbox(
     # explicit remote execution/session layer instead of reviving `torchrun config.py`.
     cmd = (
         f"cd {workspace} && {env_vars} "
-        f"python -m argus.run --local --config {config_rel}"
+        f"{IMAGE_VENV_PYTHON} -m argus.run --local --config {config_rel}"
     )
 
     def _train() -> tuple[str, str, int]:

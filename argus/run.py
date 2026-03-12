@@ -133,6 +133,7 @@ if _workspace_root.exists() and str(_workspace_root) not in sys.path:
     sys.path.insert(0, str(_workspace_root))
 
 from rollouts.image_publisher import build_or_resolve_image
+from rollouts.config_contracts import validate_train_config_module
 from rollouts.image_spec import (
     USER_IMAGE_MANIFEST_PATH,
     ImageManifest,
@@ -140,6 +141,13 @@ from rollouts.image_spec import (
     infer_cuda_version,
     manifest_write_command,
     stable_feature_name,
+)
+from rollouts.install_probes import (
+    apt_install_probe_command,
+    command_looks_like_install,
+    python_install_probe_command,
+    python_runtime_contract_snapshot_command,
+    python_runtime_contract_verify_command,
 )
 from rollouts.remote_runtime import (
     SourceSyncPolicy,
@@ -630,20 +638,30 @@ async def _deploy_and_submit(
         if remote_manifest is None or not remote_manifest.has_feature(image_apt_feature):
             bootstrap_steps.append((
                 "Installing image system packages",
-                _apt_install_command(custom_image.system_packages),
+                (
+                    f"{_apt_install_command(custom_image.system_packages)} && "
+                    f"{apt_install_probe_command('image-system-packages', packages=custom_image.system_packages)}"
+                ),
             ))
             manifest_features_applied.append(image_apt_feature)
 
     if custom_image is not None and custom_image.pip_packages:
+        # TODO: Mirror the Modal path here by creating an image-owned uv venv / runtime
+        # contract and keeping heavy Python deps out of per-run reconciliation entirely.
+        # This SSH/bootstrap path should eventually verify that runtime, not redefine it.
         image_pip_feature = stable_feature_name("image-pip-packages", custom_image.pip_packages)
         if remote_manifest is None or not remote_manifest.has_feature(image_pip_feature):
             bootstrap_steps.append((
                 "Installing image Python packages",
-                _uv_pip_install_command(
-                    custom_image.pip_packages,
-                    index_url=custom_image.pip_index_url,
-                    extra_index_url=custom_image.pip_extra_index_url,
-                    pre=custom_image.pip_prerelease,
+                (
+                    f"{_uv_pip_install_command(
+                        custom_image.pip_packages,
+                        index_url=custom_image.pip_index_url,
+                        extra_index_url=custom_image.pip_extra_index_url,
+                        pre=custom_image.pip_prerelease,
+                    )} && "
+                    f"{python_install_probe_command('image-pip-packages')} && "
+                    f"{python_runtime_contract_snapshot_command('image-pip-packages')}"
                 ),
             ))
             manifest_features_applied.append(image_pip_feature)
@@ -654,6 +672,12 @@ async def _deploy_and_submit(
         )
         if remote_manifest is None or not remote_manifest.has_feature(image_build_feature):
             for idx, command in enumerate(custom_image.build_commands, start=1):
+                if command_looks_like_install(command):
+                    command = (
+                        f"{command} && "
+                        f"{python_install_probe_command(f'image-build-command-{idx}')} && "
+                        f"{python_runtime_contract_verify_command(f'image-build-command-{idx}')}"
+                    )
                 bootstrap_steps.append((f"Running image build command {idx}", command))
             manifest_features_applied.append(image_build_feature)
 
@@ -664,7 +688,10 @@ async def _deploy_and_submit(
         if remote_manifest is None or not remote_manifest.has_feature(overlay_apt_feature):
             bootstrap_steps.append((
                 "Installing runtime system packages",
-                _apt_install_command(custom_overlay.system_packages),
+                (
+                    f"{_apt_install_command(custom_overlay.system_packages)} && "
+                    f"{apt_install_probe_command('overlay-system-packages', packages=custom_overlay.system_packages)}"
+                ),
             ))
             manifest_features_applied.append(overlay_apt_feature)
 
@@ -675,14 +702,18 @@ async def _deploy_and_submit(
         if remote_manifest is None or not remote_manifest.has_feature(overlay_pip_feature):
             bootstrap_steps.append((
                 "Installing runtime Python packages",
-                _uv_pip_install_command(
-                    custom_overlay.pip_packages,
-                    index_url=custom_overlay.pip_index_url
-                    or (custom_image.pip_index_url if custom_image else None),
-                    extra_index_url=custom_overlay.pip_extra_index_url
-                    or (custom_image.pip_extra_index_url if custom_image else None),
-                    pre=custom_overlay.pip_prerelease
-                    or (custom_image.pip_prerelease if custom_image else False),
+                (
+                    f"{_uv_pip_install_command(
+                        custom_overlay.pip_packages,
+                        index_url=custom_overlay.pip_index_url
+                        or (custom_image.pip_index_url if custom_image else None),
+                        extra_index_url=custom_overlay.pip_extra_index_url
+                        or (custom_image.pip_extra_index_url if custom_image else None),
+                        pre=custom_overlay.pip_prerelease
+                        or (custom_image.pip_prerelease if custom_image else False),
+                    )} && "
+                    f"{python_install_probe_command('overlay-pip-packages')} && "
+                    f"{python_runtime_contract_snapshot_command('overlay-pip-packages')}"
                 ),
             ))
             manifest_features_applied.append(overlay_pip_feature)
@@ -691,6 +722,12 @@ async def _deploy_and_submit(
         overlay_cmd_feature = stable_feature_name("overlay-commands", custom_overlay.commands)
         if remote_manifest is None or not remote_manifest.has_feature(overlay_cmd_feature):
             for idx, command in enumerate(custom_overlay.commands, start=1):
+                if command_looks_like_install(command):
+                    command = (
+                        f"{command} && "
+                        f"{python_install_probe_command(f'overlay-command-{idx}')} && "
+                        f"{python_runtime_contract_verify_command(f'overlay-command-{idx}')}"
+                    )
                 bootstrap_steps.append((f"Running runtime overlay command {idx}", command))
             manifest_features_applied.append(overlay_cmd_feature)
 
@@ -1117,9 +1154,10 @@ Examples:
 
     # Load config module
     config_module = load_config_module(config_path)
-
-    if not hasattr(config_module, "config"):
-        print("Config file must export 'config'", file=sys.stderr)
+    try:
+        validate_train_config_module(config_module, config_path)
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
         return 1
 
     # Get hardware config (default to local if not specified)
@@ -1205,6 +1243,17 @@ Examples:
 
     try:
         # Dispatch based on provider
+        from rollouts.inference.benchmark.config import BenchmarkConfig
+
+        if not isinstance(config_module.config, BenchmarkConfig):
+            train_fn = getattr(config_module, "train", None)
+            if not callable(train_fn):
+                print(
+                    f"Training config {config_path} must export callable train(config, **kwargs)",
+                    file=sys.stderr,
+                )
+                return 1
+
         if multi_node is not None:
             # Multi-node distributed training
             import trio
@@ -1326,9 +1375,6 @@ Examples:
 
         else:
             # Local execution
-            # Check if this is a benchmark config
-            from rollouts.inference.benchmark.config import BenchmarkConfig
-
             if isinstance(config_module.config, BenchmarkConfig):
                 # Run benchmark locally (we're already on the GPU machine)
                 import json
@@ -1344,7 +1390,7 @@ Examples:
                     hardware.gpu_count,
                 )
                 print(json.dumps(result.to_dict(), indent=2))
-            elif hasattr(config_module, "train"):
+            else:
                 # Training run
                 kwargs = {}
                 if args.max_samples is not None:
@@ -1352,12 +1398,6 @@ Examples:
 
                 results = config_module.train(config=config_module.config, **kwargs)
                 print(f"Training complete. {len(results.get('metrics_history', []))} steps")
-            else:
-                print(
-                    "Config file must export 'train' function for local execution",
-                    file=sys.stderr,
-                )
-                return 1
 
         return 0
     finally:
