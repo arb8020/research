@@ -17,8 +17,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-# Import Sample directly to avoid pulling in torch via training/__init__.py
-from ...training.types import Sample
+# Import lightweight row/sample types to avoid pulling in torch via training/__init__.py
+from ...training.types import AttemptRow, ProblemRow, TrainingSample
 
 if TYPE_CHECKING:
     import torch
@@ -47,19 +47,97 @@ class BufferState:
     seed: int = 42
 
 
+def _build_attempt(
+    prompt: Any,
+    index: int,
+    metadata: dict[str, Any] | None = None,
+) -> AttemptRow:
+    resolved_metadata = metadata or {}
+    return AttemptRow(
+        attempt_id=str(index),
+        problem=ProblemRow(
+            problem_id=str(index),
+            payload={"prompt": prompt},
+            ground_truth=resolved_metadata.get("label"),
+            metadata=resolved_metadata,
+        ),
+        metadata=resolved_metadata,
+    )
+
+
+def _extract_prompt_value(sample: AttemptRow) -> str | list[dict[str, str]]:
+    """Get the prompt payload from a buffered row without relying on legacy Sample fields."""
+    if sample.problem is not None and "prompt" in sample.problem.payload:
+        return sample.problem.payload["prompt"]
+    prompt = sample.prompt
+    if isinstance(prompt, str):
+        return prompt
+    return prompt
+
+
+def _clone_training_sample(sample: AttemptRow) -> TrainingSample | None:
+    if sample.training_sample is None:
+        return None
+
+    return TrainingSample(
+        attempt_id=sample.training_sample.attempt_id,
+        tokens=list(sample.training_sample.tokens),
+        loss_mask=list(sample.training_sample.loss_mask),
+        response_length=sample.training_sample.response_length,
+        rollout_log_probs=(
+            list(sample.training_sample.rollout_log_probs)
+            if sample.training_sample.rollout_log_probs is not None
+            else None
+        ),
+        teacher_log_probs=(
+            list(sample.training_sample.teacher_log_probs)
+            if sample.training_sample.teacher_log_probs is not None
+            else None
+        ),
+        metadata=dict(sample.training_sample.metadata),
+    )
+
+
+def _copy_attempt_for_group(
+    base_sample: AttemptRow,
+    copy_index: int,
+    group_index: int,
+) -> AttemptRow:
+    metadata = dict(base_sample.metadata)
+    metadata["legacy_index"] = copy_index
+
+    return AttemptRow(
+        attempt_id=base_sample.attempt_id,
+        problem=base_sample.problem,
+        group_index=group_index,
+        trajectory=base_sample.trajectory,
+        training_sample=_clone_training_sample(base_sample),
+        reward=base_sample.reward,
+        score=base_sample.score,
+        environment_state=(
+            dict(base_sample.environment_state)
+            if base_sample.environment_state is not None
+            else None
+        ),
+        status=base_sample.status,
+        metadata=metadata,
+        weight_version=base_sample.weight_version,
+    )
+
+
 def get_samples(
-    samples: list[Sample],
+    samples: list[AttemptRow],
     state: BufferState,
     n: int,
     n_samples_per_prompt: int = 1,
-) -> tuple[list[list[Sample]], BufferState]:
+) -> tuple[list[list[AttemptRow]], BufferState]:
     """Get next batch of samples with GRPO grouping.
 
     Pure function: returns (sample_groups, new_state).
     Does not mutate inputs.
 
     Args:
-        samples: Source dataset (list of Sample objects)
+        samples: Source dataset (list of buffered attempt rows)
         state: Current buffer state
         n: Number of unique prompts to return
         n_samples_per_prompt: Copies per prompt for GRPO (default 1)
@@ -70,7 +148,10 @@ def get_samples(
         - New buffer state
 
     Example:
-        >>> samples = [Sample(prompt="Q1"), Sample(prompt="Q2")]
+        >>> samples = [
+        ...     _build_attempt("Q1", 0),
+        ...     _build_attempt("Q2", 1),
+        ... ]
         >>> state = BufferState(seed=42)
         >>> groups, new_state = get_samples(samples, state, n=1, n_samples_per_prompt=4)
         >>> assert len(groups) == 1
@@ -84,7 +165,7 @@ def get_samples(
     # Work with a shuffled copy based on current epoch
     shuffled = _shuffle_for_epoch(samples, state.seed, state.epoch_id)
 
-    result_groups: list[list[Sample]] = []
+    result_groups: list[list[AttemptRow]] = []
     epoch_id = state.epoch_id
     sample_offset = state.sample_offset
     global_index = epoch_id * len(samples) + sample_offset
@@ -100,21 +181,12 @@ def get_samples(
         base_sample = shuffled[sample_offset]
 
         # Create group with n_samples_per_prompt copies
-        group: list[Sample] = []
+        group: list[AttemptRow] = []
         for i in range(n_samples_per_prompt):
-            # Create copy with group_index and index set
-            # Note: response is a computed property derived from trajectory, not a field
-            sample_copy = Sample(
-                prompt=base_sample.prompt,
-                trajectory=base_sample.trajectory,
-                tokens=list(base_sample.tokens),
-                loss_mask=list(base_sample.loss_mask),
-                reward=base_sample.reward,
+            sample_copy = _copy_attempt_for_group(
+                base_sample=base_sample,
+                copy_index=global_index * n_samples_per_prompt + i,
                 group_index=len(result_groups),
-                index=global_index * n_samples_per_prompt + i,
-                metadata=dict(base_sample.metadata),
-                rollout_log_probs=base_sample.rollout_log_probs,
-                status=base_sample.status,
             )
             group.append(sample_copy)
 
@@ -132,10 +204,10 @@ def get_samples(
 
 
 def get_samples_flat(
-    samples: list[Sample],
+    samples: list[AttemptRow],
     state: BufferState,
     n: int,
-) -> tuple[list[Sample], BufferState]:
+) -> tuple[list[AttemptRow], BufferState]:
     """Get next batch of samples without grouping.
 
     Convenience wrapper for get_samples with n_samples_per_prompt=1.
@@ -150,7 +222,10 @@ def get_samples_flat(
         Tuple of (samples, new_state)
 
     Example:
-        >>> samples = [Sample(prompt="Q1"), Sample(prompt="Q2")]
+        >>> samples = [
+        ...     _build_attempt("Q1", 0),
+        ...     _build_attempt("Q2", 1),
+        ... ]
         >>> state = BufferState(seed=42)
         >>> batch, new_state = get_samples_flat(samples, state, n=2)
         >>> assert len(batch) == 2
@@ -160,10 +235,10 @@ def get_samples_flat(
 
 
 def _shuffle_for_epoch(
-    samples: list[Sample],
+    samples: list[AttemptRow],
     seed: int,
     epoch_id: int,
-) -> list[Sample]:
+) -> list[AttemptRow]:
     """Create shuffled copy of samples for given epoch.
 
     Pure function - does not mutate input.
@@ -232,7 +307,7 @@ def load_samples_from_parquet(
     prompt_key: str = "prompt",
     label_key: str | None = None,
     limit: int | None = None,
-) -> list[Sample]:
+) -> list[AttemptRow]:
     """Load samples from Parquet file.
 
     Args:
@@ -242,7 +317,7 @@ def load_samples_from_parquet(
         limit: Optional limit on number of samples
 
     Returns:
-        List of Sample objects
+        List of buffered attempt rows
 
     Example:
         >>> samples = load_samples_from_parquet("data.parquet", label_key="answer")
@@ -272,7 +347,7 @@ def load_samples_from_parquet(
     if limit is not None:
         df = df.head(limit)
 
-    samples = []
+    samples: list[AttemptRow] = []
     for _i, row in df.iterrows():
         prompt = row.get(prompt_key, row.to_dict())
 
@@ -281,13 +356,7 @@ def load_samples_from_parquet(
             metadata["label"] = row[label_key]
         metadata["_raw"] = row.to_dict()
 
-        samples.append(
-            Sample(
-                prompt=prompt,
-                metadata=metadata,
-                index=len(samples),
-            )
-        )
+        samples.append(_build_attempt(prompt=prompt, index=len(samples), metadata=metadata))
 
     return samples
 
@@ -299,7 +368,7 @@ def load_samples_from_hf(
     prompt_key: str = "prompt",
     label_key: str | None = None,
     limit: int | None = None,
-) -> list[Sample]:
+) -> list[AttemptRow]:
     """Load samples from HuggingFace datasets.
 
     Args:
@@ -311,7 +380,7 @@ def load_samples_from_hf(
         limit: Optional limit on number of samples
 
     Returns:
-        List of Sample objects
+        List of buffered attempt rows
 
     Example:
         >>> samples = load_samples_from_hf(
@@ -327,7 +396,7 @@ def load_samples_from_hf(
 
     ds = load_dataset(dataset_name, subset, split=split)
 
-    samples = []
+    samples: list[AttemptRow] = []
     for i, row in enumerate(ds):
         if limit is not None and i >= limit:
             break
@@ -339,13 +408,7 @@ def load_samples_from_hf(
             metadata["label"] = row[label_key]
         metadata["_raw"] = dict(row)
 
-        samples.append(
-            Sample(
-                prompt=prompt,
-                metadata=metadata,
-                index=i,
-            )
-        )
+        samples.append(_build_attempt(prompt=prompt, index=i, metadata=metadata))
 
     return samples
 
@@ -355,7 +418,7 @@ def load_samples_from_jsonl(
     prompt_key: str = "prompt",
     label_key: str | None = None,
     limit: int | None = None,
-) -> list[Sample]:
+) -> list[AttemptRow]:
     """Load samples from JSONL file.
 
     Pure function - no side effects, just loads and returns.
@@ -367,14 +430,14 @@ def load_samples_from_jsonl(
         limit: Optional limit on number of samples to load
 
     Returns:
-        List of Sample objects
+        List of buffered attempt rows
 
     Example:
         >>> # If file contains: {"prompt": "Q1", "answer": "A1"}
         >>> samples = load_samples_from_jsonl("data.jsonl", label_key="answer")
         >>> assert samples[0].metadata["label"] == "A1"
     """
-    samples = []
+    samples: list[AttemptRow] = []
 
     with open(path) as f:
         for line_num, line in enumerate(f, start=1):
@@ -404,11 +467,7 @@ def load_samples_from_jsonl(
             metadata["_raw"] = data
 
             samples.append(
-                Sample(
-                    prompt=prompt,
-                    metadata=metadata,
-                    index=line_num - 1,
-                )
+                _build_attempt(prompt=prompt, index=line_num - 1, metadata=metadata),
             )
 
     return samples
@@ -417,7 +476,7 @@ def load_samples_from_jsonl(
 def load_samples_from_list(
     prompts: list[str | dict[str, Any]],
     labels: list[Any] | None = None,
-) -> list[Sample]:
+) -> list[AttemptRow]:
     """Create samples from Python lists.
 
     Args:
@@ -425,7 +484,7 @@ def load_samples_from_list(
         labels: Optional list of ground truth labels
 
     Returns:
-        List of Sample objects
+        List of buffered attempt rows
 
     Example:
         >>> samples = load_samples_from_list(
@@ -434,20 +493,14 @@ def load_samples_from_list(
         ... )
         >>> assert samples[0].metadata["label"] == "A1"
     """
-    samples = []
+    samples: list[AttemptRow] = []
 
     for i, prompt in enumerate(prompts):
         metadata: dict[str, Any] = {}
         if labels is not None:
             metadata["label"] = labels[i]
 
-        samples.append(
-            Sample(
-                prompt=prompt,
-                metadata=metadata,
-                index=i,
-            )
-        )
+        samples.append(_build_attempt(prompt=prompt, index=i, metadata=metadata))
 
     return samples
 
@@ -679,7 +732,7 @@ class DataBuffer:
         samples, self._state = get_samples_flat(self._samples, self._state, n)
         self.epoch_id = self._state.epoch_id
         self.sample_offset = self._state.sample_offset
-        return [s.prompt for s in samples]
+        return [_extract_prompt_value(s) for s in samples]
 
     def save_state(self) -> dict[str, Any]:
         return state_to_dict(self._state)

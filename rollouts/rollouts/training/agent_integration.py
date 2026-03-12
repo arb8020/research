@@ -164,7 +164,7 @@ async def agent_rollout_to_sample(
     states = await run_agent(state, run_config)
     final_state = states[-1]
 
-    # 6. Convert trajectory → Sample (like clicker's sample_prep.py)
+    # 6. Convert trajectory -> attempt row + attached training sample
     # Enrich metadata with agent execution info (like run_eval.py)
     enriched_metadata = {
         **(metadata or {}),

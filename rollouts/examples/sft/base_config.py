@@ -95,7 +95,10 @@ BaseConfig = SFTConfig
 def load_samples_from_config(config: DatasetConfig) -> list:
     """Load samples based on DatasetConfig.
 
-    Returns list of Sample objects from rollouts.training.types.
+    Returns buffered prompt rows for non-HF sources.
+
+    The main SFT training path below uses `load_sft_dataset(...)`, which returns
+    `TrainingSample` objects directly.
     """
     from rollouts.training.datasets.data_buffer import (
         load_samples_from_hf,

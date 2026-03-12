@@ -7,7 +7,7 @@ Two modes:
 Following experiment_config.md and RL loop patterns:
 - Loads from HuggingFace datasets
 - Compatible with DataBuffer for RL training
-- Score function works with Sample type
+- Score functions operate on attempt rows
 """
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ import trio
 if TYPE_CHECKING:
     from rollouts.core import Endpoint, Score
     from rollouts.training.datasets.data_buffer import DataBuffer
-    from rollouts.training.types import Sample
+    from rollouts.training.types import AttemptRow
 
 # ──────────────────────── Config Dataclasses ────────────────────────────────
 
@@ -171,7 +171,7 @@ def load_samples_from_config(config: DatasetConfig) -> list[dict[str, Any]]:
             limit=config.max_samples,
         )
         return [
-            {"prompt": s.prompt, "answer": s.metadata.get("label"), "full_answer": ""}
+            {"prompt": s.input.get("prompt", ""), "answer": s.ground_truth, "full_answer": ""}
             for s in samples
         ]
     elif config.source == "jsonl":
@@ -183,7 +183,7 @@ def load_samples_from_config(config: DatasetConfig) -> list[dict[str, Any]]:
             limit=config.max_samples,
         )
         return [
-            {"prompt": s.prompt, "answer": s.metadata.get("label"), "full_answer": ""}
+            {"prompt": s.input.get("prompt", ""), "answer": s.ground_truth, "full_answer": ""}
             for s in samples
         ]
     elif config.source == "parquet":
@@ -195,7 +195,7 @@ def load_samples_from_config(config: DatasetConfig) -> list[dict[str, Any]]:
             limit=config.max_samples,
         )
         return [
-            {"prompt": s.prompt, "answer": s.metadata.get("label"), "full_answer": ""}
+            {"prompt": s.input.get("prompt", ""), "answer": s.ground_truth, "full_answer": ""}
             for s in samples
         ]
     else:
@@ -232,12 +232,12 @@ def load_gsm8k_dataset(config: DatasetConfig) -> list[dict[str, Any]]:
     return load_samples_from_config(config)
 
 
-def create_gsm8k_samples(config: DatasetConfig) -> list[Sample]:
-    """Create Sample objects from GSM8K for RL training.
+def create_gsm8k_samples(config: DatasetConfig) -> list[AttemptRow]:
+    """Create attempt rows from GSM8K for RL training.
 
-    Returns Sample objects with:
-    - prompt: The question
-    - metadata["answer"]: Ground truth answer (for scoring)
+    Returns attempt rows with:
+    - problem.payload["prompt"]: The question
+    - problem.ground_truth: Final numeric answer
     - metadata["full_answer"]: Full solution with reasoning
 
     Usage with new functional API:
@@ -245,20 +245,26 @@ def create_gsm8k_samples(config: DatasetConfig) -> list[Sample]:
         state = BufferState(seed=config.seed)
         batch, state = get_samples_flat(samples, state, n=32)
     """
-    from rollouts.training.types import Sample
+    from rollouts.training.types import AttemptRow, ProblemRow
 
     dataset = load_samples_from_config(config)
 
     samples = []
     for i, row in enumerate(dataset):
+        ground_truth = row["answer"]
         samples.append(
-            Sample(
-                prompt=row["prompt"],
+            AttemptRow(
+                attempt_id=str(i),
+                problem=ProblemRow(
+                    problem_id=str(i),
+                    payload={"prompt": row["prompt"]},
+                    ground_truth=ground_truth,
+                ),
                 metadata={
                     "answer": row["answer"],
                     "full_answer": row["full_answer"],
+                    "index": i,
                 },
-                index=i,
             )
         )
 
@@ -335,15 +341,14 @@ def normalize_answer(answer: str) -> float | None:
         return None
 
 
-def gsm8k_score_fn(sample: Any) -> Score:
+def gsm8k_score_fn(sample: AttemptRow) -> Score:
     """Score function for GSM8K (single-turn mode).
 
-    Works with Sample type from rollouts.training.types.
     Extracts answer from \\boxed{} and compares to ground truth.
     """
     from rollouts.core import Metric, Score
 
-    ground_truth = sample.metadata.get("answer")
+    ground_truth = sample.ground_truth
     if ground_truth is None:
         return Score(metrics=(Metric("correct", 0.0, weight=1.0),))
 
@@ -383,11 +388,10 @@ def gsm8k_score_fn(sample: Any) -> Score:
     )
 
 
-def gsm8k_tool_score_fn(sample: Any) -> Score:
+def gsm8k_tool_score_fn(sample: AttemptRow) -> Score:
     """Score function for GSM8K with calculator tools (multi-turn mode).
 
     Extracts answer from complete_task tool call or tool results.
-    Sample has trajectory via sample.trajectory.
     """
     import json
 
@@ -399,7 +403,6 @@ def gsm8k_tool_score_fn(sample: Any) -> Score:
             metrics=(Metric("correct", 0.0, weight=1.0, metadata={"error": "no trajectory"}),)
         )
 
-    # Sample is a dataclass with .ground_truth and .input dict
     ground_truth = sample.ground_truth or sample.input.get("answer")
     if ground_truth is None:
         return Score(metrics=(Metric("correct", 0.0, weight=1.0),))
@@ -509,11 +512,8 @@ def _get_endpoint(config: GSM8KConfig) -> Endpoint:
     )
 
 
-def _single_turn_score_fn(sample: Sample) -> Score:
-    """Score function for single-turn GSM8K using rollouts evaluation types.
-
-    Sample has trajectory via sample.trajectory.
-    """
+def _single_turn_score_fn(sample: AttemptRow) -> Score:
+    """Score function for single-turn GSM8K using rollouts evaluation types."""
     from rollouts.core import Metric, Score
 
     trajectory = sample.trajectory

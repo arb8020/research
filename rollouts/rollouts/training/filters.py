@@ -13,12 +13,12 @@ from collections.abc import Callable
 
 import torch
 
-from ..training.types import Sample, Status
+from ..training.types import AttemptRow, Status
 
 # ────────────────────── SLIME's Default Filter ──────────────────────
 
 
-def check_reward_nonzero_std(samples: list[Sample]) -> bool:
+def check_reward_nonzero_std(samples: list[AttemptRow]) -> bool:
     """Keep only if reward standard deviation > 0.
 
     Based on SLIME's check_reward_nonzero_std (the default filter).
@@ -38,14 +38,12 @@ def check_reward_nonzero_std(samples: list[Sample]) -> bool:
 
     Example:
         >>> # All samples have same reward (no learning signal)
-        >>> samples = [Sample(prompt="Q", response="A1", reward=1.0),
-        ...            Sample(prompt="Q", response="A2", reward=1.0)]
+        >>> samples = [AttemptRow(reward=1.0), AttemptRow(reward=1.0)]
         >>> check_reward_nonzero_std(samples)
         False  # Discard - no variance
 
         >>> # Samples have different rewards (useful for learning)
-        >>> samples = [Sample(prompt="Q", response="A1", reward=1.0),
-        ...            Sample(prompt="Q", response="A2", reward=0.0)]
+        >>> samples = [AttemptRow(reward=1.0), AttemptRow(reward=0.0)]
         >>> check_reward_nonzero_std(samples)
         True  # Keep - has variance
     """
@@ -60,7 +58,7 @@ def check_reward_nonzero_std(samples: list[Sample]) -> bool:
 # ────────────────────── Additional Filters ──────────────────────
 
 
-def check_min_reward(samples: list[Sample], threshold: float = 0.5) -> bool:
+def check_min_reward(samples: list[AttemptRow], threshold: float = 0.5) -> bool:
     """Keep if at least one sample exceeds reward threshold.
 
     Useful for filtering out groups where all attempts failed.
@@ -73,13 +71,11 @@ def check_min_reward(samples: list[Sample], threshold: float = 0.5) -> bool:
         True if any sample.reward > threshold
 
     Example:
-        >>> samples = [Sample(prompt="Q", response="A1", reward=0.0),
-        ...            Sample(prompt="Q", response="A2", reward=0.8)]
+        >>> samples = [AttemptRow(reward=0.0), AttemptRow(reward=0.8)]
         >>> check_min_reward(samples, threshold=0.5)
         True  # Keep - has one good sample
 
-        >>> samples = [Sample(prompt="Q", response="A1", reward=0.2),
-        ...            Sample(prompt="Q", response="A2", reward=0.3)]
+        >>> samples = [AttemptRow(reward=0.2), AttemptRow(reward=0.3)]
         >>> check_min_reward(samples, threshold=0.5)
         False  # Discard - all below threshold
     """
@@ -89,7 +85,7 @@ def check_min_reward(samples: list[Sample], threshold: float = 0.5) -> bool:
     return any(sample.reward > threshold for sample in samples)
 
 
-def check_response_diversity(samples: list[Sample], min_unique_ratio: float = 0.5) -> bool:
+def check_response_diversity(samples: list[AttemptRow], min_unique_ratio: float = 0.5) -> bool:
     """Keep if responses are sufficiently diverse.
 
     Avoids training on repetitive responses (e.g., model collapse).
@@ -102,19 +98,8 @@ def check_response_diversity(samples: list[Sample], min_unique_ratio: float = 0.
         True if unique_responses / total_responses >= min_unique_ratio
 
     Example:
-        >>> samples = [Sample(prompt="Q", response="A"),
-        ...            Sample(prompt="Q", response="A"),  # Duplicate
-        ...            Sample(prompt="Q", response="B"),
-        ...            Sample(prompt="Q", response="C")]
-        >>> check_response_diversity(samples, min_unique_ratio=0.5)
-        True  # 3 unique / 4 total = 75% >= 50%
-
-        >>> samples = [Sample(prompt="Q", response="A"),
-        ...            Sample(prompt="Q", response="A"),
-        ...            Sample(prompt="Q", response="A"),
-        ...            Sample(prompt="Q", response="A")]
-        >>> check_response_diversity(samples, min_unique_ratio=0.5)
-        False  # 1 unique / 4 total = 25% < 50%
+        Distinct assistant responses yield a higher unique ratio and pass.
+        Repeated identical responses yield a low unique ratio and get dropped.
     """
     assert len(samples) > 0, "samples required"
     assert 0.0 <= min_unique_ratio <= 1.0, (
@@ -129,7 +114,7 @@ def check_response_diversity(samples: list[Sample], min_unique_ratio: float = 0.
 
 
 def check_reasonable_length(
-    samples: list[Sample], min_tokens: int = 10, max_tokens: int = 2048
+    samples: list[AttemptRow], min_tokens: int = 10, max_tokens: int = 2048
 ) -> bool:
     """Keep if average response length is reasonable.
 
@@ -144,13 +129,17 @@ def check_reasonable_length(
         True if min_tokens <= avg_length <= max_tokens
 
     Example:
-        >>> samples = [Sample(prompt="Q", response="A", tokens=[1,2,3]),
-        ...            Sample(prompt="Q", response="B", tokens=[1,2,3,4])]
+        >>> samples = [
+        ...     AttemptRow(training_sample=TrainingSample(tokens=[1,2,3])),
+        ...     AttemptRow(training_sample=TrainingSample(tokens=[1,2,3,4])),
+        ... ]
         >>> check_reasonable_length(samples, min_tokens=2, max_tokens=10)
         True  # avg=3.5, within [2, 10]
 
-        >>> samples = [Sample(prompt="Q", response="", tokens=[]),
-        ...            Sample(prompt="Q", response="A", tokens=[1])]
+        >>> samples = [
+        ...     AttemptRow(training_sample=TrainingSample(tokens=[])),
+        ...     AttemptRow(training_sample=TrainingSample(tokens=[1])),
+        ... ]
         >>> check_reasonable_length(samples, min_tokens=2, max_tokens=10)
         False  # avg=0.5, below min_tokens=2
     """
@@ -166,10 +155,10 @@ def check_reasonable_length(
     return min_tokens <= avg_length <= max_tokens
 
 
-def check_any_success(samples: list[Sample]) -> bool:
+def check_any_success(samples: list[AttemptRow]) -> bool:
     """Keep if at least one sample completed successfully.
 
-    Checks Sample.status for COMPLETED state.
+    Checks attempt status for COMPLETED state.
 
     Args:
         samples: Group of samples
@@ -179,15 +168,15 @@ def check_any_success(samples: list[Sample]) -> bool:
 
     Example:
         >>> samples = [
-        ...     Sample(prompt="Q", response="A", status=Sample.Status.COMPLETED),
-        ...     Sample(prompt="Q", response="B", status=Sample.Status.ABORTED),
+        ...     AttemptRow(status=Status.COMPLETED),
+        ...     AttemptRow(status=Status.ABORTED),
         ... ]
         >>> check_any_success(samples)
         True  # Keep - has one successful sample
 
         >>> samples = [
-        ...     Sample(prompt="Q", response="", status=Sample.Status.ABORTED),
-        ...     Sample(prompt="Q", response="", status=Sample.Status.TRUNCATED),
+        ...     AttemptRow(status=Status.ABORTED),
+        ...     AttemptRow(status=Status.TRUNCATED),
         ... ]
         >>> check_any_success(samples)
         False  # Discard - all failed
@@ -200,7 +189,7 @@ def check_any_success(samples: list[Sample]) -> bool:
 # ────────────────────── Composite Filters ──────────────────────
 
 
-def check_quality_and_diversity(samples: list[Sample]) -> bool:
+def check_quality_and_diversity(samples: list[AttemptRow]) -> bool:
     """Composite filter: reward variance AND response diversity.
 
     Combines SLIME's default with diversity check.
@@ -212,15 +201,12 @@ def check_quality_and_diversity(samples: list[Sample]) -> bool:
         True if both conditions pass
 
     Example:
-        >>> samples = [Sample(prompt="Q", response="A", reward=1.0),
-        ...            Sample(prompt="Q", response="B", reward=0.0)]
-        >>> check_quality_and_diversity(samples)
-        True  # Has variance AND diversity
+        >>> samples = [AttemptRow(reward=1.0), AttemptRow(reward=0.0)]
+        >>> check_reward_nonzero_std(samples)
+        True
 
-        >>> samples = [Sample(prompt="Q", response="A", reward=1.0),
-        ...            Sample(prompt="Q", response="A", reward=0.0)]
-        >>> check_quality_and_diversity(samples)
-        False  # Has variance but NO diversity (same response)
+        >>> samples = [AttemptRow(reward=1.0), AttemptRow(reward=0.0)]
+        >>> # response diversity must also pass for the composite filter
     """
     return check_reward_nonzero_std(samples) and check_response_diversity(
         samples, min_unique_ratio=0.5
@@ -230,7 +216,7 @@ def check_quality_and_diversity(samples: list[Sample]) -> bool:
 # ────────────────────── Filter Utilities ──────────────────────
 
 
-def make_threshold_filter(threshold: float) -> Callable[[list[Sample]], bool]:
+def make_threshold_filter(threshold: float) -> Callable[[list[AttemptRow]], bool]:
     """Create a filter with custom threshold (Casey: redundancy).
 
     Args:
@@ -244,13 +230,13 @@ def make_threshold_filter(threshold: float) -> Callable[[list[Sample]], bool]:
         >>> lenient_filter = make_threshold_filter(0.3)
     """
 
-    def filter_fn(samples: list[Sample]) -> bool:
+    def filter_fn(samples: list[AttemptRow]) -> bool:
         return check_min_reward(samples, threshold=threshold)
 
     return filter_fn
 
 
-def make_length_filter(min_tokens: int, max_tokens: int) -> Callable[[list[Sample]], bool]:
+def make_length_filter(min_tokens: int, max_tokens: int) -> Callable[[list[AttemptRow]], bool]:
     """Create a length filter with custom bounds (Casey: redundancy).
 
     Args:
@@ -265,7 +251,7 @@ def make_length_filter(min_tokens: int, max_tokens: int) -> Callable[[list[Sampl
         >>> long_filter = make_length_filter(100, 2048)
     """
 
-    def filter_fn(samples: list[Sample]) -> bool:
+    def filter_fn(samples: list[AttemptRow]) -> bool:
         return check_reasonable_length(samples, min_tokens, max_tokens)
 
     return filter_fn

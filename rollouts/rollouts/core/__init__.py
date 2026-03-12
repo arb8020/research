@@ -1,6 +1,7 @@
 """Shared rollouts schema and passive contracts."""
 
 from .types import (
+    AttemptRow,
     ChatCompletion,
     Choice,
     ContentBlock,
@@ -18,6 +19,7 @@ from .types import (
     Metric,
     PendingInput,
     PrepareMessagesFn,
+    ProblemRow,
     Sample,
     Score,
     ScoreFn,
@@ -37,6 +39,7 @@ from .types import (
     ToolFunctionParameter,
     ToolRenderConfig,
     ToolResult,
+    TrainingSample,
     Trajectory,
     TrajectoryAnnotations,
     TrajectoryEnvironment,
@@ -61,7 +64,9 @@ __all__ = [
     "Message",
     "Metric",
     "PendingInput",
+    "ProblemRow",
     "PrepareMessagesFn",
+    "AttemptRow",
     "Sample",
     "Score",
     "ScoreFn",
@@ -73,6 +78,7 @@ __all__ = [
     "ToolRenderConfig",
     "TextContent",
     "ThinkingContent",
+    "TrainingSample",
     "Tool",
     "ToolCall",
     "ToolCallContent",

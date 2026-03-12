@@ -332,7 +332,7 @@ def export_samples_to_jsonl(
         include_tokens: Whether to include token IDs (can be large)
 
     Example:
-        >>> samples = [Sample(prompt="Q1", response="A1"), ...]
+        >>> samples = [TrainingSample(tokens=[1, 2], loss_mask=[0.0, 1.0]), ...]
         >>> export_samples_to_jsonl(samples, "sft_data.jsonl")
     """
     import json
@@ -434,7 +434,7 @@ def export_samples_to_huggingface_format(
         output_path: Path to output JSONL file
 
     Example:
-        >>> samples = [Sample(prompt="Q1", response="A1"), ...]
+        >>> samples = [TrainingSample(tokens=[1, 2], loss_mask=[0.0, 1.0]), ...]
         >>> export_samples_to_huggingface_format(samples, "train.jsonl")
         >>> # Load with: datasets.load_dataset("json", data_files="train.jsonl")
     """

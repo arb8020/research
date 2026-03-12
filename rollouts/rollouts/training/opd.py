@@ -23,7 +23,7 @@ from typing import TYPE_CHECKING
 import httpx
 
 if TYPE_CHECKING:
-    from .types import Sample
+    from .types import AttemptRow
 
 logger = logging.getLogger(__name__)
 
@@ -83,27 +83,28 @@ async def compute_teacher_logprobs(
 
 async def compute_teacher_logprobs_batch(
     teacher_url: str,
-    samples: list[Sample],
+    samples: list[AttemptRow],
     timeout: float = 120.0,
 ) -> None:
-    """Compute teacher log probs for a batch of samples in parallel.
+    """Compute teacher log probs for a batch of attempts in parallel.
 
-    Modifies samples in place, setting sample.teacher_log_probs.
+    Modifies attempts in place, setting ``attempt.teacher_log_probs`` on the
+    attached training sample.
 
     Args:
         teacher_url: Teacher SGLang server URL
-        samples: List of Sample objects with tokens populated
-        timeout: Request timeout per sample
+        samples: List of attempt rows with tokens populated
+        timeout: Request timeout per attempt
 
     Side effects:
-        Sets sample.teacher_log_probs for each sample
+        Sets ``attempt.teacher_log_probs`` for each attempt
     """
     import trio
 
-    async def compute_for_sample(sample: Sample) -> None:
+    async def compute_for_sample(sample: AttemptRow) -> None:
         if not sample.tokens:
             logger.warning(
-                f"Sample {sample.id} has no tokens, skipping teacher logprob computation"
+                f"Attempt {sample.id} has no tokens, skipping teacher logprob computation"
             )
             return
 
@@ -115,7 +116,7 @@ async def compute_teacher_logprobs_batch(
             # This matches the rollout_log_probs convention
             sample.teacher_log_probs = [0.0] + teacher_logprobs
         except Exception as e:
-            logger.exception(f"Failed to compute teacher logprobs for sample {sample.id}: {e}")
+            logger.exception(f"Failed to compute teacher logprobs for attempt {sample.id}: {e}")
             sample.teacher_log_probs = None
 
     async with trio.open_nursery() as nursery:

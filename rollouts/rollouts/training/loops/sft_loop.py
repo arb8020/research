@@ -146,7 +146,7 @@ def prepare_sft_batch(samples: list[TrainingSample]) -> dict[str, Any]:
     More efficient than padding (no wasted computation on pad tokens).
 
     Args:
-        samples: List of Sample objects
+        samples: List of training samples
 
     Returns:
         Batch dict with:
@@ -157,7 +157,10 @@ def prepare_sft_batch(samples: list[TrainingSample]) -> dict[str, Any]:
         - position_ids: Position IDs for each token [total_tokens]
 
     Example:
-        >>> samples = [Sample(tokens=[1,2,3]), Sample(tokens=[4,5])]
+        >>> samples = [
+        ...     TrainingSample(tokens=[1,2,3], loss_mask=[1.0,1.0,1.0]),
+        ...     TrainingSample(tokens=[4,5], loss_mask=[1.0,1.0]),
+        ... ]
         >>> batch = prepare_sft_batch(samples)
         >>> batch["tokens"]  # tensor([1,2,3,4,5])
         >>> batch["cu_seqlens"]  # tensor([0, 3, 5])

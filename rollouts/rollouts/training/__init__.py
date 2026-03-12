@@ -8,11 +8,13 @@ Includes:
 - Metrics logging
 
 Note: This module uses lazy imports for torch-dependent components
-to allow importing Sample/types without torch installed.
+to allow importing training row types without torch installed.
 """
 
 # Types first - these don't need torch
 from ..training.types import (
+    AttemptRow,
+    ProblemRow,
     RLTrainingConfig,
     RolloutBatch,
     RolloutConfig,
@@ -20,6 +22,7 @@ from ..training.types import (
     SFTTrainingConfig,
     Status,
     TrainerConfig,
+    TrainingSample,
 )
 
 
@@ -153,7 +156,10 @@ __all__ = [
     "MetricsLogger",
     "JSONLLogger",
     # Types
+    "ProblemRow",
+    "AttemptRow",
     "Sample",
+    "TrainingSample",
     "Status",
     "SFTTrainingConfig",
     "RLTrainingConfig",

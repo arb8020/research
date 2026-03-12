@@ -1,7 +1,6 @@
 """Dataset loaders for training.
 
-Functions to load HuggingFace datasets and convert to Sample format.
-Supports common datasets for SFT and RL training.
+SFT-focused dataset loading helpers that return TrainingSample objects.
 """
 
 import logging
@@ -20,7 +19,7 @@ except ImportError:
     Dataset: "type[Dataset] | None" = None
     load_dataset: "Callable[..., Any] | None" = None
 
-from ...training.types import Sample
+from ...training.types import TrainingSample
 
 
 # Import tokenization functions lazily to avoid torch dependency at import time
@@ -46,11 +45,11 @@ def load_sft_dataset(
     tokenizer: Any | None = None,
     max_samples: int | None = None,
     max_length: int = 2048,
-) -> list[Sample]:
+) -> list[TrainingSample]:
     """Load HuggingFace dataset and convert to SFT samples.
 
     Loads a chat/instruction dataset from HuggingFace and converts conversations
-    to Sample objects ready for SFT training.
+    to TrainingSample objects ready for SFT training.
 
     Args:
         dataset_name: HuggingFace dataset name (e.g., "HuggingFaceTB/smoltalk")
@@ -61,7 +60,7 @@ def load_sft_dataset(
         max_length: Maximum sequence length for tokenization (default: 2048)
 
     Returns:
-        List of Sample objects with tokenized conversations
+        List of TrainingSample objects with tokenized conversations
 
     Example:
         >>> from transformers import AutoTokenizer
@@ -122,21 +121,23 @@ def load_sft_dataset(
             tokens, user_spans = tokenize_conversation(conversation, tokenizer, max_length)
             loss_mask = compute_loss_mask(tokens, user_spans)
 
-            sample = Sample(
-                prompt=conversation,
+            sample = TrainingSample(
                 tokens=tokens,
                 loss_mask=loss_mask,
-                reward=0.0,
-                metadata={"dataset": dataset_name, "index": idx},
+                response_length=sum(1 for weight in loss_mask if weight > 0.0),
+                metadata={
+                    "dataset": dataset_name,
+                    "index": idx,
+                    "prompt": conversation,
+                },
             )
         else:
             # No tokenization - just store conversation
-            sample = Sample(
-                prompt=conversation,
+            sample = TrainingSample(
                 tokens=[],
                 loss_mask=[],
-                reward=0.0,
-                metadata={"dataset": dataset_name, "index": idx},
+                response_length=0,
+                metadata={"dataset": dataset_name, "index": idx, "prompt": conversation},
             )
 
         samples.append(sample)
