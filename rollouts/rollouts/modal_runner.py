@@ -873,8 +873,12 @@ async def _run_training_in_sandbox(
     await trio.to_thread.run_sync(_install)
     logger.info("Dependencies installed")
 
-    # Run training with PYTHONPATH set to include our code
-    logger.info(f"Starting training: {config_rel}")
+    # Run training with PYTHONPATH set to include our code.
+    #
+    # Important: configs are declarative modules, not executable training entrypoints.
+    # Modal should invoke the same local workload entrypoint we would use on a prepared
+    # machine, not `python config.py` / `torchrun config.py`.
+    logger.info(f"Starting training via argus local entrypoint: {config_rel}")
 
     # PYTHONPATH includes:
     # - {workspace} for rollouts imports
@@ -887,14 +891,12 @@ async def _run_training_in_sandbox(
         f"ROLLOUTS_OUTPUT_DIR=results/rl/{run_name} "
     )
 
-    # Use torchrun for multi-GPU DDP training (unless disabled for backends like torchtitan)
-    if gpu_count > 1 and use_torchrun:
-        cmd = (
-            f"cd {workspace} && {env_vars} "
-            f"torchrun --standalone --nproc_per_node={gpu_count} {config_rel}"
-        )
-    else:
-        cmd = f"cd {workspace} && {env_vars} python {config_rel}"
+    # TODO: If we need true multi-process Modal training later, route that through an
+    # explicit remote execution/session layer instead of reviving `torchrun config.py`.
+    cmd = (
+        f"cd {workspace} && {env_vars} "
+        f"python -m argus.run --local --config {config_rel}"
+    )
 
     def _train() -> tuple[str, str, int]:
         return _exec_sync(sandbox, cmd, timeout=14400)  # 4 hour timeout
