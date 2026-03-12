@@ -27,7 +27,7 @@ from ..dtypes import (
     ToolExecutionEnd,
 )
 from ..progress import MultiProgress
-from ..training.types import Sample
+from ..training.types import Sample, SampleScorer
 
 logger = logging.getLogger(__name__)
 
@@ -231,12 +231,24 @@ async def _evaluate_batch(
     return results
 
 
-async def _compute_score(score_fn: Callable[..., Any], sample: Sample) -> Score:
-    """Compute score, handling both sync and async score functions."""
+async def _compute_score(
+    score_fn: Callable[..., Any] | None,
+    sample: Sample,
+    sample_scorer: SampleScorer | None = None,
+) -> Score:
+    """Compute score from either an explicit scorer stage or a legacy score function."""
     import inspect
     from typing import cast
 
     try:
+        if sample_scorer is not None:
+            await sample_scorer.score_samples([sample])
+            if sample.score is None:
+                raise ValueError("sample_scorer must populate sample.score on each sample")
+            sample.reward = sample.score.reward
+            return sample.score
+
+        assert score_fn is not None, "score_fn required when sample_scorer is not provided"
         score_result = score_fn(sample)
         if inspect.iscoroutine(score_result):
             return await score_result
@@ -912,7 +924,11 @@ async def evaluate_sample(
     )
 
     # Compute score
-    score = await _compute_score(config.score_fn, sample)
+    score = await _compute_score(
+        config.score_fn,
+        sample,
+        sample_scorer=config.sample_scorer,
+    )
 
     # Add execution metadata
     exec_metadata = {

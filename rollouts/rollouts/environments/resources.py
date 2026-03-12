@@ -16,6 +16,17 @@ class KernelEvaluator(Protocol):
     ) -> dict[str, Any]: ...
 
 
+@runtime_checkable
+class BatchKernelEvaluator(KernelEvaluator, Protocol):
+    async def score_batch(
+        self,
+        requests: list[dict[str, Any]],
+        timeout: float,
+    ) -> list[dict[str, Any]]: ...
+
+    def stats(self) -> dict[str, Any]: ...
+
+
 @dataclass(frozen=True)
 class TerminalTaskResult:
     score: float

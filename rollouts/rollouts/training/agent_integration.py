@@ -12,6 +12,8 @@ Tiger Style: Pure functions, explicit transformations, all parameters visible.
 Casey Muratori: Both high-level (coarse) and low-level (fine) APIs.
 """
 
+import inspect
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, cast
 
 import trio
@@ -73,11 +75,13 @@ def _content_to_str(content: str | list | None) -> str:
 
 async def agent_rollout_to_sample(
     prompt: str | list[dict[str, str]],
-    environment_cls: "type[Environment]",
+    environment_cls: "Callable[[], Environment] | type[Environment] | None",
     endpoint: Endpoint,
     tokenizer: Any,  # HuggingFace tokenizer
     max_turns: int = 10,
     metadata: dict[str, Any] | None = None,
+    environment_factory: Callable[[dict[str, Any]], Any] | None = None,
+    sample_data: dict[str, Any] | None = None,
 ) -> Sample:
     """Single agent rollout: prompt → multi-turn execution → training sample.
 
@@ -89,11 +93,15 @@ async def agent_rollout_to_sample(
     Args:
         prompt: Either a string (becomes user message) or list of message dicts
                 [{"role": "system", "content": "..."}, {"role": "user", "content": "..."}]
-        environment_cls: Environment class to instantiate (e.g., CalculatorEnvironment, BasicEnvironment)
+        environment_cls: Zero-arg environment constructor for simple cases.
+            Kept for backwards compatibility.
         endpoint: LLM endpoint (provider, model, etc.)
         tokenizer: HuggingFace tokenizer for building loss_mask
         max_turns: Max agent turns
         metadata: Optional metadata (ground_truth, etc.)
+        environment_factory: Optional factory taking the original sample_data and
+            returning an environment instance. Supports both sync and async factories.
+        sample_data: Original prompt/sample dict passed through to environment_factory.
 
     Returns:
         Sample with loss_mask (1.0 for assistant, 0.0 for tool/user)
@@ -121,7 +129,8 @@ async def agent_rollout_to_sample(
         ... )
     """
     assert prompt, "prompt required"
-    assert environment_cls is not None, "environment_cls required"
+    if environment_cls is None and environment_factory is None:
+        raise ValueError("Either environment_cls or environment_factory is required")
     assert endpoint is not None, "endpoint required"
     assert tokenizer is not None, "tokenizer required"
     assert max_turns > 0, f"max_turns must be positive, got {max_turns}"
@@ -138,7 +147,11 @@ async def agent_rollout_to_sample(
     actor = Actor(trajectory=trajectory, endpoint=endpoint)
 
     # 3. Create environment instance
-    environment = environment_cls()
+    resolved_environment_factory = _resolve_environment_factory(
+        environment_cls=environment_cls,
+        environment_factory=environment_factory,
+    )
+    environment = await _make_environment(resolved_environment_factory, sample_data)
 
     # 4. Create agent state
     state = AgentState(
@@ -174,6 +187,35 @@ async def agent_rollout_to_sample(
     assert sample.response, "response should not be empty after agent execution"
 
     return sample
+
+
+def _resolve_environment_factory(
+    environment_cls: "Callable[[], Environment] | type[Environment] | None",
+    environment_factory: Callable[[dict[str, Any]], Any] | None,
+) -> Callable[[dict[str, Any]], Any]:
+    """Normalize env construction to a single explicit factory surface."""
+    if environment_factory is not None:
+        return environment_factory
+
+    if environment_cls is None:
+        raise ValueError("environment_cls or environment_factory is required")
+
+    def make_environment(_: dict[str, Any]) -> "Environment":
+        return environment_cls()
+
+    return make_environment
+
+
+async def _make_environment(
+    environment_factory: Callable[[dict[str, Any]], Any],
+    sample_data: dict[str, Any] | None,
+) -> "Environment":
+    """Create environment from the normalized explicit factory."""
+    factory_input = sample_data or {}
+    environment = environment_factory(factory_input)
+    if inspect.isawaitable(environment):
+        environment = await environment
+    return cast("Environment", environment)
 
 
 async def generate_rollout_batch(

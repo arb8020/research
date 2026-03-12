@@ -3,9 +3,13 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from ..training.types import Sample
+from ..training.types import Sample, SampleScorer
+
+if TYPE_CHECKING:
+    from ..agents import RunConfig
+    from ..dtypes import Endpoint, Environment
 
 
 @dataclass(frozen=True)
@@ -30,15 +34,16 @@ class Score:
 
 
 ScoreFn = Callable[[Sample], Score] | Callable[[Sample], Awaitable[Score]]
-PrepareMessagesFn = Callable[[dict[str, Any]], list["Message"]]
-EnvironmentFactory = Callable[[dict[str, Any]], Awaitable["Environment"]]
+PrepareMessagesFn = Callable[[dict[str, Any]], list[Any]]
+EnvironmentFactory = Callable[[dict[str, Any]], Any]
 
 
 @dataclass(frozen=True)
 class EvalConfig:
     endpoint: Endpoint
-    score_fn: ScoreFn
     prepare_messages: PrepareMessagesFn
+    score_fn: ScoreFn | None = None
+    sample_scorer: SampleScorer | None = None
     environment: Environment | None = None
     environment_factory: EnvironmentFactory | None = None
     run_config: RunConfig | None = None
@@ -56,3 +61,7 @@ class EvalConfig:
     resume_dir: Path | None = None
     report_batch_size: int = 1
     metadata: dict[str, Any] | None = None
+
+    def __post_init__(self) -> None:
+        if self.score_fn is None and self.sample_scorer is None:
+            raise ValueError("EvalConfig requires either score_fn or sample_scorer")

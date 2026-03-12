@@ -13,14 +13,17 @@ from __future__ import annotations
 
 from typing import Any
 
+import trio
+
 from rollouts.environments.no_tools import BasicEnvironment
 from rollouts.training.grpo import GRPOConfig, grpo_train
 
 from .dataset import load_kernelbench_prompts
-from .scoring import kernelbench_score_fn
+from .resources import KernelBenchScoringResources
+from .scoring import KernelBenchSampleScorer
 
 # Re-export score function for external use
-__all__ = ["train", "kernelbench_score_fn", "load_kernelbench_prompts"]
+__all__ = ["KernelBenchSampleScorer", "train", "load_kernelbench_prompts"]
 
 
 def train(
@@ -98,10 +101,14 @@ def train(
     )
 
     print(f"Loaded {len(prompts)} KernelBench problems from levels {levels}")
-
-    return grpo_train(
-        config=config,
-        prompts=prompts,
-        score_fn=kernelbench_score_fn,
-        environment_cls=BasicEnvironment,  # No tools - single-turn generation
-    )
+    scoring_resources = KernelBenchScoringResources.from_sandbox_configs([])
+    trio.run(scoring_resources.start)
+    try:
+        return grpo_train(
+            config=config,
+            prompts=prompts,
+            sample_scorer=scoring_resources.scorer,
+            environment_cls=BasicEnvironment,  # No tools - single-turn generation
+        )
+    finally:
+        trio.run(scoring_resources.stop)

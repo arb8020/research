@@ -19,57 +19,13 @@ from __future__ import annotations
 
 from typing import Any
 
-from rollouts.core import Metric, Score
-from rollouts.environments.kernelbench_multi import KernelBenchMultiTurnEnvironment
+import trio
+
 from rollouts.training.grpo import GRPOConfig, grpo_train
 
 from .dataset import load_kernelbench_prompts
-
-
-def kernelbench_multi_turn_score_fn(sample: Any) -> Score:
-    """Score function for multi-turn KernelBench training.
-
-    Implements the Kevin reward formula:
-    - S = 0.3 * correct + speedup (if correct)
-
-    For multi-turn trajectories, we compute reward based on:
-    - Best speedup achieved across all turns
-    - Whether any kernel was correct
-
-    Args:
-        sample: Sample with trajectory and metadata
-
-    Returns:
-        Score with reward and metrics
-    """
-    metadata = sample.metadata if hasattr(sample, "metadata") else {}
-
-    # Extract results from metadata (set by environment)
-    best_speedup = metadata.get("best_speedup", 0.0)
-    has_correct = metadata.get("has_correct_kernel", False)
-    turns_used = metadata.get("turns_used", 0)
-    turn_history = metadata.get("turn_history", [])
-
-    # Kevin reward formula: 0.3 * correct + speedup
-    if has_correct:
-        reward = 0.3 + best_speedup
-    else:
-        reward = 0.0
-
-    # Additional metrics
-    compiled_any = any(t.get("compiled", False) for t in turn_history)
-    correct_any = any(t.get("correct", False) for t in turn_history)
-
-    return Score(
-        metrics=(
-            Metric("reward", reward, weight=1.0),
-            Metric("best_speedup", best_speedup, weight=0.0),
-            Metric("has_correct", 1.0 if has_correct else 0.0, weight=0.0),
-            Metric("compiled_any", 1.0 if compiled_any else 0.0, weight=0.0),
-            Metric("correct_any", 1.0 if correct_any else 0.0, weight=0.0),
-            Metric("turns_used", float(turns_used), weight=0.0),
-        )
-    )
+from .resources import KernelBenchRolloutResources, KernelBenchScoringResources
+from .scoring import KEVIN_MULTI_TURN_REWARD_WEIGHTS
 
 
 def train(
@@ -78,6 +34,7 @@ def train(
     levels: list[int] | None = None,
     backend: str = "cuda",
     max_turns: int = 8,
+    sandbox_configs: list[Any] | None = None,
 ) -> dict[str, Any]:
     """Run KernelBench multi-turn RL training.
 
@@ -87,6 +44,7 @@ def train(
         levels: KernelBench levels to use (default: [1, 2] for Kevin setup).
         backend: Kernel backend ("cuda" or "hip").
         max_turns: Maximum turns per problem (Kevin used 4-8).
+        sandbox_configs: Optional GPU sandbox configs for kernel evaluation.
 
     Returns:
         Dict with metrics_history.
@@ -150,21 +108,25 @@ def train(
     print(f"Loaded {len(prompts)} KernelBench problems from levels {levels}")
     print(f"Multi-turn setup: max_turns={max_turns}")
 
-    # Create environment factory that passes ref_code to each environment
-    def environment_factory(sample_data: dict[str, Any]) -> KernelBenchMultiTurnEnvironment:
-        return KernelBenchMultiTurnEnvironment(
-            ref_code=sample_data.get("ref_code", ""),
-            backend=backend,
-            max_turns=max_turns,
-        )
-
-    return grpo_train(
-        config=config,
-        prompts=prompts,
-        score_fn=kernelbench_multi_turn_score_fn,
-        environment_cls=None,  # We use environment_factory instead
-        environment_factory=environment_factory,
+    rollout_resources = KernelBenchRolloutResources.from_sandbox_configs(
+        sandbox_configs,
+        backend=backend,
+        max_turns=max_turns,
     )
+    scoring_resources = KernelBenchScoringResources.metadata_only(
+        reward_weights=KEVIN_MULTI_TURN_REWARD_WEIGHTS,
+    )
+    trio.run(rollout_resources.start)
+    try:
+        return grpo_train(
+            config=config,
+            prompts=prompts,
+            sample_scorer=scoring_resources.scorer,
+            environment_cls=None,  # We use environment_factory instead
+            environment_factory=rollout_resources,
+        )
+    finally:
+        trio.run(rollout_resources.stop)
 
 
 # Default config for direct execution

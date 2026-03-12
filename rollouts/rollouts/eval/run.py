@@ -27,7 +27,7 @@ Config files should export:
 
     - tasks: list[dict] OR tasks_path: Path (one required)
     - prepare_messages: Callable[[dict], list[Message]]
-    - score_fn: Callable[[Sample], Score]
+    - score_fn: Callable[[Sample], Score] or sample_scorer
     - make_environment: Callable[[], Environment] (optional)
 """
 
@@ -127,7 +127,10 @@ async def run_with_api(
 
     # Get eval functions from config
     prepare_messages = config_module.prepare_messages
-    score_fn = config_module.score_fn
+    score_fn = getattr(config_module, "score_fn", None)
+    sample_scorer = getattr(config_module, "sample_scorer", None)
+    if score_fn is None and sample_scorer is None:
+        raise ValueError("Config must define 'score_fn' or 'sample_scorer'")
 
     # Environment (optional)
     environment: Environment | None = None
@@ -167,6 +170,7 @@ async def run_with_api(
     eval_config = EvalConfig(
         endpoint=endpoint,
         score_fn=score_fn,
+        sample_scorer=sample_scorer,
         prepare_messages=prepare_messages,
         environment=environment,
         environment_factory=environment_factory,

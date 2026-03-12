@@ -15,12 +15,14 @@ from collections.abc import Iterator
 from typing import Any
 
 from ...training.datasets.data_buffer import DataBuffer
-from ...training.types import RolloutBatch, RolloutConfig, Sample
+from ...training.runtime import resolve_rollout_runtime
+from ...training.types import RolloutBatch, RolloutConfig, RolloutRuntime, Sample
 
 
 def generate_rollout_batches(
     data_buffer: DataBuffer,
     config: RolloutConfig,
+    runtime: RolloutRuntime | None = None,
     **rollout_kwargs: Any,
 ) -> Iterator[RolloutBatch]:
     """Generate rollout batches indefinitely (generator).
@@ -47,8 +49,9 @@ def generate_rollout_batches(
         - All helper functions are pure (no side effects)
     """
     # Validate config (Tiger Style: assert preconditions)
-    if config.generate_fn is None:
-        raise ValueError("RolloutConfig.generate_fn must be provided")
+    resolved_runtime = resolve_rollout_runtime(config=config, runtime=runtime)
+    if resolved_runtime is None:
+        raise ValueError("Rollout runtime must provide generate_fn")
     if config.batch_size <= 0:
         raise ValueError(f"batch_size must be > 0, got {config.batch_size}")
 
@@ -59,14 +62,14 @@ def generate_rollout_batches(
         assert len(prompts) == config.batch_size, "Buffer must return requested batch size"
 
         # Call user-provided rollout function
-        samples = config.generate_fn(prompts, **rollout_kwargs)
+        samples = resolved_runtime.generate_fn(prompts, **rollout_kwargs)
         assert isinstance(samples, list), (
             f"generate_fn must return list[Sample], got {type(samples)}"
         )
         assert len(samples) > 0, "generate_fn must return non-empty sample list"
 
         # Apply optional transforms (pure function)
-        samples = apply_sample_transforms(samples, config)
+        samples = apply_sample_transforms(samples, config, runtime=resolved_runtime)
 
         # Convert to batch (pure function)
         batch = convert_to_batch(
@@ -79,7 +82,11 @@ def generate_rollout_batches(
         step += 1
 
 
-def apply_sample_transforms(samples: list[Sample], config: RolloutConfig) -> list[Sample]:
+def apply_sample_transforms(
+    samples: list[Sample],
+    config: RolloutConfig,
+    runtime: RolloutRuntime | None = None,
+) -> list[Sample]:
     """Apply optional filter and score functions to samples.
 
     Pure function - no side effects.
@@ -91,8 +98,15 @@ def apply_sample_transforms(samples: list[Sample], config: RolloutConfig) -> lis
     Returns:
         Transformed samples (with reward populated from score_fn)
     """
-    if config.filter_fn is not None:
-        samples = config.filter_fn(samples)
+    resolved_runtime = resolve_rollout_runtime(config=config, runtime=runtime)
+    if resolved_runtime is not None and resolved_runtime.sample_scorer is not None:
+        raise ValueError(
+            "Explicit sample scorers require an async rollout path. "
+            "Use AsyncRolloutManager/PipelinedRolloutManager or provide score_fn instead."
+        )
+
+    if resolved_runtime is not None and resolved_runtime.filter_fn is not None:
+        samples = resolved_runtime.filter_fn(samples)
         assert len(samples) > 0, "filter_fn must not filter out all samples"
 
     if config.score_fn is not None:

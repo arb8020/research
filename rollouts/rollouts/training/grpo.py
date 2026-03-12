@@ -33,7 +33,7 @@ import trio
 
 if TYPE_CHECKING:
     from ..core import Environment, Score
-    from ..training.types import Sample
+    from ..training.types import Sample, SampleScorer
 
 # ──────────────────────── Sub-Configs (re-exported from shared) ───────────────
 
@@ -45,6 +45,8 @@ from ..training.configs import (  # noqa: E402
     RolloutConfig,
     TrainerConfig,
 )
+from ..training.scoring import FunctionSampleScorer
+from ..training.types import RolloutRuntime
 
 
 def GRPOOutputConfig(  # noqa: N802 — factory, not a class
@@ -132,9 +134,11 @@ class GRPOConfig:
 def grpo_train(
     config: GRPOConfig,
     prompts: list[dict[str, Any]],
-    score_fn: Callable[[Sample], Score],
-    environment_cls: type[Environment],
+    score_fn: Callable[[Sample], Score] | None = None,
+    environment_cls: Callable[[], Environment] | type[Environment] | None = None,
     metadata_key: str | None = None,
+    environment_factory: Callable[[dict[str, Any]], Any] | None = None,
+    sample_scorer: SampleScorer | None = None,
 ) -> dict[str, Any]:
     """Run GRPO training.
 
@@ -143,9 +147,13 @@ def grpo_train(
         prompts: List of prompt dicts, each containing:
             - "messages": List of chat messages [{"role": "...", "content": "..."}]
             - Any metadata needed by score_fn (e.g., "answer", "expected_sorted")
-        score_fn: Function (Sample) -> Score that computes reward
-        environment_cls: Environment class (BasicEnvironment for no tools,
-            CalculatorEnvironment for calculator, etc.)
+        score_fn: Legacy function (Sample) -> Score that computes reward.
+        environment_cls: Zero-arg environment constructor for simple cases
+            (BasicEnvironment, CalculatorEnvironment, factory function, etc.).
+        environment_factory: Optional per-sample environment factory. Receives the
+            original prompt/sample dict and may be sync or async.
+        sample_scorer: Explicit scoring stage. Prefer this over score_fn for
+            resourceful scorers with their own dependencies and observability.
         metadata_key: If set, extract this key from prompt dict to pass as metadata.
             If None, passes all non-"messages" keys as metadata.
 
@@ -162,7 +170,18 @@ def grpo_train(
         ... ]
         >>> results = grpo_train(config, prompts, my_score_fn, BasicEnvironment)
     """
-    return trio.run(_grpo_train_async, config, prompts, score_fn, environment_cls, metadata_key)
+    if score_fn is None and sample_scorer is None:
+        raise ValueError("grpo_train requires either score_fn or sample_scorer")
+    return trio.run(
+        _grpo_train_async,
+        config,
+        prompts,
+        score_fn,
+        environment_cls,
+        metadata_key,
+        environment_factory,
+        sample_scorer,
+    )
 
 
 # ──────────────────────── Training Helpers ────────────────────────────────────
@@ -644,7 +663,8 @@ def _create_generate_fn(
     config: GRPOConfig,
     endpoint: Any,
     tokenizer: Any,
-    environment_cls: type[Environment],
+    environment_cls: Callable[[], Environment] | type[Environment] | None,
+    environment_factory: Callable[[dict[str, Any]], Any] | None,
     metadata_key: str | None,
     logger: logging.Logger,
 ) -> Callable:
@@ -658,7 +678,7 @@ def _create_generate_fn(
     tool execution. For single-turn (max_turns = 1), it's just one LLM call.
     """
     return _create_agent_generate_fn(
-        config, endpoint, tokenizer, environment_cls, metadata_key, logger
+        config, endpoint, tokenizer, environment_cls, environment_factory, metadata_key, logger
     )
 
 
@@ -666,7 +686,8 @@ def _create_agent_generate_fn(
     config: GRPOConfig,
     endpoint: Any,
     tokenizer: Any,
-    environment_cls: type[Environment],
+    environment_cls: Callable[[], Environment] | type[Environment] | None,
+    environment_factory: Callable[[dict[str, Any]], Any] | None,
     metadata_key: str | None,
     logger: logging.Logger,
 ) -> Callable:
@@ -690,6 +711,8 @@ def _create_agent_generate_fn(
                     tokenizer=tokenizer,
                     max_turns=config.rollout.max_turns,
                     metadata=metadata,
+                    environment_factory=environment_factory,
+                    sample_data=prompt_data,
                 )
                 results.append(sample)
             except Exception as e:
@@ -733,6 +756,35 @@ def _build_grpo_run_context(
     }
 
 
+def _attach_runtime_observability(
+    batch: Any,
+    rollout_manager: Any,
+    sample_scorer: Any,
+    environment_factory: Any = None,
+) -> None:
+    """Attach explicit runtime stats to batch metadata for downstream logging."""
+    if hasattr(rollout_manager, "stats"):
+        batch.metadata["rollout_stats"] = rollout_manager.stats()
+    if sample_scorer is not None and hasattr(sample_scorer, "stats"):
+        batch.metadata["scorer_stats"] = sample_scorer.stats()
+    if environment_factory is not None and hasattr(environment_factory, "stats"):
+        batch.metadata["environment_stats"] = environment_factory.stats()
+
+
+async def _pause_pipeline_admissions(pipelined_manager: Any, logger: logging.Logger) -> None:
+    """Pause new rollout admissions before a blocking weight-sync boundary."""
+    pipelined_manager.pause_new_admissions("weight_sync")
+    logger.debug("Paused new rollout admissions for weight sync")
+    await trio.lowlevel.checkpoint()
+
+
+async def _resume_pipeline_admissions(pipelined_manager: Any, logger: logging.Logger) -> None:
+    """Resume rollout admissions after a blocking weight-sync boundary."""
+    pipelined_manager.resume_new_admissions()
+    logger.debug("Resumed rollout admissions after weight sync")
+    await trio.lowlevel.checkpoint()
+
+
 async def _process_training_step(
     step: int,
     batch: Any,
@@ -758,6 +810,7 @@ async def _process_training_step(
     import torch.distributed as dist
 
     from ..training.losses import compute_group_advantages
+    from ..training.observability import flatten_numeric_stats
 
     step_start = time.perf_counter()
 
@@ -837,6 +890,21 @@ async def _process_training_step(
         "num_groups": num_groups,
         **accumulated_metrics,
     }
+    rollout_stats = batch.metadata.get("rollout_stats")
+    rollout_observability: dict[str, float] = {}
+    if isinstance(rollout_stats, dict):
+        rollout_observability = flatten_numeric_stats(rollout_stats, prefix="rollout_")
+        step_metrics.update(rollout_observability)
+    scorer_stats = batch.metadata.get("scorer_stats")
+    scorer_observability: dict[str, float] = {}
+    if isinstance(scorer_stats, dict):
+        scorer_observability = flatten_numeric_stats(scorer_stats, prefix="scorer_")
+        step_metrics.update(scorer_observability)
+    environment_stats = batch.metadata.get("environment_stats")
+    environment_observability: dict[str, float] = {}
+    if isinstance(environment_stats, dict):
+        environment_observability = flatten_numeric_stats(environment_stats, prefix="environment_")
+        step_metrics.update(environment_observability)
 
     logger.debug("metrics", extra={"event": "step_metrics", "step": step + 1, **step_metrics})
 
@@ -890,6 +958,8 @@ async def _process_training_step(
             "gpu_allocated_gb": round(gpu_allocated_gb, 3),
             "gpu_reserved_gb": round(gpu_reserved_gb, 3),
             "ram_gb": round(ram_gb, 3),
+            **rollout_observability,
+            **scorer_observability,
         },
     )
 
@@ -980,9 +1050,11 @@ def _prepare_training_batch(
 async def _grpo_train_async(
     config: GRPOConfig,
     prompts: list[dict[str, Any]],
-    score_fn: Callable[[Sample], Score],
-    environment_cls: type[Environment],
+    score_fn: Callable[[Sample], Score] | None,
+    environment_cls: Callable[[], Environment] | type[Environment] | None,
     metadata_key: str | None = None,
+    environment_factory: Callable[[dict[str, Any]], Any] | None = None,
+    sample_scorer: SampleScorer | None = None,
 ) -> dict[str, Any]:
     """Async GRPO training implementation."""
     from .._logging import setup_logging
@@ -1220,16 +1292,27 @@ async def _grpo_train_async(
         logger.info(f"Dataset: {len(prompts)} prompts")
         data_buffer = DataBuffer(prompts=prompts)
         generate_fn = _create_generate_fn(
-            config, endpoint, tokenizer, environment_cls, metadata_key, logger
+            config,
+            endpoint,
+            tokenizer,
+            environment_cls,
+            environment_factory,
+            metadata_key,
+            logger,
         )
 
         rollout_config = RolloutConfig(
             batch_size=config.rollout.batch_size,
             n_samples_per_prompt=config.rollout.n_samples_per_prompt,
             over_sampling_factor=1.0,
-            generate_fn=generate_fn,
-            score_fn=score_fn,
         )
+        rollout_runtime = RolloutRuntime(
+            generate_fn=generate_fn,
+            sample_scorer=sample_scorer
+            if sample_scorer is not None
+            else (FunctionSampleScorer(score_fn) if score_fn is not None else None),
+        )
+        assert rollout_runtime.sample_scorer is not None, "sample scorer must be resolved"
 
         # Training loop (delegated to rollouts.training.train.train)
         from ..training.train import train as _train_loop
@@ -1272,10 +1355,28 @@ async def _grpo_train_async(
 
         async def _sync_batches() -> AsyncIterator[Any]:
             # Synchronous training (default): generate batch, train, sync weights, repeat.
-            async with AsyncRolloutManager(data_buffer, rollout_config) as rollout_manager:
+            async with AsyncRolloutManager(
+                data_buffer,
+                rollout_config,
+                runtime=rollout_runtime,
+            ) as rollout_manager:
                 for _step in range(config.checkpoint.num_steps):
-                    batch = await rollout_manager.generate_batch(score_fn=score_fn)
+                    batch = await rollout_manager.generate_batch(
+                        sample_scorer=rollout_runtime.sample_scorer
+                    )
+                    _attach_runtime_observability(
+                        batch,
+                        rollout_manager,
+                        rollout_runtime.sample_scorer,
+                        environment_factory,
+                    )
 
+                    # TODO(async-design-decisions.md): Teacher / judge scoring
+                    # should be a general scoring stage, not a sync-path special
+                    # case. This inline OPD branch bakes in "scoring is cheap and
+                    # adjacent to rollout batching", which does not match the
+                    # target architecture.
+                    # See rollouts/training/async-design-decisions.md decisions 15 and 16.
                     # Compute teacher logprobs for OPD (only supported in sync mode for now)
                     if teacher_engine is not None and batch.samples:
                         from ..training.opd import compute_teacher_logprobs_batch
@@ -1310,19 +1411,27 @@ async def _grpo_train_async(
             pipelined_manager = PipelinedRolloutManager(
                 data_buffer=data_buffer,
                 config=rollout_config,
+                runtime=rollout_runtime,
                 max_lag=config.checkpoint.max_lag,
                 queue_size=config.checkpoint.pipeline_queue_size,
-                # Pause sampling when weight sync is in progress (SGLang is blocked)
+                # Current inference backend still blocks while NCCL receives weights.
+                # Keep this explicit: no new prompt admissions while sync is active.
                 sync_in_progress_fn=lambda: weight_sync_manager.sync_in_progress,
             )
 
+            # TODO(async-design-decisions.md): This mode is still modeled as a
+            # bounded in-memory queue with pause-on-sync behavior. Our agreed
+            # target is stream-style production semantics with explicit safety
+            # valves, plus drain-then-sync as the clean default sync semantic.
+            # See rollouts/training/async-design-decisions.md decisions 2, 9, 12, 14.
             logger.info(
-                f"Using TRUE PipelineRL mode (max_lag={config.checkpoint.max_lag}, "
+                f"Using experimental in-flight sync pipeline mode (max_lag={config.checkpoint.max_lag}, "
                 f"queue_size={config.checkpoint.pipeline_queue_size}, "
                 f"engines={num_engines})"
             )
-            logger.info("  - Background sampling: ON (inference never stops)")
-            logger.info("  - Non-blocking weight sync: ON (training never waits)")
+            logger.info("  - Background sampling: ON")
+            logger.info("  - Weight sync transport: async NCCL")
+            logger.info("  - New admissions pause while inference is blocked by sync")
             if num_engines > 1:
                 logger.info(f"  - Multi-engine: {num_engines} inference servers")
 
@@ -1342,7 +1451,13 @@ async def _grpo_train_async(
                             for step in range(config.checkpoint.num_steps):
                                 batch = await pipelined_manager.get_batch(
                                     current_weight_version=weight_sync_manager.current_version,
-                                    score_fn=score_fn,
+                                    sample_scorer=rollout_runtime.sample_scorer,
+                                )
+                                _attach_runtime_observability(
+                                    batch,
+                                    pipelined_manager,
+                                    rollout_runtime.sample_scorer,
+                                    environment_factory,
                                 )
                                 yield batch
 
@@ -1402,6 +1517,7 @@ async def _grpo_train_async(
             pipelined_manager = PipelinedRolloutManager(
                 data_buffer=data_buffer,
                 config=rollout_config,
+                runtime=rollout_runtime,
                 max_lag=config.checkpoint.max_lag,
                 queue_size=config.checkpoint.pipeline_queue_size,
             )
@@ -1422,7 +1538,13 @@ async def _grpo_train_async(
                         for _step in range(config.checkpoint.num_steps):
                             batch = await pipelined_manager.get_batch(
                                 current_weight_version=backend.weight_version,
-                                score_fn=score_fn,
+                                sample_scorer=rollout_runtime.sample_scorer,
+                            )
+                            _attach_runtime_observability(
+                                batch,
+                                pipelined_manager,
+                                rollout_runtime.sample_scorer,
+                                environment_factory,
                             )
                             yield batch
                             pipelined_manager.update_weight_version(backend.weight_version)
@@ -1457,6 +1579,8 @@ async def _grpo_train_async(
                 save_checkpoint=_save_checkpoint,
                 metrics_logger=metrics_logger,
                 logger=logger,
+                before_weight_sync=lambda: _pause_pipeline_admissions(pipelined_manager, logger),
+                after_weight_sync=lambda: _resume_pipeline_admissions(pipelined_manager, logger),
             )
 
         else:

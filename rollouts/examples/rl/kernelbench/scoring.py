@@ -1,94 +1,91 @@
-"""KernelBench scoring function.
-
-Compiles and benchmarks generated kernels to compute rewards.
-
-The scoring approach:
-1. Extract kernel code from model response (from <kernel> tags or ```python blocks)
-2. Send to SandboxPool for compilation/testing/benchmarking
-3. Return Score with metrics
-
-The SandboxPool handles the actual GPU execution, either:
-- Locally via subprocess (default, for single-node setups)
-- Remotely via miniray workers (for distributed scoring)
-
-Usage:
-    # Default: local subprocess scoring
-    score = kernelbench_score_fn(sample)
-
-    # With remote sandboxes:
-    from rollouts.gpu_sandbox import SandboxPool, ModalSandboxConfig
-    pool = SandboxPool([ModalSandboxConfig(gpu="A100", count=2)])
-    await pool.start()
-    configure_sandbox_pool(pool)
-    # Now kernelbench_score_fn uses the pool
-"""
+"""Explicit KernelBench scoring stages shared by RL and evaluation."""
 
 from __future__ import annotations
 
-import asyncio
+import inspect
 import logging
 import re
-from typing import TYPE_CHECKING
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass, field
+from typing import Any, Protocol, runtime_checkable
 
-if TYPE_CHECKING:
-    from rollouts.core import Score
-    from rollouts.gpu_sandbox import SandboxPool
-    from rollouts.training.types import Sample
+from rollouts.core import Metric, Score
+from rollouts.environments.resources import BatchKernelEvaluator, KernelEvaluator
+from rollouts.training.types import Sample
 
 logger = logging.getLogger(__name__)
 
-# Module-level sandbox pool (configured via configure_sandbox_pool)
-_sandbox_pool: SandboxPool | None = None
+
+@dataclass(frozen=True)
+class KernelBenchRewardWeights:
+    """Explicit reward weights for KernelBench scoring."""
+
+    compiled: float = 0.2
+    correct: float = 1.0
+    speedup: float = 1.0
 
 
-def configure_sandbox_pool(pool: SandboxPool | None) -> None:
-    """Configure the sandbox pool for scoring.
-
-    Args:
-        pool: SandboxPool instance (or None to use local subprocess)
-    """
-    global _sandbox_pool
-    _sandbox_pool = pool
+DEFAULT_REWARD_WEIGHTS = KernelBenchRewardWeights()
+KEVIN_MULTI_TURN_REWARD_WEIGHTS = KernelBenchRewardWeights(
+    compiled=0.0,
+    correct=0.3,
+    speedup=1.0,
+)
 
 
-def get_sandbox_pool() -> SandboxPool:
-    """Get the configured sandbox pool, creating a default if needed."""
-    global _sandbox_pool
-    if _sandbox_pool is None:
-        from rollouts.gpu_sandbox import SandboxPool
+@dataclass(frozen=True)
+class KernelJudgeDecision:
+    """Optional LLM-judge decision layered on top of execution scoring."""
 
-        _sandbox_pool = SandboxPool([])  # Empty = local subprocess
-    return _sandbox_pool
+    passed: bool
+    score: float | None = None
+    reason: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@runtime_checkable
+class KernelJudge(Protocol):
+    async def judge_samples(
+        self,
+        samples: list[Sample],
+        execution_results: list[dict[str, Any]],
+    ) -> list[KernelJudgeDecision | None]: ...
+
+    def stats(self) -> dict[str, Any]: ...
+
+
+@dataclass(frozen=True)
+class FunctionKernelJudge:
+    """Adapter for simple callable judge implementations."""
+
+    judge_fn: Callable[
+        [list[Sample], list[dict[str, Any]]],
+        Awaitable[list[KernelJudgeDecision | None]] | list[KernelJudgeDecision | None],
+    ]
+
+    async def judge_samples(
+        self,
+        samples: list[Sample],
+        execution_results: list[dict[str, Any]],
+    ) -> list[KernelJudgeDecision | None]:
+        result = self.judge_fn(samples, execution_results)
+        if inspect.isawaitable(result):
+            return await result
+        return result
 
 
 def extract_kernel_code(response: str) -> str | None:
-    """Extract code from <kernel> tags or ```python blocks.
-
-    Tries multiple patterns in order of preference:
-    1. <kernel>...</kernel> tags
-    2. ```python...``` code blocks
-    3. Raw "class ModelNew" if nothing else matches
-
-    Args:
-        response: Full model response
-
-    Returns:
-        Extracted code or None if no valid code found
-    """
-    # Try <kernel> tags first (our preferred format)
+    """Extract code from <kernel> tags, fenced python, or raw ModelNew text."""
     match = re.search(r"<kernel>\s*(.*?)\s*</kernel>", response, re.DOTALL)
     if match:
         return match.group(1).strip()
 
-    # Fall back to ```python blocks
     match = re.search(r"```python\s*(.*?)\s*```", response, re.DOTALL)
     if match:
         code = match.group(1).strip()
-        # Verify it has ModelNew
         if "class ModelNew" in code or "ModelNew" in code:
             return code
 
-    # Last resort: extract from "class ModelNew" to end
     if "class ModelNew" in response:
         start = response.find("class ModelNew")
         return response[start:].strip()
@@ -96,220 +93,250 @@ def extract_kernel_code(response: str) -> str | None:
     return None
 
 
-async def score_kernel_async(
-    kernel_code: str,
-    ref_code: str,
-    timeout: float = 120.0,
-) -> dict:
-    """Score a kernel using the sandbox pool.
-
-    Args:
-        kernel_code: Generated kernel code containing ModelNew class
-        ref_code: Reference code with Model, get_inputs, get_init_inputs
-        timeout: Scoring timeout in seconds
-
-    Returns:
-        Dict with: compiled, correct, speedup, reward, pass_rate, error
-    """
-    pool = get_sandbox_pool()
-
-    # Ensure pool is started
-    if not pool._started:
-        await pool.start()
-
-    return await pool.score_one(kernel_code, ref_code, timeout)
-
-
-def score_kernel_sync(
-    kernel_code: str,
-    ref_code: str,
-    timeout: float = 120.0,
-) -> dict:
-    """Synchronous wrapper for score_kernel_async.
-
-    Creates an event loop if needed (for use in non-async contexts).
-    """
-    try:
-        loop = asyncio.get_running_loop()
-        # Already in async context - can't use run_until_complete
-        # Create a new thread to run the async function
-        import concurrent.futures
-
-        with concurrent.futures.ThreadPoolExecutor() as executor:
-            future = executor.submit(
-                asyncio.run, score_kernel_async(kernel_code, ref_code, timeout)
-            )
-            return future.result()
-    except RuntimeError:
-        # No running loop - safe to use asyncio.run
-        return asyncio.run(score_kernel_async(kernel_code, ref_code, timeout))
-
-
-def kernelbench_score_fn(sample: Sample) -> Score:
-    """Score function for KernelBench kernel generation.
-
-    Extracts code from model response, sends to sandbox pool for
-    compilation/testing/benchmarking.
-
-    Reward formula: 0.2 * compiled + 1.0 * correct + speedup (if correct)
-
-    Args:
-        sample: Sample with response and metadata
-
-    Returns:
-        Score with metrics: compiled, correct, speedup, reward
-    """
-    from rollouts.core import Metric, Score
-
-    # Get response and problem info
-    response = sample.response if hasattr(sample, "response") else ""
-    ref_code = sample.metadata.get("ref_code", "")
-
-    # Default metrics
-    compiled = 0.0
-    correct = 0.0
-    speedup = 0.0
-    pass_rate = 0.0
-    has_tags = 0.0
-    error = None
-
-    # Extract code
-    kernel_code = extract_kernel_code(response)
-    if kernel_code and ref_code:
-        has_tags = 1.0
-
-        # Score via sandbox pool
-        result = score_kernel_sync(kernel_code, ref_code)
-
-        compiled = result.get("compiled", 0.0)
-        correct = result.get("correct", 0.0)
-        speedup = result.get("speedup", 0.0)
-        pass_rate = result.get("pass_rate", 0.0)
-        error = result.get("error")
-
-        if error:
-            logger.debug(f"Scoring error: {error}")
-
-    # Compute reward
-    # - Failed to extract code: 0.0
-    # - Failed to compile: 0.0
-    # - Compiled but wrong: 0.2
-    # - Correct at 1x: 1.2
-    # - Correct at 2x: 2.2
-    reward = 0.2 * compiled + 1.0 * correct + (speedup if correct > 0 else 0.0)
-
-    return Score(
-        metrics=(
-            Metric("reward", reward, weight=1.0),
-            Metric("compiled", compiled, weight=0.0),
-            Metric("correct", correct, weight=0.0),
-            Metric("speedup", speedup, weight=0.0),
-            Metric("pass_rate", pass_rate, weight=0.0),
-            Metric("has_tags", has_tags, weight=0.0),
-        )
+def build_kernelbench_score(
+    *,
+    compiled: float,
+    correct: float,
+    speedup: float,
+    pass_rate: float,
+    has_kernel_code: float,
+    reward_weights: KernelBenchRewardWeights,
+    error: str | None = None,
+    judge_decision: KernelJudgeDecision | None = None,
+) -> Score:
+    """Build a Score object from explicit KernelBench metrics."""
+    reward = (
+        reward_weights.compiled * compiled
+        + reward_weights.correct * correct
+        + reward_weights.speedup * (speedup if correct > 0 else 0.0)
     )
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Batch scoring for efficiency
-# ─────────────────────────────────────────────────────────────────────────────
-
-
-async def score_batch_async(
-    samples: list[Sample],
-    timeout: float = 120.0,
-) -> list[Score]:
-    """Score a batch of samples using the sandbox pool.
-
-    More efficient than calling kernelbench_score_fn repeatedly because
-    it parallelizes across sandbox workers.
-
-    Args:
-        samples: List of Sample objects with response and metadata
-        timeout: Per-sample scoring timeout
-
-    Returns:
-        List of Score objects (same order as input)
-    """
-    from rollouts.core import Metric, Score
-
-    pool = get_sandbox_pool()
-
-    # Ensure pool is started
-    if not pool._started:
-        await pool.start()
-
-    # Prepare scoring requests
-    requests = []
-    for sample in samples:
-        response = sample.response if hasattr(sample, "response") else ""
-        ref_code = sample.metadata.get("ref_code", "")
-        kernel_code = extract_kernel_code(response)
-
-        if kernel_code and ref_code:
-            requests.append({
-                "kernel_code": kernel_code,
-                "ref_code": ref_code,
-                "has_tags": True,
-            })
-        else:
-            requests.append({
-                "kernel_code": "",
-                "ref_code": "",
-                "has_tags": False,
-            })
-
-    # Score all with valid code
-    valid_requests = [
-        {"kernel_code": r["kernel_code"], "ref_code": r["ref_code"]}
-        for r in requests
-        if r["has_tags"]
+    metrics = [
+        Metric("reward", reward, weight=1.0),
+        Metric("compiled", compiled, weight=0.0),
+        Metric("correct", correct, weight=0.0),
+        Metric("speedup", speedup, weight=0.0),
+        Metric("pass_rate", pass_rate, weight=0.0),
+        Metric("has_kernel_code", has_kernel_code, weight=0.0),
     ]
+    if error:
+        metrics.append(Metric("error", 0.0, weight=0.0, metadata={"message": error}))
+    if judge_decision is not None:
+        metrics.append(Metric("judge_passed", 1.0 if judge_decision.passed else 0.0, weight=0.0))
+        if judge_decision.score is not None:
+            metrics.append(Metric("judge_score", judge_decision.score, weight=0.0))
 
-    if valid_requests:
-        results = await pool.score_batch(valid_requests, timeout)
-    else:
-        results = []
+    return Score(metrics=tuple(metrics))
 
-    # Build scores, inserting results for valid requests
-    scores = []
-    result_idx = 0
-    for req in requests:
-        if req["has_tags"]:
-            result = results[result_idx]
-            result_idx += 1
 
-            compiled = result.get("compiled", 0.0)
-            correct = result.get("correct", 0.0)
-            speedup = result.get("speedup", 0.0)
-            pass_rate = result.get("pass_rate", 0.0)
-            reward = 0.2 * compiled + 1.0 * correct + (speedup if correct > 0 else 0.0)
+def _metadata_execution_result(sample: Sample) -> dict[str, Any] | None:
+    """Use environment-produced metadata when the rollout already executed scoring."""
+    metadata = sample.metadata
+    if "best_speedup" not in metadata and "has_correct_kernel" not in metadata:
+        return None
 
-            scores.append(
-                Score(
-                    metrics=(
-                        Metric("reward", reward, weight=1.0),
-                        Metric("compiled", compiled, weight=0.0),
-                        Metric("correct", correct, weight=0.0),
-                        Metric("speedup", speedup, weight=0.0),
-                        Metric("pass_rate", pass_rate, weight=0.0),
-                        Metric("has_tags", 1.0, weight=0.0),
+    turn_history = metadata.get("turn_history", [])
+    compiled_any = any(
+        turn.get("compiled", False) for turn in turn_history if isinstance(turn, dict)
+    )
+    runtime_provenance = metadata.get("evaluator_provenance")
+    if runtime_provenance is None:
+        for turn in turn_history:
+            if isinstance(turn, dict) and isinstance(turn.get("runtime_provenance"), dict):
+                runtime_provenance = turn["runtime_provenance"]
+                break
+
+    return {
+        "compiled": 1.0 if compiled_any else 0.0,
+        "correct": 1.0 if metadata.get("has_correct_kernel", False) else 0.0,
+        "speedup": float(metadata.get("best_speedup", 0.0)),
+        "pass_rate": float(metadata.get("pass_rate", 0.0)),
+        "error": metadata.get("error"),
+        "runtime_provenance": runtime_provenance,
+        "has_kernel_code": 1.0 if extract_kernel_code(sample.response) else 0.0,
+        "source": "environment_metadata",
+    }
+
+
+async def _score_one_with_evaluator(
+    evaluator: KernelEvaluator,
+    sample: Sample,
+    timeout: float,
+) -> dict[str, Any]:
+    response = sample.response
+    ref_code = sample.metadata.get("ref_code", "")
+    kernel_code = extract_kernel_code(response)
+
+    if not kernel_code or not ref_code:
+        return {
+            "compiled": 0.0,
+            "correct": 0.0,
+            "speedup": 0.0,
+            "pass_rate": 0.0,
+            "error": None,
+            "runtime_provenance": None,
+            "has_kernel_code": 0.0,
+            "source": "missing_kernel_or_ref",
+        }
+
+    result = await evaluator.score_one(kernel_code, ref_code, timeout=timeout)
+    return {
+        "compiled": float(result.get("compiled", 0.0)),
+        "correct": float(result.get("correct", 0.0)),
+        "speedup": float(result.get("speedup", 0.0)),
+        "pass_rate": float(result.get("pass_rate", 0.0)),
+        "error": result.get("error"),
+        "runtime_provenance": result.get("runtime_provenance"),
+        "has_kernel_code": 1.0,
+        "source": "evaluator",
+    }
+
+
+@dataclass
+class KernelBenchSampleScorer:
+    """Explicit scorer shared by KernelBench RL and eval paths.
+
+    Behavior:
+    - If the sample already has execution metadata from the environment, use it.
+    - Otherwise score generated code via the injected evaluator.
+    - Optionally run an LLM judge as a second scoring stage.
+    """
+
+    evaluator: KernelEvaluator | None = None
+    judge: KernelJudge | None = None
+    reward_weights: KernelBenchRewardWeights = DEFAULT_REWARD_WEIGHTS
+    timeout: float = 120.0
+    gate_reward_on_judge: bool = False
+
+    async def score_samples(self, samples: list[Sample]) -> list[Sample]:
+        execution_results = await self._score_execution(samples)
+        judge_results = await self._score_judge(samples, execution_results)
+
+        for sample, execution_result, judge_result in zip(
+            samples, execution_results, judge_results, strict=False
+        ):
+            score = build_kernelbench_score(
+                compiled=execution_result["compiled"],
+                correct=execution_result["correct"],
+                speedup=execution_result["speedup"],
+                pass_rate=execution_result["pass_rate"],
+                has_kernel_code=execution_result["has_kernel_code"],
+                reward_weights=self.reward_weights,
+                error=execution_result.get("error"),
+                judge_decision=judge_result,
+            )
+            if self.gate_reward_on_judge and judge_result is not None and not judge_result.passed:
+                score = Score(
+                    metrics=tuple(
+                        Metric(m.name, 0.0 if m.name == "reward" else m.value, m.weight, m.metadata)
+                        for m in score.metrics
                     )
                 )
-            )
-        else:
-            # No valid code extracted
-            scores.append(
-                Score(
-                    metrics=(
-                        Metric("reward", 0.0, weight=1.0),
-                        Metric("compiled", 0.0, weight=0.0),
-                        Metric("correct", 0.0, weight=0.0),
-                        Metric("speedup", 0.0, weight=0.0),
-                        Metric("pass_rate", 0.0, weight=0.0),
-                        Metric("has_tags", 0.0, weight=0.0),
-                    )
-                )
-            )
 
-    return scores
+            sample.score = score
+            sample.reward = score.reward
+            if execution_result.get("runtime_provenance") is not None:
+                sample.metadata["evaluator_provenance"] = execution_result["runtime_provenance"]
+            if judge_result is not None:
+                sample.metadata["judge"] = {
+                    "passed": judge_result.passed,
+                    "score": judge_result.score,
+                    "reason": judge_result.reason,
+                    **judge_result.metadata,
+                }
+
+        return samples
+
+    async def score_sample(self, sample: Sample) -> Score:
+        await self.score_samples([sample])
+        assert sample.score is not None, "score_samples must populate sample.score"
+        return sample.score
+
+    def stats(self) -> dict[str, Any]:
+        stats: dict[str, Any] = {}
+        if self.evaluator is not None and hasattr(self.evaluator, "stats"):
+            stats["evaluator"] = self.evaluator.stats()
+        if self.judge is not None and hasattr(self.judge, "stats"):
+            stats["judge"] = self.judge.stats()
+        return stats
+
+    async def _score_execution(self, samples: list[Sample]) -> list[dict[str, Any]]:
+        results: list[dict[str, Any] | None] = [None] * len(samples)
+        batchable_indices: list[int] = []
+        batch_requests: list[dict[str, Any]] = []
+
+        for idx, sample in enumerate(samples):
+            metadata_result = _metadata_execution_result(sample)
+            if metadata_result is not None:
+                results[idx] = metadata_result
+                continue
+
+            if self.evaluator is None:
+                raise ValueError(
+                    "KernelBenchSampleScorer requires an evaluator for samples without "
+                    "KernelBench environment metadata."
+                )
+
+            response = sample.response
+            ref_code = sample.metadata.get("ref_code", "")
+            kernel_code = extract_kernel_code(response)
+            if not kernel_code or not ref_code:
+                results[idx] = {
+                    "compiled": 0.0,
+                    "correct": 0.0,
+                    "speedup": 0.0,
+                    "pass_rate": 0.0,
+                    "error": None,
+                    "runtime_provenance": None,
+                    "has_kernel_code": 0.0,
+                    "source": "missing_kernel_or_ref",
+                }
+                continue
+
+            if isinstance(self.evaluator, BatchKernelEvaluator):
+                batchable_indices.append(idx)
+                batch_requests.append({"kernel_code": kernel_code, "ref_code": ref_code})
+            else:
+                results[idx] = await _score_one_with_evaluator(self.evaluator, sample, self.timeout)
+
+        if batchable_indices:
+            assert isinstance(self.evaluator, BatchKernelEvaluator)
+            batch_results = await self.evaluator.score_batch(batch_requests, timeout=self.timeout)
+            for idx, raw_result in zip(batchable_indices, batch_results, strict=False):
+                results[idx] = {
+                    "compiled": float(raw_result.get("compiled", 0.0)),
+                    "correct": float(raw_result.get("correct", 0.0)),
+                    "speedup": float(raw_result.get("speedup", 0.0)),
+                    "pass_rate": float(raw_result.get("pass_rate", 0.0)),
+                    "error": raw_result.get("error"),
+                    "runtime_provenance": raw_result.get("runtime_provenance"),
+                    "has_kernel_code": 1.0,
+                    "source": "batch_evaluator",
+                }
+
+        return [result if result is not None else {} for result in results]
+
+    async def _score_judge(
+        self,
+        samples: list[Sample],
+        execution_results: list[dict[str, Any]],
+    ) -> list[KernelJudgeDecision | None]:
+        if self.judge is None:
+            return [None] * len(samples)
+
+        decisions = await self.judge.judge_samples(samples, execution_results)
+        assert len(decisions) == len(samples), (
+            f"Kernel judge returned {len(decisions)} decisions for {len(samples)} samples"
+        )
+        return decisions
+
+
+def make_kernelbench_score_fn(
+    scorer: KernelBenchSampleScorer,
+) -> Callable[[Sample], Awaitable[Score]]:
+    """Compatibility adapter for callers that still need a score_fn."""
+
+    async def score_fn(sample: Sample) -> Score:
+        return await scorer.score_sample(sample)
+
+    return score_fn

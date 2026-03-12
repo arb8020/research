@@ -43,8 +43,22 @@ from typing import Any
 import trio
 
 from ...training.datasets.data_buffer import DataBuffer
+from ...training.group_assembly import (
+    assemble_groups,
+    collect_incomplete_groups,
+    count_complete_groups,
+)
 from ...training.rollout_gen.rollout_generation import convert_to_batch
-from ...training.types import RolloutBatch, RolloutConfig, Sample
+from ...training.runtime import resolve_rollout_runtime
+from ...training.scoring import resolve_sample_scorer
+from ...training.types import (
+    IncompleteGroupPolicy,
+    RolloutBatch,
+    RolloutConfig,
+    RolloutRuntime,
+    Sample,
+    SampleScorer,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -63,14 +77,16 @@ class PipelinedRolloutManager:
             If current_version - sample_version > max_lag, sample is discarded.
             Set to 0 for strict on-policy (only use samples from current version).
             Set to float('inf') for off-policy (use all samples).
-        queue_size: Maximum number of samples to buffer in queue
+        queue_size: Maximum number of samples to buffer in queue.
+            Set to 0 or a negative value to disable producer-side queue blocking.
         current_weight_version: Current model weight version (updated by trainer)
     """
 
     data_buffer: DataBuffer
     config: RolloutConfig
+    runtime: RolloutRuntime | None = None
     max_lag: int = 2  # Allow samples up to 2 versions behind
-    queue_size: int = 1024  # Buffer up to 1024 samples
+    queue_size: int = 0  # 0 = no producer-side queue cap
 
     # Sync status callback - when True, pause sampling (inference is blocked)
     # Set this to weight_sync_manager.sync_in_progress for true_pipeline
@@ -84,20 +100,31 @@ class PipelinedRolloutManager:
     _nursery: trio.Nursery | None = None
     _step_count: int = 0
     _shutdown_requested: bool = False
+    _next_group_index: int = 0
+    _group_prompts: dict[int, str | dict[str, Any]] = field(default_factory=dict)
+    _admission_paused_reason: str | None = None
 
     # Stats
     _samples_generated: int = 0
     _samples_discarded_stale: int = 0
+    _refill_requests: int = 0
+    _sync_pause_count: int = 0
+    _max_queue_length_seen: int = 0
+    _admission_pause_events: int = 0
 
     # Rollout kwargs passed to generate_fn
     rollout_kwargs: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         """Validate configuration."""
-        if self.config.generate_fn is None:
-            raise ValueError("RolloutConfig.generate_fn must be provided")
+        runtime = resolve_rollout_runtime(config=self.config, runtime=self.runtime)
+        if runtime is None:
+            raise ValueError("Rollout runtime must provide generate_fn")
+        self.runtime = runtime
         if self.config.batch_size <= 0:
             raise ValueError(f"batch_size must be > 0, got {self.config.batch_size}")
+        if self.config.max_refill_rounds < 0:
+            raise ValueError(f"max_refill_rounds must be >= 0, got {self.config.max_refill_rounds}")
 
     async def __aenter__(self) -> "PipelinedRolloutManager":
         """Async context manager entry."""
@@ -134,6 +161,21 @@ class PipelinedRolloutManager:
         self._current_weight_version = version
         logger.debug(f"Weight version updated to {version}")
 
+    def pause_new_admissions(self, reason: str = "manual") -> None:
+        """Stop admitting new prompt groups while allowing in-flight work to drain."""
+        if self._admission_paused_reason is None:
+            self._admission_pause_events += 1
+        self._admission_paused_reason = reason
+
+    def resume_new_admissions(self) -> None:
+        """Resume admitting new prompt groups after a drain/sync boundary."""
+        self._admission_paused_reason = None
+
+    @property
+    def admission_paused(self) -> bool:
+        """True when the manager is intentionally not admitting new work."""
+        return self._admission_paused_reason is not None
+
     async def start_sampling(
         self,
         nursery: trio.Nursery,
@@ -152,7 +194,9 @@ class PipelinedRolloutManager:
         # Start sampling task
         nursery.start_soon(self._sampling_loop)
         logger.info(
-            f"Started pipelined sampling (max_lag={self.max_lag}, queue_size={self.queue_size})"
+            "Started pipelined sampling (max_lag=%s, queue_size=%s)",
+            self.max_lag,
+            self.queue_size,
         )
 
     async def stop_sampling(self) -> None:
@@ -171,6 +215,7 @@ class PipelinedRolloutManager:
     async def get_batch(
         self,
         current_weight_version: int,
+        sample_scorer: SampleScorer | None = None,
         score_fn: Callable[[Sample], Any] | None = None,
         timeout: float = 60.0,
     ) -> RolloutBatch:
@@ -180,7 +225,9 @@ class PipelinedRolloutManager:
 
         Args:
             current_weight_version: Current training weight version
-            score_fn: Optional score function (Sample -> Score)
+            sample_scorer: Explicit scoring stage owned by the buffer/data side.
+            score_fn: Legacy score function (Sample -> Score), adapted into a
+                sample_scorer when provided.
             timeout: Max seconds to wait for batch
 
         Returns:
@@ -189,9 +236,8 @@ class PipelinedRolloutManager:
         Raises:
             trio.TooSlowError: If batch not ready within timeout
         """
-        import inspect
-
-        target_size = self.config.batch_size * self.config.n_samples_per_prompt
+        target_group_count = self.config.batch_size
+        refill_rounds = 0
 
         with trio.fail_after(timeout):
             while True:
@@ -199,6 +245,7 @@ class PipelinedRolloutManager:
                 async with self._queue_lock:
                     fresh_samples = []
                     remaining_queue = []
+                    stale_group_counts: dict[int, int] = {}
 
                     for sample in self._sample_queue:
                         lag = current_weight_version - sample.weight_version
@@ -207,36 +254,100 @@ class PipelinedRolloutManager:
                         else:
                             # Discard stale sample
                             self._samples_discarded_stale += 1
+                            if sample.group_index is not None:
+                                stale_group_counts[sample.group_index] = (
+                                    stale_group_counts.get(sample.group_index, 0) + 1
+                                )
                             logger.debug(
                                 f"Discarding stale sample (lag={lag} > max_lag={self.max_lag})"
                             )
 
-                    if len(fresh_samples) >= target_size:
-                        # Take what we need, keep the rest
-                        collected = fresh_samples[:target_size]
-                        remaining_queue = fresh_samples[target_size:]
+                    if (
+                        count_complete_groups(
+                            fresh_samples,
+                            self.config.n_samples_per_prompt,
+                        )
+                        >= target_group_count
+                    ):
+                        assembly_result = assemble_groups(
+                            fresh_samples,
+                            target_num_groups=target_group_count,
+                            samples_per_group=self.config.n_samples_per_prompt,
+                            incomplete_group_policy=self.config.incomplete_group_policy,
+                        )
+                        collected = assembly_result.ready_samples
+                        remaining_queue = assembly_result.overflow_samples
                         self._sample_queue = remaining_queue
                     else:
+                        incomplete_groups = collect_incomplete_groups(
+                            fresh_samples,
+                            self.config.n_samples_per_prompt,
+                        )
                         # Not enough fresh samples, keep waiting
-                        # Keep fresh samples in queue
+                        # Keep only admissible samples in queue. Incomplete groups
+                        # are still kept until there are enough complete groups to
+                        # assemble a batch; a future refill policy may choose to
+                        # drop or regenerate them earlier.
                         self._sample_queue = fresh_samples
                         collected = None
+                        assembly_result = None
+                        should_refill = (
+                            self.config.incomplete_group_policy
+                            == IncompleteGroupPolicy.REQUEST_MORE
+                            and bool(incomplete_groups or stale_group_counts)
+                            and refill_rounds < self.config.max_refill_rounds
+                        )
+                        if should_refill:
+                            refill_requests = []
+                            group_sample_counts = {
+                                group_idx: len(group_samples)
+                                for group_idx, group_samples in incomplete_groups.items()
+                            }
+                            refill_group_ids = set(incomplete_groups) | set(stale_group_counts)
+                            for group_idx in sorted(refill_group_ids):
+                                prompt = self._group_prompts.get(group_idx)
+                                if prompt is None:
+                                    logger.debug(
+                                        "Skipping refill for group %s because prompt identity is unknown",
+                                        group_idx,
+                                    )
+                                    continue
+                                missing_count = (
+                                    self.config.n_samples_per_prompt
+                                    - group_sample_counts.get(group_idx, 0)
+                                )
+                                for _ in range(missing_count):
+                                    refill_requests.append((prompt, group_idx))
+                            self._refill_requests += len(refill_requests)
+                        else:
+                            refill_requests = []
 
                 if collected is not None:
                     break
 
+                if refill_requests:
+                    refill_rounds += 1
+                    refill_samples = await self._refill_groups(
+                        refill_requests,
+                        weight_version=current_weight_version,
+                    )
+                    async with self._queue_lock:
+                        self._sample_queue.extend(refill_samples)
+                        self._samples_generated += len(refill_samples)
+                    continue
+
                 # Wait a bit for more samples
                 await trio.sleep(0.1)
 
-        # Compute rewards from score_fn if provided
-        if score_fn is not None:
-            is_async = inspect.iscoroutinefunction(score_fn)
-            for sample in collected:
-                if is_async:
-                    score = await score_fn(sample)
-                else:
-                    score = score_fn(sample)
-                sample.reward = score.reward
+        # Score samples via the explicit scoring stage if configured.
+        scorer = resolve_sample_scorer(
+            config=self.config,
+            runtime=self.runtime,
+            sample_scorer=sample_scorer,
+            score_fn=score_fn,
+        )
+        if scorer is not None:
+            await scorer.score_samples(collected)
 
         # Convert to batch
         batch = convert_to_batch(
@@ -244,6 +355,17 @@ class PipelinedRolloutManager:
             epoch_id=self.data_buffer.epoch_id,
             step_id=self._step_count,
         )
+        self._prune_group_prompts(remaining_queue, collected)
+        assert assembly_result is not None, "assembly_result must exist once a batch is collected"
+        batch.metadata.update({
+            "assembled_groups": assembly_result.ready_group_count,
+            "buffered_samples": len(assembly_result.overflow_samples),
+            "dropped_incomplete_groups": len(assembly_result.dropped_incomplete_group_sizes),
+            "dropped_incomplete_samples": len(assembly_result.dropped_incomplete_samples),
+            "incomplete_group_policy": self.config.incomplete_group_policy.value,
+            "refill_rounds": refill_rounds,
+            "rollout_stats": self.stats(),
+        })
 
         self._step_count += 1
         return batch
@@ -257,17 +379,25 @@ class PipelinedRolloutManager:
         logger.debug("Sampling loop started")
 
         while not self._shutdown_requested:
-            # Pause if weight sync is in progress (SGLang is blocked)
+            # Soft pause means: do not admit new prompts, let the current generation
+            # round finish naturally, then hold here until the sync boundary clears.
+            if self.admission_paused:
+                self._sync_pause_count += 1
+                await trio.sleep(0.1)
+                continue
             if self.sync_in_progress_fn is not None and self.sync_in_progress_fn():
-                logger.debug("Weight sync in progress, pausing sampling...")
+                self._sync_pause_count += 1
+                logger.debug("External sync gate active, pausing new admissions...")
                 await trio.sleep(0.1)
                 continue
 
             # Check if queue has room
             async with self._queue_lock:
                 queue_len = len(self._sample_queue)
+                if queue_len > self._max_queue_length_seen:
+                    self._max_queue_length_seen = queue_len
 
-            if queue_len >= self.queue_size:
+            if self.queue_size > 0 and queue_len >= self.queue_size:
                 # Queue full, wait a bit
                 await trio.sleep(0.1)
                 continue
@@ -291,10 +421,13 @@ class PipelinedRolloutManager:
                 async with self._queue_lock:
                     self._sample_queue.extend(samples)
                     self._samples_generated += len(samples)
+                    queue_len = len(self._sample_queue)
+                    if queue_len > self._max_queue_length_seen:
+                        self._max_queue_length_seen = queue_len
 
                 logger.debug(
                     f"Generated {len(samples)} samples (v={generation_weight_version}), "
-                    f"queue={len(self._sample_queue)}"
+                    f"queue={queue_len}"
                 )
 
             except Exception as e:
@@ -324,6 +457,11 @@ class PipelinedRolloutManager:
                 sample.weight_version = weight_version
             return samples
 
+        group_indices = list(range(self._next_group_index, self._next_group_index + len(prompts)))
+        self._next_group_index += len(prompts)
+        for group_idx, prompt in zip(group_indices, prompts, strict=False):
+            self._group_prompts[group_idx] = prompt
+
         # Launch all tasks in parallel
         async with trio.open_nursery() as nursery:
             results: list[Sample] = []
@@ -336,7 +474,30 @@ class PipelinedRolloutManager:
 
             for prompt_idx, prompt in enumerate(prompts):
                 for _ in range(self.config.n_samples_per_prompt):
-                    nursery.start_soon(run_task, prompt, prompt_idx)
+                    nursery.start_soon(run_task, prompt, group_indices[prompt_idx])
+
+        return results
+
+    async def _refill_groups(
+        self,
+        refill_requests: list[tuple[str | dict[str, Any], int]],
+        weight_version: int,
+    ) -> list[Sample]:
+        """Generate additional samples for existing group ids."""
+        async with trio.open_nursery() as nursery:
+            results: list[Sample] = []
+            results_lock = trio.Lock()
+
+            async def run_task(prompt: str | dict[str, Any], group_idx: int) -> None:
+                samples = await self._call_user_generate_fn([prompt])
+                for sample in samples:
+                    sample.group_index = group_idx
+                    sample.weight_version = weight_version
+                async with results_lock:
+                    results.extend(samples)
+
+            for prompt, group_idx in refill_requests:
+                nursery.start_soon(run_task, prompt, group_idx)
 
         return results
 
@@ -347,8 +508,8 @@ class PipelinedRolloutManager:
         """Call user-provided generate function (async or sync)."""
         import inspect
 
-        assert self.config.generate_fn is not None
-        generate_fn = self.config.generate_fn
+        assert self.runtime is not None, "runtime must be provided"
+        generate_fn = self.runtime.generate_fn
 
         if inspect.iscoroutinefunction(generate_fn):
             samples = await generate_fn(prompts, **self.rollout_kwargs)
@@ -362,13 +523,36 @@ class PipelinedRolloutManager:
 
         return samples
 
+    def _prune_group_prompts(
+        self, active_samples: list[Sample], consumed_samples: list[Sample]
+    ) -> None:
+        """Forget prompt identities for groups that have fully left the pipeline."""
+        active_group_ids = {
+            sample.group_index for sample in active_samples if sample.group_index is not None
+        }
+        consumed_group_ids = {
+            sample.group_index for sample in consumed_samples if sample.group_index is not None
+        }
+        for group_idx in consumed_group_ids:
+            if group_idx not in active_group_ids:
+                self._group_prompts.pop(group_idx, None)
+
     def stats(self) -> dict[str, Any]:
         """Get sampling statistics."""
         return {
+            "mode": "pipelined_rollout_manager",
             "samples_generated": self._samples_generated,
             "samples_discarded_stale": self._samples_discarded_stale,
+            "refill_requests": self._refill_requests,
             "queue_length": len(self._sample_queue),
+            "queue_limit": self.queue_size,
+            "queue_limit_enabled": self.queue_size > 0,
+            "max_queue_length_seen": self._max_queue_length_seen,
             "current_weight_version": self._current_weight_version,
+            "sync_pause_count": self._sync_pause_count,
+            "admission_paused": self.admission_paused,
+            "admission_pause_events": self._admission_pause_events,
+            "known_group_prompts": len(self._group_prompts),
             "discard_rate": (
                 self._samples_discarded_stale / self._samples_generated * 100
                 if self._samples_generated > 0

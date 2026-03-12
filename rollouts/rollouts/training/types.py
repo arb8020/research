@@ -24,6 +24,14 @@ class Status(Enum):
     ABORTED = "aborted"
 
 
+class IncompleteGroupPolicy(Enum):
+    """How to handle incomplete groups after sample-level filtering/assembly."""
+
+    REQUEST_MORE = "request_more"
+    DROP_INCOMPLETE = "drop_incomplete"
+    ERROR = "error"
+
+
 @dataclass
 class Sample:
     """Unified sample type for evaluation, rollouts, and training.
@@ -273,6 +281,30 @@ class RolloutBatch:
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
+@runtime_checkable
+class SampleScorer(Protocol):
+    """Explicit scoring stage for rollout samples.
+
+    Implementations may own separate scoring resources, admission logic, and
+    observability without coupling that behavior to rollout generation.
+    """
+
+    async def score_samples(self, samples: list[Sample]) -> list[Sample]: ...
+
+
+@dataclass(frozen=True)
+class RolloutRuntime:
+    """Runtime wiring for rollout generation.
+
+    This keeps live behavior out of RolloutConfig so config stays serializable
+    and easy to reason about.
+    """
+
+    generate_fn: Callable
+    filter_fn: Callable | None = None
+    sample_scorer: SampleScorer | None = None
+
+
 @dataclass(frozen=True)
 class RolloutConfig:
     """Configuration for rollout generation.
@@ -283,9 +315,12 @@ class RolloutConfig:
         batch_size: Number of prompts per batch
         n_samples_per_prompt: Samples to generate per prompt (for GRPO)
         over_sampling_factor: Dynamic sampling multiplier (SLIME-style)
-        generate_fn: User-provided generation function
-        score_fn: Optional score function (Sample -> Score), reward = score.reward
-        filter_fn: Optional filter (samples -> bool)
+        incomplete_group_policy: Explicit policy for incomplete groups after
+            sample-level filtering or assembly.
+        max_refill_rounds: Maximum number of refill attempts for incomplete
+            groups when using request_more policy.
+        generate_fn / score_fn / sample_scorer / filter_fn: Legacy runtime
+            wiring fields kept temporarily for backward compatibility.
 
     Example:
         >>> async def my_generate(prompts, config):
@@ -300,10 +335,13 @@ class RolloutConfig:
     batch_size: int
     n_samples_per_prompt: int = 1
     over_sampling_factor: float = 1.0
+    incomplete_group_policy: IncompleteGroupPolicy = IncompleteGroupPolicy.REQUEST_MORE
+    max_refill_rounds: int = 2
 
-    # User-provided functions (SLIME-style!)
+    # Legacy runtime wiring. Prefer RolloutRuntime for new code.
     generate_fn: Callable | None = None
-    score_fn: Callable | None = None  # (Sample) -> Score, use score.reward for training
+    score_fn: Callable | None = None  # Backwards-compatible function scorer.
+    sample_scorer: SampleScorer | None = None
     filter_fn: Callable | None = None
 
     def to_dict(self) -> dict[str, Any]:
@@ -323,9 +361,12 @@ class RolloutConfig:
         from dataclasses import asdict
 
         data = asdict(self)
+        if isinstance(data.get("incomplete_group_policy"), IncompleteGroupPolicy):
+            data["incomplete_group_policy"] = self.incomplete_group_policy.value
         # Remove non-serializable functions
         data.pop("generate_fn", None)
         data.pop("score_fn", None)
+        data.pop("sample_scorer", None)
         data.pop("filter_fn", None)
         return data
 
@@ -335,6 +376,7 @@ class RolloutConfig:
         generate_fn: Callable | None = None,
         score_fn: Callable | None = None,
         filter_fn: Callable | None = None,
+        sample_scorer: SampleScorer | None = None,
     ) -> "RolloutConfig":
         """Create RolloutConfig from dict.
 
@@ -343,6 +385,7 @@ class RolloutConfig:
             generate_fn: User-provided generation function (not serializable)
             score_fn: User-provided score function (not serializable)
             filter_fn: User-provided filter function (not serializable)
+            sample_scorer: Explicit scoring stage (not serializable)
 
         Returns:
             RolloutConfig instance
@@ -352,10 +395,16 @@ class RolloutConfig:
             >>> config = RolloutConfig.from_dict(d, generate_fn=my_generate)
             >>> assert config.batch_size == 32
         """
+        payload = dict(data)
+        if "incomplete_group_policy" in payload:
+            payload["incomplete_group_policy"] = IncompleteGroupPolicy(
+                payload["incomplete_group_policy"]
+            )
         return RolloutConfig(
-            **data,
+            **payload,
             generate_fn=generate_fn,
             score_fn=score_fn,
+            sample_scorer=sample_scorer,
             filter_fn=filter_fn,
         )
 

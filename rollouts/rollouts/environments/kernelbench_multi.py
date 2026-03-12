@@ -9,11 +9,15 @@ This environment implements the Kevin-style multi-turn RL approach:
 
 Usage:
     from rollouts.environments.kernelbench_multi import KernelBenchMultiTurnEnvironment
+    from rollouts.environments.kernelbench_multi import SandboxPoolKernelEvaluator
+    from rollouts.gpu_sandbox import SandboxPool
 
+    pool = SandboxPool([])
     env = KernelBenchMultiTurnEnvironment(
         ref_code=ref_code,  # Reference PyTorch code
         backend="cuda",
         max_turns=8,
+        evaluator=SandboxPoolKernelEvaluator(pool),
     )
 """
 
@@ -45,19 +49,10 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class SandboxPoolKernelEvaluator:
-    pool: SandboxPool | None = None
-
-    def _get_pool(self) -> SandboxPool:
-        if self.pool is None:
-            from ..gpu_sandbox import SandboxPool
-
-            self.pool = SandboxPool([])
-        return self.pool
+    pool: SandboxPool
 
     async def start(self) -> None:
-        pool = self._get_pool()
-        if not pool._started:
-            await pool.start()
+        await self.pool.ensure_capacity()
 
     async def score_one(
         self,
@@ -66,7 +61,18 @@ class SandboxPoolKernelEvaluator:
         timeout: float,
     ) -> dict[str, Any]:
         await self.start()
-        return await self._get_pool().score_one(kernel_code, ref_code, timeout=timeout)
+        return await self.pool.score_one(kernel_code, ref_code, timeout=timeout)
+
+    async def score_batch(
+        self,
+        requests: list[dict[str, Any]],
+        timeout: float,
+    ) -> list[dict[str, Any]]:
+        await self.start()
+        return await self.pool.score_batch(requests, timeout=timeout)
+
+    def stats(self) -> dict[str, Any]:
+        return self.pool.stats()
 
 
 @dataclass
@@ -92,7 +98,7 @@ class KernelBenchMultiTurnEnvironment:
     max_turns: int = 8
     current_turn: int = 0
     turn_history: list[dict[str, Any]] = field(default_factory=list)
-    evaluator: KernelEvaluator = field(default_factory=SandboxPoolKernelEvaluator, repr=False)
+    evaluator: KernelEvaluator | None = field(default=None, repr=False)
 
     # Evaluation state
     best_speedup: float = 0.0
@@ -116,7 +122,10 @@ class KernelBenchMultiTurnEnvironment:
         }
 
     @staticmethod
-    async def deserialize(data: dict) -> KernelBenchMultiTurnEnvironment:
+    async def deserialize(
+        data: dict,
+        evaluator: KernelEvaluator | None = None,
+    ) -> KernelBenchMultiTurnEnvironment:
         """Deserialize environment from checkpoint."""
         return KernelBenchMultiTurnEnvironment(
             ref_code=data["ref_code"],
@@ -128,6 +137,7 @@ class KernelBenchMultiTurnEnvironment:
             best_kernel=data.get("best_kernel"),
             has_correct_kernel=data.get("has_correct_kernel", False),
             evaluator_provenance=data.get("evaluator_provenance"),
+            evaluator=evaluator,
         )
 
     def get_tools(self) -> list[Tool]:
@@ -157,7 +167,15 @@ class KernelBenchMultiTurnEnvironment:
 
     async def on_session_start(self, session_id: str) -> None:
         """Called when session starts. Ensure evaluation resource is ready."""
-        await self.evaluator.start()
+        await self._require_evaluator().start()
+
+    def _require_evaluator(self) -> KernelEvaluator:
+        if self.evaluator is None:
+            raise ValueError(
+                "KernelBenchMultiTurnEnvironment requires an injected evaluator. "
+                "Construct it with evaluator=... or pass evaluator=... to deserialize()."
+            )
+        return self.evaluator
 
     def _extract_kernel_code(self, response: str) -> str | None:
         """Extract Python kernel code from model response.
@@ -223,7 +241,7 @@ class KernelBenchMultiTurnEnvironment:
         logger.info(f"[KernelBench] Kernel code preview: {kernel_code[:200]}...")
 
         try:
-            result = await self.evaluator.score_one(
+            result = await self._require_evaluator().score_one(
                 kernel_code,
                 self.ref_code,
                 timeout=120.0,

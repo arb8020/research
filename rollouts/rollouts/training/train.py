@@ -13,12 +13,14 @@ import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from ..training.backends.protocol import TrainingBackend
 from ..training.configs import CheckpointConfig
 from ..training.metrics import MetricsLogger
 from ..training.weight_sync import WeightSyncer
+
+if TYPE_CHECKING:
+    from ..training.backends.protocol import TrainingBackend
 
 
 @dataclass(frozen=True)
@@ -57,6 +59,8 @@ async def train(
     save_checkpoint: Callable[[int, dict[str, Any]], Awaitable[Path]] | None,
     metrics_logger: MetricsLogger | None,
     logger: logging.Logger,
+    before_weight_sync: Callable[[], Awaitable[None]] | None = None,
+    after_weight_sync: Callable[[], Awaitable[None]] | None = None,
 ) -> TrainResult:
     """Run training for a fixed number of steps.
 
@@ -122,7 +126,13 @@ async def train(
             weight_sync_ms = 0.0
             if weight_syncer is not None and should_sync(step, config):
                 sync_start = time.perf_counter()
-                await weight_syncer.sync()
+                try:
+                    if before_weight_sync is not None:
+                        await before_weight_sync()
+                    await weight_syncer.sync()
+                finally:
+                    if after_weight_sync is not None:
+                        await after_weight_sync()
                 weight_sync_ms = (time.perf_counter() - sync_start) * 1000
 
             step_total_ms = process_batch_ms + checkpoint_ms + weight_sync_ms

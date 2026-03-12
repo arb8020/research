@@ -43,7 +43,8 @@ from ...training.rollout_gen.rollout_generation import (
     apply_sample_transforms,
     convert_to_batch,
 )
-from ...training.types import RolloutBatch, RolloutConfig
+from ...training.runtime import resolve_rollout_runtime
+from ...training.types import RolloutBatch, RolloutConfig, RolloutRuntime
 
 
 class RolloutManager:
@@ -60,6 +61,7 @@ class RolloutManager:
         self,
         data_buffer: DataBuffer,
         config: RolloutConfig,
+        runtime: RolloutRuntime | None = None,
         **rollout_kwargs: Any,
     ) -> None:
         """Initialize rollout manager.
@@ -82,11 +84,12 @@ class RolloutManager:
 
         self.data_buffer = data_buffer
         self.config = config
+        self.runtime = resolve_rollout_runtime(config=config, runtime=runtime)
         self.rollout_kwargs = rollout_kwargs
 
         # Validate config
-        if config.generate_fn is None:
-            raise ValueError("RolloutConfig.generate_fn must be provided")
+        if self.runtime is None:
+            raise ValueError("Rollout runtime must provide generate_fn")
         if config.batch_size <= 0:
             raise ValueError(f"batch_size must be > 0, got {config.batch_size}")
 
@@ -114,15 +117,15 @@ class RolloutManager:
         assert len(prompts) == self.config.batch_size, "Buffer must return requested batch size"
 
         # Call user-provided rollout function
-        assert self.config.generate_fn is not None, "generate_fn must be provided"
-        samples = self.config.generate_fn(prompts, **self.rollout_kwargs)
+        assert self.runtime is not None, "runtime must be provided"
+        samples = self.runtime.generate_fn(prompts, **self.rollout_kwargs)
         assert isinstance(samples, list), (
             f"generate_fn must return list[Sample], got {type(samples)}"
         )
         assert len(samples) > 0, "generate_fn must return non-empty sample list"
 
         # Apply optional transforms
-        samples = apply_sample_transforms(samples, self.config)
+        samples = apply_sample_transforms(samples, self.config, runtime=self.runtime)
 
         # Convert to batch
         batch = convert_to_batch(

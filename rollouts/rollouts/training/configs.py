@@ -442,8 +442,9 @@ class CheckpointConfig:
     # Maximum weight version lag for async pipeline (samples older than this are discarded)
     # Only used if pipeline_mode="async". Set to 0 for strict on-policy.
     max_lag: int = 2
-    # Sample queue size for async pipeline
-    pipeline_queue_size: int = 1024
+    # Sample queue size for async pipeline.
+    # Set to 0 for stream-style production semantics without producer-side blocking.
+    pipeline_queue_size: int = 0
 
 
 @dataclass(frozen=True)
