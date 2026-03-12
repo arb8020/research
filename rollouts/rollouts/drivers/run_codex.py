@@ -18,11 +18,11 @@ from typing import TYPE_CHECKING
 
 import trio
 
+from ..core import SessionStatus
 from ..dtypes import (
     LLMCallEnd,
     LLMCallStart,
     Message,
-    SessionStatus,
     StopReason,
     StreamDone,
     StreamError,

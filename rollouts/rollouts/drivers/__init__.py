@@ -25,6 +25,7 @@ Session adapters for hot-swap:
 
 from .claude import ClaudeDriver
 from .codex import CodexDriver
+from .factory import DriverBuildRequest, create_run_fn
 from .protocol import ExternalAgentDriver
 from .runner import run_driver_to_trajectory, run_external_agent
 from .session_adapter import (
@@ -46,8 +47,10 @@ __all__ = [
     "ExternalAgentDriver",
     "ClaudeDriver",
     "CodexDriver",
+    "DriverBuildRequest",
     "run_external_agent",
     "run_driver_to_trajectory",
+    "create_run_fn",
     # Claude Code session adapters
     "messages_to_claude_session",
     "claude_session_to_messages",

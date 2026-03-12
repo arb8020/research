@@ -1,214 +1,238 @@
-# My Code Style Notes
+# Error Handling Notes
 
-## Error Handling and Control Flow
+## Core Principle
 
-**Core principle:** Control flow should be explicit and linear. Prefer tuple returns for errors over try/except.
+Failure handling should make the program more honest, not less.
 
-**Why:** try/except obscures control flow. When you see a try block, it's unclear:
-- Is the exception case rare (1 in 1000) or common (1 in 2)?
-- What's the actual execution path?
-- Are we using exceptions for normal logic or truly exceptional cases?
+Prefer explicit failure channels. Use assertions for bugs, exceptions for boundary rejection and unrecoverable preconditions, and tuple returns for expected operational failures where the caller has a meaningful choice.
 
-Explicit control flow with if/else makes the code's behavior obvious.
+The goal is not "never crash". The goal is to preserve correctness and make control flow obvious.
 
-### Internal code always uses tuple returns
+## The Three Failure Kinds
+
+### 1. Programmer Errors
+
+This means our code is wrong. An invariant was broken. A state that should be impossible happened anyway.
+
+Use `assert`.
 
 ```python
-# ✅ Good: Explicit error handling with tuple returns
+def process_batch(items: list[Item]) -> list[Result]:
+    assert items is not None
+    assert len(items) > 0
+
+    return [process_item(item) for item in items]
+```
+
+If this fails, we should crash loudly and fix the bug. Continuing would just spread corrupted assumptions deeper into the program.
+
+### 2. Boundary Rejection
+
+This means the entry point cannot proceed with the given input or environment.
+
+Examples:
+- Invalid CLI arguments
+- Missing required config
+- Malformed JSON at parse time
+- Invalid request payload
+
+Use exceptions at the boundary.
+
+```python
+def load_config(config_path: Path) -> Config:
+    if not config_path.exists():
+        raise ConfigNotFoundError(str(config_path))
+
+    text = config_path.read_text()
+    data = json.loads(text)
+    return parse_config(data)
+```
+
+This is not "exceptional" in the emotional sense. It just means this entry point rejects the input and refuses to continue.
+
+### 3. Operational Failures
+
+This means the operation may legitimately fail, and the caller has a meaningful decision to make.
+
+Examples:
+- Network timeout
+- Remote host unavailable
+- GPU busy
+- Cache miss
+- Trying one provider, then another
+
+Use explicit tuple returns: `(result, error)`.
+
+```python
+async def connect_to_gpu(config: Config) -> tuple[Connection | None, str | None]:
+    if not config.host:
+        return None, "host required"
+
+    client, err = await open_connection(config.host)
+    if err:
+        return None, f"connection failed: {err}"
+
+    return client, None
+```
+
+Tuple returns are a lightweight Python version of `Result[T, E]`: success and failure are part of the function's contract, not an ambient side channel.
+
+## Why We Avoid Defensive try/except Everywhere
+
+People are often too afraid of programs erroring. This leads to code that catches too much, falls back too eagerly, and keeps running on bad assumptions.
+
+That style is dangerous because:
+- It hides bugs instead of surfacing them
+- It makes control flow harder to read
+- It weakens invariants
+- It creates false confidence: "didn't crash" gets mistaken for "worked"
+
+Bad:
+
+```python
+def compute_total(order: Order) -> int:
+    try:
+        return sum(item.price_cents for item in order.items)
+    except Exception:
+        return 0
+```
+
+This is not recovery. It is lying.
+
+Better:
+
+```python
+def compute_total(order: Order) -> int:
+    assert order.items is not None
+    return sum(item.price_cents for item in order.items)
+```
+
+## Fall Back Only When It Preserves Correctness
+
+Do not add fallback code just because crashing feels scary.
+
+Add fallback code only when the fallback is a real alternative plan that preserves correctness.
+
+Good fallback:
+
+```python
+def load_config() -> Config:
+    if LOCAL_CONFIG.exists():
+        return parse_config_file(LOCAL_CONFIG)
+
+    if DEFAULT_CONFIG.exists():
+        return parse_config_file(DEFAULT_CONFIG)
+
+    raise ConfigError("No config file found")
+```
+
+This is acceptable because:
+- The fallback is intentional
+- The ordering is explicit
+- Failure is still surfaced if no valid plan works
+
+Bad fallback:
+
+```python
+def load_user_settings(path: Path) -> dict[str, Any]:
+    try:
+        return json.loads(path.read_text())
+    except Exception:
+        return {}
+```
+
+This silently changes program meaning and makes bugs harder to find.
+
+## Where try/except Is Okay
+
+Use `try/except` at boundaries, where Python or external libraries force it, and then convert into your own error model.
+
+Good uses:
+- Filesystem and network I/O
+- Wrapping library exceptions
+- Optional imports
+- Transaction rollback / cleanup
+- Boundary parsing code
+
+```python
+def read_json(path: Path) -> tuple[dict | None, str | None]:
+    try:
+        text = path.read_text()
+    except OSError as e:
+        return None, f"read failed: {e}"
+
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as e:
+        return None, f"invalid json: {e}"
+
+    return data, None
+```
+
+The important part is that the `try/except` stays near the boundary. Do not smear exception handling throughout core business logic just to keep the program limping along.
+
+## What Core Logic Should Look Like
+
+After parsing and validation, core logic should run on trusted data.
+
+That means:
+- Assertions for invariants
+- Straight-line control flow
+- Explicit tuple returns for expected operational failure
+- No broad exception swallowing
+- No fake default values
+
+```python
+def build_deployment_plan(config: Config) -> tuple[Plan | None, str | None]:
+    assert config.model is not None
+    assert config.region is not None
+
+    capacity, err = check_capacity(config.region)
+    if err:
+        return None, err
+
+    plan = make_plan(config, capacity)
+    return plan, None
+```
+
+## Tuple Return Conventions
+
+For single recoverable errors:
+- Success: `(value, None)`
+- Failure: `(None, error_message)`
+
+For validation that should accumulate multiple issues:
+- Return `list[str]`
+- Empty list means success
+
+```python
 def validate_config(config: dict) -> list[str]:
-    """Returns list of errors, empty if valid."""
     errors = []
     if "model" not in config:
         errors.append("Missing 'model'")
     if "learning_rate" not in config:
         errors.append("Missing 'learning_rate'")
-    elif config["learning_rate"] <= 0:
-        errors.append("learning_rate must be positive")
     return errors
-
-def process(data) -> tuple[Result | None, str | None]:
-    """Returns (result, error). Error is None on success."""
-    if not is_valid(data):
-        return None, "invalid data"
-
-    intermediate, err = transform(data)
-    if err:
-        return None, f"transform failed: {err}"
-
-    return intermediate, None
-
-# Caller has explicit control flow
-result, err = process(data)
-if err:
-    print(f"Error: {err}")
-    return 1
 ```
 
-### Even deep call stacks use tuple returns
+## Decision Guide
 
-Explicit > concise. Yes, it's more verbose, but control flow is crystal clear:
+Ask:
 
-```python
-# ✅ Good: Verbose but explicit
-def parse_config(text: str) -> tuple[Config | None, str | None]:
-    tokens, err = tokenize(text)
-    if err:
-        return None, f"Tokenize failed: {err}"
+1. Is this a bug in our code?
+2. Is this invalid input or an unmet precondition at the boundary?
+3. Is this an operational failure where the caller can retry, fallback, aggregate, or report?
 
-    sections, err = parse_sections(tokens)
-    if err:
-        return None, f"Parse failed: {err}"
+Use:
+- `assert` for `1`
+- `raise` for `2`
+- `(result, error)` for `3`
 
-    config, err = build_config(sections)
-    if err:
-        return None, f"Build failed: {err}"
+## Rules of Thumb
 
-    return config, None
-
-# ❌ Bad: Concise but implicit (exceptions hide control flow)
-def parse_config(text: str) -> Config:
-    tokens = tokenize(text)  # might raise - when? always? sometimes?
-    sections = parse_sections(tokens)  # might raise - same error type?
-    return Config(sections)
-```
-
-### Only use try/except when unavoidable
-
-**When you MUST use try/except:**
-
-1. **Wrapping external library calls** - they raise, you can't change that
-2. **Transaction rollback patterns** - need exception to trigger cleanup
-3. **Optional imports** - idiomatic Python
-4. **External I/O** - filesystem, network operations
-
-But even then, **return tuples** to your caller:
-
-```python
-# ✅ Good: Use try/except at boundary, but return tuple
-def load_file(path: Path) -> tuple[str | None, str | None]:
-    try:
-        content = path.read_text()  # External: must use try/except
-        return content, None
-    except OSError as e:
-        return None, f"Failed to read {path}: {e}"
-
-def load_model(model_id: str) -> tuple[Model | None, str | None]:
-    if not model_id:
-        return None, "model_id required"
-
-    try:
-        model = AutoModel.from_pretrained(model_id)  # External lib
-        return model, None
-    except Exception as e:
-        return None, f"Failed to load {model_id}: {e}"
-
-# Optional imports
-try:
-    import torch
-    HAS_TORCH = True
-except ImportError:
-    HAS_TORCH = False
-    torch = None
-```
-
-### Assertions for programmer errors
-
-From Tiger Style: Use assertions for bugs in our code (preconditions, invariants):
-
-```python
-def process(data):
-    assert data is not None, "caller must provide data"
-    assert len(data) > 0, "caller must validate non-empty"
-
-    # ... rest of logic
-```
-
-Assertions are for things that should **never** happen if our code is correct. They crash the program if violated.
-
-### Return type conventions
-
-**For single errors:**
-- Success: `(value, None)`
-- Failure: `(None, error_message)`
-
-**For multiple errors (validation):**
-- Return `list[str]` (empty list = success)
-
-```python
-# Single error
-def get_user(user_id: str) -> tuple[User | None, str | None]:
-    if not user_id:
-        return None, "user_id required"
-    user = db.query_one_or_none(...)
-    if not user:
-        return None, "user not found"
-    return user, None
-
-# Multiple errors
-def validate_config(config: dict) -> list[str]:
-    errors = []
-    # ... collect all errors ...
-    return errors  # empty = valid
-```
-
-### When exceptions ARE ok for control flow
-
-There are rare cases where exceptions are genuinely the right tool:
-
-1. **Transaction rollback** - exception triggers cleanup
-   ```python
-   def transfer_money(from_account, to_account, amount):
-       try:
-           db.begin_transaction()
-           debit(from_account, amount)
-           credit(to_account, amount)
-           db.commit()
-       except Exception:
-           db.rollback()
-           raise  # or return None, "Transaction failed"
-   ```
-
-2. **Deep parsing/validation of external data** where the whole call stack is "at the boundary"
-   - Note: We still prefer tuple returns even here for explicitness
-   - But if you're processing user input through 10+ functions, exceptions are pragmatic
-   - In Rust you'd use `Result<T, E>` with `?`, Python doesn't have that
-
-**Key test:** Is the exception propagating from an external boundary? If yes, it might be justified. If no, use tuple returns.
-
-### Design APIs to avoid forcing try/except on callers
-
-Provide explicit variants so callers can choose their control flow:
-
-```python
-# ❌ Bad: Forces callers into try/except for normal "not found" case
-def get_user(user_id: str) -> User:
-    """Raises UserNotFound if not exists."""
-    user = db.query_one(...)
-    if not user:
-        raise UserNotFound(user_id)
-    return user
-
-# Caller must use try/except for normal operation:
-try:
-    user = get_user(user_id)
-except UserNotFound:
-    user = create_user(user_id)
-
-# ✅ Good: Provide explicit options
-def get_user(user_id: str) -> User:
-    """Get user by ID. Raises UserNotFound if not exists."""
-    ...
-
-def get_user_or_none(user_id: str) -> User | None:
-    """Get user by ID, or None if not exists."""
-    ...
-
-def get_user_or_create(user_id: str) -> User:
-    """Get user by ID, creating if necessary."""
-    ...
-
-# Now callers choose clean control flow:
-user = get_user_or_create(user_id)  # No try/except needed
-```
-
-This is Casey Muratori's "redundancy" principle - give users options so they're not forced into awkward patterns.
+- Prefer honest failure to dishonest continuation.
+- Catch errors to translate or recover, not to hide them.
+- Do not use exceptions for routine domain control flow.
+- Do not return fake defaults unless the default is part of the domain model.
+- Do not add fallback code without being able to explain why the fallback is correct.
+- If a failure means your assumptions were wrong, crash and fix the assumptions.

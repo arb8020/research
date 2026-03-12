@@ -3,6 +3,15 @@ from .binary_search import BinarySearchEnvironment
 from .calculator import CalculatorEnvironment
 from .coding import CodingEnvironment, LocalFilesystemEnvironment
 from .compose import ComposedEnvironment, compose
+from .factory import (
+    EnvironmentBuildConfig,
+    EnvironmentFactory,
+    build_environment,
+    get_environment_factories,
+    get_environment_names,
+    infer_environment_name,
+    register_environment_factory,
+)
 from .git_worktree import GitWorktreeEnvironment
 from .handoff import HandoffEnvironment
 from .no_tools import BasicEnvironment, NoToolsEnvironment
@@ -24,6 +33,13 @@ __all__ = [
     "MessageParsingREPLEnvironment",
     "ComposedEnvironment",
     "compose",
+    "EnvironmentBuildConfig",
+    "EnvironmentFactory",
+    "build_environment",
+    "get_environment_factories",
+    "get_environment_names",
+    "infer_environment_name",
+    "register_environment_factory",
     "TerminalBenchEnvironment",
 ]
 

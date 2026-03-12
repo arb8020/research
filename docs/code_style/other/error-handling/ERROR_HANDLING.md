@@ -1,764 +1,333 @@
-# Error Handling: Composable Results Over Defensive Exceptions
+# Error Handling
 
-> **Core Principle:** Keep core logic clean. Don't litter business code with defensive try/except. Use composable Result types for railway-oriented programming and concurrent error collection.
+> **Core Principle:** Prefer honest failure to dishonest continuation.
+
+Choose the error channel based on what kind of failure happened, not based on fear of crashing and not based on habit.
+
+Use:
+- `assert` for programmer errors and broken invariants
+- `raise` for invalid input and unrecoverable preconditions at boundaries
+- `(result, error)` tuple returns for expected operational failures where the caller has a meaningful choice
+
+The goal is to preserve correctness and make control flow obvious.
 
 ---
 
 ## Quick Decision Guide
 
-When you're unsure which error handling pattern to use, follow this flowchart:
+Ask:
 
+1. Is this a bug in our code?
+2. Is this invalid input or an unmet precondition at the boundary?
+3. Is this an operational failure where the caller can retry, fallback, aggregate, or report?
+
+Use:
+- `assert` for `1`
+- `raise` for `2`
+- `(result, error)` for `3`
+
+```text
+Is this a programmer error?
+  YES -> assert
+  NO  ->
+
+Is this boundary rejection or an unrecoverable precondition?
+  YES -> raise
+  NO  ->
+
+Is this an expected operational failure with a meaningful caller choice?
+  YES -> return (result, error)
+  NO  -> raise
 ```
-Is this a programmer error (bug in my code)?
-  YES → assert
-  NO ↓
 
-Is this input validation at a system boundary?
-  YES → raise exception (parse, validate, fail fast)
-  NO ↓
+---
 
-Can the caller meaningfully recover or retry?
-  YES → tuple return (result, error) or Result type
-  NO → raise exception
-```
+## The Three Failure Kinds
 
-### The Three Patterns
+### 1. Programmer Errors -> `assert`
 
-| Pattern | When to Use | Example |
-|---------|-------------|---------|
-| **`assert`** | Invariants that should never fail if code is correct | `assert len(items) > 0` |
-| **`raise Exception`** | Precondition violations, invalid input at boundaries, infrastructure failures | `raise ConfigNotFoundError(path)` |
-| **`(result, error)` tuple** | Operational failures where caller decides how to handle | `return None, "SSH connection failed"` |
-
-### Assertions - Internal Invariants
+This means our code is wrong. An invariant broke. A state that should be impossible happened anyway.
 
 ```python
-# "This should never be false if my code is correct"
 def process_batch(items: list[Item]) -> list[Result]:
-    assert items is not None, "items cannot be None"
-    assert len(items) > 0, "items cannot be empty"
-    # ... proceed knowing invariants hold
+    assert items is not None
+    assert len(items) > 0
+
+    return [process_item(item) for item in items]
 ```
 
-**Use when:** Inside your trusted code boundary, after parsing. If these fire, it's a bug in YOUR code.
+Use `assert` when:
+- A caller violated an internal contract
+- Parsed data should already be trusted
+- A control-flow assumption should never fail if the code is correct
 
-### Exceptions - Boundary Violations
+Do not catch assertion failures just to keep going. If an invariant broke, the process is already in a state you did not design for.
+
+### 2. Boundary Rejection -> `raise`
+
+This means an entry point cannot proceed with the given input or environment.
+
+Examples:
+- Invalid CLI args
+- Missing required config
+- Malformed JSON at parse time
+- Invalid HTTP payload
+- Missing dependency at startup
 
 ```python
-# "You gave me garbage, I refuse to continue"
 def load_config(config_path: Path) -> Config:
     if not config_path.exists():
         raise ConfigNotFoundError(str(config_path))
-    # ...
+
+    text = config_path.read_text()
+    data = json.loads(text)
+    return parse_config(data)
 ```
 
-**Use when:**
-- Invalid input at system boundaries (user input, config files, CLI args)
-- Infrastructure failures (missing files, import errors, CUDA unavailable)
-- Contract violations that prevent ANY meaningful work
+Use exceptions here because:
+- The current layer is rejecting the input
+- There is no meaningful local recovery path
+- The caller should see a clear failure and fix the input or environment
 
-### Tuple Returns - Operational Failures
+This is not “exceptions everywhere”. This is exceptions at the edges.
+
+### 3. Operational Failures -> `(result, error)`
+
+This means the operation may legitimately fail, and the caller has a real decision to make.
+
+Examples:
+- Network timeout
+- Connection refused
+- Remote host unavailable
+- GPU busy
+- Cache miss
+- Trying one provider, then another
 
 ```python
-# "This might fail and that's okay, caller decides what to do"
 async def connect_to_gpu(config: Config) -> tuple[Connection | None, str | None]:
-    # Network issues, GPU busy, timeout - all expected possibilities
-    if connection_failed:
-        return None, "GPU unreachable"
-    return connection, None
+    if not config.host:
+        return None, "host required"
+
+    client, err = await open_connection(config.host)
+    if err:
+        return None, f"connection failed: {err}"
+
+    return client, None
 ```
 
-**Use when:**
-- Network/IO operations (SSH, HTTP, file sync)
-- Operations where retry/fallback makes sense
-- When you want to collect multiple errors before failing
-- When the caller has a meaningful recovery strategy
+Tuple returns are a lightweight Python version of `Result[T, E]`: success and failure are part of the function contract instead of ambient control flow.
 
-### Same Error, Different Contexts
-
-The same "file not found" can warrant different handling:
-
-```python
-# Config file missing at startup → Exception
-# "You misconfigured the system, fix it and retry"
-def load_config(config_path: Path) -> Config:
-    if not config_path.exists():
-        raise ConfigNotFoundError(config_path)
-
-# SSH key missing during deployment → Tuple return
-# "Connection failed, maybe try a different server or key?"
-async def setup_ssh(key_path: Path) -> tuple[SSHClient | None, str | None]:
-    if not key_path.exists():
-        return None, f"SSH key not found: {key_path}"
-```
-
-The difference: config is a **precondition** (should be fixed before running), SSH key is an **operational issue** (might want to try alternatives, report to user, retry with different credentials).
-
-### Tuple Returns vs Result Types
-
-This codebase uses simple tuple returns `(result, error)` rather than full `Result` monads:
-
-```python
-# Simple tuple pattern (what we use)
-state, err = await setup_deployment(config)
-if err:
-    return None, err
-
-# Full Result monad (more ceremony, more power)
-result = setup_deployment(config).and_then(run_tests).and_then(save_results)
-```
-
-**Use simple tuples when:**
-- Linear control flow (not chaining many operations)
-- Team familiarity with Python idioms
-- Explicit `if err` checks are clear enough
-
-**Use full Result types when:**
-- Chaining many failable operations (railway-oriented)
-- Need `.map()`, `.and_then()`, `.unwrap_or()` combinators
-- Concurrent error collection with `asyncio.gather()`
-
-Both are valid. Simple tuples are more Pythonic; Result types are more composable.
+Use tuple returns when:
+- Retry makes sense
+- Fallback makes sense
+- Partial failure is acceptable
+- The caller should decide how to surface the error
 
 ---
 
-## The Problem with Defensive Exception Handling
+## Why We Avoid Defensive Exception Handling
 
-### Defensive Code is Noise
+People are often too afraid of programs erroring. That fear produces code full of broad `try/except`, fake defaults, and fallback branches that exist only to avoid a crash.
 
-```python
-# BAD - exception handling obscures control flow
-def process_pipeline(data: dict) -> ProcessedData | None:
-    try:
-        validated = validate_input(data)
-    except ValidationError as e:
-        log_error(f"Validation failed: {e}")
-        return None
+That style is dangerous because:
+- It hides bugs instead of surfacing them
+- It makes control flow harder to follow
+- It weakens invariants
+- It turns “the program kept running” into fake evidence that it worked
 
-    try:
-        transformed = transform_data(validated)
-    except TransformError as e:
-        log_error(f"Transform failed: {e}")
-        return None
-
-    try:
-        enriched = enrich_data(transformed)
-    except EnrichError as e:
-        log_error(f"Enrich failed: {e}")
-        return None
-
-    try:
-        saved = save_data(enriched)
-    except SaveError as e:
-        log_error(f"Save failed: {e}")
-        return None
-
-    return saved
-```
-
-**Problems:**
-- Control flow buried in exception handling
-- Repetitive error logging
-- Hard to see the happy path
-- Each step needs its own try/except block
-
-### Concurrent Error Collection is Painful
+Bad:
 
 ```python
-# BAD - exceptions don't compose for concurrent work
-async def process_batch(items: list[Item]) -> list[Result]:
-    results = []
-    errors = []
-
-    for item in items:
-        try:
-            result = await process_item(item)
-            results.append(result)
-        except Exception as e:
-            errors.append((item.id, str(e)))
-
-    # Lost concurrency - processing serially
-    # Can't use asyncio.gather because exceptions fail-fast
-
-    if errors:
-        # What now? Raise? Return partial? Log and continue?
-        pass
-
-    return results
+def compute_total(order: Order) -> int:
+    try:
+        return sum(item.price_cents for item in order.items)
+    except Exception:
+        return 0
 ```
 
-**Problems:**
-- Can't run concurrently (exceptions fail-fast)
-- Lost track of which item failed
-- Unclear how to handle partial failures
+This is not recovery. It is lying.
+
+Better:
+
+```python
+def compute_total(order: Order) -> int:
+    assert order.items is not None
+    return sum(item.price_cents for item in order.items)
+```
+
+The style rule is:
+
+> Do not add fallback code just because crashing feels scary. Add fallback code only when the fallback is a real alternative plan that preserves correctness.
 
 ---
 
-## The Solution: Composable Result Types
+## Fallbacks: When They Are Good and When They Are Bad
 
-### Basic Result Type
+### Good fallback
+
+Fallbacks are good when they are part of the intended design.
 
 ```python
-from dataclasses import dataclass
-from typing import Generic, TypeVar, Callable
+def load_config() -> Config:
+    if LOCAL_CONFIG.exists():
+        return parse_config_file(LOCAL_CONFIG)
 
-T = TypeVar('T')
-E = TypeVar('E')
+    if DEFAULT_CONFIG.exists():
+        return parse_config_file(DEFAULT_CONFIG)
 
-@dataclass(frozen=True)
-class Result(Generic[T, E]):
-    """Result type for composable error handling."""
-    _value: T | None = None
-    _error: E | None = None
-
-    @staticmethod
-    def ok(value: T) -> "Result[T, E]":
-        """Create successful result."""
-        return Result(_value=value)
-
-    @staticmethod
-    def err(error: E) -> "Result[T, E]":
-        """Create failed result."""
-        return Result(_error=error)
-
-    @property
-    def is_ok(self) -> bool:
-        return self._error is None
-
-    @property
-    def value(self) -> T:
-        """Get value (raises if error)."""
-        if self._error is not None:
-            raise ValueError(f"Called .value on Err: {self._error}")
-        return self._value
-
-    @property
-    def error(self) -> E:
-        """Get error (raises if ok)."""
-        if self._error is None:
-            raise ValueError("Called .error on Ok")
-        return self._error
-
-    def and_then(self, f: Callable[[T], "Result[T, E]"]) -> "Result[T, E]":
-        """Chain operations (railway-oriented programming).
-
-        If this is Err, skip f and propagate error.
-        If this is Ok, apply f to the value.
-        """
-        if self._error is not None:
-            return Result.err(self._error)
-        return f(self._value)
-
-    def map(self, f: Callable[[T], T]) -> "Result[T, E]":
-        """Transform success value, pass through error."""
-        if self._error is not None:
-            return Result.err(self._error)
-        return Result.ok(f(self._value))
-
-    def unwrap_or(self, default: T) -> T:
-        """Get value or default."""
-        return self._value if self._error is None else default
+    raise ConfigError("No config file found")
 ```
 
-### Clean Pipeline Code
+This is acceptable because:
+- The fallback is intentional
+- The alternatives are explicit
+- The behavior remains correct
+- Failure is still surfaced if no valid plan works
+
+### Bad fallback
 
 ```python
-# GOOD - clean control flow with Result
-def process_pipeline(data: dict) -> Result[ProcessedData, str]:
-    """Railway-oriented: short-circuits on first error."""
-    return (
-        validate_input(data)
-        .and_then(transform_data)
-        .and_then(enrich_data)
-        .and_then(save_data)
-    )
-
-# Individual steps return Result
-def validate_input(data: dict) -> Result[ValidatedData, str]:
-    if "model" not in data:
-        return Result.err("Missing required field: model")
-
-    if data.get("batch_size", 0) <= 0:
-        return Result.err("batch_size must be positive")
-
-    return Result.ok(ValidatedData(**data))
-
-def transform_data(validated: ValidatedData) -> Result[TransformedData, str]:
-    # Just return Result - no try/except needed
-    if not validated.data_path.exists():
-        return Result.err(f"Data not found: {validated.data_path}")
-
-    transformed = apply_transform(validated)
-    return Result.ok(transformed)
-```
-
-**Benefits:**
-- Happy path is clear (the chain of operations)
-- Error handling is explicit (return Result.err)
-- No try/except spam
-- Automatic short-circuiting
-
----
-
-## Concurrent Error Collection
-
-### The Pattern
-
-```python
-async def process_batch_concurrent(
-    items: list[Item]
-) -> tuple[list[ProcessedItem], list[tuple[int, str]]]:
-    """Process all items concurrently, collect all errors."""
-
-    # Run everything concurrently (don't fail-fast)
-    results: list[Result[ProcessedItem, str]] = await asyncio.gather(
-        *[process_item_safe(item) for item in items]
-    )
-
-    # Partition successes and failures
-    successes = [r.value for r in results if r.is_ok]
-    failures = [
-        (i, r.error)
-        for i, r in enumerate(results)
-        if not r.is_ok
-    ]
-
-    return successes, failures
-
-
-async def process_item_safe(item: Item) -> Result[ProcessedItem, str]:
-    """Wrap processing in Result (no exceptions escape)."""
+def load_user_settings(path: Path) -> dict[str, Any]:
     try:
-        result = await process_item(item)
-        return Result.ok(result)
-    except Exception as e:
-        return Result.err(str(e))
+        return json.loads(path.read_text())
+    except Exception:
+        return {}
 ```
 
-**Usage:**
-```python
-successes, failures = await process_batch_concurrent(items)
+This is bad because:
+- `{}` may not be a valid substitute
+- Program meaning changes silently
+- Real bugs get hidden
+- Downstream code now runs on untrusted assumptions
 
-# Handle batch errors together
-if failures:
-    log_batch_failures(failures)
+The distinction:
+- Fallback = choose another valid plan
+- Suppression = ignore an error and pretend things are fine
 
-# Continue with successes
-if successes:
-    save_batch(successes)
-```
-
-**Benefits:**
-- Full concurrency (all items run in parallel)
-- Track which items failed
-- Collect all errors (not just first)
-- Decide how to handle partial success
+Allow the first. Be suspicious of the second.
 
 ---
 
-## Use the `returns` Library
+## Where `try/except` Is Appropriate
 
-Don't reinvent this. Use **[dry-python/returns](https://github.com/dry-python/returns)**:
+Use `try/except` near boundaries where Python or external libraries force it, and then translate into your own error model.
 
-```bash
-pip install returns
-```
-
-### Railway-Oriented Programming
-
-```python
-from returns.result import Result, Success, Failure
-from returns.pipeline import flow
-
-# GOOD - clean pipeline with >> operator
-def process_pipeline(data: dict) -> Result[ProcessedData, str]:
-    return (
-        validate_input(data)
-        >> transform_data
-        >> enrich_data
-        >> save_data
-    )  # Auto short-circuit on first Failure
-
-# Or with flow()
-def process_pipeline(data: dict) -> Result[ProcessedData, str]:
-    return flow(
-        data,
-        validate_input,
-        lambda r: r.bind(transform_data),
-        lambda r: r.bind(enrich_data),
-        lambda r: r.bind(save_data),
-    )
-```
-
-### Wrapping Risky Operations
+Good places:
+- Filesystem I/O
+- Network I/O
+- Wrapping third-party library exceptions
+- Optional imports
+- Cleanup and rollback
+- Parsing external data
 
 ```python
-from returns.result import safe
-
-# Automatically wrap exceptions into Result
-@safe
-def load_config(path: Path) -> Config:
-    """Raises become Failure automatically."""
-    data = json.loads(path.read_text())  # JSONDecodeError → Failure
-    return Config(**data)  # ValidationError → Failure
-
-# Usage
-result = load_config(Path("config.json"))
-match result:
-    case Success(config):
-        print(f"Loaded: {config}")
-    case Failure(error):
-        print(f"Failed: {error}")
-```
-
-### IO Monad for Side Effects
-
-```python
-from returns.io import IO, impure_safe
-
-# Mark impure operations explicitly
-@impure_safe
-def save_to_database(data: ProcessedData) -> None:
-    db.insert(data)  # Side effect
-
-# Compose pure and impure operations
-def process_and_save(data: dict) -> IO[Result[None, str]]:
-    return (
-        validate_input(data)
-        >> transform_data
-        >> save_to_database  # IO[Result[None, Exception]]
-    )
-```
-
----
-
-## Assertions vs Production Invariants
-
-### Critical: The `-O` Flag
-
-**Python's `-O` flag strips all `assert` statements!**
-
-While rarely used in practice, the failure mode is catastrophic: production code silently skips invariant checks.
-
-### The Distinction (Tiger Style)
-
-> "Assertions detect **programmer errors**. Unlike **operating errors**, which are expected and which must be handled, assertion failures are unexpected."
-
-**Programmer errors** (use `assert` - development only):
-- Off-by-one bugs
-- Type mismatches
-- Violated preconditions
-- "This should never happen if code is correct"
-
-**Operating errors** (use `if` + Result/Exception - always enforced):
-- Invalid user input
-- Missing files
-- Network failures
-- Configuration validation
-
-### The Pattern
-
-```python
-# WRONG - assertion for production invariant
-def compute_attention(embeddings, num_heads):
-    assert embeddings.shape[-1] % num_heads == 0  # STRIPPED WITH -O!
-    ...
-
-# RIGHT - distinguish debug vs production
-def compute_attention(embeddings, num_heads):
-    # Production invariant (always enforced)
-    if embeddings.shape[-1] % num_heads != 0:
-        raise ValueError(
-            f"Embedding dim {embeddings.shape[-1]} must be divisible "
-            f"by num_heads {num_heads}"
-        )
-
-    # Debug assertions (development only)
-    assert embeddings.ndim == 2, "Expected 2D embeddings"
-    assert num_heads > 0, "num_heads must be positive"
-
-    # Safe to proceed - invariant is guaranteed
-    head_dim = embeddings.shape[-1] // num_heads
-    ...
-```
-
-### With Result Types
-
-```python
-def compute_attention(
-    embeddings: Tensor,
-    num_heads: int
-) -> Result[Tensor, str]:
-    """Returns Err for invalid inputs."""
-
-    # Production validation (always enforced)
-    if embeddings.shape[-1] % num_heads != 0:
-        return Result.err(
-            f"Embedding dim {embeddings.shape[-1]} must be divisible "
-            f"by num_heads {num_heads}"
-        )
-
-    # Debug assertions (development checks)
-    assert embeddings.ndim == 2
-    assert num_heads > 0
-
-    attention = compute_attention_scores(embeddings, num_heads)
-    return Result.ok(attention)
-```
-
----
-
-## When to Use Exceptions
-
-### When Exceptions Are Actually Better
-
-**Use exceptions instead of Result if:**
-
-1. **Quick scripts/prototypes** - Overhead of Result types not worth it for throwaway code
-2. **Team strongly prefers idiomatic Python** - Social factors matter (will they fight the pattern?)
-3. **Heavy exception-based library integration** - Wrapping every third-party call is tedious
-4. **Simple fail-fast behavior** - If you always want to crash on error, exceptions are fine
-
-**The tradeoff is real.** Result types add:
-- More boilerplate (wrapping/unwrapping)
-- Learning curve for team members
-- Friction with Python ecosystem
-- Verbose compared to try/except
-
-**Choose consciously based on:**
-- **Project longevity** - Throwaway script vs maintained codebase?
-- **Team preferences** - Will they embrace or resist the pattern?
-- **Error handling complexity** - Simple fail-fast vs complex recovery/composition?
-- **Concurrency needs** - Do you need to collect multiple failures?
-
-**Both are valid.** This document shows the Result approach for when you want:
-- Composable error handling
-- Concurrent error collection
-- Explicit control flow in business logic
-
-But don't use Results dogmatically if exceptions fit your context better.
-
-### At System Boundaries
-
-Exceptions are appropriate at **boundaries** where you convert internal Results to external representations:
-
-```python
-# Internal: clean Result-based code
-def process_pipeline(data: dict) -> Result[ProcessedData, str]:
-    return (
-        validate_input(data)
-        >> transform_data
-        >> save_data
-    )
-
-# Boundary: CLI entry point
-def main():
-    result = process_pipeline(load_config())
-
-    match result:
-        case Success(data):
-            print(f"Success: processed {len(data.items)} items")
-            sys.exit(0)
-        case Failure(error):
-            print(f"Error: {error}", file=sys.stderr)
-            sys.exit(1)
-
-# Boundary: API handler
-@app.post("/api/process")
-def api_process(data: dict):
-    result = process_pipeline(data)
-
-    match result:
-        case Success(processed):
-            return {"status": "success", "data": processed}
-        case Failure(error):
-            return {"status": "error", "message": error}, 400
-
-# Boundary: wrapping third-party libs
-from returns.result import safe
-
-@safe
-def call_external_api(endpoint: str) -> dict:
-    """Exceptions from requests → Failure."""
-    response = requests.get(endpoint)  # Can raise
-    response.raise_for_status()  # Can raise
-    return response.json()  # Can raise
-```
-
-### For Third-Party Integration
-
-When working with libraries that raise exceptions:
-
-```python
-# Wrap at the boundary
-def load_model_safe(path: Path) -> Result[Model, str]:
-    """Wrap torch.load exceptions."""
+def read_json(path: Path) -> tuple[dict | None, str | None]:
     try:
-        model = torch.load(path)  # Can raise various exceptions
-        return Result.ok(model)
-    except FileNotFoundError:
-        return Result.err(f"Model not found: {path}")
-    except RuntimeError as e:
-        return Result.err(f"Failed to load model: {e}")
-    except Exception as e:
-        return Result.err(f"Unexpected error: {e}")
-
-# Now use in pipeline
-def setup_training(config: Config) -> Result[TrainingSetup, str]:
-    return (
-        load_model_safe(config.model_path)
-        >> initialize_optimizer
-        >> load_dataset
-    )
-```
-
----
-
-## Matklad's Separation: Handling vs Reporting
-
-From [Error Codes for Control Flow](https://matklad.github.io/2025/11/06/error-codes-for-control-flow.html):
-
-> "Displaying an error message to the user is a different aspect of error handling than branching based on a specific error condition."
-
-### Two Concerns
-
-1. **Error Handling** (branching/recovery) - needs error **type/kind**
-2. **Error Reporting** (diagnostics) - needs error **details/context**
-
-### The Diagnostic Sink Pattern (from Zig)
-
-```python
-@dataclass
-class Diagnostics:
-    """Collect detailed error information for reporting."""
-    errors: list[str] = field(default_factory=list)
-    warnings: list[str] = field(default_factory=list)
-
-    def error(self, msg: str):
-        self.errors.append(msg)
-
-    def warning(self, msg: str):
-        self.warnings.append(msg)
-
-    def has_errors(self) -> bool:
-        return len(self.errors) > 0
-
-
-class ErrorKind(Enum):
-    """Simple error codes for branching."""
-    PARSE_ERROR = "parse_error"
-    VALIDATION_ERROR = "validation_error"
-    IO_ERROR = "io_error"
-
-
-def parse_config(
-    source: str,
-    diag: Diagnostics | None = None
-) -> Result[Config, ErrorKind]:
-    """
-    If caller wants to handle: pass diag=None, switch on ErrorKind
-    If caller wants to report: pass Diagnostics, extract messages
-    """
+        text = path.read_text()
+    except OSError as e:
+        return None, f"read failed: {e}"
 
     try:
-        data = json.loads(source)
+        data = json.loads(text)
     except json.JSONDecodeError as e:
-        if diag:
-            diag.error(f"JSON parse error at line {e.lineno}: {e.msg}")
-        return Result.err(ErrorKind.PARSE_ERROR)
+        return None, f"invalid json: {e}"
 
-    if "model" not in data:
-        if diag:
-            diag.error("Missing required field 'model'")
-            diag.warning("See docs/config.md for schema")
-        return Result.err(ErrorKind.VALIDATION_ERROR)
-
-    return Result.ok(Config(**data))
-
-
-# Usage 1: Handle the error (branch on kind)
-result = parse_config(source, diag=None)
-match result:
-    case Success(config):
-        use_config(config)
-    case Failure(ErrorKind.PARSE_ERROR):
-        try_alternative_format()
-    case Failure(ErrorKind.VALIDATION_ERROR):
-        use_default_config()
-
-# Usage 2: Report the error (show diagnostics)
-diag = Diagnostics()
-result = parse_config(source, diag)
-if not result.is_ok:
-    for error in diag.errors:
-        print(f"Error: {error}", file=sys.stderr)
-    for warning in diag.warnings:
-        print(f"Warning: {warning}", file=sys.stderr)
-    sys.exit(1)
+    return data, None
 ```
+
+The important part is locality:
+- Catch close to the source
+- Translate into a smaller set of meaningful errors
+- Do not smear `try/except` through core business logic
+
+Avoid:
+- `except Exception:` in core logic
+- silent catches
+- catch-and-log-then-continue without a real recovery plan
+
+If you must catch broadly at a boundary, convert immediately and explain why.
 
 ---
 
-## Summary: The Recommendations
+## What Core Logic Should Look Like
 
-### Core Principles
+After parsing and validation, core logic should run on trusted data.
 
-1. **Keep business logic clean** - No defensive try/except spam
-2. **Use Result types internally** - Composable, explicit control flow
-3. **Convert at boundaries** - Results → Exceptions/HTTP/CLI responses
-4. **Distinguish assertions from invariants** - Never use `assert` for production checks
-5. **Separate handling from reporting** - Error kind (for branching) vs diagnostics (for user)
-
-### The Pattern
-
-```python
-# Internal: Result-based pipeline
-def process(data: dict) -> Result[Output, str]:
-    return (
-        validate(data)
-        >> transform
-        >> save
-    )
-
-# Boundary: Convert to appropriate representation
-def main():
-    match process(data):
-        case Success(output): handle_success(output)
-        case Failure(error): handle_error(error)
-```
-
-### Production Invariants
+That means:
+- Assertions for invariants
+- Straight-line control flow
+- Tuple returns for expected operational failure
+- No broad exception swallowing
+- No fake defaults
 
 ```python
-# NEVER use assert for production checks
-if critical_invariant_violated:
-    raise ValueError("Invariant violated")  # Or return Result.err()
+def build_deployment_plan(config: Config) -> tuple[Plan | None, str | None]:
+    assert config.model is not None
+    assert config.region is not None
 
-# Use assert only for development
-assert precondition_from_caller, "Caller should guarantee this"
+    capacity, err = check_capacity(config.region)
+    if err:
+        return None, err
+
+    plan = make_plan(config, capacity)
+    return plan, None
 ```
 
-### Concurrent Error Collection
-
-```python
-# Run all, collect errors
-results = await asyncio.gather(*[process(item) for item in items])
-successes = [r.value for r in results if r.is_ok]
-failures = [(i, r.error) for i, r in enumerate(results) if not r.is_ok]
-```
-
-### Use Libraries
-
-- **[dry-python/returns](https://github.com/dry-python/returns)** - Result types, railway-oriented programming
-- **[result](https://github.com/rustedpy/result)** - Rust-like Result for Python
-- Don't reinvent monads
+The core of the program should not constantly defend itself from states that the boundaries already promised to reject.
 
 ---
 
-## Further Reading
+## Return Conventions
 
-- [Matklad: Error Codes for Control Flow](https://matklad.github.io/2025/11/06/error-codes-for-control-flow.html)
-- [Matklad: Error ABI](https://matklad.github.io/2025/11/09/error-ABI.html)
-- [Tiger Style](https://github.com/tigerbeetle/tigerbeetle/blob/main/docs/TIGER_STYLE.md) - Assertions for programmer errors
-- [Joe Duffy: Error Model](https://joeduffyblog.com/2015/12/19/safe-native-code/#error-model)
-- [Railway Oriented Programming](https://fsharpforfunandprofit.com/rop/) (F# but principles apply)
+For single recoverable errors:
+- Success: `(value, None)`
+- Failure: `(None, error_message)`
+
+For validation that should accumulate multiple issues:
+- Return `list[str]`
+- Empty list means success
+
+```python
+def validate_config(config: dict) -> list[str]:
+    errors = []
+    if "model" not in config:
+        errors.append("Missing 'model'")
+    if "learning_rate" not in config:
+        errors.append("Missing 'learning_rate'")
+    elif config["learning_rate"] <= 0:
+        errors.append("learning_rate must be positive")
+    return errors
+```
+
+Use richer error types if the caller needs structured recovery, but keep the control flow explicit.
+
+---
+
+## Relationship to `Result[T, E]`
+
+A tuple return is the simplest Python version of a result type.
+
+Conceptually:
+
+```python
+Result[T, E] = Ok(T) | Err(E)
+```
+
+A real `Result` type becomes attractive when:
+- You are chaining many failable operations
+- You want helpers like `.map()` or `.and_then()`
+- You need more structured composition than raw tuples provide
+
+For most code in this codebase, tuples are enough. The important thing is not the exact syntax. The important thing is that failure remains explicit and honest.
+
+---
+
+## Rules of Thumb
+
+- Prefer honest failure to dishonest continuation.
+- Catch errors to translate or recover, not to hide them.
+- Do not use exceptions for routine domain control flow.
+- Do not return fake defaults unless the default is part of the domain model.
+- Do not add fallback code without being able to explain why the fallback is correct.
+- If a failure means your assumptions were wrong, crash and fix the assumptions.
+- Keep exception handling at the edges and keep the core logic clean.
