@@ -63,7 +63,7 @@ QWEN_TORCHTITAN_MODAL_DEPS = DepsConfig(
 )
 
 hardware = HardwareConfig(
-    gpu_type="A100-80GB",
+    gpu_type="A100",
     gpu_count=2,
     provider="modal",
     deps=QWEN_TORCHTITAN_MODAL_DEPS,
