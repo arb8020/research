@@ -208,18 +208,93 @@ SCORING_SCRIPT_EOF
             return False
 
 
+def _build_runtime_provenance_snippet() -> str:
+    """Build Python code that prints scorer runtime provenance as JSON."""
+    return """
+def _run_optional_command(command):
+    try:
+        completed = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except Exception:
+        return None
+
+    if completed.returncode != 0:
+        return None
+
+    output = completed.stdout.strip()
+    return output or None
+
+
+def _collect_runtime_provenance():
+    provenance = {
+        "hostname": platform.node(),
+        "machine": platform.machine(),
+        "platform": platform.platform(),
+        "python_version": platform.python_version(),
+        "torch": {
+            "version": torch.__version__,
+            "cuda_version": torch.version.cuda,
+            "hip_version": getattr(torch.version, "hip", None),
+            "cuda_available": torch.cuda.is_available(),
+        },
+    }
+
+    torch_info = provenance["torch"]
+    if torch.cuda.is_available():
+        try:
+            torch_info["device_count"] = torch.cuda.device_count()
+        except Exception:
+            pass
+
+        try:
+            torch_info["device_name"] = torch.cuda.get_device_name(0)
+        except Exception:
+            pass
+
+        try:
+            capability = torch.cuda.get_device_capability(0)
+        except Exception:
+            capability = None
+        if capability is not None:
+            torch_info["device_capability"] = list(capability)
+
+        driver_version = _run_optional_command(
+            ["nvidia-smi", "--query-gpu=driver_version", "--format=csv,noheader"]
+        )
+        if driver_version:
+            torch_info["driver_version"] = driver_version.splitlines()[0]
+
+    return provenance
+
+
+try:
+    print(f"PROVENANCE_RESULT:{json.dumps(_collect_runtime_provenance(), sort_keys=True)}")
+except Exception as e:
+    print(f"PROVENANCE_ERROR:{e}")
+"""
+
+
 def _build_scoring_script_for_remote(ref_code: str, kernel_b64: str) -> str:
     """Build scoring script for remote execution with base64-encoded kernel.
 
     Uses base64 encoding to safely transmit kernel code through SSH heredoc
     without escaping issues from triple quotes in CUDA source strings.
     """
+    runtime_provenance = _build_runtime_provenance_snippet()
     return f'''
 import sys
 import time
 import base64
 import tempfile
 import os
+import json
+import platform
+import subprocess
 
 # Set CUDA_HOME if not set (common Modal/container issue)
 if "CUDA_HOME" not in os.environ:
@@ -261,6 +336,7 @@ if "ModelNew" not in dir():
 # ─────────────────────────────────────────────────────────────────────────────
 
 import torch
+{runtime_provenance}
 
 try:
     model_ref = Model(*get_init_inputs())
@@ -357,10 +433,14 @@ def _build_scoring_script(kernel_code: str, ref_code: str, kernel_file_path: str
         ref_code: Reference code with Model, get_inputs, get_init_inputs
         kernel_file_path: Path to the file containing kernel_code
     """
+    runtime_provenance = _build_runtime_provenance_snippet()
     return f'''
 import sys
 import time
 import os
+import json
+import platform
+import subprocess
 
 # Set CUDA_HOME if not set (common Modal/container issue)
 if "CUDA_HOME" not in os.environ:
@@ -401,6 +481,7 @@ if "ModelNew" not in dir():
 # ─────────────────────────────────────────────────────────────────────────────
 
 import torch
+{runtime_provenance}
 
 try:
     model_ref = Model(*get_init_inputs())
@@ -495,6 +576,7 @@ def _indent(code: str, prefix: str) -> str:
 
 def _parse_scoring_output(stdout: str, stderr: str, returncode: int) -> dict[str, Any]:
     """Parse output from scoring script."""
+    import json
     import re
 
     result = {
@@ -504,7 +586,15 @@ def _parse_scoring_output(stdout: str, stderr: str, returncode: int) -> dict[str
         "reward": 0.0,
         "pass_rate": 0.0,
         "error": None,
+        "runtime_provenance": None,
     }
+
+    provenance_match = re.search(r"PROVENANCE_RESULT:(\{.*\})", stdout)
+    if provenance_match:
+        try:
+            result["runtime_provenance"] = json.loads(provenance_match.group(1))
+        except json.JSONDecodeError:
+            logger.warning("Failed to parse runtime provenance from scoring output")
 
     # Check for compile success
     if "COMPILE_SUCCESS" in stdout:

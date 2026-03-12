@@ -29,7 +29,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from .dtypes import EvalConfig
+    from .core import EvalConfig
 
 logger = logging.getLogger(__name__)
 
@@ -170,6 +170,7 @@ def fingerprint_eval(
     config: EvalConfig,
     tools: list[str] | None = None,
     dataset_path: Path | None = None,
+    extra_config: dict[str, Any] | None = None,
     allow_dirty: bool = False,
 ) -> dict[str, Any]:
     """Compute fingerprint for an evaluation run.
@@ -188,6 +189,7 @@ def fingerprint_eval(
         - handle_stop name (if present)
         - max_samples
         - dataset checksum (if path provided)
+        - extra_config (if provided)
 
     Raises:
         RuntimeError: If git has uncommitted changes and allow_dirty=False
@@ -222,6 +224,10 @@ def fingerprint_eval(
     if dataset_path:
         cfg["dataset_checksum"] = file_checksum(dataset_path)
         cfg["dataset_path"] = str(dataset_path)
+
+    # Eval-specific structured config (preferred over relying on closure names)
+    if extra_config:
+        cfg["extra_config"] = extra_config
 
     # Compute hash
     config_hash = hash_str(canonical_json(cfg))

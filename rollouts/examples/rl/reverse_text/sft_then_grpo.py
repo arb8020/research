@@ -183,7 +183,7 @@ def run_grpo(config: PipelineConfig, sft_checkpoint: Path | str) -> dict[str, An
     from datasets import load_dataset
 
     from rollouts._logging import setup_logging
-    from rollouts.dtypes import Metric, Score
+    from rollouts.core import Metric, Score
     from rollouts.environments.no_tools import BasicEnvironment
     from rollouts.training.grpo import GRPOConfig, grpo_train
 

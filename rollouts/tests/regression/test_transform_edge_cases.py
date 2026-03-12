@@ -8,13 +8,9 @@ Separated from main integration tests to keep core tests focused.
 """
 
 import pytest
-import trio
 
-from rollouts import (
-    Message,
-    ToolCallContent,
-)
-from rollouts.transform_messages import transform_messages
+from rollouts.agents.transform_messages import transform_messages
+from rollouts.core import Message, ToolCallContent
 
 
 @pytest.mark.trio
@@ -68,21 +64,3 @@ async def test_last_message_tool_calls_preserved() -> None:
 async def test_regression_transform_edge_cases() -> None:
     """Run all regression tests for transformation edge cases."""
     await test_last_message_tool_calls_preserved()
-
-
-if __name__ == "__main__":
-
-    async def main() -> None:
-        print("\n" + "=" * 70)
-        print("REGRESSION TEST: Message Transformation Edge Cases")
-        print("=" * 70)
-        try:
-            await test_last_message_tool_calls_preserved()
-        except Exception as e:
-            print(f"❌ Regression test failed: {e}")
-            import traceback
-
-            traceback.print_exc()
-        print("\n" + "=" * 70 + "\n")
-
-    trio.run(main)

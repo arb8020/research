@@ -31,7 +31,7 @@ import re
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from rollouts.dtypes import Score
+    from rollouts.core import Score
     from rollouts.gpu_sandbox import SandboxPool
     from rollouts.training.types import Sample
 
@@ -159,7 +159,7 @@ def kernelbench_score_fn(sample: Sample) -> Score:
     Returns:
         Score with metrics: compiled, correct, speedup, reward
     """
-    from rollouts.dtypes import Metric, Score
+    from rollouts.core import Metric, Score
 
     # Get response and problem info
     response = sample.response if hasattr(sample, "response") else ""
@@ -231,7 +231,7 @@ async def score_batch_async(
     Returns:
         List of Score objects (same order as input)
     """
-    from rollouts.dtypes import Metric, Score
+    from rollouts.core import Metric, Score
 
     pool = get_sandbox_pool()
 

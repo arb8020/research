@@ -11,8 +11,8 @@ import sys
 
 import trio
 
-from rollouts.dtypes import Endpoint
-from rollouts.evaluation import evaluate
+from rollouts.core import Endpoint
+from rollouts.eval import evaluate
 
 from .analysis import aggregate_results, save_results_csv
 from .config import ExperimentConfig

@@ -1,7 +1,7 @@
 from ..dtypes import Environment
 from .binary_search import BinarySearchEnvironment
 from .calculator import CalculatorEnvironment
-from .coding import LocalFilesystemEnvironment
+from .coding import CodingEnvironment, LocalFilesystemEnvironment
 from .compose import ComposedEnvironment, compose
 from .git_worktree import GitWorktreeEnvironment
 from .handoff import HandoffEnvironment
@@ -14,6 +14,7 @@ __all__ = [
     "BinarySearchEnvironment",
     "BasicEnvironment",
     "NoToolsEnvironment",
+    "CodingEnvironment",
     "LocalFilesystemEnvironment",
     "GitWorktreeEnvironment",
     "HandoffEnvironment",

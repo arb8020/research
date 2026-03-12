@@ -89,6 +89,24 @@ packages = ["rollouts"]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+[tool.pytest.ini_options]
+testpaths = [
+    "tests/unit",
+    "tests/integration",
+    "tests/regression",
+]
+markers = [
+    "unit: small focused tests over stable pure or near-pure cut points",
+    "integration: default subsystem-boundary tests",
+    "regression: bug repros that should stay fixed",
+    "live: tests that consume external APIs, CLIs, GPUs, or other costly resources",
+    "slow: long-running tests",
+    "gpu: tests that require GPU hardware or provisioning",
+]
+addopts = [
+    "--strict-markers",
+]
+
 [tool.uv]
 # Override SGLang's transformers==4.57.1 pin which has a bug with
 # list_repo_templates 404 errors. transformers 5.x has the fix.

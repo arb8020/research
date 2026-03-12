@@ -44,7 +44,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from rollouts.dtypes import Environment
+    from rollouts.core import Environment
 
 logger = logging.getLogger(__name__)
 
@@ -86,10 +86,10 @@ async def run_with_api(
     output_config: Any,
 ) -> dict[str, Any]:
     """Run eval against an API endpoint."""
-    from rollouts.dtypes import Endpoint, EvalConfig
-    from rollouts.dtypes import RunConfig as AgentRunConfig
-    from rollouts.evaluation import evaluate
-    from rollouts.handlers import handle_stop_max_turns
+    from rollouts.agents import RunConfig as AgentRunConfig
+    from rollouts.agents.handlers import handle_stop_max_turns
+    from rollouts.core import Endpoint, EvalConfig
+    from rollouts.eval import evaluate
 
     # Build endpoint
     api_key = endpoint_config.api_key or get_api_key(endpoint_config.provider)
@@ -146,7 +146,7 @@ async def run_with_api(
     async def silent_on_chunk(_: object) -> None:
         pass
 
-    from rollouts.dtypes import AgentState, StopReason
+    from rollouts.agents import AgentState, StopReason
 
     async def stop_on_no_tool(state: AgentState, _run_config: AgentRunConfig) -> AgentState:
         return replace(state, stop=StopReason.TASK_COMPLETED)

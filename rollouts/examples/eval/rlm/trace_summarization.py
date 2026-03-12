@@ -35,15 +35,9 @@ from typing import Any
 
 import trio
 
-from rollouts.agents import handle_stop_max_turns, run_agent
-from rollouts.dtypes import (
-    Actor,
-    AgentState,
-    Message,
-    RunConfig,
-    ToolCallContent,
-    Trajectory,
-)
+from rollouts.agents import Actor, AgentState, RunConfig, handle_stop_max_turns, run_agent
+from rollouts.core import Message, Trajectory
+from rollouts.dtypes import ToolCallContent
 
 from .base_config import (
     DatasetConfig,

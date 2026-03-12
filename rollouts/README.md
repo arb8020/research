@@ -66,6 +66,8 @@ python check_auth.py
 
 The coding environment provides: `read`, `write`, `edit`, `bash`
 
+For custom environments, see [docs/creating_environment.md](docs/creating_environment.md).
+
 ```bash
 # Specify working directory
 rollouts --env coding --cwd /path/to/project

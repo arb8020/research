@@ -15,7 +15,7 @@ Usage:
 
 from pathlib import Path
 
-from rollouts.dtypes import Endpoint
+from rollouts.core import Endpoint
 
 # Endpoint configuration - local SGLang server
 endpoint = Endpoint(

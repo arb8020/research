@@ -3,6 +3,9 @@ import argparse
 import trio
 
 from ..agents import (
+    Actor,
+    AgentState,
+    RunConfig,
     confirm_tool_with_feedback,
     handle_stop_max_turns,
     handle_tool_error,
@@ -11,13 +14,10 @@ from ..agents import (
     run_agent,
     stdout_handler,
 )
-from ..dtypes import (
-    Actor,
-    AgentState,
+from ..core import (
     Endpoint,
     Environment,
     Message,
-    RunConfig,
     StopReason,
     Tool,
     ToolCall,

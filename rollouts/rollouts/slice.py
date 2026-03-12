@@ -31,7 +31,7 @@ from typing import TYPE_CHECKING, Literal
 if TYPE_CHECKING:
     from .store import SessionStore
 
-from .dtypes import AgentSession, Endpoint, Message
+from .core import Endpoint, Message, SessionHandle, SessionStatus, Trajectory, TrajectorySession
 
 
 @dataclass
@@ -384,8 +384,10 @@ async def summarize_messages(
     Returns:
         Summary text
     """
-    from .dtypes import Actor, StreamEvent, TextDelta, Trajectory
-    from .dtypes import Message as Msg
+    from .agents import Actor
+    from .core import Message as Msg
+    from .core import Trajectory
+    from .dtypes import StreamEvent, TextDelta
     from .providers import get_provider_function_by_format
 
     # Format messages for summarization
@@ -435,7 +437,7 @@ Summary:"""
 
 
 async def apply_slice(
-    session: AgentSession,
+    session: SessionHandle,
     segments: list[SliceSegment],
     endpoint: Endpoint | None = None,
     summarize_goal: str | None = None,
@@ -511,12 +513,12 @@ async def apply_slice(
 
 
 async def slice_session(
-    session: AgentSession,
+    session: SessionHandle,
     spec: str,
     endpoint: Endpoint,
     session_store: SessionStore,
     summarize_goal: str | None = None,
-) -> AgentSession:
+) -> SessionHandle:
     """Create new session from sliced/summarized messages.
 
     Args:
@@ -539,18 +541,26 @@ async def slice_session(
     if not new_messages:
         raise ValueError("Slice resulted in empty message list")
 
-    # Create child session
-    child = await session_store.create(
-        endpoint=session.endpoint,
-        environment=session.environment,
-        parent_id=session.session_id,
-        branch_point=len(new_messages),
-        tags={"sliced": "true", "slice_spec": spec},
+    source_trajectory = session.to_trajectory()
+    child_trajectory = Trajectory(
+        messages=new_messages,
+        metadata=dict(source_trajectory.metadata),
+        annotations=source_trajectory.annotations,
+        environment=source_trajectory.environment,
+        session=TrajectorySession(
+            session_id=None,
+            parent_id=session.session_id,
+            branch_point=len(new_messages),
+            endpoint=session.endpoint,
+            status=SessionStatus.PENDING.value,
+            tags={"sliced": "true", "slice_spec": spec},
+            vcs=session.vcs,
+        ),
     )
 
-    # Save messages
-    for msg in new_messages:
-        await session_store.append_message(child.session_id, msg)
+    child, err = await session_store.save_trajectory(child_trajectory)
+    if err or child is None:
+        raise ValueError(err or "failed to save sliced trajectory")
 
     return child
 
@@ -559,12 +569,12 @@ async def slice_session(
 
 
 async def run_slice_command(
-    session: AgentSession,
+    session: SessionHandle,
     spec: str,
     endpoint: Endpoint,
     session_store: SessionStore,
     summarize_goal: str | None = None,
-) -> tuple[AgentSession | None, str | None]:
+) -> tuple[SessionHandle | None, str | None]:
     """Run --slice command.
 
     Args:

@@ -12,15 +12,15 @@ from openai import AsyncOpenAI
 from openai.types import CompletionUsage
 from openai.types.chat import ChatCompletionMessageParam
 
+from ..agents import Actor
+from ..core import Message, Tool, ToolCall, Usage
 from ..dtypes import (
-    Actor,
     ChatCompletion,
     Choice,
     FirstToken,
     ImageContent,
     Logprob,
     Logprobs,
-    Message,
     StreamDone,
     StreamEvent,
     StreamStart,
@@ -32,14 +32,11 @@ from ..dtypes import (
     ThinkingDelta,
     ThinkingEnd,
     ThinkingStart,
-    Tool,
-    ToolCall,
     ToolCallContent,
     ToolCallDelta,
     ToolCallEnd,
     ToolCallError,
     ToolCallStart,
-    Usage,
     parse_streaming_json,
 )
 from .base import _prepare_messages_for_llm, calculate_cost_from_usage, sanitize_request_for_logging

@@ -8,7 +8,7 @@ Run:
     python -m rollouts.eval.run --config examples/eval/reverse_text/smoke.py --limit 3
 """
 
-from rollouts.dtypes import Message, Metric, Score
+from rollouts.core import Message, Metric, Score
 from rollouts.eval import EndpointConfig, EvalOutputConfig, EvalRunConfig
 from rollouts.training.types import Sample
 

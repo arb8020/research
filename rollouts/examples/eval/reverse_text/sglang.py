@@ -14,7 +14,7 @@ With provisioning (not yet implemented):
     python -m rollouts.eval.run --config examples/eval/reverse_text/sglang.py --provision --hardware-provider runpod
 """
 
-from rollouts.dtypes import Message, Metric, Score
+from rollouts.core import Message, Metric, Score
 from rollouts.eval import (
     EndpointConfig,
     EvalOutputConfig,

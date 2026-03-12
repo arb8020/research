@@ -20,7 +20,8 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
-from ..dtypes import Endpoint, EvalConfig, Message, PrepareMessagesFn, RunConfig
+from ..agents import RunConfig
+from ..core import Endpoint, EvalConfig, Message, PrepareMessagesFn
 
 logger = logging.getLogger(__name__)
 

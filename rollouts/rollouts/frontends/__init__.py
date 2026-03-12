@@ -22,6 +22,7 @@ Usage:
     states = await run_interactive(trajectory, endpoint, frontend=frontend)
 """
 
+from .headless_json import HeadlessJsonFrontend
 from .json_frontend import JsonFrontend
 from .minimal import MinimalFrontend
 from .none import NoneFrontend
@@ -29,6 +30,7 @@ from .protocol import (
     Frontend,
     FrontendWithStatus,
     InputExit,
+    InputInterrupt,
     InputResult,
     SlashCommand,
     UserMessage,
@@ -45,11 +47,13 @@ __all__ = [
     "UserMessage",
     "SlashCommand",
     "InputExit",
+    "InputInterrupt",
     # Runner
     "InteractiveRunner",
     "RunnerConfig",
     "run_interactive",
     # Implementations
+    "HeadlessJsonFrontend",
     "JsonFrontend",
     "MinimalFrontend",
     "NoneFrontend",

@@ -15,11 +15,29 @@ from .configs import (
     HardwareConfig,
     InferenceServerConfig,
 )
+from .lm_eval import run_lm_eval
+from .native import (
+    EvalReport,
+    EvalRuntime,
+    evaluate,
+    evaluate_sample,
+    group_by,
+    simple_evaluate,
+    summarize,
+)
 
 __all__ = [
     "EndpointConfig",
+    "EvalReport",
     "EvalOutputConfig",
+    "EvalRuntime",
     "EvalRunConfig",
     "HardwareConfig",
     "InferenceServerConfig",
+    "evaluate",
+    "evaluate_sample",
+    "group_by",
+    "run_lm_eval",
+    "simple_evaluate",
+    "summarize",
 ]

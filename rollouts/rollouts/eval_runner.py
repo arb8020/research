@@ -39,7 +39,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from .dtypes import Environment, Message, Score
+    from .core import Environment, Message, Score
 
 logger = logging.getLogger(__name__)
 
@@ -139,10 +139,10 @@ def run_eval_from_spec(  # noqa: PLR0913
     """
     import trio
 
+    from .agents import RunConfig as AgentRunConfig
     from .config.tiers import EndpointConfig, OutputConfig, RunConfig
-    from .dtypes import Endpoint, EvalConfig
-    from .dtypes import RunConfig as AgentRunConfig
-    from .evaluation import evaluate
+    from .core import Endpoint, EvalConfig
+    from .eval import evaluate
 
     # ── Resolve configs with defaults ──
     endpoint_cfg = endpoint or EndpointConfig()
@@ -221,8 +221,8 @@ def run_eval_from_spec(  # noqa: PLR0913
             environment = spec.make_environment()  # type: ignore[missing-argument]  # nullary when not per_sample
 
     # ── Stop handlers ──
-    from .dtypes import AgentState, StopReason
-    from .handlers import handle_stop_max_turns
+    from .agents import AgentState, StopReason
+    from .agents.handlers import handle_stop_max_turns
 
     async def stop_on_no_tool(state: AgentState, run_config: AgentRunConfig) -> AgentState:
         return replace(state, stop=StopReason.TASK_COMPLETED)

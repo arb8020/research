@@ -23,7 +23,7 @@ from __future__ import annotations
 import re
 from typing import Any, Literal
 
-from rollouts.dtypes import Metric, Score
+from rollouts.core import Metric, Score
 from rollouts.environments.no_tools import BasicEnvironment
 from rollouts.synthetic import RETRY_TOKEN as _RETRY_TOKEN
 from rollouts.synthetic import build_igsm_loader

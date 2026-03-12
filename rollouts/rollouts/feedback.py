@@ -14,7 +14,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from .dtypes import AgentState, Endpoint
+    from .agents import AgentState
+    from .core import Endpoint
 
 
 @dataclass
@@ -65,7 +66,8 @@ Reply with just "yes" or "no"."""
         thinking=None,  # No thinking for quick check
     )
 
-    from .dtypes import Actor, Message, Trajectory
+    from .agents import Actor
+    from .core import Message, Trajectory
 
     check_trajectory = Trajectory(
         messages=[
@@ -131,7 +133,8 @@ HARNESS_FEEDBACK: <feedback>"""
         thinking=None,
     )
 
-    from .dtypes import Actor, Message, Trajectory
+    from .agents import Actor
+    from .core import Message, Trajectory
 
     survey_trajectory = Trajectory(
         messages=[

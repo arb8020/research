@@ -452,6 +452,15 @@ class TUIFrontend:
             self._renderer.render_history(messages, skip_system=False)
             self._is_first_user_message = False
 
+    def replace_history(self, messages: list) -> None:
+        """Replace visible chat history after a session/context switch."""
+        if self._renderer:
+            self._renderer.clear_chat()
+            self._renderer.render_history(messages, skip_system=False)
+            self._is_first_user_message = False
+        if self._tui:
+            self._tui.request_render()
+
     def add_system_message(self, text: str) -> None:
         """Add a system message to the chat.
 

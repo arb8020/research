@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from rollouts.dtypes import Endpoint
+from rollouts.core import Endpoint
 
 from .eval_swe_grep import SWEGrepConfig
 

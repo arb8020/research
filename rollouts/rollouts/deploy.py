@@ -29,7 +29,7 @@ from typing import TYPE_CHECKING, Any
 import trio
 
 if TYPE_CHECKING:
-    from .dtypes import Endpoint
+    from .core import Endpoint
 
 logger = logging.getLogger(__name__)
 

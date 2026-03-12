@@ -149,7 +149,7 @@ def kernelbench_score_fn(sample: Sample) -> Score:
 #### D. Training Config (`base_config.py`)
 
 ```python
-from rollouts.dtypes import Metric, Score
+from rollouts.core import Metric, Score
 from rollouts.environments.no_tools import BasicEnvironment
 from rollouts.training.grpo import GRPOConfig, grpo_train
 

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import asyncio
 
-from ...dtypes import RunConfig
+from ...agents import RunConfig
 from ...frontends.tui import TUI, AgentRenderer, ProcessTerminal
 
 

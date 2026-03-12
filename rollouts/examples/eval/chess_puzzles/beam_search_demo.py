@@ -12,11 +12,12 @@ Requires:
 
 import trio
 
+from rollouts.agents import Actor, AgentState, RunConfig
+from rollouts.core import Endpoint, Message, Trajectory
 from rollouts.datasets.lichess_puzzles import (
     get_puzzle_fen_after_opponent_move,
     load_lichess_puzzles,
 )
-from rollouts.dtypes import Actor, AgentState, Endpoint, Message, RunConfig, Trajectory
 from rollouts.environments.chess_puzzle import ChessPuzzleEnvironment
 from rollouts.search import (
     get_best_terminal,

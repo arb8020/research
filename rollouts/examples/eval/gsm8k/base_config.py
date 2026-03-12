@@ -24,7 +24,7 @@ from typing import TYPE_CHECKING, Any
 import trio
 
 if TYPE_CHECKING:
-    from rollouts.dtypes import Endpoint, Score
+    from rollouts.core import Endpoint, Score
     from rollouts.training.datasets.data_buffer import DataBuffer
     from rollouts.training.types import Sample
 
@@ -341,7 +341,7 @@ def gsm8k_score_fn(sample: Any) -> Score:
     Works with Sample type from rollouts.training.types.
     Extracts answer from \\boxed{} and compares to ground truth.
     """
-    from rollouts.dtypes import Metric, Score
+    from rollouts.core import Metric, Score
 
     ground_truth = sample.metadata.get("answer")
     if ground_truth is None:
@@ -391,7 +391,7 @@ def gsm8k_tool_score_fn(sample: Any) -> Score:
     """
     import json
 
-    from rollouts.dtypes import Metric, Score
+    from rollouts.core import Metric, Score
 
     trajectory = sample.trajectory
     if trajectory is None:
@@ -490,7 +490,7 @@ def gsm8k_tool_score_fn(sample: Any) -> Score:
 
 def _get_endpoint(config: GSM8KConfig) -> Endpoint:
     """Create Endpoint from config, loading API key from env if needed."""
-    from rollouts.dtypes import Endpoint
+    from rollouts.core import Endpoint
 
     api_key = config.endpoint.api_key
     if not api_key:
@@ -514,7 +514,7 @@ def _single_turn_score_fn(sample: Sample) -> Score:
 
     Sample has trajectory via sample.trajectory.
     """
-    from rollouts.dtypes import Metric, Score
+    from rollouts.core import Metric, Score
 
     trajectory = sample.trajectory
     if trajectory is None:
@@ -566,11 +566,11 @@ def _single_turn_score_fn(sample: Sample) -> Score:
 
 
 async def _eval_single_turn(config: GSM8KConfig) -> dict[str, Any]:
-    """Single-turn evaluation using rollouts.evaluation framework."""
+    """Single-turn evaluation using rollouts.eval."""
     from rollouts._logging import setup_logging
-    from rollouts.agents import handle_stop_max_turns
-    from rollouts.dtypes import EvalConfig, Message, RunConfig
-    from rollouts.evaluation import evaluate
+    from rollouts.agents import RunConfig, handle_stop_max_turns
+    from rollouts.core import EvalConfig, Message
+    from rollouts.eval import evaluate
 
     log_level = "INFO" if config.run.verbose else "WARNING"
     setup_logging(level=log_level, use_color=True)
@@ -635,10 +635,10 @@ async def _eval_single_turn(config: GSM8KConfig) -> dict[str, Any]:
 async def _eval_multi_turn(config: GSM8KConfig) -> dict[str, Any]:
     """Multi-turn evaluation: model uses calculator tools."""
     from rollouts._logging import setup_logging
-    from rollouts.agents import handle_stop_max_turns
-    from rollouts.dtypes import EvalConfig, Message, RunConfig
+    from rollouts.agents import RunConfig, handle_stop_max_turns
+    from rollouts.core import EvalConfig, Message
     from rollouts.environments.calculator import CalculatorEnvironment
-    from rollouts.evaluation import evaluate
+    from rollouts.eval import evaluate
 
     log_level = "INFO" if config.run.verbose else "WARNING"
     setup_logging(level=log_level, use_color=True)

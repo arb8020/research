@@ -17,7 +17,7 @@ from functools import partial
 
 import trio
 
-from rollouts.dtypes import Endpoint
+from rollouts.core import Endpoint
 from rollouts.prompt_optimization import (
     GEPAConfig,
     TerminalBenchConfig,

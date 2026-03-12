@@ -36,14 +36,8 @@ from typing import Any
 
 import trio
 
-from rollouts.agents import handle_stop_max_turns, run_agent
-from rollouts.dtypes import (
-    Actor,
-    AgentState,
-    Message,
-    RunConfig,
-    Trajectory,
-)
+from rollouts.agents import Actor, AgentState, RunConfig, handle_stop_max_turns, run_agent
+from rollouts.core import Message, Trajectory
 
 from .base_config import (
     RLM_TOOL_SYSTEM_PROMPT,

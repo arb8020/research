@@ -19,7 +19,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from rollouts.dtypes import Metric, Score
+from rollouts.core import Metric, Score
 from rollouts.environments.kernelbench_multi import KernelBenchMultiTurnEnvironment
 from rollouts.training.grpo import GRPOConfig, grpo_train
 

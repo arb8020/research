@@ -27,7 +27,8 @@ from dacite import from_dict
 from openai import AsyncOpenAI
 
 from .._retry import async_retry
-from ..dtypes import Actor, ChatCompletion, StreamEvent, ToolCallError
+from ..agents import Actor
+from ..dtypes import ChatCompletion, StreamEvent, ToolCallError
 from .base import (
     NonRetryableError,
     VLLMErrorType,

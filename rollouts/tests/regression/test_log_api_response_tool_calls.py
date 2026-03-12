@@ -12,14 +12,14 @@ Cut point: log_api_response() must handle real ChatCompletion objects.
 Run: python tests/regression/test_log_api_response_tool_calls.py
 """
 
-from rollouts.dtypes import (
+from rollouts.core import (
     ChatCompletion,
     Choice,
     Message,
     TextContent,
-    ToolCallContent,
     Usage,
 )
+from rollouts.dtypes import ToolCallContent
 from rollouts.providers.base import log_api_response
 
 
@@ -81,13 +81,3 @@ def test_without_tool_calls() -> None:
         stop_reason="stop",
         has_tool_calls=bool(completion.choices[0].message.get_tool_calls()),
     )
-
-
-if __name__ == "__main__":
-    test_with_tool_calls()
-    print("✓ test_with_tool_calls")
-
-    test_without_tool_calls()
-    print("✓ test_without_tool_calls")
-
-    print("\nAll tests passed!")

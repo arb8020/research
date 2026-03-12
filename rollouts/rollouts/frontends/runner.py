@@ -35,20 +35,21 @@ from typing import TYPE_CHECKING
 
 import trio
 
-from ..agents import Actor, AgentState, run_agent
-from ..dtypes import (
+from ..agents import Actor, AgentState, RunConfig, run_agent
+from ..agents.session_runtime import ensure_persisted_session
+from ..core import (
     Endpoint,
     Environment,
-    EnvironmentConfig,
     Message,
-    RunConfig,
+    SessionHandle,
     StopReason,
-    StreamEvent,
     ToolCall,
     ToolConfirmResult,
     ToolResult,
     Trajectory,
 )
+from ..dtypes import StreamEvent
+from .tui.slash_commands import SlashCommandResult, handle_slash_command
 
 # Type alias for run functions (run_agent, run_claude, run_codex)
 RunFn = Callable[[AgentState, RunConfig], Awaitable[list[AgentState]]]
@@ -88,7 +89,7 @@ class RunnerConfig:
 
     # Behavior flags
     confirm_tools: bool = False
-    initial_prompt: str | None = None
+    bootstrap_input: str | None = None
     single_turn: bool = False
     detached: bool = False
 
@@ -99,6 +100,15 @@ class RunnerConfig:
     # Backend function (default: run_agent from SDK)
     # Can be swapped to run_claude, run_codex for external drivers
     run_fn: RunFn | None = None  # None means use run_agent
+
+
+@dataclass(frozen=True)
+class _SlashHandlingResult:
+    """Normalized result for slash command handling in the runner."""
+
+    state: AgentState
+    handled: bool
+    expanded_text: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -211,13 +221,14 @@ class InteractiveRunner:
         self.parent_session_id = cfg.parent_session_id
         self.branch_point = cfg.branch_point
         self.confirm_tools = cfg.confirm_tools
-        self.initial_prompt = cfg.initial_prompt
+        self.bootstrap_input = cfg.bootstrap_input
         self.single_turn = cfg.single_turn
         self.detached = cfg.detached
         self.cwd = cfg.cwd or Path.cwd()
         self.enable_swap = cfg.enable_swap
         self.run_fn: RunFn = cfg.run_fn or run_agent
 
+        self.session_handle: SessionHandle | None = None
         self._cancel_scope: trio.CancelScope | None = None
 
     async def run(self) -> list[AgentState]:
@@ -260,7 +271,7 @@ class InteractiveRunner:
                     if current_state is None:
                         try:
                             current_state = await self._create_initial_state()
-                            self.initial_prompt = None
+                            self.bootstrap_input = None
                         except _SwapBackend as e:
                             swap_request = e
                             nursery.cancel_scope.cancel()
@@ -331,9 +342,14 @@ class InteractiveRunner:
         Returns None if user exits or interrupts before providing input.
         Raises _SwapBackend if user issues /swap command.
         """
-        first_input = self.initial_prompt
+        first_input = self.bootstrap_input
 
-        # Check if initial_prompt is a slash command
+        if first_input is None:
+            queued_message = await self._consume_queued_message()
+            if queued_message is not None:
+                first_input = queued_message
+
+        # Check if bootstrap input is a slash command
         if first_input and first_input.startswith("/"):
             space_idx = first_input.find(" ")
             if space_idx == -1:
@@ -348,11 +364,11 @@ class InteractiveRunner:
 
                 from ..drivers.run_claude import run_claude
 
-                # Clear initial_prompt before raising to prevent infinite loop
-                self.initial_prompt = None
+                # Clear bootstrap input before raising to prevent infinite loop
+                self.bootstrap_input = None
                 new_run_fn = partial(run_claude, model="sonnet", cwd=self.cwd)
                 raise _SwapBackend(target="claude", new_run_fn=new_run_fn)
-            # Other slash commands don't make sense as initial prompt
+            # Other slash commands don't make sense as bootstrap input
             # (no session context yet), so pass them through to LLM
 
         if not first_input:
@@ -403,6 +419,40 @@ class InteractiveRunner:
             confirm_tools=self.confirm_tools,
         )
 
+    async def _consume_queued_message(self) -> str | None:
+        """Consume one queued user message from the active session handle, if any."""
+        if not (self.session_store and self.session_id):
+            return None
+
+        session, err = await self.session_store.get(self.session_id)
+        if err is not None or session is None:
+            return None
+
+        self.session_handle = session
+        if not session.queued_messages:
+            return None
+
+        queued, err = await self.session_store.consume_queued_message(self.session_id)
+        if err is not None:
+            raise RuntimeError(err)
+        if queued is None:
+            return None
+
+        self.session_handle = SessionHandle.from_trajectory(
+            session.to_trajectory(),
+            message_count=session.message_count,
+            pending_input=session.pending_input,
+            queued_messages=session.queued_messages[1:],
+        )
+
+        content = queued.content
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            text_parts = [block.text for block in content if getattr(block, "type", None) == "text"]
+            return "\n".join(text_parts)
+        return str(content) if content is not None else ""
+
     async def _ensure_session(self, state: AgentState) -> AgentState:
         """Create session if needed, return state with session_id set.
 
@@ -414,24 +464,27 @@ class InteractiveRunner:
             return state
 
         if state.session_id:
-            # Already have a session (resuming)
             self.session_id = state.session_id
-            return state
 
-        # Create new session
-        session = await self.session_store.create(
-            endpoint=state.actor.endpoint,
-            environment=EnvironmentConfig(type="none"),  # Simplified for drivers
-            parent_id=state.parent_session_id,
-            branch_point=state.branch_point,
+        ensured_state = await ensure_persisted_session(state, self.session_store)
+        self.session_id = ensured_state.session_id
+        persisted_trajectory = dc_replace(
+            ensured_state.actor.trajectory,
+            session=dc_replace(
+                ensured_state.actor.trajectory.session,
+                session_id=ensured_state.session_id,
+                endpoint=ensured_state.actor.endpoint,
+            ),
         )
-        self.session_id = session.session_id
-
-        # Persist initial messages
-        for msg in state.actor.trajectory.messages:
-            await self.session_store.append_message(session.session_id, msg)
-
-        return dc_replace(state, session_id=session.session_id)
+        self.trajectory = persisted_trajectory
+        self.session_handle = SessionHandle.from_trajectory(
+            persisted_trajectory,
+            message_count=len(persisted_trajectory.messages),
+        )
+        return dc_replace(
+            ensured_state,
+            actor=dc_replace(ensured_state.actor, trajectory=persisted_trajectory),
+        )
 
     def _create_run_config(self) -> RunConfig:
         """Create RunConfig with all callbacks."""
@@ -509,12 +562,11 @@ class InteractiveRunner:
                     return dc_replace(state, stop=StopReason.INTERRUPTED)
 
                 case SlashCommand(name=name, args=args):
-                    # Handle slash command - runner has access to session/endpoint/etc
-                    handled = await self._handle_slash_command(name, args, state)
-                    if handled:
+                    slash_result = await self._handle_slash_command(name, args, state)
+                    state = slash_result.state
+                    if slash_result.handled:
                         continue  # Get next input
-                    # Unknown command - pass to LLM as regular message
-                    user_text = f"/{name} {args}".strip()
+                    user_text = slash_result.expanded_text or f"/{name} {args}".strip()
 
                 case UserMessage(text=user_text):
                     pass  # Fall through to add message
@@ -529,98 +581,154 @@ class InteractiveRunner:
             )
             return dc_replace(state, actor=dc_replace(state.actor, trajectory=new_trajectory))
 
-    async def _handle_slash_command(self, name: str, args: str, state: AgentState) -> bool:
-        """Handle a slash command. Returns True if handled, False to pass to LLM.
+    async def _handle_slash_command(
+        self, name: str, args: str, state: AgentState
+    ) -> _SlashHandlingResult:
+        """Handle slash commands through the shared slash-command contract."""
+        command_text = f"/{name} {args}".strip()
+        result = await handle_slash_command(self, command_text)
+        return await self._apply_slash_command_result(state, result)
 
-        Slash commands are handled here because the runner has access to:
-        - self.endpoint (for /model)
-        - self.session_store, self.session_id (for /slice)
-        - self.environment (for /env)
-        - self.run_fn (for /swap)
-        """
-        if name == "swap":
-            target = args.lower() if args else ""
-            if target == "claude":
-                from functools import partial
+    async def _apply_slash_command_result(
+        self,
+        state: AgentState,
+        result: SlashCommandResult,
+    ) -> _SlashHandlingResult:
+        """Apply a shared slash-command result to runner and agent state."""
+        if result.message:
+            self._show_message(result.message)
 
-                from ..drivers.run_claude import run_claude
+        if result.swap_target:
+            await self._raise_swap_backend(result.swap_target)
 
-                new_run_fn = partial(run_claude, model="sonnet", cwd=self.cwd)
-                raise _SwapBackend(target="claude", new_run_fn=new_run_fn)
-            if target == "codex":
-                # TODO: implement run_codex
-                self._show_message("Codex swap not yet implemented")
-                return True
-            elif target == "rollouts":
-                # Swap back to SDK
-                raise _SwapBackend(target="rollouts", new_run_fn=run_agent)
-            else:
-                self._show_message("Usage: /swap <claude|codex|rollouts>")
-            return True
-
-        if name == "model":
-            return await self._handle_model_command(args, state)
-
-        if name == "thinking":
-            return await self._handle_thinking_command(args, state)
-
-        # Unknown command
-        self._show_message(f"Unknown command: /{name}\nAvailable: /model, /thinking, /swap")
-        return True
-
-    async def _handle_model_command(self, args: str, state: AgentState) -> bool:
-        """Handle /model command to switch models."""
-        from ..models import get_model
-
-        if not args:
-            # Show current model
-            self._show_message(f"Current model: {self.endpoint.model}")
-            return True
-
-        # Try to parse and switch model
-        try:
-            new_endpoint = get_model(args, api_key=self.endpoint.api_key)
-            self.endpoint = new_endpoint
-            # Update actor with new endpoint
-            self._show_message(f"Switched to: {new_endpoint.model}")
-        except Exception as e:
-            self._show_message(f"Cannot switch to {args}: {e}")
-
-        return True
-
-    async def _handle_thinking_command(self, args: str, state: AgentState) -> bool:
-        """Handle /thinking command to toggle extended thinking."""
-        if not args:
-            # Show current state
-            thinking = getattr(self.endpoint, "thinking", None)
-            if thinking:
-                self._show_message(
-                    f"Thinking: enabled (budget: {thinking.get('budget_tokens', 'default')})"
-                )
-            else:
-                self._show_message("Thinking: disabled")
-            return True
-
-        if args.lower() == "off":
-            self.endpoint = dc_replace(self.endpoint, thinking=None)
-            self._show_message("Thinking: disabled")
-        elif args.lower() == "on":
-            self.endpoint = dc_replace(
-                self.endpoint, thinking={"type": "enabled", "budget_tokens": 10000}
+        if not result.handled:
+            return _SlashHandlingResult(
+                state=state,
+                handled=False,
+                expanded_text=result.expanded_text,
             )
-            self._show_message("Thinking: enabled (budget: 10000)")
-        else:
-            # Try to parse as budget
-            try:
-                budget = int(args)
-                self.endpoint = dc_replace(
-                    self.endpoint, thinking={"type": "enabled", "budget_tokens": budget}
-                )
-                self._show_message(f"Thinking: enabled (budget: {budget})")
-            except ValueError:
-                self._show_message("Usage: /thinking [on|off|<budget>]")
 
+        next_state = state
+        if result.new_session_id:
+            switched = await self.switch_session(
+                result.new_session_id,
+                environment=result.new_environment,
+            )
+            if not switched:
+                return _SlashHandlingResult(state=state, handled=True)
+
+            next_state = self._build_state_for_active_session(state)
+        elif result.new_endpoint or result.new_environment:
+            next_state = self._apply_in_place_runtime_update(
+                state,
+                endpoint=result.new_endpoint,
+                environment=result.new_environment,
+                trajectory=result.new_trajectory,
+            )
+
+        return _SlashHandlingResult(state=next_state, handled=True)
+
+    async def _raise_swap_backend(self, target: str) -> None:
+        """Translate slash-command swap requests into runner backend swaps."""
+        if target == "claude":
+            from functools import partial
+
+            from ..drivers.run_claude import run_claude
+
+            new_run_fn = partial(run_claude, model="sonnet", cwd=self.cwd)
+            raise _SwapBackend(target="claude", new_run_fn=new_run_fn)
+        if target == "codex":
+            self._show_message("Codex swap not yet implemented")
+            return
+        if target == "rollouts":
+            raise _SwapBackend(target="rollouts", new_run_fn=run_agent)
+        self._show_message("Usage: /swap <claude|codex|rollouts>")
+
+    async def switch_session(
+        self,
+        new_session_id: str,
+        *,
+        environment: Environment | None = None,
+    ) -> bool:
+        """Switch the runner to a persisted child session/trajectory."""
+        if not self.session_store:
+            return False
+
+        session, err = await self.session_store.get(new_session_id)
+        if err or not session:
+            return False
+
+        self.session_handle = session
+        self.session_id = new_session_id
+        self.parent_session_id = session.parent_id
+        self.branch_point = session.branch_point
+        self.endpoint = session.endpoint
+        self.trajectory = session.to_trajectory()
+        if environment is not None:
+            self.environment = environment
         return True
+
+    def _build_state_for_active_session(self, state: AgentState) -> AgentState:
+        """Rebuild agent state from the runner's active session handle."""
+        if self.session_handle is None:
+            return state
+
+        tools = self.environment.get_tools() if self.environment else []
+        return dc_replace(
+            state,
+            actor=dc_replace(
+                state.actor,
+                trajectory=self.session_handle.to_trajectory(),
+                endpoint=self.endpoint,
+                tools=tools,
+            ),
+            environment=self.environment,
+            session_id=self.session_id,
+            parent_session_id=self.parent_session_id,
+            branch_point=self.branch_point,
+        )
+
+    def _apply_in_place_runtime_update(
+        self,
+        state: AgentState,
+        *,
+        endpoint: Endpoint | None = None,
+        environment: Environment | None = None,
+        trajectory: Trajectory | None = None,
+    ) -> AgentState:
+        """Apply non-forking runtime updates directly to the active state."""
+        current_trajectory = trajectory or state.actor.trajectory
+        if endpoint is not None:
+            self.endpoint = endpoint
+        if environment is not None:
+            self.environment = environment
+
+        if endpoint is not None:
+            current_trajectory = dc_replace(
+                current_trajectory,
+                session=dc_replace(current_trajectory.session, endpoint=endpoint),
+            )
+
+        self.trajectory = current_trajectory
+
+        if self.session_handle is not None:
+            self.session_handle = SessionHandle.from_trajectory(
+                current_trajectory,
+                message_count=self.session_handle.message_count,
+                pending_input=self.session_handle.pending_input,
+            )
+
+        tools = self.environment.get_tools() if self.environment else []
+        return dc_replace(
+            state,
+            actor=dc_replace(
+                state.actor,
+                trajectory=current_trajectory,
+                endpoint=self.endpoint,
+                tools=tools,
+            ),
+            environment=self.environment,
+        )
 
     def _show_message(self, text: str) -> None:
         """Show a message to the user (via frontend if possible, else print)."""
@@ -787,8 +895,6 @@ async def run_interactive(
     Returns:
         List of agent states from the run
 
-    Raises:
-        SwapRequest: When user requests /swap to another driver
     """
     runner = InteractiveRunner(
         trajectory=trajectory,

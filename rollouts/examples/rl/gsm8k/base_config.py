@@ -13,7 +13,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from rollouts.dtypes import Metric, Score
+from rollouts.core import Metric, Score
 from rollouts.environments.no_tools import BasicEnvironment
 from rollouts.training.grpo import GRPOConfig, grpo_train
 

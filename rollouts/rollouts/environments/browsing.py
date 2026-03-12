@@ -19,10 +19,9 @@ from curl_cffi import requests as curl_requests
 if TYPE_CHECKING:
     from ..frontends.tui.theme import Theme
 
-from ..dtypes import (
-    AgentState,
+from ..agents import AgentState, RunConfig
+from ..core import (
     Message,
-    RunConfig,
     Tool,
     ToolCall,
     ToolFunction,

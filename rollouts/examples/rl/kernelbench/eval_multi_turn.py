@@ -35,7 +35,8 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
 
 from examples.rl.kernelbench.dataset import load_kernelbench_prompts
-from rollouts.dtypes import AgentState, Endpoint, RunConfig
+from rollouts.agents import AgentState, RunConfig
+from rollouts.core import Endpoint
 from rollouts.environments.kernelbench_multi import KernelBenchMultiTurnEnvironment
 from rollouts.models import MODELS
 from rollouts.rollout import run_agent
@@ -88,7 +89,7 @@ async def evaluate_single_problem(
     # Create initial state
     from dataclasses import dataclass
 
-    from rollouts.dtypes import Trajectory
+    from rollouts.core import Trajectory
 
     @dataclass
     class SimpleActor:

@@ -14,7 +14,8 @@ from dataclasses import dataclass
 
 import trio
 
-from ..dtypes import AgentState, Message, RunConfig, Tool, ToolCall, ToolFormatter, ToolResult
+from ..agents import AgentState, RunConfig
+from ..core import Message, Tool, ToolCall, ToolFormatter, ToolResult
 
 
 @dataclass

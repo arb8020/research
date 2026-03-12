@@ -1,6 +1,6 @@
 """Session adapters for hot-swapping between drivers.
 
-Converts between rollouts' canonical session format (AgentSession.messages)
+Converts between rollouts' canonical session format (SessionHandle.messages)
 and external driver formats (Claude Code JSONL, Codex threads).
 
 The canonical format is a list of Message objects with role/content. Each

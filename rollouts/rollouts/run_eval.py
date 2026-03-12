@@ -18,8 +18,8 @@ from pathlib import Path
 import trio
 from dotenv import load_dotenv
 
-from .agents import RunConfig, run_agent
-from .dtypes import Actor, AgentState, Endpoint
+from .agents import Actor, AgentState, RunConfig, run_agent
+from .core import Endpoint
 from .logging_utils import init_rollout_logging
 from .progress import tqdm
 

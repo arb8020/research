@@ -11,7 +11,7 @@ Reference: /tmp/pi-mono/packages/coding-agent/src/core/slash-commands.ts
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
@@ -59,11 +59,6 @@ class RunnerContext(Protocol):
         ...
 
     @property
-    def initial_trajectory(self) -> Trajectory:
-        """Initial trajectory (before any agent runs)."""
-        ...
-
-    @property
     def environment(self) -> Environment | None:
         """Current environment for tool execution."""
         ...
@@ -102,6 +97,7 @@ class SlashCommandResult:
     new_environment: Environment | None = None  # /env changed environment
     new_session_id: str | None = None  # /slice, /env created new session
     new_trajectory: Trajectory | None = None  # /slice changed message history
+    swap_target: str | None = None  # /swap requests a backend transition
 
 
 # =============================================================================
@@ -120,6 +116,59 @@ BUILTIN_COMMANDS: list[SlashCommand] = [
     SlashCommand("env", "Switch environment", arg_hint="[env_spec|list]"),
     SlashCommand("swap", "Hot-swap to external driver", arg_hint="[claude|codex]"),
 ]
+
+
+def _get_source_session_id(runner: RunnerContext) -> str | None:
+    """Return the best available parent session for fork-like commands."""
+    return runner.session_id or runner.parent_session_id
+
+
+async def _fork_session_with_endpoint(
+    runner: RunnerContext,
+    new_endpoint: Endpoint,
+    *,
+    message: str,
+    error_prefix: str = "Cannot switch configuration",
+) -> SlashCommandResult:
+    """Fork a child session when changing semantic execution config.
+
+    If no persisted session exists yet, fall back to an in-memory endpoint change.
+    """
+    source_session_id = _get_source_session_id(runner)
+    if not runner.session_store or not source_session_id:
+        return SlashCommandResult(message=message, new_endpoint=new_endpoint)
+
+    source_trajectory, err = await runner.session_store.get_trajectory(source_session_id)
+    if err or source_trajectory is None:
+        return SlashCommandResult(message=f"{error_prefix}: {err or 'load failed'}")
+
+    child_trajectory = replace(
+        source_trajectory,
+        session=replace(
+            source_trajectory.session,
+            session_id=None,
+            parent_id=source_session_id,
+            branch_point=len(source_trajectory.messages),
+            endpoint=new_endpoint,
+            status="pending",
+            created_at=None,
+            updated_at=None,
+        ),
+        messages=list(source_trajectory.messages),
+        completions=list(source_trajectory.completions),
+        metadata=dict(source_trajectory.metadata),
+    )
+
+    child_session, err = await runner.session_store.save_trajectory(child_trajectory)
+    if err or child_session is None:
+        return SlashCommandResult(message=f"{error_prefix}: {err or 'save failed'}")
+
+    return SlashCommandResult(
+        message=f"{message}\nSwitched to child session: {child_session.session_id}",
+        new_endpoint=new_endpoint,
+        new_session_id=child_session.session_id,
+        new_trajectory=child_session.to_trajectory(),
+    )
 
 
 async def handle_slash_command(
@@ -196,8 +245,8 @@ def _find_similar_command(command: str) -> str | None:
 async def _handle_model(runner: RunnerContext, args: str) -> SlashCommandResult:
     """Handle /model command.
 
-    Returns new_endpoint instead of mutating runner.endpoint.
-    Caller is responsible for updating state and persisting.
+    Semantic config changes fork a child session when session context exists.
+    Otherwise this falls back to an in-memory endpoint change.
     """
     from ...models import get_model, get_models, get_providers
 
@@ -278,18 +327,17 @@ async def _handle_model(runner: RunnerContext, args: str) -> SlashCommandResult:
             # For other providers, try generic pattern
             new_api_key = os.environ.get(f"{provider.upper()}_API_KEY", "")
 
-    new_endpoint = Endpoint(
+    new_endpoint = Endpoint.from_legacy(
         provider=provider,
         model=model_id,
-        # Preserve generic settings that apply to all providers
+        api_base=new_api_base,
+        api_key=new_api_key,
+        oauth_token=new_oauth_token,
+        # Preserve generic settings that apply to all providers.
         max_tokens=old_endpoint.max_tokens,
         temperature=old_endpoint.temperature,
         max_retries=old_endpoint.max_retries,
         timeout=old_endpoint.timeout,
-        # Auth for the new provider
-        api_key=new_api_key,
-        oauth_token=new_oauth_token,
-        api_base=new_api_base,
         is_claude_code_api_key=new_is_claude_code_api_key,
         # Let provider-specific fields use defaults:
         # - thinking=None (Anthropic-only)
@@ -297,9 +345,11 @@ async def _handle_model(runner: RunnerContext, args: str) -> SlashCommandResult:
         # - max_completion_tokens=None (OpenAI-only)
     )
 
-    return SlashCommandResult(
+    return await _fork_session_with_endpoint(
+        runner,
+        new_endpoint,
         message=f"Switched to: {provider}/{model_id}",
-        new_endpoint=new_endpoint,
+        error_prefix="Cannot switch model",
     )
 
 
@@ -328,8 +378,8 @@ def _make_thinking_config(budget: int | None) -> dict[str, Any] | None:
 async def _handle_thinking(runner: RunnerContext, args: str) -> SlashCommandResult:
     """Handle /thinking command.
 
-    Returns new_endpoint instead of mutating runner.endpoint.
-    Caller is responsible for updating state and persisting.
+    Semantic config changes fork a child session when session context exists.
+    Otherwise this falls back to an in-memory endpoint change.
     """
     from dataclasses import replace as dc_replace
 
@@ -395,9 +445,11 @@ async def _handle_thinking(runner: RunnerContext, args: str) -> SlashCommandResu
     else:
         status = "off"
 
-    return SlashCommandResult(
+    return await _fork_session_with_endpoint(
+        runner,
+        new_endpoint,
         message=f"Thinking: {status}",
-        new_endpoint=new_endpoint,
+        error_prefix="Cannot update thinking",
     )
 
 
@@ -412,7 +464,6 @@ async def _handle_slice(runner: RunnerContext, args: str) -> SlashCommandResult:
     Returns new_session_id and new_trajectory instead of calling switch_session.
     Caller is responsible for updating state and TUI.
     """
-    from ...dtypes import Trajectory
     from ...slice import parse_slice_spec, run_slice_command
 
     # Determine which session to use for slicing:
@@ -425,8 +476,8 @@ async def _handle_slice(runner: RunnerContext, args: str) -> SlashCommandResult:
     # Get message count from session store (authoritative source)
     # The in-memory trajectory may be stale or not yet updated
     if runner.session_store and source_session_id:
-        session, _ = await runner.session_store.get(source_session_id)
-        messages = session.messages if session else []
+        trajectory, _ = await runner.session_store.get_trajectory(source_session_id)
+        messages = trajectory.messages if trajectory else []
     else:
         # Fall back to in-memory trajectory if no session store
         messages = runner.trajectory.messages if runner.trajectory else []
@@ -469,17 +520,11 @@ async def _handle_slice(runner: RunnerContext, args: str) -> SlashCommandResult:
     if not child:
         return SlashCommandResult(message="Slice produced no result")
 
-    # Reload the child session to get the actual messages
-    # (run_slice_command returns session object before messages are appended)
-    child_reloaded, err = await runner.session_store.get(child.session_id)
-    if err or not child_reloaded:
-        return SlashCommandResult(message=f"Slice created but failed to reload: {err}")
-
     # Return the new session info - caller handles the switch
     return SlashCommandResult(
         message=f"Switched to child session: {child.session_id}",
         new_session_id=child.session_id,
-        new_trajectory=Trajectory(messages=list(child_reloaded.messages)),
+        new_trajectory=child.to_trajectory(),
     )
 
 
@@ -595,7 +640,13 @@ async def _handle_env(runner: RunnerContext, args: str) -> SlashCommandResult:
     Returns new_environment and new_session_id instead of mutating runner.
     Caller is responsible for updating state and TUI.
     """
-    from ...dtypes import EnvironmentConfig, Trajectory
+    from ...dtypes import (
+        EnvironmentConfig,
+        SessionStatus,
+        Trajectory,
+        TrajectoryEnvironment,
+        TrajectorySession,
+    )
 
     # /env (no args) - show current
     if not args:
@@ -667,33 +718,44 @@ async def _handle_env(runner: RunnerContext, args: str) -> SlashCommandResult:
     if not any(m.role == "system" for m in new_messages):
         new_messages.insert(0, Message(role="system", content=new_system_prompt))
 
-    # Create child session with new environment
-    new_env_config = EnvironmentConfig(type=env_spec)
-    child_session = await runner.session_store.create(
-        endpoint=runner.endpoint,
-        environment=new_env_config,
-        parent_id=runner.session_id,
-        branch_point=len(session.messages),
-    )
-
-    # Copy messages to child (with updated system prompt)
-    for msg in new_messages:
-        await runner.session_store.append_message(child_session.session_id, msg)
-
-    # Serialize and store the new environment state
+    env_state = None
     if hasattr(new_env, "serialize"):
         env_state = await new_env.serialize()
-        await runner.session_store.update(
-            child_session.session_id,
-            environment_state=env_state,
-        )
+
+    source_trajectory = session.to_trajectory()
+    child_trajectory = Trajectory(
+        messages=new_messages,
+        completions=list(source_trajectory.completions),
+        rewards=source_trajectory.rewards,
+        group=source_trajectory.group,
+        replica=source_trajectory.replica,
+        advantages=source_trajectory.advantages,
+        metadata=dict(source_trajectory.metadata),
+        annotations=source_trajectory.annotations,
+        environment=TrajectoryEnvironment.from_session_parts(
+            EnvironmentConfig(type=env_spec, config={}),
+            env_state,
+        ),
+        session=TrajectorySession(
+            session_id=None,
+            parent_id=runner.session_id,
+            branch_point=len(session.messages),
+            endpoint=runner.endpoint,
+            status=SessionStatus.PENDING.value,
+            vcs=session.vcs,
+        ),
+    )
+
+    child_session, err = await runner.session_store.save_trajectory(child_trajectory)
+    if err or child_session is None:
+        return SlashCommandResult(message=f"Cannot switch env: {err or 'save failed'}")
 
     # Return the new session and environment - caller handles the switch
     return SlashCommandResult(
         message=f"Switched to session {child_session.session_id} with env {env_spec}",
         new_session_id=child_session.session_id,
         new_environment=new_env,
-        new_trajectory=Trajectory(messages=new_messages),
+        new_trajectory=child_session.to_trajectory(),
     )
 
 
@@ -709,12 +771,8 @@ async def _handle_swap(runner: RunnerContext, args: str) -> SlashCommandResult:
     /swap claude    - Switch to Claude Code CLI
     /swap codex     - Switch to Codex CLI
 
-    Raises SwapRequest to break out of the agent loop and switch drivers.
+    Returns an explicit backend transition request for the caller to apply.
     """
-    from pathlib import Path
-
-    from ..runner import SwapRequest
-
     if not args:
         return SlashCommandResult(
             message="Usage: /swap <driver>\n  /swap claude - Switch to Claude Code\n  /swap codex  - Switch to Codex"
@@ -724,16 +782,10 @@ async def _handle_swap(runner: RunnerContext, args: str) -> SlashCommandResult:
     if target not in ("claude", "codex"):
         return SlashCommandResult(message=f"Unknown driver: {target}\nAvailable: claude, codex")
 
-    # Get current messages from runner's trajectory
-    messages = list(runner.initial_trajectory.messages)
-
-    # Get working directory
-    cwd = Path.cwd()
-    if runner.environment and hasattr(runner.environment, "working_dir"):
-        cwd = runner.environment.working_dir
-
-    # Raise SwapRequest to break out of the TUI agent loop
-    raise SwapRequest(target=target, messages=messages, cwd=cwd)
+    return SlashCommandResult(
+        message=f"Swapping to {target}",
+        swap_target=target,
+    )
 
 
 # =============================================================================

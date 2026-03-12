@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from rollouts.dtypes import Endpoint, Message
+from rollouts.core import Endpoint, Message
 
 
 @dataclass

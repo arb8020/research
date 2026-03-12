@@ -32,7 +32,7 @@ from typing import TYPE_CHECKING, Any
 import trio
 
 if TYPE_CHECKING:
-    from ..dtypes import Environment, Score
+    from ..core import Environment, Score
     from ..training.types import Sample
 
 # ──────────────────────── Sub-Configs (re-exported from shared) ───────────────

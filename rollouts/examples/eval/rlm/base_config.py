@@ -18,7 +18,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
 
-from rollouts.dtypes import Endpoint, Metric, Score
+from rollouts.core import Endpoint, Metric, Score
 
 logger = logging.getLogger(__name__)
 

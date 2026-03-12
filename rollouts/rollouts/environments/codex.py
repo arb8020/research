@@ -61,7 +61,8 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     import trio
 
-    from ..dtypes import AgentState, RunConfig, Tool, ToolCall, ToolResult
+    from ..agents import AgentState, RunConfig
+    from ..core import Tool, ToolCall, ToolResult
 
 logger = logging.getLogger(__name__)
 

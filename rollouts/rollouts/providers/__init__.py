@@ -34,7 +34,8 @@ from .sglang import (
 )
 
 if TYPE_CHECKING:
-    from ..dtypes import Actor, StreamEvent
+    from ..agents import Actor
+    from ..dtypes import StreamEvent
 
 # Type alias for provider streaming functions
 # Note: Actual functions may accept additional kwargs (user_message_for_thinking, turn_idx, etc.)

@@ -23,15 +23,12 @@ from typing import TYPE_CHECKING, Any
 
 import trio
 
-from ..dtypes import (
-    Actor,
-    AgentSession,
-    AgentState,
+from ..agents import Actor, AgentState, RunConfig
+from ..core import (
     Endpoint,
     Message,
-    RunConfig,
-    StreamEvent,
-    TextDelta,
+    SessionHandle,
+    SessionStatus,
     Tool,
     ToolCall,
     ToolFunction,
@@ -39,6 +36,7 @@ from ..dtypes import (
     ToolResult,
     Trajectory,
 )
+from ..dtypes import StreamEvent, TextDelta
 from ..export import session_to_markdown
 from ..providers import get_provider_function_by_format
 
@@ -106,7 +104,7 @@ Steps:
 
 
 async def generate_handoff_context(
-    session: AgentSession,
+    session: SessionHandle,
     goal: str,
     endpoint: Endpoint,
 ) -> tuple[str, None] | tuple[None, str]:
@@ -265,7 +263,7 @@ class HandoffEnvironment:
     working_dir: Path = field(default_factory=Path.cwd)
 
     # Internal: current session reference (set by agent loop via on_session_start)
-    _current_session: AgentSession | None = field(default=None, repr=False)
+    _current_session: SessionHandle | None = field(default=None, repr=False)
 
     def _get_handoff_model(self) -> str:
         """Get the model to use for handoff extraction."""
@@ -400,13 +398,19 @@ The goal should describe what to do next (1-2 sentences), not what was already d
         if self.fast_mode:
             # Fast mode: single LLM call to summarize session
             # Update current session with latest messages from state
-            session_with_current_messages = AgentSession(
-                session_id=self._current_session.session_id,
-                parent_id=self._current_session.parent_id,
-                branch_point=self._current_session.branch_point,
-                endpoint=self._current_session.endpoint,
-                environment=self._current_session.environment,
-                messages=current_state.actor.trajectory.messages,
+            session_with_current_messages = SessionHandle.from_trajectory(
+                Trajectory(
+                    completions=list(current_state.actor.trajectory.completions),
+                    messages=list(current_state.actor.trajectory.messages),
+                    rewards=current_state.actor.trajectory.rewards,
+                    group=current_state.actor.trajectory.group,
+                    replica=current_state.actor.trajectory.replica,
+                    advantages=current_state.actor.trajectory.advantages,
+                    metadata=dict(current_state.actor.trajectory.metadata),
+                    annotations=current_state.actor.trajectory.annotations,
+                    session=self._current_session.trajectory.session,
+                    environment=self._current_session.trajectory.environment,
+                )
             )
             handoff_content, error = await generate_handoff_context(
                 session=session_with_current_messages,
@@ -433,18 +437,23 @@ The goal should describe what to do next (1-2 sentences), not what was already d
 
         # Create new session with handoff content as initial message
         try:
-            new_session = await self.session_store.create(
-                endpoint=self.endpoint,
-                environment=self._current_session.environment,
-                parent_id=self._current_session.session_id,
-                tags={"handoff_goal": goal[:100]},  # Truncate for metadata
+            new_session_trajectory = Trajectory(
+                messages=[Message(role="user", content=handoff_content)],
+                session=TrajectorySession(
+                    parent_id=self._current_session.session_id,
+                    endpoint=self.endpoint,
+                    status=SessionStatus.PENDING.value,
+                    tags={"handoff_goal": goal[:100]},
+                    vcs=self._current_session.vcs,
+                ),
+                environment=TrajectoryEnvironment.from_session_parts(
+                    self._current_session.environment,
+                    self._current_session.environment_state,
+                ),
             )
-
-            # Add the handoff content as the first user message
-            await self.session_store.append_message(
-                new_session.session_id,
-                Message(role="user", content=handoff_content),
-            )
+            new_session, err = await self.session_store.save_trajectory(new_session_trajectory)
+            if err is not None or new_session is None:
+                raise RuntimeError(err or "Failed to save handoff trajectory")
 
         except Exception as e:
             return ToolResult(

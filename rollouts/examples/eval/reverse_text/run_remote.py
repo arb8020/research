@@ -107,18 +107,11 @@ async def run_on_modal(model: str, limit: int) -> dict:
 
         import trio
 
-        from rollouts.dtypes import (
-            AgentState,
-            Endpoint,
-            EvalConfig,
-            Message,
-            Metric,
-            Score,
-            StopReason,
-        )
-        from rollouts.dtypes import RunConfig as AgentRunConfig
-        from rollouts.evaluation import evaluate
-        from rollouts.handlers import handle_stop_max_turns
+        from rollouts.agents import AgentState
+        from rollouts.agents import RunConfig as AgentRunConfig
+        from rollouts.agents.handlers import handle_stop_max_turns
+        from rollouts.core import Endpoint, EvalConfig, Message, Metric, Score, StopReason
+        from rollouts.eval import evaluate
         from rollouts.training.types import Sample
 
         # Tasks

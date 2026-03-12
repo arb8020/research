@@ -44,8 +44,7 @@ from ..dtypes import (
 )
 
 if TYPE_CHECKING:
-    from ..agents import AgentState
-    from ..dtypes import RunConfig
+    from ..agents import AgentState, RunConfig
     from ..store import SessionStore
 
 logger = logging.getLogger(__name__)
@@ -59,6 +58,7 @@ async def run_claude(
     cwd: Path | None = None,
     resume_session_id: str | None = None,
     autonomous: bool = False,
+    allowed_tools: list[str] | None = None,
 ) -> list[AgentState]:
     """Run Claude Code CLI as the agent backend.
 

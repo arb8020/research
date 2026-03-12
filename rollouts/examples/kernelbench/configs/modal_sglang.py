@@ -14,7 +14,7 @@ Prerequisites:
 
 from pathlib import Path
 
-from rollouts.dtypes import Endpoint
+from rollouts.core import Endpoint
 
 # Modal-hosted SGLang endpoint
 # Deployed via: modal deploy examples/kernelbench/modal_sglang.py

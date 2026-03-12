@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from ...dtypes import AgentState
+    from ...agents import AgentState
 
 
 # ─── Input Phase Results ───────────────────────────────────────────────────────

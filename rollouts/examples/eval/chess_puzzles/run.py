@@ -32,15 +32,8 @@ from pathlib import Path
 
 import trio
 
-from rollouts import (
-    Actor,
-    AgentState,
-    Endpoint,
-    Message,
-    RunConfig,
-    Trajectory,
-    run_agent,
-)
+from rollouts.agents import Actor, AgentState, RunConfig, run_agent
+from rollouts.core import Endpoint, Message, Trajectory
 from rollouts.datasets.lichess_puzzles import (
     get_puzzle_fen_after_opponent_move,
     load_lichess_puzzles,

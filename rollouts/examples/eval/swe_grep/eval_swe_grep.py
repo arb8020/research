@@ -26,15 +26,8 @@ from typing import Any
 
 import trio
 
-from rollouts.agents import handle_stop_max_turns, run_agent
-from rollouts.dtypes import (
-    Actor,
-    AgentState,
-    Endpoint,
-    Message,
-    RunConfig,
-    Trajectory,
-)
+from rollouts.agents import Actor, AgentState, RunConfig, handle_stop_max_turns, run_agent
+from rollouts.core import Endpoint, Message, Trajectory
 from rollouts.environments.swe_grep import SearchFn, SWEGrepEnvironment
 
 from .scoring import compute_retrieval_score, grade_answer

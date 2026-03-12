@@ -19,11 +19,10 @@ from typing import Any
 
 import trio
 
-from ..dtypes import (
-    AgentState,
+from ..agents import AgentState, RunConfig
+from ..core import (
     Environment,
     Message,
-    RunConfig,
     Tool,
     ToolCall,
     ToolResult,
@@ -44,11 +43,14 @@ def _get_environment_registry() -> dict[str, Callable[[dict], Coroutine[Any, Any
         from .coding import LocalFilesystemEnvironment
         from .git_worktree import GitWorktreeEnvironment
         from .no_tools import BasicEnvironment
+        from .orchestrate import OrchestrateEnvironment, SharedDocumentEnvironment
         from .repl import REPLEnvironment
 
         _ENVIRONMENT_REGISTRY.update({
             "coding": LocalFilesystemEnvironment.deserialize,
             "git_worktree": GitWorktreeEnvironment.deserialize,
+            "orchestrate": OrchestrateEnvironment.deserialize,
+            "orchestrate_documents": SharedDocumentEnvironment.deserialize,
             "repl": REPLEnvironment.deserialize,
             "calculator": CalculatorEnvironment.deserialize,
             "basic": BasicEnvironment.deserialize,

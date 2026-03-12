@@ -1,9 +1,11 @@
+from __future__ import annotations
+
 import json
 import os
 import time
 from collections.abc import Awaitable, Callable, Iterator, Mapping
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime
 from enum import Enum, IntEnum
 from pathlib import Path
 from typing import (
@@ -439,7 +441,7 @@ class ToolResultReceived(JsonSerializable):
     """Emitted when a tool execution result is received"""
 
     tool_call_id: str
-    content: str | list["ContentBlock"]  # Forward ref - ContentBlock defined later
+    content: str | list[ContentBlock]  # Forward ref - ContentBlock defined later
     is_error: bool = False
     error: str | None = None
     details: dict[str, Any] | None = None  # UI-only structured data (e.g., diff for edit tool)
@@ -583,10 +585,10 @@ class ProviderStreamFunction(Protocol):
 
     async def __call__(
         self,
-        actor: "Actor",
+        actor: Actor,
         on_chunk: Callable[[StreamEvent], Awaitable[None]],
         **kwargs: Any,
-    ) -> "Actor":
+    ) -> Actor:
         """Stream LLM response and return updated Actor with new trajectory message.
 
         Args:
@@ -899,6 +901,178 @@ class ChatCompletion(JsonSerializable):
 
 
 @dataclass(frozen=True)
+class TrajectoryAnnotations(JsonSerializable):
+    """Optional rollout/training annotations attached to a trajectory.
+
+    These fields are currently duplicated in legacy top-level Trajectory fields.
+    The nested bundle is the migration target; the top-level fields remain for
+    compatibility until callers are moved over.
+    """
+
+    reward: float | dict[str, float] | None = None
+    group: int | None = None
+    replica: int | None = None
+    advantage: float | None = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> TrajectoryAnnotations:
+        assert data is not None
+        assert isinstance(data, dict)
+        return cls(
+            reward=data.get("reward"),
+            group=data.get("group"),
+            replica=data.get("replica"),
+            advantage=data.get("advantage"),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        if self.reward is not None:
+            result["reward"] = self.reward
+        if self.group is not None:
+            result["group"] = self.group
+        if self.replica is not None:
+            result["replica"] = self.replica
+        if self.advantage is not None:
+            result["advantage"] = self.advantage
+        return result
+
+
+@dataclass(frozen=True)
+class TrajectorySession(JsonSerializable):
+    """Session/branching metadata attached to a trajectory."""
+
+    session_id: str | None = None
+    parent_id: str | None = None
+    branch_point: int | None = None
+    endpoint: Endpoint | None = None
+    status: str | None = None
+    created_at: str | None = None
+    updated_at: str | None = None
+    tags: dict[str, str] = field(default_factory=dict)
+    vcs: dict[str, str] | None = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> TrajectorySession:
+        assert data is not None
+        assert isinstance(data, dict)
+        raw_tags = data.get("tags", {})
+        tags = raw_tags if isinstance(raw_tags, dict) else {}
+        status = data.get("status")
+        if status is not None:
+            status = str(status)
+        return cls(
+            session_id=data.get("session_id"),
+            parent_id=data.get("parent_id"),
+            branch_point=data.get("branch_point"),
+            endpoint=(
+                Endpoint.from_dict(data["endpoint"])
+                if isinstance(data.get("endpoint"), dict)
+                else None
+            ),
+            status=status,
+            created_at=data.get("created_at"),
+            updated_at=data.get("updated_at"),
+            tags=tags,
+            vcs=data.get("vcs"),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        if self.session_id is not None:
+            result["session_id"] = self.session_id
+        if self.parent_id is not None:
+            result["parent_id"] = self.parent_id
+        if self.branch_point is not None:
+            result["branch_point"] = self.branch_point
+        if self.endpoint is not None:
+            result["endpoint"] = self.endpoint.to_dict(exclude_secrets=True)
+        if self.status is not None:
+            result["status"] = self.status
+        if self.created_at is not None:
+            result["created_at"] = self.created_at
+        if self.updated_at is not None:
+            result["updated_at"] = self.updated_at
+        if self.tags:
+            result["tags"] = self.tags
+        if self.vcs is not None:
+            result["vcs"] = self.vcs
+        return result
+
+
+class EnvironmentResumeMode(Enum):
+    """Resumability guarantee for serialized environment data."""
+
+    COLD = "cold"
+    WARM = "warm"
+    NONE = "none"
+
+
+@dataclass(frozen=True)
+class TrajectoryEnvironment(JsonSerializable):
+    """Environment bundle attached to a trajectory.
+
+    `config` mirrors the durable environment selection/configuration.
+    `state` is an optional serialized checkpoint snapshot.
+    `resume_mode` states whether `state` is cold-resumable, warm-resumable,
+    or informational only.
+    """
+
+    kind: str = ""
+    config: dict[str, Any] = field(default_factory=dict)
+    state: dict[str, Any] | None = None
+    resume_mode: EnvironmentResumeMode = EnvironmentResumeMode.COLD
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> TrajectoryEnvironment:
+        assert data is not None
+        assert isinstance(data, dict)
+        raw_mode = data.get("resume_mode", EnvironmentResumeMode.COLD.value)
+        if isinstance(raw_mode, EnvironmentResumeMode):
+            resume_mode = raw_mode
+        else:
+            resume_mode = EnvironmentResumeMode(str(raw_mode))
+        raw_config = data.get("config", {})
+        config = raw_config if isinstance(raw_config, dict) else {}
+        raw_state = data.get("state")
+        state = raw_state if isinstance(raw_state, dict) else None
+        return cls(
+            kind=data.get("kind", ""),
+            config=config,
+            state=state,
+            resume_mode=resume_mode,
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        result: dict[str, Any] = {
+            "kind": self.kind,
+            "config": self.config,
+            "resume_mode": self.resume_mode.value,
+        }
+        if self.state is not None:
+            result["state"] = self.state
+        return result
+
+    @classmethod
+    def from_session_parts(
+        cls,
+        environment: EnvironmentConfig,
+        state: dict[str, Any] | None = None,
+    ) -> TrajectoryEnvironment:
+        assert environment is not None
+        resume_mode = EnvironmentResumeMode.COLD
+        if isinstance(state, dict) and "_env_ref" in state:
+            # Warm-only checkpoints depend on a live in-process environment.
+            resume_mode = EnvironmentResumeMode.WARM
+        return cls(
+            kind=environment.type,
+            config=environment.config,
+            state=state,
+            resume_mode=resume_mode,
+        )
+
+
+@dataclass(frozen=True)
 class Trajectory(JsonSerializable):
     completions: list[ChatCompletion] = field(default_factory=list)
     messages: list[Message] = field(default_factory=list)  # debugging only
@@ -909,9 +1083,30 @@ class Trajectory(JsonSerializable):
     metadata: dict[str, Any] = field(
         default_factory=dict
     )  # For dataset-specific info (e.g., ground truth)
+    annotations: TrajectoryAnnotations = field(default_factory=TrajectoryAnnotations)
+    session: TrajectorySession = field(default_factory=TrajectorySession)
+    environment: TrajectoryEnvironment | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        result = {
+            "completions": [asdict(completion) for completion in self.completions],
+            "messages": [asdict(message) for message in self.messages],
+            "rewards": self.rewards,
+            "group": self.group,
+            "replica": self.replica,
+            "advantages": self.advantages,
+            "metadata": self.metadata,
+        }
+        if self.annotations.to_dict():
+            result["annotations"] = self.annotations.to_dict()
+        if self.session.to_dict():
+            result["session"] = self.session.to_dict()
+        if self.environment is not None:
+            result["environment"] = self.environment.to_dict()
+        return result
 
     @staticmethod
-    def from_dict(data: dict[str, Any]) -> "Trajectory":
+    def from_dict(data: dict[str, Any]) -> Trajectory:
         """Rebuild nested dataclasses so type hints stay correct."""
         assert data is not None
         assert isinstance(data, dict)
@@ -943,6 +1138,27 @@ class Trajectory(JsonSerializable):
                 )
             )
 
+        annotations_data = data.get("annotations", {})
+        if annotations_data:
+            annotations = TrajectoryAnnotations.from_dict(annotations_data)
+        else:
+            annotations = TrajectoryAnnotations(
+                reward=data.get("reward", data.get("rewards")),
+                group=data.get("group"),
+                replica=data.get("replica"),
+                advantage=data.get("advantage", data.get("advantages")),
+            )
+
+        session_data = data.get("session", {})
+        session = TrajectorySession.from_dict(session_data) if session_data else TrajectorySession()
+
+        environment_data = data.get("environment")
+        environment = (
+            TrajectoryEnvironment.from_dict(environment_data)
+            if isinstance(environment_data, dict)
+            else None
+        )
+
         result = Trajectory(
             completions=comps,
             messages=data.get("messages", []),
@@ -951,20 +1167,124 @@ class Trajectory(JsonSerializable):
             replica=data.get("replica", 0),
             advantages=data.get("advantages", 0.0),
             metadata=data.get("metadata", {}),
+            annotations=annotations,
+            session=session,
+            environment=environment,
         )
         assert result is not None
         return result
 
+    def session_reward(self) -> float | dict[str, float] | None:
+        """Return the persisted session-level reward annotation."""
+        if self.annotations.reward is not None:
+            return self.annotations.reward
+        if self.rewards != 0.0:
+            return self.rewards
+        return None
+
+    def session_status(self) -> SessionStatus:
+        """Return the persisted session status with a safe default."""
+        from .core.session import SessionStatus
+
+        status_str = self.session.status or SessionStatus.PENDING.value
+        try:
+            return SessionStatus(status_str)
+        except ValueError:
+            return SessionStatus[status_str.upper()]
+
+    def endpoint_or_default(self) -> Endpoint:
+        """Return the session endpoint or an empty placeholder."""
+        return self.session.endpoint or Endpoint(model="", base_url="", api_format="")
+
+    def environment_config(self) -> EnvironmentConfig:
+        """Return the durable environment configuration for the trajectory."""
+        from .core.session import EnvironmentConfig
+
+        if self.environment is None:
+            return EnvironmentConfig(type="")
+        return EnvironmentConfig(type=self.environment.kind, config=dict(self.environment.config))
+
+    def environment_state(self) -> dict[str, Any] | None:
+        """Return the serialized environment state, if any."""
+        return self.environment.state if self.environment is not None else None
+
+    def to_session_record(self) -> dict[str, Any]:
+        """Serialize the trajectory using the session store's durable shape."""
+        return {
+            "session_id": self.session.session_id,
+            "parent_id": self.session.parent_id,
+            "branch_point": self.session.branch_point,
+            "endpoint": self.endpoint_or_default().to_dict(exclude_secrets=True),
+            "environment": self.environment_config().to_dict(),
+            "environment_state": self.environment_state(),
+            "status": self.session_status().value,
+            "reward": self.session_reward(),
+            "tags": dict(self.session.tags),
+            "created_at": self.session.created_at or datetime.now().isoformat(),
+            "updated_at": self.session.updated_at or datetime.now().isoformat(),
+            "vcs": self.session.vcs,
+        }
+
+    @classmethod
+    def from_session_record(
+        cls, data: dict[str, Any], messages: list[Message] | None = None
+    ) -> Trajectory:
+        """Deserialize the session store's durable shape into a canonical trajectory."""
+        from .core.session import EnvironmentConfig, SessionStatus
+
+        environment = TrajectoryEnvironment.from_session_parts(
+            EnvironmentConfig.from_dict(data["environment"]),
+            data.get("environment_state"),
+        )
+        reward = data.get("reward")
+        reward_scalar = reward if isinstance(reward, (int, float)) else 0.0
+        return cls(
+            messages=list(messages or []),
+            rewards=reward_scalar,
+            annotations=TrajectoryAnnotations(reward=reward),
+            session=TrajectorySession(
+                session_id=data["session_id"],
+                parent_id=data.get("parent_id"),
+                branch_point=data.get("branch_point"),
+                endpoint=Endpoint.from_dict(data["endpoint"]),
+                status=data.get("status", SessionStatus.PENDING.value),
+                created_at=data.get("created_at", datetime.now().isoformat()),
+                updated_at=data.get("updated_at", datetime.now().isoformat()),
+                tags=data.get("tags", {}),
+                vcs=data.get("vcs"),
+            ),
+            environment=environment,
+        )
+
+    def to_session_summary(self, message_count: int | None = None) -> SessionSummary:
+        """Build a lightweight summary for listing/index views."""
+        from .core.session import SessionSummary
+
+        return SessionSummary(
+            session_id=self.session.session_id or "",
+            parent_id=self.session.parent_id,
+            branch_point=self.session.branch_point,
+            endpoint=self.endpoint_or_default(),
+            environment=self.environment_config(),
+            status=self.session_status(),
+            reward=self.session_reward(),
+            tags=dict(self.session.tags),
+            created_at=self.session.created_at or datetime.now().isoformat(),
+            updated_at=self.session.updated_at or datetime.now().isoformat(),
+            vcs=self.session.vcs,
+            message_count=message_count,
+        )
+
     # ---------- JSONL convenience layer -----------------------------------
     def to_json(self) -> str:
         assert self is not None
-        result = json.dumps(asdict(self), ensure_ascii=False)
+        result = json.dumps(self.to_dict(), ensure_ascii=False)
         assert result is not None
         assert isinstance(result, str)
         return result
 
     @staticmethod
-    def to_jsonl(trajectories: list["Trajectory"]) -> str:
+    def to_jsonl(trajectories: list[Trajectory]) -> str:
         assert trajectories is not None
         assert isinstance(trajectories, list)
         result = "\n".join(t.to_json() for t in trajectories)
@@ -972,7 +1292,7 @@ class Trajectory(JsonSerializable):
         return result
 
     @staticmethod
-    def from_json(json_str: str) -> "Trajectory":
+    def from_json(json_str: str) -> Trajectory:
         assert json_str is not None
         assert isinstance(json_str, str)
         assert len(json_str) > 0
@@ -982,7 +1302,7 @@ class Trajectory(JsonSerializable):
         return result
 
     @staticmethod
-    def from_jsonl(jsonl_str: str) -> list["Trajectory"]:
+    def from_jsonl(jsonl_str: str) -> list[Trajectory]:
         assert jsonl_str is not None
         assert isinstance(jsonl_str, str)
         result = [Trajectory.from_json(line) for line in jsonl_str.strip().splitlines() if line]
@@ -991,7 +1311,7 @@ class Trajectory(JsonSerializable):
 
     # ---------- disk I/O ---------------------------------------------------
     @staticmethod
-    def save_jsonl(trajectories: list["Trajectory"], filepath: str) -> None:
+    def save_jsonl(trajectories: list[Trajectory], filepath: str) -> None:
         assert trajectories is not None
         assert isinstance(trajectories, list)
         assert filepath is not None
@@ -1003,7 +1323,7 @@ class Trajectory(JsonSerializable):
         assert path_obj.exists()
 
     @staticmethod
-    def load_jsonl(filepath: str) -> list["Trajectory"]:
+    def load_jsonl(filepath: str) -> list[Trajectory]:
         assert filepath is not None
         assert len(filepath) > 0
         path_obj = Path(filepath)
@@ -1016,7 +1336,7 @@ class Trajectory(JsonSerializable):
         return result
 
     @staticmethod
-    def load_jsonl_streaming(filepath: str) -> Iterator["Trajectory"]:
+    def load_jsonl_streaming(filepath: str) -> Iterator[Trajectory]:
         assert filepath is not None
         assert len(filepath) > 0
         path_obj = Path(filepath)
@@ -1044,7 +1364,7 @@ class Trajectory(JsonSerializable):
         return result
 
     @staticmethod
-    def get_completion_tokens(traj: "Trajectory") -> int:
+    def get_completion_tokens(traj: Trajectory) -> int:
         assert traj is not None
         assert isinstance(traj, Trajectory)
         result = sum(
@@ -1054,7 +1374,7 @@ class Trajectory(JsonSerializable):
         return result
 
     @staticmethod
-    def get_total_tokens(traj: "Trajectory") -> int:
+    def get_total_tokens(traj: Trajectory) -> int:
         assert traj is not None
         assert isinstance(traj, Trajectory)
         result = sum(
@@ -1064,7 +1384,7 @@ class Trajectory(JsonSerializable):
         return result
 
     @staticmethod
-    def hash(trajectory: "Trajectory") -> str:
+    def hash(trajectory: Trajectory) -> str:
         """Generate a hash for a single trajectory."""
         import hashlib
 
@@ -1111,6 +1431,9 @@ class StopReason(Enum):
     ABORTED = "ABORTED"
     NEEDS_INPUT = "NEEDS_INPUT"  # Agent waiting for user input (interactive mode)
     INTERRUPTED = "INTERRUPTED"  # User interrupted (Escape) - can resume with driver_session_id
+    ERROR = "ERROR"  # General driver error (e.g. invalid state, unexpected condition)
+    END_TURN = "END_TURN"  # Claude driver: model finished its turn normally
+    BUDGET_EXCEEDED = "BUDGET_EXCEEDED"  # Token/cost budget exceeded
 
 
 @dataclass(frozen=True)
@@ -1123,7 +1446,7 @@ class ToolResult(JsonSerializable):
     # UI-only structured data (stripped before LLM)
     details: dict[str, Any] | None = None
 
-    def to_summary(self, tool_call: "ToolCall") -> dict[str, Any] | None:
+    def to_summary(self, tool_call: ToolCall) -> dict[str, Any] | None:
         """Build observability summary for wide event emission.
 
         Extracts key fields from tool_call.args and self.details that are useful
@@ -1186,8 +1509,8 @@ class Environment(Protocol):
     async def exec_tool(
         self,
         tool_call: ToolCall,
-        current_state: "AgentState",
-        run_config: "RunConfig",
+        current_state: AgentState,
+        run_config: RunConfig,
         cancel_scope: trio.CancelScope | None = None,
     ) -> ToolResult:
         """Execute a tool call in this environment.
@@ -1204,7 +1527,7 @@ class Environment(Protocol):
         """Check if tool requires confirmation."""
         ...
 
-    def get_tool_formatter(self, tool_name: str) -> "ToolFormatter | None":
+    def get_tool_formatter(self, tool_name: str) -> ToolFormatter | None:
         """Return optional TUI formatter for this tool.
 
         Args:
@@ -1253,7 +1576,7 @@ class Environment(Protocol):
         """
         ...
 
-    async def on_assistant_message(self, message: "Message", state: "AgentState") -> "AgentState":
+    async def on_assistant_message(self, message: Message, state: AgentState) -> AgentState:
         """Called after each assistant message, before tool processing.
 
         Allows environment to respond to assistant messages with feedback, regardless
@@ -1308,7 +1631,7 @@ class Environment(Protocol):
         ...
 
     @staticmethod
-    async def deserialize(data: dict) -> "Environment":
+    async def deserialize(data: dict) -> Environment:
         """Deserialize environment from dictionary.
 
         Should validate env_kind and version before restoring state.
@@ -1495,9 +1818,7 @@ class Endpoint(JsonSerializable):
         return d
 
     @classmethod
-    def from_dict(
-        cls, data: dict[str, Any], api_key: str = "", oauth_token: str = ""
-    ) -> "Endpoint":
+    def from_dict(cls, data: dict[str, Any], api_key: str = "", oauth_token: str = "") -> Endpoint:
         """Deserialize from dict, injecting secrets at runtime.
 
         Args:
@@ -1556,7 +1877,7 @@ class Endpoint(JsonSerializable):
         api_key: str = "",
         oauth_token: str = "",
         **kwargs: Any,
-    ) -> "Endpoint":
+    ) -> Endpoint:
         """Create Endpoint from legacy provider+model format.
 
         DEPRECATED: Use Endpoint() directly with the new format.
@@ -1608,391 +1929,4 @@ class Endpoint(JsonSerializable):
             api_key=api_key,
             oauth_token=oauth_token,
             **kwargs,
-        )
-
-
-@dataclass(frozen=True)
-class Actor(JsonSerializable):
-    trajectory: Trajectory
-    endpoint: Endpoint
-    tools: list[Tool] = field(default_factory=list)
-
-
-@dataclass(frozen=True)
-class AgentState:
-    actor: Actor
-    environment: Environment | None
-    stop: StopReason | None = None
-    error: str | None = None  # Error message if stop is due to error (e.g., ProviderError)
-    turn_idx: int = 0
-    pending_tool_calls: list[ToolCall] = field(default_factory=list)
-    next_tool_idx: int = 0  # Which tool we're about to process
-    timestamp: str = datetime.now(timezone.utc).isoformat() + "Z"
-    session_id: str | None = None  # Session ID for persistence (set by run_agent)
-    # For forking: when resuming with different config, create child session
-    parent_session_id: str | None = None  # Parent session to branch from
-    branch_point: int | None = None  # Message index where branching from parent
-    confirm_tools: bool = False  # Whether tool confirmation is required
-    # Driver-specific session ID (e.g., Claude Code session for --resume)
-    driver_session_id: str | None = None
-
-
-# Forward declarations for RunConfig (needs to be after AgentState but before default handlers)
-async def default_stdin_handler(prompt: str) -> str:
-    """Default input handler using trio.to_thread.run_sync for non-blocking input."""
-    return await trio.to_thread.run_sync(input, prompt)
-
-
-async def default_confirm_tool(
-    tc: ToolCall, state: "AgentState", run_config: "RunConfig"
-) -> tuple["AgentState", ToolConfirmResult]:
-    """Default tool confirmation handler - auto-confirm all tools."""
-    return state, ToolConfirmResult(proceed=True)
-
-
-async def default_no_tool_handler(state: "AgentState", run_config: "RunConfig") -> "AgentState":
-    """Default no-tool handler - mark task as complete."""
-    from dataclasses import replace
-
-    return replace(state, stop=StopReason.TASK_COMPLETED)
-
-
-@dataclass(frozen=True)
-class RunConfig:
-    # TODO: Add runtime validation for on_chunk parameter to catch sync functions early
-    # Currently if a sync function is passed, it gets set to None silently, causing
-    # "object NoneType can't be used in 'await' expression" errors later. Should validate
-    # that on_chunk is properly async and has correct signature at construction time.
-    on_chunk: Callable[[StreamEvent], Awaitable[None]]
-    # on_input returns InputResult (UserMessage | SlashCommand | InputExit) from frontends.protocol
-    # Using Any to avoid circular import with frontends module
-    on_input: Callable[[str], Awaitable[Any]] = field(default_factory=lambda: default_stdin_handler)
-    confirm_tool: Callable[
-        [ToolCall, "AgentState", "RunConfig"], Awaitable[tuple["AgentState", ToolConfirmResult]]
-    ] = field(default_factory=lambda: default_confirm_tool)
-    handle_tool_error: Callable[[ToolResult, "AgentState"], "AgentState"] = lambda tr, s: s
-    on_step_start: Callable[["AgentState"], "AgentState"] = lambda s: s
-    handle_stop: Callable[["AgentState"], "AgentState"] = lambda s: s
-    handle_no_tool: Callable[["AgentState", "RunConfig"], Awaitable["AgentState"]] = field(
-        default_factory=lambda: default_no_tool_handler
-    )
-    user_message_for_thinking: str | None = None
-    inline_thinking: str | None = None
-    show_progress: bool = False  # Enable turn-level progress tracking
-    cancel_scope: trio.CancelScope | None = (
-        None  # Optional Trio cancel scope for graceful cancellation. When cancel_scope.cancel() is called, any in-flight HTTP request is immediately cancelled and trio.Cancelled is raised. The agent loop catches this and sets stop=StopReason.ABORTED.
-    )
-    # Mutable container for interrupt flag - list with single bool element
-    # Set interrupt_flag[0] = True to signal interrupt, driver will reset to False after handling
-    interrupt_flag: list[bool] | None = None
-    # Session persistence
-    session_store: Any | None = (
-        None  # SessionStore instance for persistence (session_id is on AgentState)
-    )
-    # Two-level concurrency control for maximizing API throughput
-    # API limiter: controls concurrent LLM API calls (saturate tokens/min)
-    # Tool limiter: controls concurrent tool executions (respect file descriptors, GPU limits)
-    # When set, samples yield their slot while waiting for the other resource type
-    api_limiter: trio.CapacityLimiter | None = None
-    tool_limiter: trio.CapacityLimiter | None = None
-
-
-# ── Evaluation Types ──────────────────────────────────────────────────────────
-
-
-@dataclass(frozen=True)
-class Metric:
-    """A measured dimension. Weight=0 means track-only, weight>0 means contributes to reward.
-
-    Tiger Style: Immutable, explicit, composable.
-
-    Examples:
-        >>> # Reward component (contributes to training signal)
-        >>> Metric("correct", 1.0, weight=1.0)
-
-        >>> # Tracking-only metric (logged but not used for optimization)
-        >>> Metric("latency_ms", 145.2, weight=0)
-
-        >>> # With metadata for debugging
-        >>> Metric("format_valid", 0.0, weight=0.2, metadata={"error": "missing closing tag"})
-    """
-
-    name: str
-    value: float
-    weight: float = 0.0
-    metadata: dict[str, Any] = field(default_factory=dict)
-
-
-@dataclass(frozen=True)
-class Score:
-    """Collection of metrics, some of which are rewards (weight > 0).
-
-    Tiger Style: Immutable, explicit breakdown, single reward property for training.
-
-    Examples:
-        >>> score = Score(metrics=(
-        ...     Metric("correct", 1.0, weight=1.0),
-        ...     Metric("format", 0.5, weight=0.2),
-        ...     Metric("tokens", 150, weight=0),  # tracked only
-        ... ))
-        >>> score.reward  # Weighted average: (1.0*1.0 + 0.5*0.2) / (1.0 + 0.2) = 0.917
-        0.9166666666666666
-    """
-
-    metrics: tuple[Metric, ...]
-
-    @property
-    def reward(self) -> float:
-        """Weighted average of metrics with weight > 0."""
-        weighted = [(m.value, m.weight) for m in self.metrics if m.weight > 0]
-        if not weighted:
-            return 0.0
-        total_weight = sum(w for _, w in weighted)
-        return sum(v * w for v, w in weighted) / total_weight
-
-
-# Sample is unified in training.types - import here for backward compatibility
-from .training.types import Sample  # noqa: E402
-
-# Score function: pure transform from Sample -> Score
-# Sample has trajectory, ground_truth, input, etc. - access via sample.trajectory
-# Supports both sync and async (for external verifiers that need network calls)
-ScoreFn = Callable[[Sample], Score] | Callable[[Sample], Awaitable[Score]]
-
-# Type aliases for EvalConfig
-PrepareMessagesFn = Callable[[dict[str, Any]], list[Message]]
-EnvironmentFactory = Callable[[dict[str, Any]], Awaitable["Environment"]]
-
-
-@dataclass(frozen=True)
-class EvalConfig:
-    """Configuration for evaluation runs.
-
-    Tiger Style: All configuration explicit, immutable, composable.
-
-    TODO: Document API choice and its impact on results
-    Article quote: "OpenAI reports up to 3% improvements on SWE-bench Verified by using their
-    Responses API, while other providers, such as Anthropic, only offer a subset of features
-    in their OpenAI ChatCompletions compatible endpoint."
-
-    Article quote: "Minimax reports an astronomical 23 percentage point difference in performance
-    on tau-bench when using their API implementation compared to the standard ChatCompletions API."
-
-    Problem: We use native SDKs (good), but should document which API variant we use per provider
-    and ensure we're not leaving performance on the table by using compatibility endpoints.
-
-    Current status:
-    - OpenAI: Using Chat Completions (not Responses API - may underperform by ~3%)
-    - Anthropic: Using native Messages API (correct)
-    - Google: Using native Gemini API (correct)
-
-    Example:
-        >>> def prepare_messages(sample: dict) -> list[Message]:
-        ...     return [
-        ...         Message(role="system", content="You are a math tutor."),
-        ...         Message(role="user", content=sample["question"]),
-        ...     ]
-        >>> config = EvalConfig(
-        ...     endpoint=Endpoint.from_legacy(provider="openai", model="gpt-4o-mini"),
-        ...     score_fn=my_score_fn,
-        ...     prepare_messages=prepare_messages,
-        ...     max_concurrent=4,
-        ... )
-        >>> report = await evaluate(dataset, config)
-    """
-
-    # Required
-    endpoint: "Endpoint"
-    score_fn: ScoreFn
-    prepare_messages: PrepareMessagesFn
-
-    # Environment (optional - for tool-using agents)
-    # Use `environment` for stateless environments (same for all samples, e.g. CodingEnvironment)
-    # Use `environment_factory` when environment needs per-sample setup (e.g. GPUModeSimpleEnvironment)
-    environment: "Environment | None" = None
-    environment_factory: EnvironmentFactory | None = None
-
-    # Agent execution
-    # TODO: Require run_config explicitly instead of constructing hidden default when None
-    run_config: RunConfig | None = None
-
-    # Dataset control
-    max_samples: int | None = None  # If None, evaluate all
-
-    # Parallelization
-    max_concurrent: int = 1
-
-    # Output
-    output_dir: Path | None = None
-    eval_name: str = "evaluation"
-    config_path: str | None = (
-        None  # Path to config file relative to repo root (for dashboard links)
-    )
-
-    # Logging
-    # TODO: Consider consolidating verbose/show_progress/stream_tokens into single output mode
-    verbose: bool = True
-    show_progress: bool = False  # Enable sample-level progress tracking
-    stream_tokens: bool = False  # Stream LLM tokens to stdout (used if run_config is None)
-
-    # Sample-level retry for transient failures (rate limits, connection errors)
-    # Separates request-scale retries (SDK, seconds) from sample-scale retries (minutes)
-    max_sample_retries: int = 5  # Number of times to retry failed samples
-
-    # Two-level concurrency for maximizing API throughput during evals
-    # max_concurrent: total samples in flight (existing field)
-    # max_api_concurrent: max LLM API calls in flight (saturate tokens/min)
-    # max_tool_concurrent: max tool executions in flight (respect file descriptors, GPU limits)
-    # When both are set, samples yield their slot while waiting for the other resource type
-    max_api_concurrent: int | None = None  # None = use max_concurrent for API calls
-    max_tool_concurrent: int | None = None  # None = use max_concurrent for tool calls
-
-    # Interrupt/resume support
-    # resume_dir: Previous run directory to resume from (skip completed samples)
-    # report_batch_size: Write partial report every N samples (1 = after every sample)
-    resume_dir: Path | None = None
-    report_batch_size: int = 1  # Write report after each sample for best recovery
-
-    # Custom metadata (flows to report.json for dashboard filtering)
-    # e.g., {"experiment": "gemm", "runner": "elliot"}
-    metadata: dict[str, Any] | None = None
-
-
-# ── Session Types ──────────────────────────────────────────────────────────────
-# Types for persisting agent sessions (trajectories, config, environment state).
-# See docs/design/rollouts-session-design.md for design details.
-
-
-class SessionStatus(Enum):
-    """Session status."""
-
-    PENDING = "pending"
-    COMPLETED = "completed"
-    TRUNCATED = "truncated"
-    ABORTED = "aborted"
-
-
-# EndpointConfig deleted - use Endpoint.to_dict(exclude_secrets=True) instead
-
-
-@dataclass(frozen=True)
-class EnvironmentConfig:
-    """Environment configuration.
-
-    Stored in session for reproducibility.
-    """
-
-    type: str  # e.g., "gpumode", "localfs"
-    # Environment-specific config
-    config: dict[str, Any] = field(default_factory=dict)
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "type": self.type,
-            "config": self.config,
-        }
-
-    @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "EnvironmentConfig":
-        return cls(
-            type=data["type"],
-            config=data.get("config", {}),
-        )
-
-
-# SessionMessage deleted - use Message with optional timestamp instead
-
-
-@dataclass(frozen=True)
-class AgentSession:
-    """A persisted agent session.
-
-    This is the record stored in ~/.rollouts/sessions/<session_id>/
-    """
-
-    # Identity
-    # TODO(naming): AgentSession vs AgentState has justified separation (persistence vs runtime)
-    # but some friction:
-    # - parent_id here vs parent_session_id in AgentState (same semantic, different names)
-    # - Lossy conversion: Environment Protocol -> EnvironmentConfig loses config details
-    # - Completions lost on persist (Trajectory.completions not stored, only messages)
-    # - Status mapping in agents.py:1067 has gaps (some StopReasons -> PENDING)
-    # Not blocking, but worth aligning names and documenting the lossy conversions
-    session_id: str
-    parent_id: str | None = None  # None for root sessions
-    branch_point: int | None = None  # message index where branched from parent
-
-    # Config (serializable, stored in session.json)
-    # Endpoint stored with secrets excluded via to_dict(exclude_secrets=True)
-    endpoint: Endpoint = field(
-        default_factory=lambda: Endpoint(model="", base_url="", api_format="")
-    )
-    environment: EnvironmentConfig = field(default_factory=lambda: EnvironmentConfig(type=""))
-
-    # Trajectory - uses Message directly (with optional timestamp field)
-    messages: list[Message] = field(default_factory=list)
-    message_count: int | None = None  # Set when listing (without loading messages)
-
-    # Environment state (opaque, env-specific)
-    # TODO(environment_state): This opaque dict has several issues:
-    # - No schema validation: env changes shape silently break resume
-    # - Missing serialize() in some envs (swe_grep crashes on persist)
-    # - Some envs can't deserialize from cold storage (terminal_bench, handoff)
-    # - Version fields exist (repl) but are ignored during deserialize
-    # - agents.py:714 silently swallows serialize errors (env_state becomes None)
-    # Consider: typed Protocol for env state, or at minimum validate env_kind + version
-    environment_state: dict[str, Any] | None = None
-
-    # Outcome
-    status: SessionStatus = SessionStatus.PENDING
-    reward: float | dict[str, float] | None = None
-
-    # Metadata
-    tags: dict[str, str] = field(default_factory=dict)
-    created_at: str = field(default_factory=lambda: datetime.now().isoformat())
-    updated_at: str = field(default_factory=lambda: datetime.now().isoformat())
-
-    # VCS info for agent-trace attribution (optional)
-    # Format: {"type": "git", "revision": "abc123...", "root": "/path/to/repo"}
-    vcs: dict[str, str] | None = None
-
-    def to_dict(self) -> dict[str, Any]:
-        """Serialize to dict for JSON storage."""
-        d = {
-            "session_id": self.session_id,
-            "parent_id": self.parent_id,
-            "branch_point": self.branch_point,
-            "endpoint": self.endpoint.to_dict(exclude_secrets=True),
-            "environment": self.environment.to_dict(),
-            # messages are stored separately in messages.jsonl
-            "environment_state": self.environment_state,
-            "status": self.status.value,
-            "reward": self.reward,
-            "tags": self.tags,
-            "created_at": self.created_at,
-            "updated_at": self.updated_at,
-        }
-        if self.vcs is not None:
-            d["vcs"] = self.vcs
-        return d
-
-    @classmethod
-    def from_dict(
-        cls, data: dict[str, Any], messages: list[Message] | None = None
-    ) -> "AgentSession":
-        """Deserialize from dict."""
-        return cls(
-            session_id=data["session_id"],
-            parent_id=data.get("parent_id"),
-            branch_point=data.get("branch_point"),
-            endpoint=Endpoint.from_dict(data["endpoint"]),
-            environment=EnvironmentConfig.from_dict(data["environment"]),
-            messages=messages or [],
-            environment_state=data.get("environment_state"),
-            status=SessionStatus(data.get("status", "pending")),
-            reward=data.get("reward"),
-            tags=data.get("tags", {}),
-            created_at=data.get("created_at", datetime.now().isoformat()),
-            updated_at=data.get("updated_at", datetime.now().isoformat()),
-            vcs=data.get("vcs"),
         )

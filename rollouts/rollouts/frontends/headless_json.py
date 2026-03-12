@@ -1,9 +1,9 @@
-"""HeadlessJsonFrontend - Bidirectional NDJSON for scripting and testing.
+"""HeadlessJsonFrontend - bidirectional NDJSON for scripting and testing.
 
 Unlike JsonFrontend which is output-only, this frontend supports:
-- Reading NDJSON input from stdin (user messages, slash commands)
+- Reading NDJSON input from stdin (user messages, slash commands, interrupts)
 - Emitting NDJSON output to stdout (responses, command results)
-- Processing slash commands like the TUI does
+- Acting as a pure input/output transport while the runner owns command logic
 
 Designed for:
 - Testing slash commands programmatically
@@ -33,6 +33,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import trio
+
+from .protocol import InputExit, InputInterrupt, InputResult, SlashCommand, UserMessage
 
 if TYPE_CHECKING:
     from ..dtypes import Endpoint, Environment, StreamEvent, ToolCall, Trajectory
@@ -236,6 +238,10 @@ class HeadlessJsonFrontend:
         if err or not session:
             return False
 
+        trajectory, err = await self.session_store.get_trajectory(new_session_id)
+        if err or not trajectory:
+            return False
+
         self.session_id = new_session_id
         self._session_id = new_session_id
 
@@ -244,9 +250,7 @@ class HeadlessJsonFrontend:
         self.endpoint = session.endpoint
 
         # Update trajectory
-        from ..dtypes import Trajectory
-
-        self.trajectory = Trajectory(messages=session.messages)
+        self.trajectory = trajectory
 
         self._emit({
             "type": "system",
@@ -256,13 +260,13 @@ class HeadlessJsonFrontend:
 
         return True
 
-    async def get_input(self, prompt: str = "") -> str:
+    async def get_input(self, prompt: str = "") -> InputResult:
         """Get user input from stdin NDJSON.
 
         Reads JSON lines from stdin. Each line should be:
             {"type": "user", "text": "..."}
-
-        Slash commands are processed internally.
+            {"type": "interrupt"}
+            {"type": "exit"}
         """
         while True:
             # Read next line from stdin
@@ -270,7 +274,7 @@ class HeadlessJsonFrontend:
 
             if line is None:
                 # EOF - signal to stop
-                raise EOFError("No more input")
+                return InputExit()
 
             # Parse JSON
             try:
@@ -280,6 +284,19 @@ class HeadlessJsonFrontend:
                     "type": "error",
                     "error": f"Invalid JSON input: {e}",
                     "line": line,
+                })
+                continue
+
+            msg_type = data.get("type", "user")
+            if msg_type == "interrupt":
+                return InputInterrupt()
+            if msg_type == "exit":
+                return InputExit()
+            if msg_type != "user":
+                self._emit({
+                    "type": "error",
+                    "error": "Unsupported input type",
+                    "input": data,
                 })
                 continue
 
@@ -293,15 +310,16 @@ class HeadlessJsonFrontend:
                 })
                 continue
 
-            # Handle slash commands
             if text.startswith("/"):
-                handled, expanded_text = await self._handle_slash_command(text)
-                if handled:
-                    continue
-                if expanded_text:
-                    return expanded_text
+                space_idx = text.find(" ")
+                if space_idx == -1:
+                    return SlashCommand(name=text[1:], args="")
+                return SlashCommand(name=text[1:space_idx], args=text[space_idx + 1 :].strip())
 
-            return text
+            if text.strip().lower() in ("exit", "quit", "q"):
+                return InputExit()
+
+            return UserMessage(text=text)
 
     async def _read_input_line(self) -> str | None:
         """Read a single line from stdin asynchronously."""
@@ -327,6 +345,10 @@ class HeadlessJsonFrontend:
     async def confirm_tool(self, tool_call: ToolCall) -> bool:
         """Auto-approve all tools in headless mode."""
         return True
+
+    def add_system_message(self, text: str) -> None:
+        """Emit a system notice message."""
+        self._emit({"type": "system", "subtype": "message", "text": text})
 
     def show_loader(self, text: str) -> None:
         """Emit loader event."""

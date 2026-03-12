@@ -20,12 +20,12 @@ from typing import Any
 
 from openai import AsyncOpenAI
 
+from ..agents import Actor
+from ..core import Message, ToolCall, Usage
 from ..dtypes import (
-    Actor,
     ChatCompletion,
     Choice,
     FirstToken,
-    Message,
     StreamDone,
     StreamError,
     StreamEvent,
@@ -38,13 +38,11 @@ from ..dtypes import (
     ThinkingDelta,
     ThinkingEnd,
     ThinkingStart,
-    ToolCall,
     ToolCallContent,
     ToolCallDelta,
     ToolCallEnd,
     ToolCallError,
     ToolCallStart,
-    Usage,
     parse_streaming_json,
 )
 from .base import (
@@ -628,7 +626,7 @@ async def rollout_openai_responses(
     client = AsyncOpenAI(**client_kwargs)
 
     # Transform messages for cross-provider compatibility (like pi-ai does)
-    from ..transform_messages import transform_messages
+    from ..agents.transform_messages import transform_messages
 
     transformed_messages = transform_messages(
         actor.trajectory.messages,

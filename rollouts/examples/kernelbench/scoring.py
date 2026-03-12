@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from rollouts.dtypes import Score
+    from rollouts.core import Score
     from rollouts.training.types import Sample
 
 
@@ -29,7 +29,7 @@ def kernelbench_score_fn(sample: Sample) -> Score:
     Returns:
         Score with reward and metrics
     """
-    from rollouts.dtypes import Metric, Score
+    from rollouts.core import Metric, Score
 
     metadata = sample.metadata if hasattr(sample, "metadata") else {}
 
@@ -74,7 +74,7 @@ def kernelbench_single_turn_score_fn(sample: Sample) -> Score:
         Score with reward and metrics
     """
 
-    from rollouts.dtypes import Metric, Score
+    from rollouts.core import Metric, Score
 
     response = sample.response if hasattr(sample, "response") else ""
     metadata = sample.metadata if hasattr(sample, "metadata") else {}

@@ -29,11 +29,10 @@ import trio
 if TYPE_CHECKING:
     from ..frontends.tui.theme import Theme
 
-from ..dtypes import (
-    AgentState,
+from ..agents import AgentState, RunConfig
+from ..core import (
     Endpoint,
     Message,
-    RunConfig,
     StopReason,
     Tool,
     ToolCall,
@@ -705,7 +704,8 @@ findings = agent("Find security vulnerabilities and explain each", auth_code)
 
     async def _async_llm_query(self, prompt: str) -> str:
         """Make a simple LLM call (no tools, no recursion)."""
-        from ..dtypes import Actor, Trajectory
+        from ..agents import Actor
+        from ..core import Trajectory
         from ..providers import get_provider_function_by_format
 
         assert self.sub_endpoint is not None
@@ -735,12 +735,14 @@ findings = agent("Find security vulnerabilities and explain each", auth_code)
     async def _async_agent(self, task: str, context: str, run_config: RunConfig) -> str:
         """Spawn a child agent with full tool access."""
         from ..agents import (
+            Actor,
             compose_handlers,
             handle_stop_max_turns,
             handle_stop_on_empty_message,
             run_agent,
         )
-        from ..dtypes import Actor, ToolConfirmResult, Trajectory
+        from ..core import Trajectory
+        from ..dtypes import ToolConfirmResult
 
         assert self.sub_endpoint is not None
 

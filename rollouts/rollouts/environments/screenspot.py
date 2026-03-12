@@ -8,7 +8,8 @@ import re
 
 import trio
 
-from ..dtypes import AgentState, Message, Tool, ToolCall, ToolResult
+from ..agents import AgentState
+from ..core import Message, Tool, ToolCall, ToolResult
 
 
 class ScreenSpotEnvironment:

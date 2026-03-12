@@ -25,8 +25,8 @@ from typing import Any
 
 import trio
 
-from .agents import run_agent
-from .dtypes import Actor, AgentState, Endpoint, Environment, Message, RunConfig, Trajectory
+from .agents import Actor, AgentState, RunConfig, run_agent
+from .core import Endpoint, Environment, Message, Trajectory
 
 logger = logging.getLogger(__name__)
 

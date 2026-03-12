@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from rollouts.dtypes import Tool, ToolCall, ToolFunction, ToolFunctionParameter
+from rollouts.core import Tool, ToolCall, ToolFunction, ToolFunctionParameter
 
 # Type for injectable search function
 # Takes (query, top_k) and returns formatted search results string

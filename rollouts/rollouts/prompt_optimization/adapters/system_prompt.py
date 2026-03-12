@@ -15,18 +15,10 @@ from typing import Any
 
 import trio
 
-from ...agents import handle_stop_max_turns
-from ...dtypes import (
-    AgentState,
-    Endpoint,
-    EvalConfig,
-    Message,
-    RunConfig,
-    Score,
-    StopReason,
-    StreamEvent,
-)
-from ...evaluation import EvalRuntime, evaluate_sample
+from ...agents import AgentState, RunConfig, handle_stop_max_turns
+from ...core import Endpoint, EvalConfig, Message, Score, StopReason
+from ...dtypes import StreamEvent
+from ...eval.native import EvalRuntime, evaluate_sample
 from ...training.types import Sample
 from ..types import Candidate, EvaluationBatch
 

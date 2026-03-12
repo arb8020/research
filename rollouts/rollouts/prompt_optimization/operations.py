@@ -106,8 +106,8 @@ async def propose_mutation(
     Returns:
         New text for the component
     """
-    from ..agents import rollout
-    from ..dtypes import Actor, Trajectory
+    from ..agents import Actor, rollout
+    from ..core import Trajectory
 
     current_instruction = candidate[component]
     examples_text = format_reflective_examples(reflective_data)

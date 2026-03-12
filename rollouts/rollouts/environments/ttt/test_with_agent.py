@@ -4,8 +4,8 @@ import os
 
 import trio
 
-from ...agents import run_agent
-from ...dtypes import Actor, AgentState, Endpoint, Message, RunConfig, Trajectory
+from ...agents import Actor, AgentState, RunConfig, run_agent
+from ...core import Endpoint, Message, Trajectory
 from .code_challenge import FibonacciEnvironment
 
 

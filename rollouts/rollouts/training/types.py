@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Any, Generic, Protocol, TypeVar, runtime_check
 import trio
 
 if TYPE_CHECKING:
-    from ..dtypes import Score, Trajectory
+    from ..core import Score, Trajectory
 
 
 class Status(Enum):
@@ -143,7 +143,7 @@ class Sample:
                 if content is None:
                     continue
                 # Handle content blocks - extract text
-                from ..dtypes import TextContent, ThinkingContent
+                from ..core import TextContent, ThinkingContent
 
                 parts = []
                 for block in content:
@@ -174,7 +174,7 @@ class Sample:
         """
         import json
 
-        from ..dtypes import Trajectory
+        from ..core import Trajectory
 
         d: dict[str, Any] = {}
         for key, value in self.__dict__.items():
@@ -214,7 +214,7 @@ class Sample:
             >>> d = {"id": "001", "prompt": "Q", "status": "completed"}
             >>> sample = Sample.from_dict(d)
         """
-        from ..dtypes import Metric, Score, Trajectory
+        from ..core import Metric, Score, Trajectory
 
         data = data.copy()
         if "status" in data:

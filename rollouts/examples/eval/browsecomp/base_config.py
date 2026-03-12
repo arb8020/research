@@ -31,7 +31,7 @@ from typing import Any
 import pandas as pd
 import trio
 
-from rollouts.dtypes import Endpoint, Message, Metric, Score, Trajectory
+from rollouts.core import Endpoint, Message, Metric, Score, Trajectory
 
 logger = logging.getLogger(__name__)
 
@@ -232,7 +232,7 @@ async def grade_response(
 
     Returns True if the response is correct, False otherwise.
     """
-    from rollouts.dtypes import Actor
+    from rollouts.agents import Actor
     from rollouts.providers import get_provider_function
 
     grader_prompt = GRADER_TEMPLATE.format(
@@ -368,10 +368,10 @@ def _get_grader_endpoint(config: GraderConfig) -> Endpoint:
 async def _run_eval(config: BrowseCompConfig) -> dict[str, Any]:
     """Run BrowseComp evaluation using rollouts framework."""
     from rollouts._logging import setup_logging
-    from rollouts.agents import handle_stop_max_turns
-    from rollouts.dtypes import EvalConfig, RunConfig
+    from rollouts.agents import RunConfig, handle_stop_max_turns
+    from rollouts.core import EvalConfig
     from rollouts.environments import BrowsingEnvironment
-    from rollouts.evaluation import evaluate
+    from rollouts.eval import evaluate
 
     setup_logging(level="INFO", use_color=True)
 

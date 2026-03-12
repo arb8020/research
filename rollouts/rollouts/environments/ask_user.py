@@ -25,10 +25,9 @@ from typing import TYPE_CHECKING, Any
 
 import trio
 
-from ..dtypes import (
-    AgentState,
+from ..agents import AgentState, RunConfig
+from ..core import (
     Message,
-    RunConfig,
     Tool,
     ToolCall,
     ToolFunction,

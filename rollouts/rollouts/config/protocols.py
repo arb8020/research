@@ -13,7 +13,7 @@ from typing import Any, Protocol, runtime_checkable
 
 # Import types from ..dtypes
 # These are already defined and used across projects
-from ..dtypes import Endpoint, EvalConfig, Message
+from ..core import Endpoint, EvalConfig, Message
 
 
 @runtime_checkable

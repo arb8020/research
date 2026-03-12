@@ -11,7 +11,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from rollouts.dtypes import Endpoint, EvalConfig, Message, Metric, Score
+from rollouts.core import Endpoint, EvalConfig, Message, Metric, Score
 from rollouts.training.types import Sample
 
 from ..judge import JudgeTemplate, judge_single
@@ -136,7 +136,7 @@ def make_insecure_code_eval_config(
         output_dir: Where to save results
 
     Returns:
-        (config, dataset) tuple — pass both to rollouts.evaluation.evaluate()
+        (config, dataset) tuple — pass both to rollouts.eval.evaluate()
     """
     dataset = load_code_prompts(prompts_path, num_contexts)
 

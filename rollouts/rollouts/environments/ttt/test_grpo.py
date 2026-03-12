@@ -3,7 +3,7 @@
 This verifies the environment integrates with the existing GRPO infrastructure.
 """
 
-from ...dtypes import Metric, Score
+from ...core import Metric, Score
 from ...training.grpo import GRPOConfig, grpo_train
 from ...training.types import Sample
 from .code_challenge import CodeChallengeEnvironment, FibonacciEnvironment

@@ -34,8 +34,7 @@ from ..dtypes import (
 )
 
 if TYPE_CHECKING:
-    from ..agents import AgentState
-    from ..dtypes import RunConfig
+    from ..agents import AgentState, RunConfig
     from ..store import SessionStore
 
 logger = logging.getLogger(__name__)

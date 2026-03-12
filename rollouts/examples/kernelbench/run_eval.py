@@ -24,6 +24,8 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import logging
+import platform
+import socket
 import subprocess
 import sys
 from pathlib import Path
@@ -38,12 +40,14 @@ if str(repo_root) not in sys.path:
 
 from examples.kernelbench.dataset import load_kernelbench_prompts
 from examples.kernelbench.scoring import kernelbench_score_fn
-from rollouts.dtypes import AgentState, Endpoint, EvalConfig, Message, RunConfig
+from rollouts.agents import AgentState, RunConfig
+from rollouts.core import Endpoint, EvalConfig, Message
 from rollouts.environments.kernelbench_multi import (
     KernelBenchMultiTurnEnvironment,
-    configure_sandbox_pool,
+    SandboxPoolKernelEvaluator,
 )
-from rollouts.evaluation import evaluate
+from rollouts.eval import evaluate
+from rollouts.fingerprint import fingerprint_eval
 from rollouts.gpu_sandbox import SandboxPool
 
 logger = logging.getLogger(__name__)
@@ -61,6 +65,75 @@ async def multi_turn_no_tool_handler(state: AgentState, run_config: RunConfig) -
     # If it did, we respect that. If not, we continue the multi-turn loop.
     # The state is returned as-is - the agent loop will increment turn_idx.
     return state
+
+
+def _summarize_sandbox_configs(sandbox_configs: list[Any]) -> list[dict[str, Any]]:
+    summaries: list[dict[str, Any]] = []
+    for config in sandbox_configs:
+        summary = {
+            "type": type(config).__name__,
+        }
+        for field_name in ("provider", "gpu_type", "gpu", "count", "max_price", "docker_image"):
+            value = getattr(config, field_name, None)
+            if value is not None:
+                summary[field_name] = value
+        summaries.append(summary)
+    return summaries
+
+
+def _collect_eval_host_provenance() -> dict[str, Any]:
+    provenance: dict[str, Any] = {
+        "hostname": socket.gethostname(),
+        "platform": platform.platform(),
+        "python_version": platform.python_version(),
+    }
+
+    try:
+        import torch
+
+        torch_provenance: dict[str, Any] = {
+            "version": torch.__version__,
+            "cuda_version": torch.version.cuda,
+            "hip_version": getattr(torch.version, "hip", None),
+            "cuda_available": torch.cuda.is_available(),
+        }
+        if torch.cuda.is_available():
+            torch_provenance["device_count"] = torch.cuda.device_count()
+            torch_provenance["device_name"] = torch.cuda.get_device_name(0)
+            if hasattr(torch.cuda, "get_device_capability"):
+                torch_provenance["device_capability"] = list(torch.cuda.get_device_capability(0))
+        provenance["torch"] = torch_provenance
+    except Exception as exc:
+        provenance["torch_error"] = str(exc)
+
+    return provenance
+
+
+def _build_kernelbench_provenance(
+    config: dict[str, Any],
+    eval_config: EvalConfig,
+) -> dict[str, Any]:
+    sandbox_summary = _summarize_sandbox_configs(config["sandbox_configs"])
+    kernelbench_config = {
+        "levels": list(config["levels"]),
+        "backend": config["backend"],
+        "max_turns": config["max_turns"],
+        "max_samples": config["max_samples"],
+        "max_concurrent": config["max_concurrent"],
+        "eval_name": config["eval_name"],
+        "sandbox_configs": sandbox_summary,
+    }
+    fingerprint = fingerprint_eval(
+        eval_config,
+        tools=[],
+        extra_config=kernelbench_config,
+        allow_dirty=True,
+    )
+    return {
+        "config_fingerprint": fingerprint,
+        "eval_host": _collect_eval_host_provenance(),
+        "kernelbench_config": kernelbench_config,
+    }
 
 
 def load_config(config_path: str) -> dict[str, Any]:
@@ -177,9 +250,8 @@ async def run_eval(config_path: str, cli_overrides: dict[str, Any]) -> None:
         prompts = prompts[: config["max_samples"]]
     logger.info(f"Loaded {len(prompts)} problems from levels {config['levels']} (skip={skip})")
 
-    # Configure sandbox pool for kernel evaluation
     pool = SandboxPool(config["sandbox_configs"])
-    configure_sandbox_pool(pool)
+    evaluator = SandboxPoolKernelEvaluator(pool)
 
     # Create environment factory
     async def environment_factory(sample: dict[str, Any]) -> KernelBenchMultiTurnEnvironment:
@@ -187,6 +259,7 @@ async def run_eval(config_path: str, cli_overrides: dict[str, Any]) -> None:
             ref_code=sample.get("ref_code", ""),
             backend=config["backend"],
             max_turns=config["max_turns"],
+            evaluator=evaluator,
         )
 
     # Build run_config with multi-turn handler (don't auto-stop on no tools)
@@ -211,6 +284,10 @@ async def run_eval(config_path: str, cli_overrides: dict[str, Any]) -> None:
         verbose=config["verbose"],
         show_progress=True,
         run_config=run_config,
+    )
+    eval_config = dataclass_replace(
+        eval_config,
+        metadata=_build_kernelbench_provenance(config, eval_config),
     )
 
     # Start sandbox pool

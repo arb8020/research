@@ -2,10 +2,9 @@ from dataclasses import dataclass
 
 import trio
 
-from ..dtypes import (
-    AgentState,
+from ..agents import AgentState, RunConfig
+from ..core import (
     Message,
-    RunConfig,
     StopReason,
     Tool,
     ToolCall,

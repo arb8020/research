@@ -19,18 +19,15 @@ from typing import Any
 
 import trio
 
-from ...agents import run_agent
-from ...dtypes import (
-    Actor,
-    AgentState,
+from ...agents import Actor, AgentState, RunConfig, run_agent
+from ...core import (
     Endpoint,
     Message,
-    RunConfig,
     StopReason,
-    StreamEvent,
     Trajectory,
 )
-from ...environments.terminal_bench import TerminalBenchEnvironment
+from ...dtypes import StreamEvent
+from ...environments.terminal_bench import TerminalBenchEnvironment, run_tests_and_score
 from ..types import Candidate, EvaluationBatch
 
 logger = logging.getLogger(__name__)
@@ -64,85 +61,6 @@ class TerminalBenchConfig:
 
 
 # ─── Pure Functions ───────────────────────────────────────────────────────────
-
-
-async def run_tests_and_score(
-    env: TerminalBenchEnvironment,
-) -> tuple[float, bool, str]:
-    """Run terminal-bench tests and compute score.
-
-    Returns:
-        Tuple of (score, success, failure_reason)
-    """
-    from terminal_bench.dataset.dataset import Dataset
-    from terminal_bench.handlers.trial_handler import Task, TaskPaths
-    from terminal_bench.parsers.parser_factory import ParserFactory
-    from terminal_bench.terminal.docker_compose_manager import DockerComposeManager
-
-    # Get task paths
-    dataset = Dataset(name="terminal-bench-core", version="head", task_ids=[env.task_id])
-    task_path = dataset._tasks[0]
-    task = Task.from_yaml(task_path / "task.yaml")
-    task_paths = TaskPaths(task_path)
-
-    def setup_and_run_tests() -> tuple[str | None, str | None]:
-        # Copy test script
-        env.terminal.copy_to_container(
-            paths=[task_paths.run_tests_path],
-            container_dir=str(DockerComposeManager.CONTAINER_TEST_DIR),
-        )
-
-        # Copy test directory if it exists
-        if task_paths.test_dir.exists():
-            env.terminal.copy_to_container(
-                paths=[task_paths.test_dir],
-                container_dir=str(DockerComposeManager.CONTAINER_TEST_DIR),
-            )
-
-        # Create a new session for tests
-        test_session = env.terminal.create_session(
-            "tests", is_active_stream=False, as_configured_user=False
-        )
-
-        # Run tests
-        test_script = DockerComposeManager.CONTAINER_TEST_DIR / task_paths.run_tests_path.name
-        try:
-            test_session.send_keys(
-                [f"bash {test_script}", "Enter"],
-                block=True,
-                max_timeout_sec=task.max_test_timeout_sec,
-            )
-        except TimeoutError:
-            return None, "TEST_TIMEOUT"
-
-        return test_session.capture_pane(capture_entire=True), None
-
-    test_output, timeout_error = await trio.to_thread.run_sync(setup_and_run_tests)
-
-    if timeout_error:
-        return 0.0, False, timeout_error
-
-    # Parse results
-    try:
-        parser = ParserFactory.get_parser(task.parser_name)
-        results = parser.parse(test_output)
-
-        if results is None:
-            return 0.0, False, "PARSE_ERROR"
-
-        # Compute score as fraction of passed tests
-        passed = sum(1 for r in results.values() if str(r) == "UnitTestStatus.PASSED")
-        total = len(results)
-        score = passed / total if total > 0 else 0.0
-
-        success = all(str(r) == "UnitTestStatus.PASSED" for r in results.values())
-        failure_reason = "" if success else f"Failed {total - passed}/{total} tests"
-
-        return score, success, failure_reason
-
-    except Exception as e:
-        logger.exception(f"Error parsing test results: {e}")
-        return 0.0, False, f"PARSE_ERROR: {e}"
 
 
 def _handle_stop_max_turns(max_turns: int) -> Callable[[AgentState], AgentState]:

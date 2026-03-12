@@ -11,7 +11,7 @@ Builds system prompts with:
 from datetime import datetime
 from pathlib import Path
 
-from .dtypes import Tool
+from .core import Tool
 from .paths import get_config_dir, get_docs_dir, get_readme_path, get_version
 
 # =============================================================================

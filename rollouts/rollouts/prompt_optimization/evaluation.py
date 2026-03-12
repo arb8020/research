@@ -4,33 +4,20 @@ Evaluates prompt templates on datasets using the existing rollouts infrastructur
 """
 
 import logging
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Sequence
 from dataclasses import replace
 from typing import Any
 
 import trio
 
-from ..agents import rollout
-from ..dtypes import (
-    Actor,
-    Endpoint,
-    Environment,
-    RunConfig,
-    Score,
-    StreamEvent,
-    Trajectory,
-)
+from ..agents import Actor, RunConfig, rollout
+from ..core import Endpoint, Environment, Trajectory
+from ..dtypes import StreamEvent
 from ..training.types import Sample
 from .formatting import format_prompt
 from .types import PromptTemplate
 
 logger = logging.getLogger(__name__)
-
-# Type alias for score function
-ScoreFn = Callable[[Sample], Score] | Callable[[Sample], Awaitable[Score]]
-
-# Type alias for environment factory
-EnvironmentFactory = Callable[[dict[str, Any]], Awaitable[Environment]]
 
 
 async def _silent_chunk_handler(_: StreamEvent) -> None:

@@ -21,17 +21,12 @@ Scenario:
 
 import json
 
-from rollouts.dtypes import (
-    Message,
-    TextContent,
-    ThinkingContent,
-    ToolCallContent,
-)
+from rollouts.agents.transform_messages import transform_messages
+from rollouts.core import Message, TextContent, ThinkingContent, ToolCallContent
 from rollouts.providers.anthropic import (
     _merge_consecutive_api_messages,
     _message_to_anthropic,
 )
-from rollouts.transform_messages import transform_messages
 
 
 def test_session_resume_message_order() -> None:
@@ -376,17 +371,3 @@ def test_interrupt_then_continue_scenario() -> None:
                 )
 
     print("\n✅ No bug detected - tool_result is not in first message")
-
-
-if __name__ == "__main__":
-    print("Running test_session_resume_message_order...")
-    test_session_resume_message_order()
-
-    print("\nRunning test_tool_result_position_in_merged_messages...")
-    test_tool_result_position_in_merged_messages()
-
-    print("\nRunning test_interrupt_then_continue_scenario...")
-    test_interrupt_then_continue_scenario()
-
-    print("\n" + "=" * 50)
-    print("All tests passed!")

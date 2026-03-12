@@ -15,14 +15,24 @@ For Anthropic: auto-uses OAuth if logged in, otherwise ANTHROPIC_API_KEY.
 from __future__ import annotations
 
 import argparse
+import json
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 import trio
 
-from .dtypes import AgentSession, Endpoint, Message, Trajectory
+from .core import (
+    Endpoint,
+    Message,
+    SessionHandle,
+    SessionStatus,
+    Trajectory,
+    TrajectoryEnvironment,
+    TrajectorySession,
+)
 from .environments import (
     CalculatorEnvironment,
     GitWorktreeEnvironment,
@@ -103,6 +113,16 @@ print(matches[:5])
 ```
 
 When you have the answer: FINAL(42)""",
+    "orchestrate": """You are an orchestration agent. Delegate bounded work to child threads instead of doing implementation directly.
+
+Use the orchestrate tool to write async Python that calls:
+- system.thread(...) for subagents
+- system.query(...) for tool-less questions
+- system.fromId(...) to reuse prior child results
+- system.allocate(...) / shared docs for cross-thread artifacts
+- system.log(...) for progress
+
+Prefer short, purpose-built child tasks. Reuse aliases when continuing a workstream.""",
 }
 
 # Token and thinking budget defaults
@@ -134,6 +154,13 @@ class CLIConfig:
     cwd: str | None = None
     confirm_tools: bool = False
     context: str | None = None  # For REPL environments
+    tbench_task_id: str | None = None
+    tbench_dataset_name: str = "terminal-bench-core"
+    tbench_dataset_version: str = "head"
+    tbench_surface: str = "terminal"
+    tbench_logging_dir: str | None = None
+    tbench_rebuild: bool = False
+    tbench_no_cleanup: bool = False
 
     # Session
     continue_session: bool = False
@@ -144,7 +171,7 @@ class CLIConfig:
     print_mode: str | None = None
     stream_json: bool = False
     quiet: bool = False
-    initial_prompt: str | None = None
+    bootstrap_input: str | None = None
 
     # Frontend
     frontend: str = "tui"
@@ -259,8 +286,8 @@ def create_parser() -> argparse.ArgumentParser:
         type=str,
         default=PARSER_DEFAULTS["env"],
         help=(
-            "Environment with tools. Options: none, calculator, coding, git, repl, repl_blocks. "
-            "Compose with '+': coding+repl, git+repl (default: none)"
+            "Environment with tools. Options: none, ask_user, calculator, coding, git, orchestrate, repl, repl_blocks, tbench. "
+            "Compose with '+': coding+repl, git+repl, orchestrate+coding (default: none)"
         ),
     )
     parser.add_argument(
@@ -291,6 +318,46 @@ def create_parser() -> argparse.ArgumentParser:
         type=str,
         default=None,
         help="Path to file containing context for REPL environments",
+    )
+    parser.add_argument(
+        "--tbench-task-id",
+        type=str,
+        default=None,
+        help="Terminal-Bench task ID for --env tbench",
+    )
+    parser.add_argument(
+        "--tbench-dataset-name",
+        type=str,
+        default="terminal-bench-core",
+        help="Terminal-Bench dataset name (default: terminal-bench-core)",
+    )
+    parser.add_argument(
+        "--tbench-dataset-version",
+        type=str,
+        default="head",
+        help="Terminal-Bench dataset version (default: head)",
+    )
+    parser.add_argument(
+        "--tbench-surface",
+        type=str,
+        default="terminal",
+        help="Terminal-Bench tool surface (default: terminal)",
+    )
+    parser.add_argument(
+        "--tbench-logging-dir",
+        type=str,
+        default=None,
+        help="Terminal-Bench run directory (default: auto-generated runs/tb_<task>_<timestamp>)",
+    )
+    parser.add_argument(
+        "--tbench-rebuild",
+        action="store_true",
+        help="Rebuild the Terminal-Bench task image before starting",
+    )
+    parser.add_argument(
+        "--tbench-no-cleanup",
+        action="store_true",
+        help="Keep Terminal-Bench containers/artifacts alive after the run",
     )
 
     # Session management
@@ -623,7 +690,7 @@ def format_time_ago(dt_str: str) -> str:
         return f"{days}d ago"
 
 
-async def pick_session_async(session_store: FileSessionStore) -> AgentSession | None:
+async def pick_session_async(session_store: FileSessionStore) -> SessionHandle | None:
     """Interactive session picker. Returns None if no sessions or user cancels."""
     sessions = await session_store.list(limit=20)
 
@@ -1084,18 +1151,26 @@ def cmd_export(
                 return 1
         elif config.session == "" or config.continue_session:
             if config.continue_session:
-                session, err = await session_store.get_latest()
-                if err or session is None:
+                summary, err = await session_store.get_latest()
+                if err or summary is None:
                     print("No sessions found", file=sys.stderr)
+                    return 1
+                session, err = await session_store.get(summary.session_id)
+                if err or session is None:
+                    print(f"Error loading session: {err}", file=sys.stderr)
                     return 1
             else:
                 session = await pick_session_async(session_store)
                 if session is None:
                     return 0
         else:
-            session, err = await session_store.get_latest()
-            if err or session is None:
+            summary, err = await session_store.get_latest()
+            if err or summary is None:
                 print("No sessions found. Use -s to select a session.", file=sys.stderr)
+                return 1
+            session, err = await session_store.get(summary.session_id)
+            if err or session is None:
+                print(f"Error loading session: {err}", file=sys.stderr)
                 return 1
 
         if config.export_md is not None:
@@ -1183,7 +1258,7 @@ def cmd_doctor(config: CLIConfig, session_store: FileSessionStore) -> int:
 
 
 def _diagnose_session_issues(
-    session: AgentSession,
+    session: SessionHandle,
 ) -> list[tuple[str, str, list[int]]]:
     """Diagnose issues in a session. Returns list of (issue_type, description, affected_indices)."""
     issues: list[tuple[str, str, list[int]]] = []
@@ -1236,7 +1311,7 @@ def _diagnose_session_issues(
 
 
 async def _fix_session_issues(
-    session: AgentSession,
+    session: SessionHandle,
     issues: list[tuple[str, str, list[int]]],
     session_store: FileSessionStore,
 ) -> int:
@@ -1251,17 +1326,27 @@ async def _fix_session_issues(
         return 0
 
     fixed_messages = [msg for i, msg in enumerate(session.messages) if i not in indices_to_remove]
-
-    new_session = await session_store.create(
-        endpoint=session.endpoint,
-        environment=session.environment,
-        parent_id=session.session_id,
-        branch_point=len(fixed_messages),
-        tags={"doctor": "fixed", "removed_indices": str(sorted(indices_to_remove))},
+    fixed_trajectory = Trajectory(
+        messages=fixed_messages,
+        annotations=session.to_trajectory().annotations,
+        session=TrajectorySession(
+            parent_id=session.session_id,
+            branch_point=len(fixed_messages),
+            endpoint=session.endpoint,
+            status=SessionStatus.PENDING.value,
+            tags={"doctor": "fixed", "removed_indices": str(sorted(indices_to_remove))},
+            vcs=session.vcs,
+        ),
+        environment=TrajectoryEnvironment.from_session_parts(
+            session.environment,
+            session.environment_state,
+        ),
     )
 
-    for msg in fixed_messages:
-        await session_store.append_message(new_session.session_id, msg)
+    new_session, err = await session_store.save_trajectory(fixed_trajectory)
+    if err is not None or new_session is None:
+        print(f"\nFailed to create fixed session: {err or 'unknown error'}", file=sys.stderr)
+        return 1
 
     print(f"\nCreated fixed session: {new_session.session_id}")
     print(f"  Removed {len(indices_to_remove)} message(s) at indices: {sorted(indices_to_remove)}")
@@ -1271,7 +1356,7 @@ async def _fix_session_issues(
 
 
 async def _trim_session(
-    session: AgentSession,
+    session: SessionHandle,
     trim_count: int,
     session_store: FileSessionStore,
 ) -> int:
@@ -1288,17 +1373,27 @@ async def _trim_session(
 
     trimmed_messages = session.messages[:-trim_count]
     branch_point = len(trimmed_messages)
-
-    new_session = await session_store.create(
-        endpoint=session.endpoint,
-        environment=session.environment,
-        parent_id=session.session_id,
-        branch_point=branch_point,
-        tags={"doctor": "trimmed", "trimmed_count": str(trim_count)},
+    trimmed_trajectory = Trajectory(
+        messages=trimmed_messages,
+        annotations=session.to_trajectory().annotations,
+        session=TrajectorySession(
+            parent_id=session.session_id,
+            branch_point=branch_point,
+            endpoint=session.endpoint,
+            status=SessionStatus.PENDING.value,
+            tags={"doctor": "trimmed", "trimmed_count": str(trim_count)},
+            vcs=session.vcs,
+        ),
+        environment=TrajectoryEnvironment.from_session_parts(
+            session.environment,
+            session.environment_state,
+        ),
     )
 
-    for msg in trimmed_messages:
-        await session_store.append_message(new_session.session_id, msg)
+    new_session, err = await session_store.save_trajectory(trimmed_trajectory)
+    if err is not None or new_session is None:
+        print(f"\nFailed to create fixed session: {err or 'unknown error'}", file=sys.stderr)
+        return 1
 
     print(f"\nCreated fixed session: {new_session.session_id}")
     print(f"  Trimmed {trim_count} messages (kept {len(trimmed_messages)})")
@@ -1460,7 +1555,7 @@ def cmd_slice(config: CLIConfig, session_store: FileSessionStore) -> int:
 
 def cmd_ls(session_store: FileSessionStore, include_all: bool = False) -> int:
     """Handle --ls and --ls-all commands."""
-    from .dtypes import SessionStatus
+    from .core import SessionStatus
 
     async def ls_action() -> int:
         # Get all sessions
@@ -1512,7 +1607,7 @@ def cmd_ls(session_store: FileSessionStore, include_all: bool = False) -> int:
 
 def cmd_status(session_store: FileSessionStore, session_id: str) -> int:
     """Handle --status command."""
-    from .dtypes import SessionStatus
+    from .core import SessionStatus
 
     async def status_action() -> int:
         session, err = await session_store.get(session_id)
@@ -1555,7 +1650,7 @@ def cmd_send(
     message: str,
 ) -> int:
     """Handle --send command: send message to waiting session and resume."""
-    from .dtypes import SessionStatus
+    from .core import SessionStatus
 
     async def send_action() -> int | None:
         # Check session exists and is waiting
@@ -1571,19 +1666,20 @@ def cmd_send(
             )
             return 1
 
-        # Clear pending input
-        await session_store.clear_pending_input(session_id)
+        queued_message = Message(role="user", content=message)
+        _, err = await session_store.enqueue_message(session_id, queued_message)
+        if err is not None:
+            print(f"Failed to queue input for {session_id}: {err}", file=sys.stderr)
+            return 1
+
+        _, err = await session_store.clear_pending_input(session_id)
+        if err is not None:
+            print(f"Failed to clear pending input for {session_id}: {err}", file=sys.stderr)
+            return 1
 
         print(f"Resuming {session_id}...", file=sys.stderr)
 
-        # Set up config to resume with the message as initial prompt.
-        # TODO(cleanup): We use initial_prompt instead of appending to messages.jsonl
-        # because the runner waits for input before running the agent. When resuming,
-        # it sees the existing trajectory and asks for new input, ignoring any message
-        # we append. Using initial_prompt bypasses this. A cleaner fix would be for the
-        # runner to detect "trajectory has unprocessed user message" and skip waiting.
         config.session = session_id
-        config.initial_prompt = message
         # Keep detached mode for send (no TUI)
         config.detached = True
 
@@ -1739,6 +1835,7 @@ def apply_session_config(config: CLIConfig) -> bool:
             "CalculatorEnvironment": "calculator",
             "LocalFilesystemEnvironment": "coding",
             "GitWorktreeEnvironment": "git",
+            "OrchestrateEnvironment": "orchestrate",
         }
         if env_type in env_map:
             config.env = env_map[env_type]
@@ -1758,107 +1855,235 @@ def apply_session_config(config: CLIConfig) -> bool:
     return True
 
 
-def create_environment(config: CLIConfig) -> tuple[Environment | None, bool]:
-    """Create environment from config. Returns (environment, success)."""
-    if config.env == "calculator":
-        return CalculatorEnvironment(), True
+def _warn_missing_context() -> None:
+    print(
+        "Warning: No context provided for REPL environment. "
+        "Use --context or --context-file to provide input.",
+        file=sys.stderr,
+    )
 
-    if config.env == "coding":
-        from .environments.coding import TOOL_PRESETS
 
-        tools = config.tools or "full"
+def _create_calculator_environment(config: CLIConfig) -> tuple[Environment | None, bool]:
+    del config
+    return CalculatorEnvironment(), True
 
-        # Handle template tools (comma-separated list like "read,grep,bash")
-        if "," in tools:
-            tools_list = [t.strip() for t in tools.split(",")]
-            return LocalFilesystemEnvironment(
-                working_dir=config.working_dir,
-                tools=tools_list,
-                bash_allowlist=config._bash_allowlist,
-            ), True
 
-        # Handle preset names
-        if tools not in TOOL_PRESETS:
-            print(
-                f"Unknown tool preset: {tools}. Available: {', '.join(TOOL_PRESETS.keys())}",
-                file=sys.stderr,
-            )
-            return None, False
+def _create_coding_environment(config: CLIConfig) -> tuple[Environment | None, bool]:
+    from .environments.coding import TOOL_PRESETS
+
+    tools = config.tools or "full"
+
+    if "," in tools:
+        tools_list = [t.strip() for t in tools.split(",")]
         return LocalFilesystemEnvironment(
             working_dir=config.working_dir,
-            tools=tools,
+            tools=tools_list,
             bash_allowlist=config._bash_allowlist,
         ), True
 
-    if config.env == "git":
-        return GitWorktreeEnvironment(working_dir=config.working_dir), True
+    if tools not in TOOL_PRESETS:
+        print(
+            f"Unknown tool preset: {tools}. Available: {', '.join(TOOL_PRESETS.keys())}",
+            file=sys.stderr,
+        )
+        return None, False
 
-    if config.env == "repl":
-        from .environments.repl import REPLEnvironment
+    return LocalFilesystemEnvironment(
+        working_dir=config.working_dir,
+        tools=tools,
+        bash_allowlist=config._bash_allowlist,
+    ), True
 
-        # Context must be provided via --context or --context-file
-        context = config.context or ""
-        if not context:
-            print(
-                "Warning: No context provided for REPL environment. "
-                "Use --context or --context-file to provide input.",
-                file=sys.stderr,
+
+def _create_git_environment(config: CLIConfig) -> tuple[Environment | None, bool]:
+    return GitWorktreeEnvironment(working_dir=config.working_dir), True
+
+
+def _create_repl_environment(config: CLIConfig) -> tuple[Environment | None, bool]:
+    from .environments.repl import REPLEnvironment
+
+    context = config.context or ""
+    if not context:
+        _warn_missing_context()
+    return REPLEnvironment(context=context, sub_endpoint=config.endpoint), True
+
+
+def _create_repl_blocks_environment(config: CLIConfig) -> tuple[Environment | None, bool]:
+    from .environments.repl import MessageParsingREPLEnvironment
+
+    context = config.context or ""
+    if not context:
+        _warn_missing_context()
+    return MessageParsingREPLEnvironment(context=context, sub_endpoint=config.endpoint), True
+
+
+def _create_orchestrate_environment(config: CLIConfig) -> tuple[Environment | None, bool]:
+    from .environments.orchestrate import OrchestrateEnvironment
+
+    return OrchestrateEnvironment(
+        endpoint=config.endpoint,
+        cwd=config.working_dir,
+    ), True
+
+
+def _create_tbench_environment(config: CLIConfig) -> tuple[Environment | None, bool]:
+    if not config.tbench_task_id:
+        print("--tbench-task-id is required when using --env tbench", file=sys.stderr)
+        return None, False
+
+    from .environments.terminal_bench import (
+        create_tbench_environment,
+        create_tbench_resource,
+    )
+
+    try:
+
+        async def _create() -> Environment:
+            resource = await create_tbench_resource(
+                task_id=config.tbench_task_id or "",
+                dataset_name=config.tbench_dataset_name,
+                dataset_version=config.tbench_dataset_version,
+                logging_dir=config.tbench_logging_dir,
+                no_rebuild=not config.tbench_rebuild,
+                cleanup=not config.tbench_no_cleanup,
             )
-        return REPLEnvironment(context=context, sub_endpoint=config.endpoint), True
-
-    if config.env == "repl_blocks":
-        from .environments.repl import MessageParsingREPLEnvironment
-
-        context = config.context or ""
-        if not context:
-            print(
-                "Warning: No context provided for REPL environment. "
-                "Use --context or --context-file to provide input.",
-                file=sys.stderr,
+            return await create_tbench_environment(
+                surface=config.tbench_surface,
+                resource=resource,
             )
-        return MessageParsingREPLEnvironment(context=context, sub_endpoint=config.endpoint), True
 
+        environment = trio.run(_create)
+    except Exception as exc:
+        print(f"Failed to create Terminal-Bench environment: {exc}", file=sys.stderr)
+        return None, False
+    return environment, True
+
+
+def _create_ask_user_environment(config: CLIConfig) -> tuple[Environment | None, bool]:
+    del config
+    from .environments.ask_user import AskUserQuestionEnvironment
+
+    return AskUserQuestionEnvironment(), True
+
+
+def _environment_builders() -> dict[str, Callable[[CLIConfig], tuple[Environment | None, bool]]]:
+    return {
+        "ask_user": _create_ask_user_environment,
+        "calculator": _create_calculator_environment,
+        "coding": _create_coding_environment,
+        "git": _create_git_environment,
+        "repl": _create_repl_environment,
+        "repl_blocks": _create_repl_blocks_environment,
+        "orchestrate": _create_orchestrate_environment,
+        "tbench": _create_tbench_environment,
+    }
+
+
+def _create_environment_by_name(
+    config: CLIConfig,
+    env_name: str,
+) -> tuple[Environment | None, bool]:
+    builder = _environment_builders().get(env_name)
+    if builder is None:
+        print(f"Unknown environment: {env_name}", file=sys.stderr)
+        return None, False
+    return builder(config)
+
+
+def create_environment(config: CLIConfig) -> tuple[Environment | None, bool]:
+    """Create environment from config. Returns (environment, success)."""
     # Composed environments: coding+repl, git+repl, etc.
     # TODO: Consider auto-composition when --context is provided with coding/git envs
     # For now, explicit composition via comma-separated env names
     if "+" in config.env:
         from .environments.compose import compose
-        from .environments.repl import REPLEnvironment
 
         env_names = config.env.split("+")
         environments = []
 
         for env_name in env_names:
-            if env_name == "coding":
-                environments.append(
-                    LocalFilesystemEnvironment(
-                        working_dir=config.working_dir, tools=config.tools or "full"
-                    )
-                )
-            elif env_name == "git":
-                environments.append(GitWorktreeEnvironment(working_dir=config.working_dir))
-            elif env_name == "repl":
-                context = config.context or ""
-                if not context:
-                    print(
-                        "Warning: No context provided for REPL environment. "
-                        "Use --context or --context-file to provide input.",
-                        file=sys.stderr,
-                    )
-                environments.append(REPLEnvironment(context=context, sub_endpoint=config.endpoint))
-            elif env_name == "calculator":
-                environments.append(CalculatorEnvironment())
-            elif env_name == "ask_user":
-                from .environments.ask_user import AskUserQuestionEnvironment
-
-                environments.append(AskUserQuestionEnvironment())
-            else:
-                print(f"Unknown environment in composition: {env_name}", file=sys.stderr)
+            environment, success = _create_environment_by_name(config, env_name)
+            if not success:
                 return None, False
+            assert environment is not None
+            environments.append(environment)
 
         return compose(*environments), True
 
-    return None, True
+    if config.env == "none":
+        return None, True
+
+    return _create_environment_by_name(config, config.env)
+
+
+def create_session_store(config: CLIConfig) -> FileSessionStore | None:
+    """Create the session store for the current run configuration."""
+    if config.no_session:
+        return None
+
+    if config.env == "tbench" and config.environment is not None:
+        logging_dir = getattr(config.environment, "logging_dir", None)
+        if logging_dir is not None:
+            agent_dir = Path(logging_dir) / "agent"
+            return FileSessionStore(
+                base_dir=agent_dir / "sessions",
+                atif_filename="trajectory.json",
+                atif_output_path=agent_dir / "trajectory.json",
+            )
+
+    return FileSessionStore()
+
+
+async def cleanup_environment(environment: Environment | None) -> None:
+    """Best-effort environment cleanup after a run finishes."""
+    if environment is None or not hasattr(environment, "cleanup"):
+        return
+    await environment.cleanup()
+
+
+def get_tbench_agent_timeout_sec(environment: Environment | None) -> float | None:
+    """Return the terminal-bench agent timeout when available."""
+    if environment is None:
+        return None
+    timeout = getattr(environment, "max_agent_timeout_sec", None)
+    if timeout is None:
+        return None
+    return float(timeout)
+
+
+async def finalize_tbench_run(
+    environment: Environment | None,
+    *,
+    agent_timed_out: bool = False,
+) -> int | None:
+    """Run terminal-bench verification and persist the result when applicable."""
+    if environment is None or not hasattr(environment, "run_tests"):
+        return None
+
+    result = await environment.run_tests()
+    success = result.success and not agent_timed_out
+    failure_reason = "AGENT_TIMEOUT" if agent_timed_out else result.failure_reason
+
+    payload = {
+        "score": result.score,
+        "success": success,
+        "failure_reason": failure_reason,
+        "agent_timed_out": agent_timed_out,
+    }
+    logging_dir = getattr(environment, "logging_dir", None)
+    if logging_dir is not None:
+        logging_path = Path(logging_dir)
+        logging_path.mkdir(parents=True, exist_ok=True)
+        (logging_path / "results.json").write_text(json.dumps(payload, indent=2))
+        if result.output:
+            (logging_path / "test_output.txt").write_text(result.output)
+
+    summary = (
+        f"Terminal-Bench result: success={payload['success']} "
+        f"score={payload['score']:.3f} reason={payload['failure_reason'] or 'OK'}"
+    )
+    print(summary, file=sys.stderr)
+    return 0 if payload["success"] else 1
 
 
 # =============================================================================
@@ -1870,135 +2095,139 @@ async def run_agent(config: CLIConfig) -> int:
     """Run the interactive agent."""
     from .agents import resume_session
 
-    session_store = config.session_store
-    session_id: str | None = None
-    trajectory: Trajectory
+    try:
+        session_store = config.session_store
+        session_id: str | None = None
+        trajectory: Trajectory
 
-    # Resolve session
-    if session_store is not None:
-        if config.session is not None:
-            if config.session == "":
-                session = await pick_session_async(session_store)
-                if session is None:
-                    return 0
-                session_id = session.session_id
-            else:
-                session_id = config.session
-        elif config.continue_session:
-            session, _err = await session_store.get_latest()
-            if session:
-                session_id = session.session_id
-            else:
-                print("No previous session found, starting new session")
+        # Resolve session
+        if session_store is not None:
+            if config.session is not None:
+                if config.session == "":
+                    session = await pick_session_async(session_store)
+                    if session is None:
+                        return 0
+                    session_id = session.session_id
+                else:
+                    session_id = config.session
+            elif config.continue_session:
+                session, _err = await session_store.get_latest()
+                if session:
+                    session_id = session.session_id
+                else:
+                    print("No previous session found, starting new session")
 
-    # Build trajectory
-    parent_session_id: str | None = None
-    branch_point: int | None = None
+        # Build trajectory
+        parent_session_id: str | None = None
+        branch_point: int | None = None
 
-    # Build system prompt - use dynamic builder if we have an environment with tools
-    if config.system_prompt:
-        # User provided explicit prompt - use as-is
-        system_prompt = config.system_prompt
-    elif config.environment:
-        # Build dynamic prompt with actual tools
-        from .prompt import build_system_prompt
+        # Build system prompt - use dynamic builder if we have an environment with tools
+        if config.system_prompt:
+            # User provided explicit prompt - use as-is
+            system_prompt = config.system_prompt
+        elif config.environment:
+            # Build dynamic prompt with actual tools
+            from .prompt import build_system_prompt
 
-        # Get environment-provided system prompt if available
-        env_system_prompt = None
-        if hasattr(config.environment, "get_system_prompt"):
-            env_system_prompt = config.environment.get_system_prompt()
+            # Get environment-provided system prompt if available
+            env_system_prompt = None
+            if hasattr(config.environment, "get_system_prompt"):
+                env_system_prompt = config.environment.get_system_prompt()
 
-        system_prompt = build_system_prompt(
-            env_name=config.env,
-            tools=config.environment.get_tools(),
-            cwd=config.working_dir,
-            env_system_prompt=env_system_prompt,
-        )
-    else:
-        # Fallback to static prompts
-        system_prompt = SYSTEM_PROMPTS.get(config.env, SYSTEM_PROMPTS["none"])
-
-    if session_id and session_store:
-        try:
-            assert config.endpoint is not None
-            state = await resume_session(
-                session_id, session_store, config.endpoint, config.environment
+            system_prompt = build_system_prompt(
+                env_name=config.env,
+                tools=config.environment.get_tools(),
+                cwd=config.working_dir,
+                env_system_prompt=env_system_prompt,
             )
-            trajectory = state.actor.trajectory
+        else:
+            # Fallback to static prompts
+            system_prompt = SYSTEM_PROMPTS.get(config.env, SYSTEM_PROMPTS["none"])
 
-            parent_session, _ = await session_store.get(session_id)
-            if parent_session:
-                current_env_type = (
-                    type(config.environment).__name__ if config.environment else "none"
+        if session_id and session_store:
+            try:
+                assert config.endpoint is not None
+                state = await resume_session(
+                    session_id, session_store, config.endpoint, config.environment
                 )
-                parent_env_type = (
-                    parent_session.environment.type if parent_session.environment else "none"
-                )
-                parent_confirm_tools = (
-                    parent_session.environment.config.get("confirm_tools", False)
-                    if parent_session.environment
-                    else False
-                )
+                trajectory = state.actor.trajectory
 
-                # For Claude driver, we convert the session so don't fork on model changes
-                if config.driver == "claude":
-                    config_differs = False
-                else:
-                    config_differs = (
-                        config.endpoint.model != parent_session.endpoint.model
-                        or config.endpoint.provider != parent_session.endpoint.provider
-                        or current_env_type != parent_env_type
-                        or config.confirm_tools != parent_confirm_tools
+                parent_session, _ = await session_store.get(session_id)
+                if parent_session:
+                    current_env_type = (
+                        type(config.environment).__name__ if config.environment else "none"
+                    )
+                    parent_env_type = (
+                        parent_session.environment.type if parent_session.environment else "none"
+                    )
+                    parent_confirm_tools = (
+                        parent_session.environment.config.get("confirm_tools", False)
+                        if parent_session.environment
+                        else False
                     )
 
-                if config_differs:
-                    parent_session_id = session_id
-                    branch_point = len(trajectory.messages)
-                    session_id = None
-                    print(f"Forking from session: {parent_session_id}")
-                    print(
-                        f"  Config changed: model={config.endpoint.model}, env={current_env_type}"
-                    )
-                    print(f"  Branch point: {branch_point} messages")
+                    # For Claude driver, we convert the session so don't fork on model changes
+                    if config.driver == "claude":
+                        config_differs = False
+                    else:
+                        config_differs = (
+                            config.endpoint.model != parent_session.endpoint.model
+                            or config.endpoint.provider != parent_session.endpoint.provider
+                            or current_env_type != parent_env_type
+                            or config.confirm_tools != parent_confirm_tools
+                        )
+
+                    if config_differs:
+                        parent_session_id = session_id
+                        branch_point = len(trajectory.messages)
+                        session_id = None
+                        print(f"Forking from session: {parent_session_id}")
+                        print(
+                            f"  Config changed: model={config.endpoint.model}, env={current_env_type}"
+                        )
+                        print(f"  Branch point: {branch_point} messages")
+                    else:
+                        print(f"Resuming session: {parent_session.session_id}")
+                        # TODO: Token counting is not accurate when resuming - should count tokens
+                        # from resumed messages, not just new messages in this session
+                        print(f"  {len(trajectory.messages)} messages")
                 else:
-                    print(f"Resuming session: {parent_session.session_id}")
-                    # TODO: Token counting is not accurate when resuming - should count tokens
-                    # from resumed messages, not just new messages in this session
+                    print(f"Resuming session: {session_id}")
                     print(f"  {len(trajectory.messages)} messages")
-            else:
-                print(f"Resuming session: {session_id}")
-                print(f"  {len(trajectory.messages)} messages")
-        except ValueError as e:
-            print(f"Error: {e}", file=sys.stderr)
-            return 1
+            except ValueError as e:
+                print(f"Error: {e}", file=sys.stderr)
+                return 1
 
-        if not trajectory.messages or trajectory.messages[0].role != "system":
-            trajectory = Trajectory(
-                messages=[Message(role="system", content=system_prompt)] + list(trajectory.messages)
-            )
-    else:
-        trajectory = Trajectory(messages=[Message(role="system", content=system_prompt)])
+            if not trajectory.messages or trajectory.messages[0].role != "system":
+                trajectory = Trajectory(
+                    messages=[Message(role="system", content=system_prompt)]
+                    + list(trajectory.messages)
+                )
+        else:
+            trajectory = Trajectory(messages=[Message(role="system", content=system_prompt)])
 
-    # Check for stdin input
-    initial_prompt = config.initial_prompt
-    if initial_prompt is None and not sys.stdin.isatty():
-        initial_prompt = sys.stdin.read().strip() or None
+        # Check for stdin input
+        bootstrap_input = config.bootstrap_input
+        if bootstrap_input is None and not sys.stdin.isatty():
+            bootstrap_input = sys.stdin.read().strip() or None
 
-    # Non-interactive print mode
-    if config.print_mode is not None:
-        return await _run_print_mode(config, trajectory, session_id, initial_prompt)
+        # Non-interactive print mode
+        if config.print_mode is not None:
+            return await _run_print_mode(config, trajectory, session_id, bootstrap_input)
 
-    # Interactive mode
-    return await _run_interactive_mode(
-        config, trajectory, session_id, parent_session_id, branch_point, initial_prompt
-    )
+        # Interactive mode
+        return await _run_interactive_mode(
+            config, trajectory, session_id, parent_session_id, branch_point, bootstrap_input
+        )
+    finally:
+        await cleanup_environment(config.environment)
 
 
 async def _run_print_mode(
     config: CLIConfig,
     trajectory: Trajectory,
     session_id: str | None,
-    initial_prompt: str | None,
+    bootstrap_input: str | None,
 ) -> int:
     """Run in non-interactive print mode."""
     assert config.endpoint is not None, "endpoint must be set for print mode"
@@ -2007,7 +2236,7 @@ async def _run_print_mode(
 
     query = config.print_mode
     if query == "-":
-        query = initial_prompt or ""
+        query = bootstrap_input or ""
         if not query:
             print("Error: no input from stdin", file=sys.stderr)
             return 1
@@ -2063,31 +2292,57 @@ async def _run_print_mode(
         )
 
     try:
-        await run_interactive(
-            trajectory,
-            config.endpoint,
-            frontend=frontend,
-            environment=config.environment,
-            config=RunnerConfig(
-                session_store=config.session_store,
-                session_id=session_id,
-                initial_prompt=query,
-                single_turn=True,
-                run_fn=run_fn,
-            ),
-        )
+        timeout_sec = get_tbench_agent_timeout_sec(config.environment)
+        timed_out = False
+        try:
+            if timeout_sec is None:
+                await run_interactive(
+                    trajectory,
+                    config.endpoint,
+                    frontend=frontend,
+                    environment=config.environment,
+                    config=RunnerConfig(
+                        session_store=config.session_store,
+                        session_id=session_id,
+                        bootstrap_input=query,
+                        single_turn=True,
+                        run_fn=run_fn,
+                    ),
+                )
+            else:
+                with trio.fail_after(timeout_sec):
+                    await run_interactive(
+                        trajectory,
+                        config.endpoint,
+                        frontend=frontend,
+                        environment=config.environment,
+                        config=RunnerConfig(
+                            session_store=config.session_store,
+                            session_id=session_id,
+                            bootstrap_input=query,
+                            single_turn=True,
+                            run_fn=run_fn,
+                        ),
+                    )
+        except trio.TooSlowError:
+            timed_out = True
+            print(
+                f"Terminal-Bench agent timed out after {timeout_sec:.1f}s",
+                file=sys.stderr,
+            )
     except KeyboardInterrupt:
-        return 0
+        result = await finalize_tbench_run(config.environment)
+        return result if result is not None else 0
     except Exception as e:
+        result = await finalize_tbench_run(config.environment)
         if config.stream_json:
-            import json
-
             print(json.dumps({"type": "error", "error": str(e)}), flush=True)
         else:
             print(f"\nError: {e}", file=sys.stderr)
-        return 1
+        return result if result is not None else 1
     else:
-        return 0
+        result = await finalize_tbench_run(config.environment, agent_timed_out=timed_out)
+        return result if result is not None else 0
 
 
 async def _run_interactive_mode(
@@ -2096,7 +2351,7 @@ async def _run_interactive_mode(
     session_id: str | None,
     parent_session_id: str | None,
     branch_point: int | None,
-    initial_prompt: str | None,
+    bootstrap_input: str | None,
 ) -> int:
     """Run in interactive mode with selected frontend and driver."""
     assert config.endpoint is not None, "endpoint must be set for interactive mode"
@@ -2129,7 +2384,9 @@ async def _run_interactive_mode(
         # For Claude driver, use sonnet by default (don't pass through non-Claude models)
         claude_model = "sonnet"
         if config.endpoint.model and config.endpoint.provider == "anthropic":
-            claude_model = config.endpoint.model
+            # endpoint.model is "provider/model-id" format; Claude CLI only wants the model-id
+            raw = config.endpoint.model
+            claude_model = raw.split("/", 1)[1] if "/" in raw else raw
 
         run_fn = partial(
             run_claude,
@@ -2179,26 +2436,58 @@ async def _run_interactive_mode(
         frontend = NoneFrontend(show_tool_calls=True, show_thinking=False)
 
     try:
-        await run_interactive(
-            trajectory,
-            config.endpoint,
-            frontend=frontend,
-            environment=config.environment,
-            config=RunnerConfig(
-                session_store=config.session_store,
-                session_id=session_id,
-                parent_session_id=parent_session_id,
-                branch_point=branch_point,
-                confirm_tools=config.confirm_tools,
-                initial_prompt=initial_prompt,
-                detached=config.detached,
-                cwd=config.cwd,
-                run_fn=run_fn,
-            ),
-        )
+        timeout_sec = get_tbench_agent_timeout_sec(config.environment)
+        timed_out = False
+        try:
+            if timeout_sec is None:
+                await run_interactive(
+                    trajectory,
+                    config.endpoint,
+                    frontend=frontend,
+                    environment=config.environment,
+                    config=RunnerConfig(
+                        session_store=config.session_store,
+                        session_id=session_id,
+                        parent_session_id=parent_session_id,
+                        branch_point=branch_point,
+                        confirm_tools=config.confirm_tools,
+                        bootstrap_input=bootstrap_input,
+                        detached=config.detached,
+                        cwd=config.cwd,
+                        run_fn=run_fn,
+                    ),
+                )
+            else:
+                with trio.fail_after(timeout_sec):
+                    await run_interactive(
+                        trajectory,
+                        config.endpoint,
+                        frontend=frontend,
+                        environment=config.environment,
+                        config=RunnerConfig(
+                            session_store=config.session_store,
+                            session_id=session_id,
+                            parent_session_id=parent_session_id,
+                            branch_point=branch_point,
+                            confirm_tools=config.confirm_tools,
+                            bootstrap_input=bootstrap_input,
+                            detached=config.detached,
+                            cwd=config.cwd,
+                            run_fn=run_fn,
+                        ),
+                    )
+        except trio.TooSlowError:
+            timed_out = True
+            print(
+                f"Terminal-Bench agent timed out after {timeout_sec:.1f}s",
+                file=sys.stderr,
+            )
     except KeyboardInterrupt:
         print("\n\n✅ Agent stopped")
-    return 0
+        result = await finalize_tbench_run(config.environment)
+        return result if result is not None else 0
+    result = await finalize_tbench_run(config.environment, agent_timed_out=timed_out)
+    return result if result is not None else 0
 
 
 # =============================================================================
@@ -2422,6 +2711,7 @@ def main() -> int:
         continue_session=args.continue_session,
         session=args.session,
         no_session=args.no_session,
+        tbench_surface=args.tbench_surface,
         print_mode=args.print_mode,
         stream_json=args.stream_json,
         quiet=args.quiet,
@@ -2592,7 +2882,7 @@ def main() -> int:
     config.environment = environment
 
     # Set up session store
-    config.session_store = FileSessionStore() if not config.no_session else None
+    config.session_store = create_session_store(config)
 
     # Run the agent
     try:

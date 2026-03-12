@@ -19,7 +19,7 @@ import re
 
 import trio
 
-from rollouts.dtypes import Endpoint, Metric, Score
+from rollouts.core import Endpoint, Metric, Score
 from rollouts.prompt_optimization import (
     EvolutionaryConfig,
     PromptTemplate,

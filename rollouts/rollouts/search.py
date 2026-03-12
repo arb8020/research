@@ -38,7 +38,7 @@ from typing import TYPE_CHECKING
 import trio
 
 if TYPE_CHECKING:
-    from .dtypes import AgentState, RunConfig
+    from .agents import AgentState, RunConfig
 
 from .agents import run_agent_step
 

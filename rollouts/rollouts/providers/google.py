@@ -11,11 +11,11 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+from ..agents import Actor
+from ..core import Message, ToolCall, Usage
 from ..dtypes import (
-    Actor,
     ChatCompletion,
     Choice,
-    Message,
     StreamDone,
     StreamEvent,
     StreamStart,
@@ -27,12 +27,10 @@ from ..dtypes import (
     ThinkingDelta,
     ThinkingEnd,
     ThinkingStart,
-    ToolCall,
     ToolCallContent,
     ToolCallDelta,
     ToolCallEnd,
     ToolCallStart,
-    Usage,
 )
 from .base import calculate_cost_from_usage
 
@@ -354,7 +352,7 @@ async def rollout_google(
             )
 
     # Transform messages for cross-provider compatibility (like pi-ai does)
-    from ..transform_messages import transform_messages
+    from ..agents.transform_messages import transform_messages
 
     transformed_messages = transform_messages(
         actor.trajectory.messages,

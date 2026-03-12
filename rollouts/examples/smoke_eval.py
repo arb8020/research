@@ -12,7 +12,7 @@ from __future__ import annotations
 from typing import Any
 
 from rollouts.config.tiers import EndpointConfig, OutputConfig, RunConfig
-from rollouts.dtypes import Message, Metric, Sample, Score
+from rollouts.core import Message, Metric, Sample, Score
 from rollouts.eval_runner import EvalSpec, run_eval_from_spec
 
 # ── Score function ──

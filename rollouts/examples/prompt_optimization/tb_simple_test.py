@@ -11,16 +11,9 @@ import os
 
 import trio
 
-from rollouts.agents import handle_stop_max_turns, run_agent
-from rollouts.dtypes import (
-    Actor,
-    AgentState,
-    Endpoint,
-    Message,
-    RunConfig,
-    StreamEvent,
-    Trajectory,
-)
+from rollouts.agents import Actor, AgentState, RunConfig, handle_stop_max_turns, run_agent
+from rollouts.core import Endpoint, Message, Trajectory
+from rollouts.dtypes import StreamEvent
 from rollouts.environments.terminal_bench import TerminalBenchEnvironment
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s")

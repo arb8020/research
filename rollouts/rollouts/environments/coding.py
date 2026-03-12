@@ -8,10 +8,10 @@ Inspired by pi-mono's minimalist approach.
 from __future__ import annotations
 
 import os
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
 import httpx
@@ -22,10 +22,9 @@ if TYPE_CHECKING:
     from ..dtypes import DetailLevel
     from ..frontends.tui.theme import Theme
 
-from ..dtypes import (
-    AgentState,
+from ..agents import AgentState, RunConfig
+from ..core import (
     Message,
-    RunConfig,
     Tool,
     ToolCall,
     ToolFunction,
@@ -39,22 +38,20 @@ from ._formatting import (
     replace_tabs,
     shorten_path,
 )
+from .resources import CodingWorkspaceResource, CommandExecutionResult, CommandRunner
 
 MAX_LINES = 2000
 MAX_LINE_LENGTH = 2000
 MAX_OUTPUT_SIZE = 30_000  # 30KB (matches Claude Code's default)
 
 # Directory for storing large tool outputs
-TOOL_OUTPUT_DIR = Path.home() / ".rollouts" / "tool_outputs"
+DEFAULT_TOOL_OUTPUT_DIR = Path.home() / ".rollouts" / "tool_outputs"
 
 # Web fetch constants
 WEB_FETCH_MAX_SIZE = 10 * 1024 * 1024  # 10MB max download
 WEB_FETCH_MAX_CONTENT = 100_000  # 100KB max content after conversion
 WEB_FETCH_CACHE_TTL = 900  # 15 minutes
 WEB_FETCH_TIMEOUT = 30  # seconds
-
-# Simple in-memory cache for web fetches
-_web_fetch_cache: dict[str, tuple[float, dict]] = {}
 
 
 def expand_path(file_path: str) -> Path:
@@ -521,91 +518,99 @@ async def _summarize_content(
 
 
 @dataclass
-class LocalFilesystemEnvironment:
-    """Local filesystem environment with read, write, edit, bash tools.
+class LocalWorkspaceResource:
+    working_dir: str
+    path_resolver: Callable[[str], Path] = field(default=expand_path, repr=False)
 
-    Args:
-        working_dir: Working directory for file operations and bash commands
-        tools: Tool filter - either a preset name ("full", "readonly", "no-write")
-               or a list of tool names (e.g., ["read", "edit"]). Defaults to "full".
-        bash_allowlist: List of allowed bash command prefixes. If set, only commands
-            starting with one of these prefixes will be allowed. None means all
-            commands are allowed. Example: ["uv run pytest", "jq", "python -c"]
-        summarize_web_fetch: Whether to use AI to summarize fetched web content.
-        summarizer_provider: Provider for summarization ("anthropic", "openai", "google").
-        summarizer_model: Model to use for summarization.
-    """
+    def resolve_path(self, current_working_dir: str, path: str) -> str:
+        candidate = path
+        if not (path == "~" or path.startswith("~/") or os.path.isabs(path)):
+            candidate = str(Path(current_working_dir) / path)
+        return str(self.path_resolver(candidate))
 
-    working_dir: Path = field(default_factory=Path.cwd)
-    tools: str | list[str] = "full"
-    bash_allowlist: list[str] | None = None
-    summarize_web_fetch: bool = True
-    summarizer_provider: str = "anthropic"
-    summarizer_model: str = "claude-3-5-haiku-latest"
+    async def read_file(self, path: str) -> bytes:
+        return Path(path).read_bytes()
 
-    def __post_init__(self) -> None:
-        # Resolve preset name to tool list
+    async def write_file(self, path: str, content: bytes) -> None:
+        abs_path = Path(path)
+        abs_path.parent.mkdir(parents=True, exist_ok=True)
+        abs_path.write_bytes(content)
+
+
+class LocalCommandRunner:
+    async def run(
+        self,
+        command: str,
+        *,
+        cwd: str,
+        timeout: float,
+        session_id: str | None = None,
+        cancel_scope: Any | None = None,
+    ) -> CommandExecutionResult:
+        from ._subprocess import run_command
+
+        returncode, stdout, stderr = await run_command(command, cwd=cwd, timeout=timeout)
+        return CommandExecutionResult(returncode=returncode, stdout=stdout, stderr=stderr, cwd=cwd)
+
+
+class CodingEnvironment:
+    """Generic coding environment over injected workspace and command backends."""
+
+    def __init__(
+        self,
+        workspace: CodingWorkspaceResource,
+        command_runner: CommandRunner,
+        *,
+        tools: str | list[str] = "full",
+        bash_allowlist: list[str] | None = None,
+        summarize_web_fetch: bool = True,
+        summarizer_provider: str = "anthropic",
+        summarizer_model: str = "claude-3-5-haiku-latest",
+        output_dir: Path = DEFAULT_TOOL_OUTPUT_DIR,
+        current_working_dir: str | None = None,
+        web_fetch_cache: dict[str, tuple[float, dict[str, Any]]] | None = None,
+        content_summarizer: Callable[
+            [str, str, str, str],
+            Awaitable[tuple[str | None, str | None]],
+        ] = _summarize_content,
+    ) -> None:
+        self.workspace = workspace
+        self.command_runner = command_runner
+        self.tools = tools
+        self.bash_allowlist = bash_allowlist
+        self.summarize_web_fetch = summarize_web_fetch
+        self.summarizer_provider = summarizer_provider
+        self.summarizer_model = summarizer_model
+        self.output_dir = output_dir
+        self.current_working_dir = current_working_dir or workspace.working_dir
+        self.web_fetch_cache = web_fetch_cache or {}
+        self.content_summarizer = content_summarizer
+
         if isinstance(self.tools, str):
-            if self.tools in TOOL_PRESETS:
-                self._tool_filter = TOOL_PRESETS[self.tools]
-            else:
+            if self.tools not in TOOL_PRESETS:
                 raise ValueError(
                     f"Unknown tool preset: {self.tools}. Available: {list(TOOL_PRESETS.keys())}"
                 )
+            self._tool_filter = TOOL_PRESETS[self.tools]
         else:
             self._tool_filter = self.tools
 
     def get_name(self) -> str:
-        """Return environment name identifier."""
         return "coding"
 
     def get_status_info(self) -> dict[str, str] | None:
-        """Return cwd for status line display."""
-        cwd = str(self.working_dir)
-        # Shorten home directory to ~
+        cwd = self.current_working_dir
         home = os.path.expanduser("~")
         if cwd.startswith(home):
             cwd = "~" + cwd[len(home) :]
         return {"cwd": cwd}
 
-    async def serialize(self) -> dict:
-        return {
-            "env_kind": "coding",
-            "working_dir": str(self.working_dir),
-            "tools": self.tools,
-            "bash_allowlist": self.bash_allowlist,
-            "summarize_web_fetch": self.summarize_web_fetch,
-            "summarizer_provider": self.summarizer_provider,
-            "summarizer_model": self.summarizer_model,
-        }
-
-    @staticmethod
-    async def deserialize(data: dict) -> LocalFilesystemEnvironment:
-        return LocalFilesystemEnvironment(
-            working_dir=Path(data["working_dir"]),
-            tools=data.get("tools", "full"),
-            bash_allowlist=data.get("bash_allowlist"),
-            summarize_web_fetch=data.get("summarize_web_fetch", True),
-            summarizer_provider=data.get("summarizer_provider", "anthropic"),
-            summarizer_model=data.get("summarizer_model", "claude-3-5-haiku-latest"),
-        )
-
     def requires_confirmation(self, tool_call: ToolCall) -> bool:
-        """Only bash commands require confirmation by default."""
         return tool_call.name == "bash"
 
     def get_tool_render_config(self, tool_name: str) -> ToolRenderConfig | None:
-        """Return render config for the given tool.
-
-        Returns None for unknown tools (uses default rendering).
-
-        Simple tools use ToolRenderConfig with header_fn and summaries.
-        Complex tools use ToolRenderConfig with custom_formatter for full control.
-        """
         configs: dict[str, ToolRenderConfig] = {
-            # Simple: just config
             "bash": BASH_RENDER_CONFIG,
-            # Complex: custom formatter for special rendering
             "read": ToolRenderConfig(custom_formatter=format_read),
             "write": ToolRenderConfig(custom_formatter=format_write),
             "edit": ToolRenderConfig(custom_formatter=format_edit),
@@ -616,26 +621,20 @@ class LocalFilesystemEnvironment:
     def get_tool_formatter(
         self, tool_name: str
     ) -> Callable[[str, dict, dict | None, bool, Theme | None], str] | None:
-        """Legacy method - returns formatter function for the given tool.
-
-        Prefer get_tool_render_config() for new code.
-        """
         config = self.get_tool_render_config(tool_name)
         if config and config.custom_formatter:
             return config.custom_formatter
         if config:
-            # Wrap config in a formatter function
             return lambda name, args, result, expanded, theme: format_tool(
                 name, args, result, expanded, theme, config
             )
         return None
 
     def get_tools(self) -> list[Tool]:
-        all_tools = self._get_all_tools()
+        all_tools = self._get_all_tools() + self._get_extra_tools()
         return [t for t in all_tools if t.function.name in self._tool_filter]
 
     def _get_bash_description(self) -> str:
-        """Get bash tool description, including allowlist info if set."""
         base = "Execute a bash command in the current working directory. Returns stdout and stderr."
         if self.bash_allowlist:
             allowed = ", ".join(f"'{p}'" for p in self.bash_allowlist)
@@ -643,9 +642,7 @@ class LocalFilesystemEnvironment:
         return base
 
     def _get_all_tools(self) -> list[Tool]:
-        """Return all available tools (before filtering)."""
         return [
-            # read tool
             Tool(
                 type="function",
                 function=ToolFunction(
@@ -671,7 +668,6 @@ class LocalFilesystemEnvironment:
                     required=["path"],
                 ),
             ),
-            # write tool
             Tool(
                 type="function",
                 function=ToolFunction(
@@ -693,7 +689,6 @@ class LocalFilesystemEnvironment:
                     required=["path", "content"],
                 ),
             ),
-            # edit tool
             Tool(
                 type="function",
                 function=ToolFunction(
@@ -719,7 +714,6 @@ class LocalFilesystemEnvironment:
                     required=["path", "old_text", "new_text"],
                 ),
             ),
-            # bash tool
             Tool(
                 type="function",
                 function=ToolFunction(
@@ -738,7 +732,6 @@ class LocalFilesystemEnvironment:
                     required=["command"],
                 ),
             ),
-            # web_fetch tool
             Tool(
                 type="function",
                 function=ToolFunction(
@@ -762,8 +755,10 @@ class LocalFilesystemEnvironment:
             ),
         ]
 
+    def _get_extra_tools(self) -> list[Tool]:
+        return []
+
     async def on_assistant_message(self, message: Message, state: AgentState) -> AgentState:
-        """No feedback needed for coding environment."""
         return state
 
     async def exec_tool(
@@ -773,57 +768,59 @@ class LocalFilesystemEnvironment:
         run_config: RunConfig,
         cancel_scope: trio.CancelScope | None = None,
     ) -> ToolResult:
-        """Execute tool call."""
         try:
             if tool_call.name == "read":
                 return await self._exec_read(tool_call)
-            elif tool_call.name == "write":
+            if tool_call.name == "write":
                 return await self._exec_write(tool_call)
-            elif tool_call.name == "edit":
+            if tool_call.name == "edit":
                 return await self._exec_edit(tool_call)
-            elif tool_call.name == "bash":
-                return await self._exec_bash(tool_call, current_state.session_id, cancel_scope)
-            elif tool_call.name == "web_fetch":
-                return await self._exec_web_fetch(tool_call, current_state.session_id)
-            else:
-                return ToolResult(
-                    tool_call_id=tool_call.id,
-                    is_error=True,
-                    content="",
-                    error=f"Unknown tool: {tool_call.name}",
-                )
+            if tool_call.name == "bash":
+                session_id = current_state.session_id if current_state is not None else None
+                return await self._exec_bash(tool_call, session_id, cancel_scope)
+            if tool_call.name == "web_fetch":
+                session_id = current_state.session_id if current_state is not None else None
+                return await self._exec_web_fetch(tool_call, session_id)
+
+            extra = await self._exec_extra_tool(tool_call)
+            if extra is not None:
+                return extra
+            return ToolResult(
+                tool_call_id=tool_call.id,
+                is_error=True,
+                content="",
+                error=f"Unknown tool: {tool_call.name}",
+            )
         except trio.Cancelled:
-            # Re-raise cancellation so agent loop can handle it
             raise
         except Exception as e:
             return ToolResult(tool_call_id=tool_call.id, is_error=True, content="", error=str(e))
 
+    async def _exec_extra_tool(self, tool_call: ToolCall) -> ToolResult | None:
+        return None
+
     async def _exec_read(self, tool_call: ToolCall) -> ToolResult:
-        """Read file contents."""
         path_str = tool_call.args["path"]
         offset = tool_call.args.get("offset")
         limit = tool_call.args.get("limit")
+        abs_path = self.workspace.resolve_path(self.current_working_dir, path_str)
 
-        abs_path = expand_path(path_str)
-
-        if not abs_path.exists():
+        try:
+            content = (await self.workspace.read_file(abs_path)).decode("utf-8")
+        except FileNotFoundError:
             return ToolResult(
                 tool_call_id=tool_call.id,
                 is_error=True,
                 content="",
                 error=f"File not found: {path_str}",
             )
-
-        if not abs_path.is_file():
+        except IsADirectoryError:
             return ToolResult(
                 tool_call_id=tool_call.id,
                 is_error=True,
                 content="",
                 error=f"Not a file: {path_str}",
             )
-
-        try:
-            content = abs_path.read_text(encoding="utf-8")
         except UnicodeDecodeError:
             return ToolResult(
                 tool_call_id=tool_call.id,
@@ -833,12 +830,9 @@ class LocalFilesystemEnvironment:
             )
 
         lines = content.split("\n")
-
-        # Apply offset and limit
-        start_line = (offset - 1) if offset else 0  # 1-indexed to 0-indexed
+        start_line = (offset - 1) if offset else 0
         max_lines = limit or MAX_LINES
         end_line = min(start_line + max_lines, len(lines))
-
         if start_line >= len(lines):
             return ToolResult(
                 tool_call_id=tool_call.id,
@@ -848,8 +842,6 @@ class LocalFilesystemEnvironment:
             )
 
         selected_lines = lines[start_line:end_line]
-
-        # Truncate long lines
         had_truncated = False
         formatted_lines = []
         for line in selected_lines:
@@ -860,8 +852,6 @@ class LocalFilesystemEnvironment:
                 formatted_lines.append(line)
 
         output_text = "\n".join(formatted_lines)
-
-        # Add notices
         notices = []
         if had_truncated:
             notices.append(f"Some lines were truncated to {MAX_LINE_LENGTH} characters")
@@ -870,38 +860,30 @@ class LocalFilesystemEnvironment:
             notices.append(
                 f"{remaining} more lines not shown. Use offset={end_line + 1} to continue"
             )
-
         if notices:
             output_text += f"\n\n... ({'. '.join(notices)})"
 
         return ToolResult(tool_call_id=tool_call.id, is_error=False, content=output_text)
 
     async def _exec_write(self, tool_call: ToolCall) -> ToolResult:
-        """Write content to file."""
         path_str = tool_call.args["path"]
         content = tool_call.args["content"]
+        abs_path = self.workspace.resolve_path(self.current_working_dir, path_str)
+        is_create = True
+        try:
+            await self.workspace.read_file(abs_path)
+            is_create = False
+        except (FileNotFoundError, IsADirectoryError):
+            is_create = True
 
-        abs_path = expand_path(path_str)
-
-        # Check if file exists (create vs overwrite)
-        is_create = not abs_path.exists()
-
-        # Create parent directories
-        abs_path.parent.mkdir(parents=True, exist_ok=True)
-
-        # Write file
-        abs_path.write_text(content, encoding="utf-8")
-
-        # Compute line range for agent-trace attribution
+        await self.workspace.write_file(abs_path, content.encode("utf-8"))
         line_count = content.count("\n") + 1
-
         return ToolResult(
             tool_call_id=tool_call.id,
             is_error=False,
             content=f"Successfully wrote {len(content)} bytes to {path_str}",
             details={
-                # agent-trace attribution fields
-                "file_path": str(abs_path),
+                "file_path": abs_path,
                 "start_line": 1,
                 "end_line": line_count,
                 "operation": "create" if is_create else "edit",
@@ -909,23 +891,27 @@ class LocalFilesystemEnvironment:
         )
 
     async def _exec_edit(self, tool_call: ToolCall) -> ToolResult:
-        """Edit file by replacing exact text."""
         path_str = tool_call.args["path"]
         old_text = tool_call.args["old_text"]
         new_text = tool_call.args["new_text"]
+        abs_path = self.workspace.resolve_path(self.current_working_dir, path_str)
 
-        abs_path = expand_path(path_str)
-
-        if not abs_path.exists():
+        try:
+            content = (await self.workspace.read_file(abs_path)).decode("utf-8")
+        except FileNotFoundError:
             return ToolResult(
                 tool_call_id=tool_call.id,
                 is_error=True,
                 content="",
                 error=f"File not found: {path_str}",
             )
-
-        try:
-            content = abs_path.read_text(encoding="utf-8")
+        except IsADirectoryError:
+            return ToolResult(
+                tool_call_id=tool_call.id,
+                is_error=True,
+                content="",
+                error=f"Not a file: {path_str}",
+            )
         except UnicodeDecodeError:
             return ToolResult(
                 tool_call_id=tool_call.id,
@@ -934,7 +920,6 @@ class LocalFilesystemEnvironment:
                 error=f"Cannot read binary file: {path_str}",
             )
 
-        # Check if old text exists
         if old_text not in content:
             return ToolResult(
                 tool_call_id=tool_call.id,
@@ -943,7 +928,6 @@ class LocalFilesystemEnvironment:
                 error=f"Could not find the exact text in {path_str}. The old text must match exactly including all whitespace and newlines.",
             )
 
-        # Count occurrences
         occurrences = content.count(old_text)
         if occurrences > 1:
             return ToolResult(
@@ -953,10 +937,8 @@ class LocalFilesystemEnvironment:
                 error=f"Found {occurrences} occurrences of the text in {path_str}. The text must be unique. Please provide more context to make it unique.",
             )
 
-        # Perform replacement (manual to avoid $ interpretation)
         index = content.find(old_text)
         new_content = content[:index] + new_text + content[index + len(old_text) :]
-
         if content == new_content:
             return ToolResult(
                 tool_call_id=tool_call.id,
@@ -965,22 +947,16 @@ class LocalFilesystemEnvironment:
                 error=f"No changes made to {path_str}. The replacement produced identical content.",
             )
 
-        abs_path.write_text(new_content, encoding="utf-8")
-
-        # Generate diff for UI display
+        await self.workspace.write_file(abs_path, new_content.encode("utf-8"))
         diff_str = generate_diff(content, new_content)
-
-        # Compute line range for agent-trace attribution
         start_line, end_line = compute_edit_line_range(content, new_content, old_text, new_text)
-
         return ToolResult(
             tool_call_id=tool_call.id,
             is_error=False,
             content=f"Successfully replaced text in {path_str}. Changed {len(old_text)} characters to {len(new_text)} characters.",
             details={
                 "diff": diff_str,
-                # agent-trace attribution fields
-                "file_path": str(abs_path),
+                "file_path": abs_path,
                 "start_line": start_line,
                 "end_line": end_line,
                 "operation": "edit",
@@ -988,21 +964,12 @@ class LocalFilesystemEnvironment:
         )
 
     def _check_bash_allowlist(self, command: str) -> str | None:
-        """Check if command is allowed by bash_allowlist.
-
-        Returns None if allowed, or an error message if blocked.
-        """
         if self.bash_allowlist is None:
-            return None  # No allowlist = all commands allowed
-
-        # Strip leading whitespace for matching
+            return None
         cmd = command.lstrip()
-
         for prefix in self.bash_allowlist:
             if cmd.startswith(prefix):
-                return None  # Allowed
-
-        # Command not in allowlist
+                return None
         allowed_str = ", ".join(f"'{p}'" for p in self.bash_allowlist)
         return (
             f"Command not allowed. This environment only permits commands starting with: {allowed_str}\n"
@@ -1015,18 +982,8 @@ class LocalFilesystemEnvironment:
         session_id: str | None = None,
         cancel_scope: trio.CancelScope | None = None,
     ) -> ToolResult:
-        """Execute bash command with proper cancellation support.
-
-        Large outputs (>30KB) are written to a file instead of being truncated,
-        following Cursor's dynamic context discovery pattern. The agent can then
-        read specific portions of the output file as needed.
-        """
-        from ._subprocess import run_command
-
         command = tool_call.args["command"]
         timeout = tool_call.args.get("timeout", 120)
-
-        # Check bash allowlist before executing
         if error := self._check_bash_allowlist(command):
             return ToolResult(
                 tool_call_id=tool_call.id,
@@ -1036,31 +993,32 @@ class LocalFilesystemEnvironment:
             )
 
         try:
-            returncode, stdout, stderr = await run_command(
-                command, cwd=str(self.working_dir), timeout=timeout
+            result = await self.command_runner.run(
+                command,
+                cwd=self.current_working_dir,
+                timeout=timeout,
+                session_id=session_id,
+                cancel_scope=cancel_scope,
             )
+            if result.cwd:
+                self.current_working_dir = result.cwd
 
             output = ""
-            if stdout:
-                output += stdout
-            if stderr:
+            if result.stdout:
+                output += result.stdout
+            if result.stderr:
                 if output:
                     output += "\n"
-                output += stderr
+                output += result.stderr
 
-            # For large outputs, write to file instead of truncating (lossless)
             output_file_path: str | None = None
             if len(output) > MAX_OUTPUT_SIZE:
                 output_file_path = self._write_large_output(output, tool_call.id, session_id)
                 total_lines = output.count("\n") + 1
                 total_kb = len(output) // 1024
-
-                # Show truncated preview + file reference
-                # Include the last few lines (often most relevant for errors)
                 preview_size = MAX_OUTPUT_SIZE // 2
                 head = output[:preview_size]
                 tail = output[-preview_size:]
-
                 output = (
                     f"{head}\n\n"
                     f"... [{total_kb}KB total, {total_lines} lines - full output saved to file]\n\n"
@@ -1071,12 +1029,12 @@ class LocalFilesystemEnvironment:
                     f"or `bash command='tail -100 {output_file_path}'` to see the end."
                 )
 
-            if returncode != 0:
+            if result.returncode != 0:
                 return ToolResult(
                     tool_call_id=tool_call.id,
                     is_error=True,
                     content=output or "(no output)",
-                    error=f"Command exited with code {returncode}",
+                    error=f"Command exited with code {result.returncode}",
                     details={"output_file": output_file_path} if output_file_path else None,
                 )
 
@@ -1086,7 +1044,6 @@ class LocalFilesystemEnvironment:
                 content=output or "(no output)",
                 details={"output_file": output_file_path} if output_file_path else None,
             )
-
         except TimeoutError:
             return ToolResult(
                 tool_call_id=tool_call.id,
@@ -1095,50 +1052,31 @@ class LocalFilesystemEnvironment:
                 error=f"Command timed out after {timeout} seconds",
             )
         except trio.Cancelled:
-            raise  # Re-raise so the agent loop handles it
+            raise
 
     def _write_large_output(self, output: str, tool_call_id: str, session_id: str | None) -> str:
-        """Write large command output to a file for later retrieval.
-
-        Returns the path to the output file.
-        """
-        # Organize by session if available, otherwise use 'anonymous'
         session_dir = session_id or "anonymous"
-        output_dir = TOOL_OUTPUT_DIR / session_dir
+        output_dir = self.output_dir / session_dir
         output_dir.mkdir(parents=True, exist_ok=True)
-
-        # Sanitize tool_call_id to prevent path traversal attacks
-        # tool_call_id comes from the model/provider and could contain malicious paths
         safe_id = "".join(c for c in tool_call_id if c.isalnum() or c in "-_")[:64]
         if not safe_id:
             import uuid
 
             safe_id = str(uuid.uuid4())
-
         output_file = output_dir / f"{safe_id}.txt"
-
-        # Defense in depth: verify resolved path stays within output_dir
         resolved = output_file.resolve()
         assert resolved.is_relative_to(output_dir.resolve()), "Path traversal detected"
-
         output_file.write_text(output, encoding="utf-8")
-
         return str(output_file)
 
     async def _exec_web_fetch(
         self, tool_call: ToolCall, session_id: str | None = None
     ) -> ToolResult:
-        """Fetch content from URL, convert to markdown, return with context.
-
-        Large content (>100KB) is saved to a file instead of being truncated,
-        following the same pattern as bash outputs.
-        """
         import time
 
         url = tool_call.args["url"]
         prompt = tool_call.args["prompt"]
 
-        # Validate URL
         try:
             parsed = urlparse(url)
             if parsed.scheme not in ("http", "https"):
@@ -1160,24 +1098,20 @@ class LocalFilesystemEnvironment:
                 tool_call_id=tool_call.id, is_error=True, content="", error=f"Invalid URL: {e}"
             )
 
-        # Upgrade http to https
         original_host = parsed.netloc
         if parsed.scheme == "http":
             url = url.replace("http://", "https://", 1)
 
-        # Check cache
         now = time.time()
-        if url in _web_fetch_cache:
-            cached_time, cached_result = _web_fetch_cache[url]
+        if url in self.web_fetch_cache:
+            cached_time, cached_result = self.web_fetch_cache[url]
             if now - cached_time < WEB_FETCH_CACHE_TTL:
-                # Return cached content with the new prompt context
                 return ToolResult(
                     tool_call_id=tool_call.id,
                     is_error=False,
                     content=f"[Cached] URL: {url}\nPrompt: {prompt}\n\n---\n\n{cached_result['content']}",
                 )
 
-        # Fetch the URL (don't auto-follow redirects so we can detect cross-host)
         try:
             async with httpx.AsyncClient(
                 timeout=WEB_FETCH_TIMEOUT,
@@ -1190,30 +1124,21 @@ class LocalFilesystemEnvironment:
                         "Accept": "text/html, text/markdown, */*",
                     },
                 )
-
-                # Handle redirects - detect cross-host redirects
                 redirect_count = 0
                 while response.is_redirect and redirect_count < 5:
                     redirect_url = response.headers.get("location", "")
                     if not redirect_url:
                         break
-
-                    # Make redirect URL absolute if relative
                     if redirect_url.startswith("/"):
                         redirect_url = f"https://{urlparse(str(response.url)).netloc}{redirect_url}"
-
                     redirect_parsed = urlparse(redirect_url)
                     redirect_host = redirect_parsed.netloc
-
-                    # Detect cross-host redirect
                     if redirect_host and redirect_host != original_host:
                         return ToolResult(
                             tool_call_id=tool_call.id,
                             is_error=False,
                             content=f"Redirect detected: {url} redirects to a different host.\n\nRedirect URL: {redirect_url}\n\nPlease make a new web_fetch request with this URL if you want to follow the redirect.",
                         )
-
-                    # Same host, follow redirect
                     response = await client.get(
                         redirect_url,
                         headers={
@@ -1222,9 +1147,7 @@ class LocalFilesystemEnvironment:
                         },
                     )
                     redirect_count += 1
-
                 response.raise_for_status()
-
         except httpx.TimeoutException:
             return ToolResult(
                 tool_call_id=tool_call.id,
@@ -1244,7 +1167,6 @@ class LocalFilesystemEnvironment:
                 tool_call_id=tool_call.id, is_error=True, content="", error=f"Request failed: {e}"
             )
 
-        # Check content size
         content_length = len(response.content)
         if content_length > WEB_FETCH_MAX_SIZE:
             return ToolResult(
@@ -1254,7 +1176,6 @@ class LocalFilesystemEnvironment:
                 error=f"Content too large: {content_length} bytes (max {WEB_FETCH_MAX_SIZE})",
             )
 
-        # Decode content
         try:
             text = response.text
         except Exception as e:
@@ -1265,59 +1186,43 @@ class LocalFilesystemEnvironment:
                 error=f"Failed to decode response: {e}",
             )
 
-        # Convert HTML to markdown if needed
         content_type = response.headers.get("content-type", "")
         if "text/html" in content_type:
             try:
                 text = markdownify.markdownify(text, heading_style="ATX", strip=["script", "style"])
             except Exception:
-                # Fall back to raw text if conversion fails
                 pass
 
-        # Cache the raw result (before summarization)
-        _web_fetch_cache[url] = (now, {"content": text, "status": response.status_code})
-
-        # Clean old cache entries
-        for cached_url in list(_web_fetch_cache.keys()):
-            cached_time, _ = _web_fetch_cache[cached_url]
+        self.web_fetch_cache[url] = (now, {"content": text, "status": response.status_code})
+        for cached_url in list(self.web_fetch_cache.keys()):
+            cached_time, _ = self.web_fetch_cache[cached_url]
             if now - cached_time > WEB_FETCH_CACHE_TTL:
-                del _web_fetch_cache[cached_url]
+                del self.web_fetch_cache[cached_url]
 
-        # Summarize if enabled and content is large enough
         final_content = text
         summarized = False
-        if (
-            self.summarize_web_fetch
-            and len(text) > WEB_FETCH_SUMMARIZE_THRESHOLD
-            and prompt  # Need a prompt to guide summarization
-        ):
-            summary, _error = await _summarize_content(
+        if self.summarize_web_fetch and len(text) > WEB_FETCH_SUMMARIZE_THRESHOLD and prompt:
+            summary, _error = await self.content_summarizer(
                 text, prompt, self.summarizer_provider, self.summarizer_model
             )
             if summary:
                 final_content = summary
                 summarized = True
-            # On error, fall back to truncated raw content (Claude Code behavior)
 
-        # Build header
         header = f"URL: {url}"
         if summarized:
             header += f"\n[Summarized by {self.summarizer_model}]"
         header += f"\nPrompt: {prompt}\n\n---\n\n"
 
-        # For large content, save to file instead of truncating (lossless)
         output_file_path: str | None = None
         if len(final_content) > WEB_FETCH_MAX_CONTENT:
             output_file_path = self._write_large_output(
                 header + final_content, tool_call.id, session_id
             )
             total_kb = len(final_content) // 1024
-
-            # Show truncated preview + file reference
             preview_size = WEB_FETCH_MAX_CONTENT // 2
             head = final_content[:preview_size]
             tail = final_content[-preview_size:]
-
             final_content = (
                 f"{head}\n\n"
                 f"... [{total_kb}KB total - full content saved to file]\n\n"
@@ -1332,4 +1237,69 @@ class LocalFilesystemEnvironment:
             is_error=False,
             content=header + final_content,
             details={"output_file": output_file_path} if output_file_path else None,
+        )
+
+
+@dataclass
+class LocalFilesystemEnvironment(CodingEnvironment):
+    """Local filesystem assembly for the generic coding environment."""
+
+    working_dir: Path = field(default_factory=Path.cwd)
+    tools: str | list[str] = "full"
+    bash_allowlist: list[str] | None = None
+    summarize_web_fetch: bool = True
+    summarizer_provider: str = "anthropic"
+    summarizer_model: str = "claude-3-5-haiku-latest"
+    output_dir: Path = field(default_factory=lambda: DEFAULT_TOOL_OUTPUT_DIR)
+    path_resolver: Callable[[str], Path] = field(default=expand_path, repr=False)
+    web_fetch_cache: dict[str, tuple[float, dict[str, Any]]] = field(
+        default_factory=dict, repr=False
+    )
+    content_summarizer: Callable[
+        [str, str, str, str],
+        Awaitable[tuple[str | None, str | None]],
+    ] = field(default=_summarize_content, repr=False)
+
+    def __post_init__(self) -> None:
+        workspace = LocalWorkspaceResource(
+            working_dir=str(self.working_dir),
+            path_resolver=self.path_resolver,
+        )
+        CodingEnvironment.__init__(
+            self,
+            workspace,
+            LocalCommandRunner(),
+            tools=self.tools,
+            bash_allowlist=self.bash_allowlist,
+            summarize_web_fetch=self.summarize_web_fetch,
+            summarizer_provider=self.summarizer_provider,
+            summarizer_model=self.summarizer_model,
+            output_dir=self.output_dir,
+            current_working_dir=str(self.working_dir),
+            web_fetch_cache=self.web_fetch_cache,
+            content_summarizer=self.content_summarizer,
+        )
+
+    async def serialize(self) -> dict:
+        return {
+            "env_kind": "coding",
+            "working_dir": self.current_working_dir,
+            "tools": self.tools,
+            "bash_allowlist": self.bash_allowlist,
+            "summarize_web_fetch": self.summarize_web_fetch,
+            "summarizer_provider": self.summarizer_provider,
+            "summarizer_model": self.summarizer_model,
+            "output_dir": str(self.output_dir),
+        }
+
+    @staticmethod
+    async def deserialize(data: dict) -> LocalFilesystemEnvironment:
+        return LocalFilesystemEnvironment(
+            working_dir=Path(data["working_dir"]),
+            tools=data.get("tools", "full"),
+            bash_allowlist=data.get("bash_allowlist"),
+            summarize_web_fetch=data.get("summarize_web_fetch", True),
+            summarizer_provider=data.get("summarizer_provider", "anthropic"),
+            summarizer_model=data.get("summarizer_model", "claude-3-5-haiku-latest"),
+            output_dir=Path(data.get("output_dir", DEFAULT_TOOL_OUTPUT_DIR)),
         )

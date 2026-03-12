@@ -20,7 +20,7 @@ import re
 
 import trio
 
-from rollouts.dtypes import Endpoint, Metric, Score
+from rollouts.core import Endpoint, Metric, Score
 from rollouts.environments.calculator import CalculatorEnvironment
 from rollouts.prompt_optimization import GEPAConfig, optimize_prompt
 from rollouts.training.types import Sample

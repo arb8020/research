@@ -22,13 +22,17 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from .dtypes import (
+from .core import (
     Endpoint,
     EnvironmentConfig,
     Message,
+    SessionStatus,
     TextContent,
-    ToolCallContent,
+    Trajectory,
+    TrajectoryEnvironment,
+    TrajectorySession,
 )
+from .dtypes import ToolCallContent
 from .store import FileSessionStore
 
 # Claude Code stores projects with path encoded as dashes
@@ -348,19 +352,21 @@ async def import_claude_code_session(
         },
     )
 
-    # Create new session
-    new_session = await session_store.create(
-        endpoint=endpoint,
-        environment=env_config,
-        tags={
-            "imported_from": "claude_code",
-            "original_session_id": session.session_id,
-            "original_project": str(session.project_path),
-        },
+    trajectory = Trajectory(
+        messages=list(messages),
+        session=TrajectorySession(
+            endpoint=endpoint,
+            status=SessionStatus.PENDING.value,
+            tags={
+                "imported_from": "claude_code",
+                "original_session_id": session.session_id,
+                "original_project": str(session.project_path),
+            },
+        ),
+        environment=TrajectoryEnvironment.from_session_parts(env_config),
     )
-
-    # Append messages
-    for msg in messages:
-        await session_store.append_message(new_session.session_id, msg)
+    new_session, err = await session_store.save_trajectory(trajectory)
+    if err is not None or new_session is None:
+        return None, err or "Failed to save imported trajectory"
 
     return new_session.session_id, None

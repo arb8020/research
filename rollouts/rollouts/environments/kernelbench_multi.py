@@ -26,44 +26,47 @@ from typing import TYPE_CHECKING, Any
 
 import trio
 
-from ..dtypes import (
-    AgentState,
+from ..agents import AgentState, RunConfig
+from ..core import (
     Message,
-    RunConfig,
     StopReason,
     TextContent,
     Tool,
     ToolCall,
     ToolResult,
 )
+from .resources import KernelEvaluator
 
 if TYPE_CHECKING:
     from ..gpu_sandbox import SandboxPool
 
 logger = logging.getLogger(__name__)
 
-# Module-level sandbox pool (configured via configure_sandbox_pool)
-_sandbox_pool: SandboxPool | None = None
 
+@dataclass
+class SandboxPoolKernelEvaluator:
+    pool: SandboxPool | None = None
 
-def configure_sandbox_pool(pool: SandboxPool | None) -> None:
-    """Configure the sandbox pool for kernel evaluation.
+    def _get_pool(self) -> SandboxPool:
+        if self.pool is None:
+            from ..gpu_sandbox import SandboxPool
 
-    Args:
-        pool: SandboxPool instance (or None to use local subprocess)
-    """
-    global _sandbox_pool
-    _sandbox_pool = pool
+            self.pool = SandboxPool([])
+        return self.pool
 
+    async def start(self) -> None:
+        pool = self._get_pool()
+        if not pool._started:
+            await pool.start()
 
-def get_sandbox_pool() -> SandboxPool:
-    """Get the configured sandbox pool, creating a default if needed."""
-    global _sandbox_pool
-    if _sandbox_pool is None:
-        from ..gpu_sandbox import SandboxPool
-
-        _sandbox_pool = SandboxPool([])  # Empty = local subprocess
-    return _sandbox_pool
+    async def score_one(
+        self,
+        kernel_code: str,
+        ref_code: str,
+        timeout: float,
+    ) -> dict[str, Any]:
+        await self.start()
+        return await self._get_pool().score_one(kernel_code, ref_code, timeout=timeout)
 
 
 @dataclass
@@ -89,11 +92,13 @@ class KernelBenchMultiTurnEnvironment:
     max_turns: int = 8
     current_turn: int = 0
     turn_history: list[dict[str, Any]] = field(default_factory=list)
+    evaluator: KernelEvaluator = field(default_factory=SandboxPoolKernelEvaluator, repr=False)
 
     # Evaluation state
     best_speedup: float = 0.0
     best_kernel: str | None = None
     has_correct_kernel: bool = False
+    evaluator_provenance: dict[str, Any] | None = None
 
     async def serialize(self) -> dict:
         """Serialize environment state for checkpointing."""
@@ -107,6 +112,7 @@ class KernelBenchMultiTurnEnvironment:
             "best_speedup": self.best_speedup,
             "best_kernel": self.best_kernel,
             "has_correct_kernel": self.has_correct_kernel,
+            "evaluator_provenance": self.evaluator_provenance,
         }
 
     @staticmethod
@@ -121,6 +127,7 @@ class KernelBenchMultiTurnEnvironment:
             best_speedup=data.get("best_speedup", 0.0),
             best_kernel=data.get("best_kernel"),
             has_correct_kernel=data.get("has_correct_kernel", False),
+            evaluator_provenance=data.get("evaluator_provenance"),
         )
 
     def get_tools(self) -> list[Tool]:
@@ -149,10 +156,8 @@ class KernelBenchMultiTurnEnvironment:
         return None
 
     async def on_session_start(self, session_id: str) -> None:
-        """Called when session starts. Ensure sandbox pool is ready."""
-        pool = get_sandbox_pool()
-        if not pool._started:
-            await pool.start()
+        """Called when session starts. Ensure evaluation resource is ready."""
+        await self.evaluator.start()
 
     def _extract_kernel_code(self, response: str) -> str | None:
         """Extract Python kernel code from model response.
@@ -207,24 +212,22 @@ class KernelBenchMultiTurnEnvironment:
         return None
 
     async def _evaluate_kernel(self, kernel_code: str) -> dict[str, Any]:
-        """Evaluate kernel code using the SandboxPool.
+        """Evaluate kernel code using the injected evaluator.
 
         Compiles, tests correctness, and benchmarks the kernel.
 
         Returns:
             Dict with keys: compiled, correct, speedup, error, pass_rate
         """
-        pool = get_sandbox_pool()
-
-        # Ensure pool is started
-        if not pool._started:
-            await pool.start()
-
         logger.info(f"[KernelBench] Evaluating kernel ({len(kernel_code)} chars)")
         logger.info(f"[KernelBench] Kernel code preview: {kernel_code[:200]}...")
 
         try:
-            result = await pool.score_one(kernel_code, self.ref_code, timeout=120.0)
+            result = await self.evaluator.score_one(
+                kernel_code,
+                self.ref_code,
+                timeout=120.0,
+            )
             logger.info(f"[KernelBench] Score result: {result}")
             return {
                 "compiled": result.get("compiled", 0.0) > 0.5,
@@ -232,6 +235,7 @@ class KernelBenchMultiTurnEnvironment:
                 "speedup": result.get("speedup", 0.0),
                 "pass_rate": result.get("pass_rate", 0.0),
                 "error": result.get("error"),
+                "runtime_provenance": result.get("runtime_provenance"),
             }
         except Exception as e:
             logger.exception(f"Kernel evaluation failed: {e}")
@@ -241,6 +245,7 @@ class KernelBenchMultiTurnEnvironment:
                 "speedup": 0.0,
                 "pass_rate": 0.0,
                 "error": str(e),
+                "runtime_provenance": None,
             }
 
     def _format_feedback(
@@ -355,6 +360,9 @@ class KernelBenchMultiTurnEnvironment:
         else:
             # Evaluate the kernel
             result = await self._evaluate_kernel(kernel_code)
+            runtime_provenance = result.get("runtime_provenance")
+            if runtime_provenance is not None and self.evaluator_provenance is None:
+                self.evaluator_provenance = runtime_provenance
 
             # Update tracking
             if result["correct"] and result["speedup"] > self.best_speedup:
@@ -372,6 +380,7 @@ class KernelBenchMultiTurnEnvironment:
                 "correct": result["correct"],
                 "speedup": result["speedup"],
                 "error": result.get("error"),
+                "runtime_provenance": runtime_provenance,
             })
 
             # Format feedback
@@ -392,6 +401,7 @@ class KernelBenchMultiTurnEnvironment:
                     "has_correct_kernel": self.has_correct_kernel,
                     "turns_used": self.current_turn,
                     "turn_history": self.turn_history,
+                    "evaluator_provenance": self.evaluator_provenance,
                 })
 
                 new_trajectory = replace(
@@ -412,6 +422,7 @@ class KernelBenchMultiTurnEnvironment:
             "has_correct_kernel": self.has_correct_kernel,
             "turns_used": self.current_turn,
             "turn_history": self.turn_history,
+            "evaluator_provenance": self.evaluator_provenance,
         })
 
         new_trajectory = replace(

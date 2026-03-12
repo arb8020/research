@@ -12,14 +12,19 @@ from typing import Any
 import trio
 from anthropic import AsyncAnthropic
 
+from ..agents import Actor
+from ..core import (
+    Message,
+    Tool,
+    ToolCall,
+    Usage,
+)
 from ..dtypes import (
-    Actor,
     ChatCompletion,
     Choice,
     FirstToken,
     ImageContent,
     LLMCallStart,
-    Message,
     RetryEnd,
     RetryStart,
     StreamDone,
@@ -34,14 +39,11 @@ from ..dtypes import (
     ThinkingDelta,
     ThinkingEnd,
     ThinkingStart,
-    Tool,
-    ToolCall,
     ToolCallContent,
     ToolCallDelta,
     ToolCallEnd,
     ToolCallError,
     ToolCallStart,
-    Usage,
     parse_streaming_json,
 )
 from .base import (
@@ -781,7 +783,7 @@ async def rollout_anthropic(
     # runs in pure trio. But that's a larger refactor - this try/finally is sufficient.
     try:
         # Transform messages for cross-provider compatibility (like pi-ai does)
-        from ..transform_messages import transform_messages
+        from ..agents.transform_messages import transform_messages
 
         transformed_messages = transform_messages(
             actor.trajectory.messages,

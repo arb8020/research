@@ -11,7 +11,7 @@ Based on the inoculation-prompting paper's evaluation methodology.
 from pathlib import Path
 from typing import Any
 
-from rollouts.dtypes import Endpoint, EvalConfig, Message, Metric, Score
+from rollouts.core import Endpoint, EvalConfig, Message, Metric, Score
 from rollouts.training.types import Sample
 
 from ..judge import JudgeTemplate, judge_single
@@ -140,7 +140,7 @@ def make_emergent_misalignment_eval_config(
     """Create EvalConfig + dataset for emergent misalignment eval.
 
     Returns:
-        (config, dataset) tuple — pass both to rollouts.evaluation.evaluate()
+        (config, dataset) tuple — pass both to rollouts.eval.evaluate()
     """
     dataset = [{"question": question, "name": name} for name, question in QUESTIONS.items()]
 

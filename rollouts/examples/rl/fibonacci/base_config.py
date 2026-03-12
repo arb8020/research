@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from rollouts.dtypes import Metric, Score
+from rollouts.core import Metric, Score
 from rollouts.environments.ttt.code_challenge import (
     FIBONACCI_TEST_CASES,
     CodeChallengeEnvironment,
