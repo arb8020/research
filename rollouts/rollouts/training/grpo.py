@@ -1130,7 +1130,24 @@ async def _grpo_train_async(
             logger.exception(f"Preflight check failed: {e}")
             raise
     elif backend_name == "torchtitan":
-        logger.info("Skipping preflight check for torchtitan (FSDP sharding handled by backend)")
+        from .preflight import preflight_torchtitan_runtime
+
+        runtime_preflight = preflight_torchtitan_runtime()
+        if runtime_preflight.ok:
+            logger.info(
+                "TorchTitan runtime preflight passed: stage=%s torch=%s",
+                runtime_preflight.stage,
+                runtime_preflight.details.get("torch_version"),
+            )
+        else:
+            details = runtime_preflight.details or {}
+            logger.error(
+                "TorchTitan runtime preflight failed: stage=%s error=%s details=%s",
+                runtime_preflight.stage,
+                runtime_preflight.error,
+                details,
+            )
+            runtime_preflight.require_ok()
 
     config.save(output_dir / "config.json")
     metrics_logger = JSONLLogger(output_dir)
