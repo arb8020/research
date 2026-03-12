@@ -14,7 +14,7 @@ from examples.rl.kernelbench.scoring import (
 )
 from rollouts.core import Metric, Score
 from rollouts.eval.native import _compute_score
-from rollouts.training.types import Sample
+from rollouts.training.types import AttemptRow, ProblemRow
 
 
 class FakeBatchEvaluator:
@@ -67,16 +67,17 @@ class ErrorBatchEvaluator(FakeBatchEvaluator):
 
 
 class FakeSampleScorer:
-    async def score_samples(self, samples: list[Sample]) -> list[Sample]:
+    async def score_samples(self, samples: list[AttemptRow]) -> list[AttemptRow]:
         for sample in samples:
             sample.score = Score(metrics=(Metric("reward", 3.0, weight=1.0),))
             sample.reward = 3.0
         return samples
 
 
-def make_code_sample(*, response: str, ref_code: str = "class Model: pass") -> Sample:
-    sample = Sample(
-        prompt="prompt",
+def make_attempt(*, response: str = "", ref_code: str = "class Model: pass") -> AttemptRow:
+    sample = AttemptRow(
+        attempt_id="attempt-1",
+        problem=ProblemRow(problem_id="prompt", payload={"prompt": "prompt"}),
         metadata={"ref_code": ref_code},
     )
 
@@ -89,7 +90,8 @@ def make_code_sample(*, response: str, ref_code: str = "class Model: pass") -> S
 
 @pytest.mark.trio
 async def test_kernelbench_scorer_uses_environment_metadata_without_evaluator() -> None:
-    sample = Sample(
+    sample = AttemptRow(
+        attempt_id="attempt-1",
         metadata={
             "best_speedup": 1.75,
             "has_correct_kernel": True,
@@ -110,8 +112,9 @@ async def test_kernelbench_scorer_uses_environment_metadata_without_evaluator() 
 
 @pytest.mark.trio
 async def test_kernelbench_scorer_requires_evaluator_without_env_metadata() -> None:
-    sample = Sample(
-        prompt="prompt",
+    sample = AttemptRow(
+        attempt_id="attempt-1",
+        problem=ProblemRow(problem_id="prompt", payload={"prompt": "prompt"}),
         metadata={"ref_code": "class Model: pass"},
     )
 
@@ -127,8 +130,9 @@ async def test_kernelbench_scorer_requires_evaluator_without_env_metadata() -> N
 
 @pytest.mark.trio
 async def test_kernelbench_scorer_uses_injected_batch_evaluator() -> None:
-    sample = Sample(
-        prompt="prompt",
+    sample = AttemptRow(
+        attempt_id="attempt-1",
+        problem=ProblemRow(problem_id="prompt", payload={"prompt": "prompt"}),
         metadata={"ref_code": "class Model: pass"},
     )
     sample.trajectory = None
@@ -160,8 +164,9 @@ async def test_kernelbench_scorer_uses_injected_batch_evaluator() -> None:
 
 @pytest.mark.trio
 async def test_kernelbench_scorer_preserves_error_metadata_from_evaluator() -> None:
-    sample = Sample(
-        prompt="prompt",
+    sample = AttemptRow(
+        attempt_id="attempt-1",
+        problem=ProblemRow(problem_id="prompt", payload={"prompt": "prompt"}),
         metadata={"ref_code": "class Model: pass"},
     )
 
@@ -183,7 +188,7 @@ async def test_kernelbench_scorer_preserves_error_metadata_from_evaluator() -> N
 
 @pytest.mark.trio
 async def test_eval_compute_score_supports_sample_scorer() -> None:
-    sample = Sample(id="sample-1")
+    sample = AttemptRow(attempt_id="sample-1")
 
     score = await _compute_score(None, sample, sample_scorer=FakeSampleScorer())
 
@@ -193,12 +198,12 @@ async def test_eval_compute_score_supports_sample_scorer() -> None:
 
 @pytest.mark.trio
 async def test_kernelbench_judge_policy_only_judges_compiled_samples() -> None:
-    compiled_sample = make_code_sample(response="```python\nclass ModelNew:\n    pass\n```")
-    missing_code_sample = make_code_sample(response="no kernel here")
-    judge_calls: list[list[Sample]] = []
+    compiled_sample = make_attempt(response="```python\nclass ModelNew:\n    pass\n```")
+    missing_code_sample = make_attempt(response="no kernel here")
+    judge_calls: list[list[AttemptRow]] = []
 
     async def judge_fn(
-        samples: list[Sample],
+        samples: list[AttemptRow],
         _execution_results: list[dict[str, object]],
     ) -> list[KernelJudgeDecision | None]:
         judge_calls.append(samples)
@@ -224,10 +229,10 @@ async def test_kernelbench_judge_policy_only_judges_compiled_samples() -> None:
 
 @pytest.mark.trio
 async def test_kernelbench_judge_can_gate_reward() -> None:
-    sample = make_code_sample(response="```python\nclass ModelNew:\n    pass\n```")
+    sample = make_attempt(response="```python\nclass ModelNew:\n    pass\n```")
 
     async def judge_fn(
-        samples: list[Sample],
+        samples: list[AttemptRow],
         _execution_results: list[dict[str, object]],
     ) -> list[KernelJudgeDecision | None]:
         return [

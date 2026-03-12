@@ -120,7 +120,7 @@ class RolloutManager:
         assert self.runtime is not None, "runtime must be provided"
         samples = self.runtime.generate_fn(prompts, **self.rollout_kwargs)
         assert isinstance(samples, list), (
-            f"generate_fn must return list[Sample], got {type(samples)}"
+            f"generate_fn must return list[AttemptRow], got {type(samples)}"
         )
         assert len(samples) > 0, "generate_fn must return non-empty sample list"
 

@@ -33,7 +33,7 @@ import trio
 
 if TYPE_CHECKING:
     from ..core import Environment, Score
-    from ..training.types import Sample, SampleScorer
+    from ..training.types import AttemptRow, SampleScorer
 
 # ──────────────────────── Sub-Configs (re-exported from shared) ───────────────
 
@@ -134,7 +134,7 @@ class GRPOConfig:
 def grpo_train(
     config: GRPOConfig,
     prompts: list[dict[str, Any]],
-    score_fn: Callable[[Sample], Score] | None = None,
+    score_fn: Callable[[AttemptRow], Score] | None = None,
     environment_cls: Callable[[], Environment] | type[Environment] | None = None,
     metadata_key: str | None = None,
     environment_factory: Callable[[dict[str, Any]], Any] | None = None,
@@ -147,7 +147,7 @@ def grpo_train(
         prompts: List of prompt dicts, each containing:
             - "messages": List of chat messages [{"role": "...", "content": "..."}]
             - Any metadata needed by score_fn (e.g., "answer", "expected_sorted")
-        score_fn: Legacy function (Sample) -> Score that computes reward.
+        score_fn: Legacy function (AttemptRow) -> Score that computes reward.
         environment_cls: Zero-arg environment constructor for simple cases
             (BasicEnvironment, CalculatorEnvironment, factory function, etc.).
         environment_factory: Optional per-sample environment factory. Receives the
@@ -1050,7 +1050,7 @@ def _prepare_training_batch(
 async def _grpo_train_async(
     config: GRPOConfig,
     prompts: list[dict[str, Any]],
-    score_fn: Callable[[Sample], Score] | None,
+    score_fn: Callable[[AttemptRow], Score] | None,
     environment_cls: Callable[[], Environment] | type[Environment] | None,
     metadata_key: str | None = None,
     environment_factory: Callable[[dict[str, Any]], Any] | None = None,

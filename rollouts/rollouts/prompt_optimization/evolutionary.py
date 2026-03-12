@@ -232,7 +232,7 @@ async def run_evolutionary_gepa(
         dataset: List of sample dicts
         endpoint: LLM endpoint for task evaluation
         mutation_endpoint: LLM endpoint for proposing mutations (can be same as endpoint)
-        score_fn: Function to compute score from Sample
+        score_fn: Function to compute score from an attempt row
         environment_factory: Optional factory for per-sample environments
         on_generation: Optional callback after each generation
 

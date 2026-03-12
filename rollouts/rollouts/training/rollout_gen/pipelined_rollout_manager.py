@@ -226,7 +226,7 @@ class PipelinedRolloutManager:
         Args:
             current_weight_version: Current training weight version
             sample_scorer: Explicit scoring stage owned by the buffer/data side.
-            score_fn: Legacy score function (Sample -> Score), adapted into a
+            score_fn: Legacy score function (AttemptRow -> Score), adapted into a
                 sample_scorer when provided.
             timeout: Max seconds to wait for batch
 

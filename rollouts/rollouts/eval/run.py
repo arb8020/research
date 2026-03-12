@@ -27,7 +27,7 @@ Config files should export:
 
     - tasks: list[dict] OR tasks_path: Path (one required)
     - prepare_messages: Callable[[dict], list[Message]]
-    - score_fn: Callable[[Sample], Score] or sample_scorer
+    - score_fn: Callable[[AttemptRow], Score] or sample_scorer
     - make_environment: Callable[[], Environment] (optional)
 """
 

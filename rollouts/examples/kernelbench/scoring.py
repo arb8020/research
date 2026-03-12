@@ -1,7 +1,10 @@
-"""KernelBench scoring function.
+"""Legacy KernelBench scoring helpers.
 
 Computes rewards for kernel optimization based on correctness and speedup.
 Follows the Kevin paper formula: S = 0.3 * correct + speedup (if correct)
+
+Prefer the injected scorer stage in
+``examples/rl/kernelbench/scoring.py`` for new eval/RL paths.
 """
 
 from __future__ import annotations
@@ -10,10 +13,10 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from rollouts.core import Score
-    from rollouts.training.types import Sample
+    from rollouts.training.types import AttemptRow
 
 
-def kernelbench_score_fn(sample: Sample) -> Score:
+def kernelbench_score_fn(sample: AttemptRow) -> Score:
     """Score function for multi-turn KernelBench evaluation/training.
 
     Implements the Kevin reward formula:
@@ -24,7 +27,7 @@ def kernelbench_score_fn(sample: Sample) -> Score:
     - Whether any kernel was correct
 
     Args:
-        sample: Sample with trajectory and metadata
+        sample: Attempt row with trajectory and metadata
 
     Returns:
         Score with reward and metrics
@@ -61,14 +64,14 @@ def kernelbench_score_fn(sample: Sample) -> Score:
     )
 
 
-def kernelbench_single_turn_score_fn(sample: Sample) -> Score:
+def kernelbench_single_turn_score_fn(sample: AttemptRow) -> Score:
     """Score function for single-turn KernelBench (no environment feedback).
 
     Used when evaluating without the multi-turn environment.
     Extracts kernel from response and scores directly.
 
     Args:
-        sample: Sample with response and ref_code in metadata
+        sample: Attempt row with response and ref_code in metadata
 
     Returns:
         Score with reward and metrics
@@ -94,6 +97,8 @@ def kernelbench_single_turn_score_fn(sample: Sample) -> Score:
             )
         )
 
+    # TODO(async-design-decisions.md): This legacy helper still creates a local
+    # sandbox pool inline. Prefer scorer/resource injection in new code.
     # Score via sandbox pool (sync wrapper)
     from rollouts.gpu_sandbox import SandboxPool
 

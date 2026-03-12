@@ -1,10 +1,6 @@
 """Training data types.
 
 Pure dataclasses - transparent, no hidden state (Casey Muratori's principle).
-The old flat Sample type has been replaced with:
-- ProblemRow: normalized input/problem data
-- AttemptRow: one execution attempt plus scoring/provenance
-- TrainingSample: trainer-facing token/loss-mask data derived from an attempt
 """
 
 from collections.abc import Callable
@@ -282,91 +278,6 @@ class AttemptRow:
         return AttemptRow(**payload)
 
 
-@dataclass(init=False)
-class Sample(AttemptRow):
-    """Compatibility wrapper for older call sites still constructing Sample directly.
-
-    New code should use ProblemRow / AttemptRow / TrainingSample explicitly.
-    """
-
-    # TODO(async-design-decisions.md): Remove this compatibility wrapper once
-    # the remaining prompt-optimization/example/dataset helper call sites stop
-    # constructing the old flat Sample shape directly.
-
-    def __init__(
-        self,
-        id: str = "",
-        index: int | None = None,
-        group_index: int | None = None,
-        input: dict[str, Any] | None = None,
-        prompt: str | list[dict[str, str]] = "",
-        ground_truth: Any | None = None,
-        trajectory: "Trajectory | None" = None,
-        tokens: list[int] | None = None,
-        response_length: int = 0,
-        loss_mask: list[float] | None = None,
-        reward: float = 0.0,
-        rollout_log_probs: list[float] | None = None,
-        teacher_log_probs: list[float] | None = None,
-        score: "Score | None" = None,
-        environment_state: dict[str, Any] | None = None,
-        status: Status = Status.PENDING,
-        metadata: dict[str, Any] | None = None,
-        weight_version: int = 0,
-    ) -> None:
-        problem = None
-        if input is not None or ground_truth is not None or prompt:
-            payload = dict(input or {})
-            if prompt and "prompt" not in payload and "messages" not in payload:
-                payload["prompt"] = prompt
-            problem = ProblemRow(
-                problem_id=id,
-                payload=payload,
-                ground_truth=ground_truth,
-                metadata=dict(metadata or {}),
-            )
-
-        training_sample = None
-        if (
-            tokens is not None
-            or loss_mask is not None
-            or rollout_log_probs is not None
-            or teacher_log_probs is not None
-        ):
-            resolved_loss_mask = list(loss_mask or [])
-            resolved_tokens = list(tokens or [])
-            if response_length == 0 and resolved_loss_mask:
-                response_length = sum(1 for weight in resolved_loss_mask if weight > 0.0)
-            training_metadata = dict(metadata or {})
-            if prompt and "prompt" not in training_metadata:
-                training_metadata["prompt"] = prompt
-            training_sample = TrainingSample(
-                attempt_id=id,
-                tokens=resolved_tokens,
-                loss_mask=resolved_loss_mask,
-                response_length=response_length,
-                rollout_log_probs=rollout_log_probs,
-                teacher_log_probs=teacher_log_probs,
-                metadata=training_metadata,
-            )
-
-        super().__init__(
-            attempt_id=id,
-            problem=problem,
-            group_index=group_index,
-            trajectory=trajectory,
-            training_sample=training_sample,
-            reward=reward,
-            score=score,
-            environment_state=environment_state,
-            status=status,
-            metadata=dict(metadata or {}),
-            weight_version=weight_version,
-        )
-        if index is not None:
-            self.metadata.setdefault("legacy_index", index)
-
-
 @dataclass
 class RolloutBatch:
     """Training-ready batch of samples.
@@ -454,7 +365,13 @@ class RolloutConfig:
 
     Example:
         >>> async def my_generate(prompts, config):
-        ...     return [Sample(prompt=p, response="...") for p in prompts]
+        ...     return [
+        ...         AttemptRow(
+        ...             attempt_id=str(i),
+        ...             problem=ProblemRow(problem_id=str(i), payload={"prompt": p}),
+        ...         )
+        ...         for i, p in enumerate(prompts)
+        ...     ]
         >>>
         >>> config = RolloutConfig(
         ...     batch_size=32,

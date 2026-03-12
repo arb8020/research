@@ -10,20 +10,54 @@ from rollouts.training.rollout_gen.async_rollout_manager import AsyncRolloutMana
 from rollouts.training.rollout_gen.pipelined_rollout_manager import PipelinedRolloutManager
 from rollouts.training.runtime import resolve_rollout_runtime
 from rollouts.training.types import (
+    AttemptRow,
     IncompleteGroupPolicy,
+    ProblemRow,
     RolloutConfig,
     RolloutRuntime,
-    Sample,
+    TrainingSample,
 )
+
+
+def make_attempt(
+    *,
+    prompt: str = "",
+    group_index: int | None = None,
+    reward: float = 0.0,
+    weight_version: int = 0,
+    tokens: list[int] | None = None,
+    loss_mask: list[float] | None = None,
+) -> AttemptRow:
+    training_sample = None
+    if tokens is not None or loss_mask is not None:
+        resolved_tokens = list(tokens or [])
+        resolved_loss_mask = list(loss_mask or [])
+        training_sample = TrainingSample(
+            tokens=resolved_tokens,
+            loss_mask=resolved_loss_mask,
+            response_length=sum(1 for weight in resolved_loss_mask if weight > 0.0),
+            metadata={"prompt": prompt} if prompt else {},
+        )
+    problem = None
+    if prompt:
+        problem = ProblemRow(problem_id=prompt, payload={"prompt": prompt})
+    return AttemptRow(
+        attempt_id=prompt,
+        problem=problem,
+        group_index=group_index,
+        training_sample=training_sample,
+        reward=reward,
+        weight_version=weight_version,
+    )
 
 
 def test_assemble_groups_drops_incomplete_groups_and_keeps_complete_overflow() -> None:
     samples = [
-        Sample(group_index=10),
-        Sample(group_index=10),
-        Sample(group_index=20),
-        Sample(group_index=30),
-        Sample(group_index=30),
+        make_attempt(group_index=10),
+        make_attempt(group_index=10),
+        make_attempt(group_index=20),
+        make_attempt(group_index=30),
+        make_attempt(group_index=30),
     ]
 
     result = assemble_groups(samples, target_num_groups=1, samples_per_group=2)
@@ -37,9 +71,9 @@ def test_assemble_groups_drops_incomplete_groups_and_keeps_complete_overflow() -
 
 def test_assemble_groups_can_fail_closed_on_incomplete_groups() -> None:
     samples = [
-        Sample(group_index=10),
-        Sample(group_index=10),
-        Sample(group_index=20),
+        make_attempt(group_index=10),
+        make_attempt(group_index=10),
+        make_attempt(group_index=20),
     ]
 
     with pytest.raises(ValueError, match="Group 20 is incomplete"):
@@ -67,7 +101,7 @@ def test_resolve_rollout_runtime_prefers_explicit_runtime() -> None:
     explicit_runtime = RolloutRuntime(generate_fn=lambda prompts: [])
     legacy_config = RolloutConfig(
         batch_size=1,
-        generate_fn=lambda prompts: [Sample() for _ in prompts],
+        generate_fn=lambda prompts: [make_attempt() for _ in prompts],
     )
 
     resolved_runtime = resolve_rollout_runtime(
@@ -82,10 +116,10 @@ def test_resolve_rollout_runtime_prefers_explicit_runtime() -> None:
 async def test_async_rollout_manager_refills_incomplete_groups() -> None:
     call_counts: dict[str, int] = defaultdict(int)
 
-    async def generate_fn(prompts: list[str]) -> list[Sample]:
+    async def generate_fn(prompts: list[str]) -> list[AttemptRow]:
         prompt = prompts[0]
         call_counts[prompt] += 1
-        return [Sample(prompt=prompt, tokens=[1], loss_mask=[1.0], reward=0.0)]
+        return [make_attempt(prompt=prompt, tokens=[1], loss_mask=[1.0], reward=0.0)]
 
     config = RolloutConfig(
         batch_size=1,
@@ -98,7 +132,9 @@ async def test_async_rollout_manager_refills_incomplete_groups() -> None:
         data_buffer=DataBuffer(prompts=["unused"]),
         config=config,
         runtime=runtime,
-        buffered_samples=[Sample(prompt="prompt-a", group_index=7, tokens=[1], loss_mask=[1.0])],
+        buffered_samples=[
+            make_attempt(prompt="prompt-a", group_index=7, tokens=[1], loss_mask=[1.0])
+        ],
     )
 
     async with manager:
@@ -116,10 +152,10 @@ async def test_async_rollout_manager_refills_incomplete_groups() -> None:
 async def test_pipelined_rollout_manager_refills_fully_stale_group_from_prompt_registry() -> None:
     call_counts: dict[str, int] = defaultdict(int)
 
-    async def generate_fn(prompts: list[str]) -> list[Sample]:
+    async def generate_fn(prompts: list[str]) -> list[AttemptRow]:
         prompt = prompts[0]
         call_counts[prompt] += 1
-        return [Sample(prompt=prompt, tokens=[1], loss_mask=[1.0], reward=0.0)]
+        return [make_attempt(prompt=prompt, tokens=[1], loss_mask=[1.0], reward=0.0)]
 
     config = RolloutConfig(
         batch_size=1,
@@ -136,7 +172,7 @@ async def test_pipelined_rollout_manager_refills_fully_stale_group_from_prompt_r
     )
     manager._group_prompts[7] = "prompt-a"
     manager._sample_queue = [
-        Sample(
+        make_attempt(
             prompt="prompt-a",
             group_index=7,
             weight_version=0,

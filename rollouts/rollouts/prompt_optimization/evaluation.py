@@ -38,10 +38,10 @@ async def evaluate_single_sample(
 
     Args:
         template: PromptTemplate to evaluate
-        sample: Sample data dict
+        sample: Problem row payload dict
         seed: Sample index (for logging)
         endpoint: LLM endpoint configuration
-        score_fn: Function to compute score from Sample
+        score_fn: Function to compute score from an attempt row
         environment: Optional environment for tool-using agents
         run_config: Optional run configuration
 
@@ -72,7 +72,7 @@ async def evaluate_single_sample(
         logger.warning(f"Sample {seed} failed: {e}")
         return 0.0
 
-    # Build Sample for score function
+    # Build attempt row for scoring
     # Try common ground truth field names
     ground_truth = sample.get("ground_truth") or sample.get("answer") or sample.get("label")
     eval_sample = AttemptRow(
@@ -118,7 +118,7 @@ async def evaluate_template(
         seeds: Indices into dataset to evaluate on
         dataset: Full dataset (list of sample dicts)
         endpoint: LLM endpoint configuration
-        score_fn: Function to compute score from Sample
+        score_fn: Function to compute score from an attempt row
         environment_factory: Optional factory for per-sample environments
         max_concurrent: Maximum parallel evaluations
 

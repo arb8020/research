@@ -19,13 +19,13 @@ from ...agents import AgentState, RunConfig, handle_stop_max_turns
 from ...core import Endpoint, EvalConfig, Message, Score, StopReason
 from ...dtypes import StreamEvent
 from ...eval.native import EvalRuntime, evaluate_sample
-from ...training.types import Sample
+from ...training.types import AttemptRow
 from ..types import Candidate, EvaluationBatch
 
 logger = logging.getLogger(__name__)
 
 # Type aliases
-ScoreFn = Callable[[Sample], Score] | Callable[[Sample], Awaitable[Score]]
+ScoreFn = Callable[[AttemptRow], Score] | Callable[[AttemptRow], Awaitable[Score]]
 EnvironmentFactory = Callable[[dict[str, Any]], Awaitable[Any]]
 
 
@@ -51,8 +51,8 @@ class SystemPromptConfig:
 # ─── Pure Functions ───────────────────────────────────────────────────────────
 
 
-def extract_output(sample: Sample) -> str:
-    """Extract output text from Sample's trajectory."""
+def extract_output(sample: AttemptRow) -> str:
+    """Extract output text from an attempt row's trajectory."""
     if not sample.trajectory or not sample.trajectory.messages:
         return ""
 
@@ -165,7 +165,7 @@ async def evaluate_system_prompt(
     # Create runtime context for evaluate_sample calls
     runtime = EvalRuntime(config=eval_config)
 
-    async def eval_one(idx: int, sample_data: dict) -> Sample:
+    async def eval_one(idx: int, sample_data: dict) -> AttemptRow:
         env = await config.environment_factory(sample_data) if config.environment_factory else None
         return await evaluate_sample(
             sample_data=sample_data,
@@ -177,7 +177,7 @@ async def evaluate_system_prompt(
     # Run with concurrency limit
     async with trio.open_nursery() as nursery:
         limiter = trio.CapacityLimiter(config.max_concurrent)
-        results: list[Sample | None] = [None] * len(batch)
+        results: list[AttemptRow | None] = [None] * len(batch)
 
         async def eval_with_limit(idx: int, sample_data: dict) -> None:
             async with limiter:

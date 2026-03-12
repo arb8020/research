@@ -120,7 +120,7 @@ class AsyncRolloutManager:
 
         Args:
             sample_scorer: Explicit scoring stage owned by the buffer/data side.
-            score_fn: Legacy score function (Sample -> Score), adapted into a
+            score_fn: Legacy score function (AttemptRow -> Score), adapted into a
                 sample_scorer when provided.
 
         Returns:
@@ -270,7 +270,7 @@ class AsyncRolloutManager:
         ) -> list[AttemptRow]:
             """Generate sample for a single prompt with group index."""
             # Call user's generate function
-            # Note: User function should return list[Sample]
+            # Note: User function should return list[AttemptRow]
             samples = await self._call_user_generate_fn([prompt])
             # Set group_index on all returned samples
             for sample in samples:
@@ -465,7 +465,7 @@ async def generate_rollout_batch(
         config: RolloutConfig with generation settings
         runtime: Optional explicit rollout runtime wiring.
         sample_scorer: Explicit scoring stage owned by the buffer/data side.
-        score_fn: Legacy score function (Sample -> Score), adapted into a
+        score_fn: Legacy score function (AttemptRow -> Score), adapted into a
             sample_scorer when provided.
         **rollout_kwargs: Kwargs passed to generate_fn
 

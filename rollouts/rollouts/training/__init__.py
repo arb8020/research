@@ -18,7 +18,6 @@ from ..training.types import (
     RLTrainingConfig,
     RolloutBatch,
     RolloutConfig,
-    Sample,
     SFTTrainingConfig,
     Status,
     TrainerConfig,
@@ -158,7 +157,6 @@ __all__ = [
     # Types
     "ProblemRow",
     "AttemptRow",
-    "Sample",
     "TrainingSample",
     "Status",
     "SFTTrainingConfig",

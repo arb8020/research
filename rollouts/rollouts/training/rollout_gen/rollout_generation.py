@@ -92,7 +92,7 @@ def apply_sample_transforms(
     Pure function - no side effects.
 
     Args:
-        samples: List of Sample objects
+        samples: List of attempt rows
         config: RolloutConfig with optional filter_fn and score_fn
 
     Returns:
@@ -128,7 +128,7 @@ def convert_to_batch(
     Pure function - no side effects.
 
     Args:
-        samples: List of Sample objects
+        samples: List of attempt rows
         epoch_id: Current epoch number
         step_id: Current step number
 
@@ -178,7 +178,7 @@ def extract_sample_fields(samples: list[AttemptRow]) -> tuple[list, list, list]:
     Pure extraction - no computation.
 
     Args:
-        samples: List of Sample objects
+        samples: List of attempt rows
 
     Returns:
         Tuple of (tokens, loss_masks, rewards)
@@ -196,7 +196,7 @@ def extract_group_indices(samples: list[AttemptRow]) -> list[int]:
     (for GRPO advantage normalization).
 
     Args:
-        samples: List of Sample objects
+        samples: List of attempt rows
 
     Returns:
         List of group indices (one per sample)
@@ -210,7 +210,7 @@ def extract_rollout_log_probs(samples: list[AttemptRow]) -> list[list[float]] | 
     Only returns non-None if ALL samples have rollout_log_probs.
 
     Args:
-        samples: List of Sample objects
+        samples: List of attempt rows
 
     Returns:
         List of per-token logprob lists, or None if not available
@@ -255,7 +255,7 @@ def build_batch_metadata(
     Aggregates sample-level metadata and adds batch-level info.
 
     Args:
-        samples: List of Sample objects
+        samples: List of attempt rows
         epoch_id: Current epoch number
         step_id: Current step number
 

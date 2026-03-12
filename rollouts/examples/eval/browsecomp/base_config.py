@@ -275,14 +275,13 @@ def create_browsecomp_score_fn(grader_endpoint: Endpoint) -> Callable[[Any], Awa
     """Create score function with grader endpoint bound.
 
     Returns an async score function compatible with rollouts EvalConfig.
-    Sample has trajectory via sample.trajectory.
+    The attempt row carries the execution trajectory via ``sample.trajectory``.
     """
 
     async def browsecomp_score_fn(sample: Any) -> Score:
         """Score function for BrowseComp.
 
         Uses LLM-as-judge to grade the response.
-        Sample has trajectory via sample.trajectory.
         """
         trajectory = sample.trajectory
         if trajectory is None:

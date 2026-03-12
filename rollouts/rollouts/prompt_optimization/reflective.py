@@ -265,7 +265,7 @@ async def optimize_prompt(
         system: Initial system prompt to optimize
         user_template: Template for user messages (with {placeholders})
         dataset: List of sample dicts
-        score_fn: Function to compute score from Sample
+        score_fn: Function to compute score from an attempt row
         endpoint: LLM endpoint for task evaluation
         reflection_endpoint: LLM endpoint for mutations (defaults to endpoint)
         config: Optimization config (defaults to GEPAConfig())
