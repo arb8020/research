@@ -14,7 +14,8 @@ from typing import TYPE_CHECKING, Any
 
 import trio
 
-from .resources import CommandExecutionResult, WorkspaceInfraError
+from ..infra_errors import WorkspaceInfraError
+from .resources import CommandExecutionResult
 from .runtime_probe import build_gpu_runtime_probe_script
 
 if TYPE_CHECKING:

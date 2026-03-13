@@ -8,7 +8,8 @@ from typing import Any
 
 import trio
 
-from .resources import CommandExecutionResult, WorkspaceInfraError
+from ..infra_errors import WorkspaceInfraError
+from .resources import CommandExecutionResult
 from .runtime_probe import build_gpu_runtime_probe_script
 
 DEFAULT_BIFROST_WORKSPACE = "~/.bifrost/workspaces/rollouts"
