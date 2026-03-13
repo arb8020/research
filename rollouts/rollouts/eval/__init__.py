@@ -9,6 +9,7 @@ Usage:
 """
 
 from .configs import (
+    AgentRunSpec,
     EndpointConfig,
     EvalOutputConfig,
     EvalRunConfig,
@@ -28,6 +29,7 @@ from .native import (
 
 __all__ = [
     "EndpointConfig",
+    "AgentRunSpec",
     "EvalReport",
     "EvalOutputConfig",
     "EvalRuntime",

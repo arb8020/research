@@ -27,18 +27,20 @@ Example usage:
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 if TYPE_CHECKING:
     from rollouts.agents.types import AgentState
+    from rollouts.agents.types import RunConfig as AgentRunConfig
 
 # Reuse HardwareConfig from training
 from rollouts.training.configs import HardwareConfig
 
 __all__ = [
+    "AgentRunSpec",
     "EndpointConfig",
     "EvalRunConfig",
     "EvalOutputConfig",
@@ -90,6 +92,30 @@ class WallClockStop:
 
 SupportedStopHandler = MaxTurnsStop | TokenBudgetStop | CostBudgetStop | WallClockStop
 EvalStopHandler = SupportedStopHandler | Callable[["AgentState"], "AgentState"]
+
+
+@dataclass(frozen=True)
+class AgentRunSpec:
+    """Per-sample agent execution spec.
+
+    This is the eval-side product type closest to what one `run_agent(...)`
+    execution needs: endpoint, request materialization, optional environment,
+    and stop/no-tool behavior. Dataset iteration, concurrency, retries, and
+    output policy still belong to EvalRunConfig/EvalOutputConfig.
+    """
+
+    endpoint: "EndpointConfig"
+    prepare_messages: Callable[[dict[str, Any]], list[Any]]
+    environment: Any | None = None
+    environment_factory: Callable[[dict[str, Any]], Any] | None = None
+    stop_handler: EvalStopHandler | None = None
+    handle_no_tool: Callable[["AgentState", "AgentRunConfig"], Awaitable["AgentState"]] | None = None
+
+    def __post_init__(self) -> None:
+        if self.environment is not None and self.environment_factory is not None:
+            raise ValueError(
+                "AgentRunSpec cannot define both environment and environment_factory"
+            )
 
 
 @dataclass(frozen=True)

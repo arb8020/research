@@ -36,6 +36,8 @@ def validate_train_config_module(config_module: Any, config_path: Path) -> None:
 
 def validate_eval_config_module(config_module: Any, config_path: Path) -> None:
     """Validate the module contract for eval entrypoints."""
+    from .eval.configs import AgentRunSpec
+
     _require_prime_ci_status(config_module, config_path)
 
     has_tasks = hasattr(config_module, "tasks")
@@ -43,9 +45,15 @@ def validate_eval_config_module(config_module: Any, config_path: Path) -> None:
     if not has_tasks and not has_tasks_path:
         raise ValueError(f"Eval config {config_path} must define 'tasks' or 'tasks_path'")
 
+    run_spec = getattr(config_module, "run_spec", None)
+    if run_spec is not None and not isinstance(run_spec, AgentRunSpec):
+        raise ValueError(f"Eval config {config_path} must export run_spec: AgentRunSpec")
+
     prepare_messages = getattr(config_module, "prepare_messages", None)
-    if not callable(prepare_messages):
-        raise ValueError(f"Eval config {config_path} must export callable prepare_messages")
+    if run_spec is None and not callable(prepare_messages):
+        raise ValueError(
+            f"Eval config {config_path} must export callable prepare_messages or run_spec"
+        )
 
     score_fn = getattr(config_module, "score_fn", None)
     sample_scorer = getattr(config_module, "sample_scorer", None)

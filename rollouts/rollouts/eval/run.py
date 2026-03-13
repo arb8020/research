@@ -53,7 +53,7 @@ logger = logging.getLogger(__name__)
 REPO_ROOT = Path(__file__).parent.parent.parent
 
 
-def _build_stop_handler(run_config: Any) -> Any:
+def _lower_eval_stop_handler(stop_handler: Any) -> Any:
     from rollouts.agents import (
         handle_stop_cost_budget,
         handle_stop_max_turns,
@@ -62,7 +62,6 @@ def _build_stop_handler(run_config: Any) -> Any:
     )
     from rollouts.eval.configs import CostBudgetStop, MaxTurnsStop, TokenBudgetStop, WallClockStop
 
-    stop_handler = run_config.resolved_stop_handler()
     if callable(stop_handler):
         return stop_handler
     if isinstance(stop_handler, MaxTurnsStop):
@@ -74,6 +73,10 @@ def _build_stop_handler(run_config: Any) -> Any:
     if isinstance(stop_handler, WallClockStop):
         return handle_stop_wall_clock_budget(stop_handler.max_seconds)
     raise ValueError(f"Unsupported eval stop handler: {stop_handler!r}")
+
+
+def _build_stop_handler(run_config: Any) -> Any:
+    return _lower_eval_stop_handler(run_config.resolved_stop_handler())
 
 
 def _resolve_endpoint_metadata(provider: str, model: str) -> tuple[str | None, str | None]:
@@ -191,17 +194,21 @@ async def run_with_api(
 
     logger.info(f"Loaded {len(tasks)} tasks")
 
+    run_spec = getattr(config_module, "run_spec", None)
+
     # Get eval functions from config
-    prepare_messages = config_module.prepare_messages
+    prepare_messages = (
+        run_spec.prepare_messages if run_spec is not None else config_module.prepare_messages
+    )
     score_fn = getattr(config_module, "score_fn", None)
     sample_scorer = getattr(config_module, "sample_scorer", None)
     if score_fn is None and sample_scorer is None:
         raise ValueError("Config must define 'score_fn' or 'sample_scorer'")
 
     # Environment (optional)
-    environment: Environment | None = None
-    environment_factory = None
-    if hasattr(config_module, "make_environment"):
+    environment: Environment | None = run_spec.environment if run_spec is not None else None
+    environment_factory = run_spec.environment_factory if run_spec is not None else None
+    if run_spec is None and hasattr(config_module, "make_environment"):
         make_env = config_module.make_environment
         if (
             hasattr(config_module, "per_sample_environment")
@@ -220,10 +227,20 @@ async def run_with_api(
     async def stop_on_no_tool(state: AgentState, _run_config: AgentRunConfig) -> AgentState:
         return replace(state, stop=StopReason.TASK_COMPLETED)
 
+    handle_stop = _build_stop_handler(run_config)
+    if run_spec is not None and run_spec.stop_handler is not None:
+        handle_stop = _lower_eval_stop_handler(run_spec.stop_handler)
+
+    handle_no_tool = (
+        run_spec.handle_no_tool
+        if run_spec is not None and run_spec.handle_no_tool is not None
+        else stop_on_no_tool
+    )
+
     agent_run_config = AgentRunConfig(
         on_chunk=silent_on_chunk,
-        handle_stop=_build_stop_handler(run_config),
-        handle_no_tool=stop_on_no_tool,
+        handle_stop=handle_stop,
+        handle_no_tool=handle_no_tool,
     )
 
     # Output directory
@@ -362,7 +379,8 @@ Examples:
         return 1
 
     # Get configs with defaults
-    endpoint_config = getattr(config_module, "endpoint", EndpointConfig())
+    run_spec = getattr(config_module, "run_spec", None)
+    endpoint_config = run_spec.endpoint if run_spec is not None else getattr(config_module, "endpoint", EndpointConfig())
     run_config = getattr(config_module, "run", EvalRunConfig())
     output_config = getattr(config_module, "output", EvalOutputConfig())
     hardware_config = getattr(config_module, "hardware", None)
