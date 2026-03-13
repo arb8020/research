@@ -27,9 +27,13 @@ Example usage:
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
+
+if TYPE_CHECKING:
+    from rollouts.agents.types import AgentState
 
 # Reuse HardwareConfig from training
 from rollouts.training.configs import HardwareConfig
@@ -39,7 +43,53 @@ __all__ = [
     "EvalRunConfig",
     "EvalOutputConfig",
     "HardwareConfig",
+    "SupportedStopHandler",
+    "EvalStopHandler",
+    "MaxTurnsStop",
+    "TokenBudgetStop",
+    "CostBudgetStop",
+    "WallClockStop",
 ]
+
+
+@dataclass(frozen=True)
+class MaxTurnsStop:
+    max_turns: int
+
+    def __post_init__(self) -> None:
+        if self.max_turns <= 0:
+            raise ValueError("MaxTurnsStop.max_turns must be positive")
+
+
+@dataclass(frozen=True)
+class TokenBudgetStop:
+    max_tokens: int
+
+    def __post_init__(self) -> None:
+        if self.max_tokens <= 0:
+            raise ValueError("TokenBudgetStop.max_tokens must be positive")
+
+
+@dataclass(frozen=True)
+class CostBudgetStop:
+    max_cost_usd: float
+
+    def __post_init__(self) -> None:
+        if self.max_cost_usd <= 0:
+            raise ValueError("CostBudgetStop.max_cost_usd must be positive")
+
+
+@dataclass(frozen=True)
+class WallClockStop:
+    max_seconds: float
+
+    def __post_init__(self) -> None:
+        if self.max_seconds <= 0:
+            raise ValueError("WallClockStop.max_seconds must be positive")
+
+
+SupportedStopHandler = MaxTurnsStop | TokenBudgetStop | CostBudgetStop | WallClockStop
+EvalStopHandler = SupportedStopHandler | Callable[["AgentState"], "AgentState"]
 
 
 @dataclass(frozen=True)
@@ -126,7 +176,8 @@ class EvalRunConfig:
 
     # Limits
     max_samples: int | None = None  # Limit dataset size
-    max_turns: int = 10  # Max conversation turns
+    max_turns: int = 10  # Legacy default; translated into MaxTurnsStop when stop_handler is unset
+    stop_handler: EvalStopHandler | None = None
 
     # Display
     verbose: bool = True
@@ -135,6 +186,9 @@ class EvalRunConfig:
 
     # Retry
     max_sample_retries: int = 2  # Retry failed samples
+
+    def resolved_stop_handler(self) -> EvalStopHandler:
+        return self.stop_handler or MaxTurnsStop(self.max_turns)
 
 
 @dataclass(frozen=True)

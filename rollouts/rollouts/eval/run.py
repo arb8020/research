@@ -46,9 +46,34 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from rollouts.core import Environment
 
+from ..config_contracts import validate_eval_config_module
+
 logger = logging.getLogger(__name__)
 
 REPO_ROOT = Path(__file__).parent.parent.parent
+
+
+def _build_stop_handler(run_config: Any) -> Any:
+    from rollouts.agents import (
+        handle_stop_cost_budget,
+        handle_stop_max_turns,
+        handle_stop_token_budget,
+        handle_stop_wall_clock_budget,
+    )
+    from rollouts.eval.configs import CostBudgetStop, MaxTurnsStop, TokenBudgetStop, WallClockStop
+
+    stop_handler = run_config.resolved_stop_handler()
+    if callable(stop_handler):
+        return stop_handler
+    if isinstance(stop_handler, MaxTurnsStop):
+        return handle_stop_max_turns(stop_handler.max_turns)
+    if isinstance(stop_handler, TokenBudgetStop):
+        return handle_stop_token_budget(stop_handler.max_tokens)
+    if isinstance(stop_handler, CostBudgetStop):
+        return handle_stop_cost_budget(stop_handler.max_cost_usd)
+    if isinstance(stop_handler, WallClockStop):
+        return handle_stop_wall_clock_budget(stop_handler.max_seconds)
+    raise ValueError(f"Unsupported eval stop handler: {stop_handler!r}")
 
 
 def _resolve_endpoint_metadata(provider: str, model: str) -> tuple[str | None, str | None]:
@@ -124,7 +149,6 @@ async def run_with_api(
 ) -> dict[str, Any]:
     """Run eval against an API endpoint."""
     from rollouts.agents import RunConfig as AgentRunConfig
-    from rollouts.agents.handlers import handle_stop_max_turns
     from rollouts.core import Endpoint, EvalConfig
     from rollouts.eval import evaluate
 
@@ -198,7 +222,7 @@ async def run_with_api(
 
     agent_run_config = AgentRunConfig(
         on_chunk=silent_on_chunk,
-        handle_stop=handle_stop_max_turns(run_config.max_turns),
+        handle_stop=_build_stop_handler(run_config),
         handle_no_tool=stop_on_no_tool,
     )
 
@@ -331,6 +355,11 @@ Examples:
         return 1
 
     config_module = load_config_module(config_path)
+    try:
+        validate_eval_config_module(config_module, config_path)
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
 
     # Get configs with defaults
     endpoint_config = getattr(config_module, "endpoint", EndpointConfig())

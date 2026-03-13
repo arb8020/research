@@ -7,6 +7,7 @@ from .handlers import (
     handle_stop_max_turns,
     handle_stop_on_empty_message,
     handle_stop_token_budget,
+    handle_stop_wall_clock_budget,
     inject_tool_reminder,
     inject_turn_warning,
 )
@@ -44,6 +45,7 @@ __all__ = [
     "handle_stop_max_turns",
     "handle_stop_on_empty_message",
     "handle_stop_token_budget",
+    "handle_stop_wall_clock_budget",
     "handle_tool_error",
     "inject_tool_reminder",
     "inject_turn_warning",

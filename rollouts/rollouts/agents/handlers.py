@@ -8,6 +8,7 @@
 # Design: Each handler is a pure function (AgentState) -> AgentState.
 # Compose them with compose_handlers() for complex stopping logic.
 
+import time
 from collections.abc import Callable
 from dataclasses import replace
 
@@ -109,6 +110,24 @@ def handle_stop_cost_budget(
     def handler(state: AgentState) -> AgentState:
         current_cost = actual_cost_fn(state)
         if current_cost >= max_cost_usd:
+            return replace(state, stop=StopReason.BUDGET_EXCEEDED)
+        return state
+
+    return handler
+
+
+def handle_stop_wall_clock_budget(max_seconds: float) -> Callable[[AgentState], AgentState]:
+    """Stop when wall-clock elapsed time exceeds budget.
+
+    The budget is measured from handler construction time, which matches the
+    lifecycle of a single eval/sample run when attached to a RunConfig.
+    """
+    assert max_seconds > 0, "max_seconds must be positive"
+    start_time = time.monotonic()
+
+    def handler(state: AgentState) -> AgentState:
+        elapsed_seconds = time.monotonic() - start_time
+        if elapsed_seconds >= max_seconds:
             return replace(state, stop=StopReason.BUDGET_EXCEEDED)
         return state
 
