@@ -795,17 +795,106 @@ async def _create_sandbox(
 
     timeout_seconds = config.timeout_hours * 3600
 
-    logger.info(f"Creating sandbox: {sandbox_name} (gpu={gpu_spec})...")
-    sandbox = await trio_asyncio.aio_as_trio(
-        modal.Sandbox.create.aio(
-            app=app,
-            image=image,
-            gpu=gpu_spec,
-            timeout=timeout_seconds,
-            name=sandbox_name,
-            verbose=True,  # Enable backend logging for observability
+    create_timeout_s = 300
+    create_heartbeat_s = 15
+    create_attempts = 2
+
+    def emit(event: str, **data: Any) -> None:
+        if config.event_log is not None:
+            config.event_log(
+                event,
+                provider="modal",
+                run_name=config.run_name,
+                sandbox_name=sandbox_name,
+                gpu_type=config.gpu_type,
+                gpu_count=config.gpu_count,
+                **data,
+            )
+
+    async def _create_once(attempt: int) -> Any:
+        logger.info(f"Creating sandbox: {sandbox_name} (gpu={gpu_spec}) attempt={attempt}/{create_attempts}")
+        emit("modal_sandbox_create_attempt_start", attempt=attempt, timeout_sec=create_timeout_s)
+
+        result: dict[str, Any] = {}
+
+        async def _create_task() -> None:
+            result["sandbox"] = await trio_asyncio.aio_as_trio(
+                modal.Sandbox.create.aio(
+                    app=app,
+                    image=image,
+                    gpu=gpu_spec,
+                    timeout=timeout_seconds,
+                    name=sandbox_name,
+                    verbose=True,  # Enable backend logging for observability
+                )
+            )
+
+        start = trio.current_time()
+        with trio.move_on_after(create_timeout_s) as scope:
+            async with trio.open_nursery() as nursery:
+                nursery.start_soon(_create_task)
+                while "sandbox" not in result:
+                    elapsed = trio.current_time() - start
+                    emit(
+                        "modal_sandbox_create_heartbeat",
+                        attempt=attempt,
+                        elapsed_sec=round(elapsed, 3),
+                    )
+                    await trio.sleep(create_heartbeat_s)
+                nursery.cancel_scope.cancel()
+
+        if "sandbox" in result:
+            elapsed = trio.current_time() - start
+            emit(
+                "modal_sandbox_create_attempt_succeeded",
+                attempt=attempt,
+                elapsed_sec=round(elapsed, 3),
+            )
+            return result["sandbox"]
+
+        assert scope.cancelled_caught
+        emit(
+            "modal_sandbox_create_attempt_timeout",
+            attempt=attempt,
+            timeout_sec=create_timeout_s,
         )
-    )
+        raise TimeoutError(
+            f"Modal sandbox creation timed out after {create_timeout_s}s "
+            f"(attempt {attempt}/{create_attempts})"
+        )
+
+    sandbox = None
+    last_error: Exception | None = None
+    for attempt in range(1, create_attempts + 1):
+        try:
+            sandbox = await _create_once(attempt)
+            break
+        except Exception as exc:
+            last_error = exc
+            logger.warning(
+                "Modal sandbox create attempt %s/%s failed: %s",
+                attempt,
+                create_attempts,
+                exc,
+            )
+            if attempt == create_attempts:
+                break
+            emit(
+                "modal_sandbox_create_retry_scheduled",
+                attempt=attempt,
+                next_attempt=attempt + 1,
+                error=f"{type(exc).__name__}: {exc}",
+            )
+
+    if sandbox is None:
+        emit(
+            "modal_sandbox_create_failed",
+            attempts=create_attempts,
+            error=f"{type(last_error).__name__}: {last_error}" if last_error else "unknown",
+        )
+        raise RuntimeError(
+            f"Modal sandbox creation failed after {create_attempts} attempts: {last_error}"
+        ) from last_error
 
     assert sandbox is not None, "Sandbox.create() returned None"
     assert sandbox.object_id, "Sandbox missing object_id"
