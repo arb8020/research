@@ -780,6 +780,121 @@ def _build_grpo_run_context(
     }
 
 
+def _build_training_preflight_datum(config: GRPOConfig, device: str) -> Any:
+    """Build a cheap synthetic datum for backend health checks.
+
+    This is not a VRAM worst-case probe. It exists to exercise the real
+    backend/model/provider/optimizer path before we pay inference startup cost.
+    """
+    import torch
+
+    from ..training.contracts import ModelInput, TrainableParameterPolicy, TrainingDatum
+
+    micro_batch_size = config.trainer.micro_batch_size or 1
+    seq_len = min(config.rollout.max_seq_len, 32)
+    vocab_size = 1024
+
+    tokens = torch.randint(0, vocab_size, (micro_batch_size, seq_len), device=device)
+    labels = tokens.clone()
+    loss_mask = torch.ones(micro_batch_size, seq_len, device=device)
+    advantages = torch.ones(micro_batch_size, device=device)
+    group_ids = torch.arange(micro_batch_size, device=device, dtype=torch.long)
+
+    return TrainingDatum(
+        model_input=ModelInput(tokens=tokens),
+        objective_inputs={
+            "labels": labels,
+            "loss_mask": loss_mask,
+            "advantages": advantages,
+            "group_ids": group_ids,
+        },
+        trainable_parameter_policy=TrainableParameterPolicy.full_weight(),
+        metadata={"synthetic": True, "preflight": "training_backend"},
+    )
+
+
+async def _run_training_preflight(
+    config: GRPOConfig,
+    output_dir: Path,
+    logger: logging.Logger,
+    *,
+    megatron_workers: list[Any] | None = None,
+    node_id: str | None = None,
+    run_context: dict[str, Any] | None = None,
+) -> None:
+    """Initialize the training backend and run one synthetic step.
+
+    This is a backend-health preflight, not a full startup or VRAM truth probe.
+    Its job is to fail before expensive inference startup if training is broken.
+    """
+    from types import SimpleNamespace
+
+    from ..training.contract_witnesses import rl_contract_loss
+
+    rc = run_context or {}
+    logger.info(
+        "training_preflight_start",
+        extra={
+            "event": "training_preflight_start",
+            **rc,
+            "node_id": node_id or rc.get("node_id"),
+            "backend": config.trainer.backend,
+        },
+    )
+
+    dummy_engine = SimpleNamespace(api_base=f"http://127.0.0.1:{config.inference.port}/v1")
+    preflight_output_dir = output_dir / "_training_preflight"
+    preflight_output_dir.mkdir(parents=True, exist_ok=True)
+
+    backend = None
+    cleanup: Callable[[], None] | None = None
+    try:
+        backend, _tokenizer, _endpoint, cleanup = _setup_training_backend(
+            config,
+            preflight_output_dir,
+            dummy_engine,
+            megatron_workers=megatron_workers,
+        )
+
+        logger.info(
+            "training_preflight_backend_init_ok",
+            extra={
+                "event": "training_preflight_backend_init_ok",
+                **rc,
+                "node_id": node_id or rc.get("node_id"),
+                "backend": config.trainer.backend,
+            },
+        )
+
+        device = f"cuda:{config.trainer.cuda_device_ids[0]}"
+        datum = _build_training_preflight_datum(config, device)
+        fb_future = backend.forward_backward(datum, loss_fn=rl_contract_loss)
+        fb_result = await fb_future.result()
+        optim_future = backend.optim_step()
+        optim_result = await optim_future.result()
+
+        logger.info(
+            "training_preflight_synthetic_step_ok",
+            extra={
+                "event": "training_preflight_synthetic_step_ok",
+                **rc,
+                "node_id": node_id or rc.get("node_id"),
+                "backend": config.trainer.backend,
+                "losses": getattr(fb_result, "losses", {}),
+                "optim": optim_result,
+            },
+        )
+    finally:
+        if cleanup is not None:
+            cleanup()
+        try:
+            import torch
+
+            torch.cuda.empty_cache()
+        except Exception:
+            pass
+
+
 def _attach_runtime_observability(
     batch: Any,
     rollout_manager: Any,
@@ -1268,6 +1383,26 @@ async def _grpo_train_async(
             config=megatron_config,
         )
         logger.info(f"Spawned {len(megatron_workers)} megatron workers")
+
+    # Training preflight: initialize the backend and run one synthetic step
+    # before paying inference startup cost. This is a backend-health check, not
+    # a VRAM truth probe.
+    await _run_training_preflight(
+        config,
+        output_dir,
+        logger,
+        megatron_workers=megatron_workers,
+        node_id=os.environ.get("ROLLOUTS_NODE_ID"),
+        run_context={
+            "run_name": run_name,
+            "output_dir": str(output_dir),
+            "model_name": config.model.name,
+            "trainer_backend": config.trainer.backend,
+            "inference_backend": config.inference.backend,
+            "node_id": os.environ.get("ROLLOUTS_NODE_ID"),
+            "hostname": socket.gethostname(),
+        },
+    )
 
     # Launch inference engine(s) - multi-engine for higher throughput
     # NOTE: This is when CUDA gets initialized (SGLang loads model on GPU 0)
