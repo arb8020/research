@@ -28,7 +28,6 @@ def _miles_stable_megatron_runtime_packages() -> tuple[str, ...]:
         "torchaudio==2.9.1",
         "cmake",
         "ninja",
-        "flash-attn==2.7.4.post1",
         f"mbridge @ git+https://github.com/ISEEKYAN/mbridge.git@{MILES_STABLE_MBRIDGE_COMMIT}",
         "transformer_engine[pytorch]==2.10.0",
         "flash-linear-attention==0.4.0",
@@ -112,6 +111,11 @@ def _cudnn_install_command() -> str:
     return f"{runtime_python} -m pip install --upgrade --no-deps 'nvidia-cudnn-cu12==9.16.0.29'"
 
 
+def _flash_attn_install_command() -> str:
+    runtime_python = f"$({_runtime_python_bin()})"
+    return f"MAX_JOBS=64 {runtime_python} -m pip install --no-build-isolation 'flash-attn==2.7.4.post1'"
+
+
 def _miles_stable_source_commands() -> tuple[str, ...]:
     return (
         "if [ ! -d /root/sglang ]; then "
@@ -134,6 +138,7 @@ def _miles_stable_source_commands() -> tuple[str, ...]:
             patch_name="megatron.patch",
             patch_dest="/tmp/miles-stable-megatron.patch",
         ),
+        _flash_attn_install_command(),
         _cudnn_install_command(),
         _apex_install_command(),
         _editable_install_command("/root/sglang", "python[all]"),
