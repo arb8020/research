@@ -32,7 +32,6 @@ def _miles_stable_megatron_runtime_packages() -> tuple[str, ...]:
         f"mbridge @ git+https://github.com/ISEEKYAN/mbridge.git@{MILES_STABLE_MBRIDGE_COMMIT}",
         "transformer_engine[pytorch]==2.10.0",
         "flash-linear-attention==0.4.0",
-        f"apex @ git+https://github.com/NVIDIA/apex.git@{MILES_STABLE_APEX_COMMIT}",
         f"torch_memory_saver @ git+https://github.com/fzyzcjy/torch_memory_saver.git@{MILES_STABLE_TORCH_MEMORY_SAVER_COMMIT}",
         "git+https://github.com/fzyzcjy/Megatron-Bridge.git@dev_rl",
         "nvidia-modelopt[torch]>=0.37.0",
@@ -98,6 +97,17 @@ def _editable_install_command(repo_dir: str, target: str = ".") -> str:
     return f"cd {repo_dir} && {runtime_python} -m pip install -e '{target}'"
 
 
+def _apex_install_command() -> str:
+    runtime_python = f"$({_runtime_python_bin()})"
+    return (
+        "cd /tmp && "
+        "NVCC_APPEND_FLAGS='--threads 4' "
+        f"{runtime_python} -m pip install --no-cache-dir --no-build-isolation "
+        "--config-settings='--build-option=--cpp_ext --cuda_ext --parallel 8' "
+        f"'apex @ git+https://github.com/NVIDIA/apex.git@{MILES_STABLE_APEX_COMMIT}'"
+    )
+
+
 def _miles_stable_source_commands() -> tuple[str, ...]:
     return (
         "if [ ! -d /root/sglang ]; then "
@@ -120,6 +130,7 @@ def _miles_stable_source_commands() -> tuple[str, ...]:
             patch_name="megatron.patch",
             patch_dest="/tmp/miles-stable-megatron.patch",
         ),
+        _apex_install_command(),
         _editable_install_command("/root/sglang", "python[all]"),
         _editable_install_command("/root/Megatron-LM"),
     )
