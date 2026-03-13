@@ -91,6 +91,8 @@ WORKLOAD_ENTRYPOINT_SENTINEL = "__ARGUS_WORKLOAD_ENTRYPOINT_STARTED__"
 MODAL_IMAGE_BUILD_HEARTBEAT_S = 15.0
 MODAL_IMAGE_BUILD_LOG_LINE_LIMIT = 200
 MODAL_IMAGE_BUILD_LOG_CHAR_LIMIT = 1000
+MODAL_FAILURE_DIAGNOSTICS_TIMEOUT_S = 30
+MODAL_FAILURE_DIAGNOSTICS_OUTPUT_CHAR_LIMIT = 4000
 
 
 @dataclass
@@ -300,6 +302,146 @@ def _trim_modal_build_log_line(line: str) -> str:
     if len(trimmed) <= MODAL_IMAGE_BUILD_LOG_CHAR_LIMIT:
         return trimmed
     return trimmed[: MODAL_IMAGE_BUILD_LOG_CHAR_LIMIT - 3] + "..."
+
+
+def _trim_failure_diagnostics_output(text: str) -> tuple[str, bool]:
+    trimmed = text.rstrip()
+    if len(trimmed) <= MODAL_FAILURE_DIAGNOSTICS_OUTPUT_CHAR_LIMIT:
+        return trimmed, False
+    return trimmed[: MODAL_FAILURE_DIAGNOSTICS_OUTPUT_CHAR_LIMIT - 3] + "...", True
+
+
+def _modal_failure_diagnostic_probes() -> tuple[tuple[str, str], ...]:
+    return (
+        (
+            "cgroup_memory_events",
+            "if [ -f /sys/fs/cgroup/memory.events ]; then cat /sys/fs/cgroup/memory.events; "
+            "elif [ -f /sys/fs/cgroup/memory/memory.oom_control ]; then cat /sys/fs/cgroup/memory/memory.oom_control; "
+            "else echo unavailable; fi",
+        ),
+        (
+            "cgroup_memory_state",
+            "for f in /sys/fs/cgroup/memory.current /sys/fs/cgroup/memory.peak /sys/fs/cgroup/memory.max "
+            "/sys/fs/cgroup/memory.swap.current /sys/fs/cgroup/memory.swap.max; do "
+            'if [ -f "$f" ]; then printf \'%s=\' "$f"; cat "$f"; fi; done',
+        ),
+        (
+            "memory_pressure",
+            "if [ -f /proc/pressure/memory ]; then cat /proc/pressure/memory; else echo unavailable; fi",
+        ),
+        ("proc_meminfo", "cat /proc/meminfo"),
+        ("nvidia_smi", "nvidia-smi"),
+        (
+            "nvidia_smi_compute_apps",
+            "nvidia-smi --query-compute-apps=pid,process_name,used_memory --format=csv,noheader,nounits",
+        ),
+        (
+            "process_table",
+            "ps -eo pid,ppid,pgid,stat,%mem,%cpu,rss,vsz,etimes,cmd --sort=-rss | head -n 40",
+        ),
+        ("kernel_messages", "dmesg | tail -n 200"),
+    )
+
+
+def _parse_counter_map(raw: str) -> dict[str, int]:
+    counters: dict[str, int] = {}
+    for line in raw.splitlines():
+        parts = line.strip().split()
+        if len(parts) != 2:
+            continue
+        name, value = parts
+        try:
+            counters[name] = int(value)
+        except ValueError:
+            continue
+    return counters
+
+
+def _summarize_failure_diagnostics(
+    probes: dict[str, dict[str, Any]],
+    *,
+    exit_code: int,
+) -> dict[str, Any]:
+    summary: dict[str, Any] = {"exit_code": exit_code}
+
+    memory_events = probes.get("cgroup_memory_events")
+    if memory_events is not None:
+        counters = _parse_counter_map(str(memory_events.get("stdout", "")))
+        if counters:
+            summary["cgroup_memory_events"] = counters
+            if counters.get("oom_kill", 0) > 0 or counters.get("oom_group_kill", 0) > 0:
+                summary["suspected_cause"] = "cgroup_oom_kill"
+            elif counters.get("oom", 0) > 0:
+                summary["suspected_cause"] = "cgroup_oom"
+
+    kernel_messages = probes.get("kernel_messages")
+    if kernel_messages is not None:
+        stderr = str(kernel_messages.get("stderr", ""))
+        stdout = str(kernel_messages.get("stdout", ""))
+        if "Operation not permitted" in stderr or "permission denied" in stderr.lower():
+            summary["kernel_messages_access"] = "denied"
+        elif stdout:
+            summary["kernel_messages_access"] = "available"
+
+    return summary
+
+
+async def _collect_modal_failure_diagnostics(
+    sandbox: Any,
+    *,
+    exit_code: int,
+    emit: Callable[..., None],
+) -> dict[str, Any]:
+    """Snapshot remote runtime state after a hard workload failure.
+
+    The goal is to capture the machine state before sandbox teardown so signals
+    like cgroup OOM counters or live GPU allocations are not lost behind a bare
+    exit code such as 137.
+    """
+
+    emit("modal_failure_diagnostics_start", exit_code=exit_code)
+    probes: dict[str, dict[str, Any]] = {}
+
+    for probe_name, command in _modal_failure_diagnostic_probes():
+        emit("modal_failure_diagnostics_probe_start", probe=probe_name)
+
+        def _run_probe() -> tuple[str, str, int]:
+            return _exec_sync(
+                sandbox,
+                command,
+                timeout=MODAL_FAILURE_DIAGNOSTICS_TIMEOUT_S,
+                stream_output=False,
+            )
+
+        try:
+            stdout, stderr, probe_exit_code = await trio.to_thread.run_sync(_run_probe)
+        except Exception as exc:
+            error = f"{type(exc).__name__}: {exc}"
+            probes[probe_name] = {"error": error}
+            emit("modal_failure_diagnostics_probe_failed", probe=probe_name, error=error)
+            continue
+
+        stdout_excerpt, stdout_truncated = _trim_failure_diagnostics_output(stdout)
+        stderr_excerpt, stderr_truncated = _trim_failure_diagnostics_output(stderr)
+        probe_result = {
+            "exit_code": probe_exit_code,
+            "stdout": stdout_excerpt,
+            "stderr": stderr_excerpt,
+            "stdout_bytes": len(stdout),
+            "stderr_bytes": len(stderr),
+            "stdout_truncated": stdout_truncated,
+            "stderr_truncated": stderr_truncated,
+        }
+        probes[probe_name] = probe_result
+        emit(
+            "modal_failure_diagnostics_probe_finished",
+            probe=probe_name,
+            **probe_result,
+        )
+
+    summary = _summarize_failure_diagnostics(probes, exit_code=exit_code)
+    emit("modal_failure_diagnostics_finished", summary=summary)
+    return {"summary": summary, "probes": probes}
 
 
 async def _emit_private_modal_image_logs(
@@ -1045,6 +1187,7 @@ def _exec_sync(
     command: str,
     timeout: int = 300,
     *,
+    stream_output: bool = True,
     on_started: Callable[[], None] | None = None,
     on_stdout_line: Callable[[str], None] | None = None,
     on_stderr_line: Callable[[str], None] | None = None,
@@ -1077,7 +1220,8 @@ def _exec_sync(
         for line in proc.stdout:
             stdout_lines.append(line)
             mark_activity()
-            logger.info(f"[sandbox] {line.rstrip()}")
+            if stream_output:
+                logger.info(f"[sandbox] {line.rstrip()}")
             if on_stdout_line is not None:
                 on_stdout_line(line)
 
@@ -1085,7 +1229,8 @@ def _exec_sync(
         for line in proc.stderr:
             stderr_lines.append(line)
             mark_activity()
-            logger.warning(f"[sandbox stderr] {line.rstrip()}")
+            if stream_output:
+                logger.warning(f"[sandbox stderr] {line.rstrip()}")
             if on_stderr_line is not None:
                 on_stderr_line(line)
 
@@ -1319,9 +1464,20 @@ async def _run_training_in_sandbox(
     emit("remote_exit_observed", exit_code=exit_code)
 
     if exit_code != 0:
+        failure_diagnostics = await _collect_modal_failure_diagnostics(
+            sandbox,
+            exit_code=exit_code,
+            emit=emit,
+        )
         logger.error(f"Training failed with exit code {exit_code}")
+        logger.error("Failure diagnostics summary: %s", failure_diagnostics.get("summary"))
         logger.error(f"stderr: {stderr}")
-        return {"success": False, "exit_code": exit_code, "stderr": stderr}
+        return {
+            "success": False,
+            "exit_code": exit_code,
+            "stderr": stderr,
+            "failure_diagnostics": failure_diagnostics,
+        }
 
     logger.info("Training completed successfully")
     return {"success": True, "exit_code": 0}
