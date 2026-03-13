@@ -27,6 +27,29 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _normalize_hf_config_for_megatron_bridge(hf_config: Any) -> Any:
+    """Normalize HF config shape to match Megatron bridge expectations.
+
+    Some model families store rotary metadata under nested config fields such as
+    `rope_parameters` or `rope_scaling`, while mbridge still reads a top-level
+    `hf_config.rope_theta`. Normalize that at the backend-native model boundary
+    before touching bridge internals.
+    """
+    text_config = getattr(hf_config, "text_config", None)
+    target = text_config if text_config is not None else hf_config
+
+    if not hasattr(target, "rope_theta"):
+        rope_parameters = getattr(target, "rope_parameters", None)
+        if isinstance(rope_parameters, dict) and "rope_theta" in rope_parameters:
+            target.rope_theta = rope_parameters["rope_theta"]
+        else:
+            rope_scaling = getattr(target, "rope_scaling", None)
+            if isinstance(rope_scaling, dict) and "rope_theta" in rope_scaling:
+                target.rope_theta = rope_scaling["rope_theta"]
+
+    return hf_config
+
+
 @dataclass
 class MegatronModelConfig:
     """Configuration for Megatron model creation.
@@ -236,8 +259,8 @@ def _build_model_provider(config: MegatronModelConfig, bridge: Any) -> Any:
             "Consider using a megatron.bridge build instead."
         )
 
-    hf_config = AutoConfig.from_pretrained(
-        config.model_name, trust_remote_code=config.trust_remote_code
+    hf_config = _normalize_hf_config_for_megatron_bridge(
+        AutoConfig.from_pretrained(config.model_name, trust_remote_code=config.trust_remote_code)
     )
     transformer_config = bridge._build_config()
 
