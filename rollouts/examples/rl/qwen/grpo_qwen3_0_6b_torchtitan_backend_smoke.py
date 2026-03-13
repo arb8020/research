@@ -20,10 +20,12 @@ def _load_witness_config():
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    return module.config
+    return module.config, module.hardware
 
 
-config = deepcopy(_load_witness_config())
+config, hardware = _load_witness_config()
+config = deepcopy(config)
+hardware = deepcopy(hardware)
 
 
 def train(config=config, **kwargs):
