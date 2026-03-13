@@ -80,3 +80,70 @@ def run_torchtitan_backend_init_smoke(config: Any, **_: Any) -> dict[str, Any]:
     """
 
     return trio.run(_torchtitan_backend_init_smoke_async, config)
+
+
+async def _inference_startup_smoke_async(config: Any) -> dict[str, Any]:
+    from .grpo import _create_inference_engines, _create_teacher_engine
+
+    output_root = Path(getattr(getattr(config, "output", None), "output_dir", "results"))
+    checkpoint_dir = output_root / "smoke_inference_startup"
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+
+    engines = _create_inference_engines(config, checkpoint_dir)
+    teacher_engine = _create_teacher_engine(config, checkpoint_dir)
+
+    launched: list[dict[str, Any]] = []
+    try:
+        for idx, engine in enumerate(engines):
+            engine.launch()
+            engine.start_log_tailer()
+            launched.append(
+                {
+                    "engine_index": idx,
+                    "engine_name": getattr(engine, "name", "unknown"),
+                    "port": getattr(engine, "port", None),
+                    "cuda_device_ids": list(getattr(engine, "cuda_device_ids", ())),
+                }
+            )
+
+        if teacher_engine is not None:
+            teacher_engine.launch()
+            teacher_engine.start_log_tailer()
+
+        startup_timeout = float(getattr(config.inference, "startup_timeout", 300.0))
+        async with trio.open_nursery() as startup_nursery:
+            for engine in engines:
+                startup_nursery.start_soon(engine.wait_until_ready, startup_timeout)
+            if teacher_engine is not None:
+                startup_nursery.start_soon(teacher_engine.wait_until_ready, startup_timeout)
+
+        return {
+            "smoke": "inference_startup",
+            "backend": getattr(config.inference, "backend", None),
+            "model": getattr(config.model, "name", None),
+            "num_engines": len(engines),
+            "engines": launched,
+            "teacher_engine": teacher_engine is not None,
+        }
+    finally:
+        for engine in engines:
+            try:
+                engine.shutdown()
+            except Exception:
+                pass
+        if teacher_engine is not None:
+            try:
+                teacher_engine.shutdown()
+            except Exception:
+                pass
+
+
+def run_inference_startup_smoke(config: Any, **_: Any) -> dict[str, Any]:
+    """Run the cheapest real inference startup stage in the target runtime.
+
+    This starts the configured inference engine(s), waits for health, and exits.
+    It is intended to isolate inference bring-up failures from training and RL
+    orchestration.
+    """
+
+    return trio.run(_inference_startup_smoke_async, config)

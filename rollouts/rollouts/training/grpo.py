@@ -1457,6 +1457,20 @@ async def _grpo_train_async(
         node_id=os.environ.get("ROLLOUTS_NODE_ID"),
         num_inference_engines=num_engines,
     )
+    logger.info(
+        "inference startup",
+        extra={
+            **run_context,
+            "event": "inference_startup_start",
+            "num_engines": num_engines,
+            "ports": list(config.inference.ports),
+            "gpu_assignments": [list(gpus) for gpus in config.inference.gpu_assignments],
+            "inference_backend": config.inference.backend,
+            "inference_mem_fraction": config.inference.mem_fraction,
+            "inference_tensor_parallel_size": config.inference.tensor_parallel_size,
+            "inference_startup_timeout": config.inference.startup_timeout,
+        },
+    )
 
     if num_engines == 1:
         gpu_str = ",".join(str(g) for g in config.inference.cuda_device_ids)
@@ -1467,7 +1481,18 @@ async def _grpo_train_async(
             gpu_str = ",".join(str(g) for g in config.inference.gpu_assignments[i])
             logger.info(f"  Engine {i}: {engine.name} on GPU {gpu_str}, port {engine.port}")
 
-    for engine in inference_engines:
+    for idx, engine in enumerate(inference_engines):
+        logger.info(
+            "inference engine launch",
+            extra={
+                **run_context,
+                "event": "inference_engine_launch",
+                "engine_index": idx,
+                "engine_name": engine.name,
+                "engine_port": engine.port,
+                "engine_cuda_device_ids": list(engine.cuda_device_ids),
+            },
+        )
         engine.launch()
         engine.start_log_tailer()
 
@@ -1482,6 +1507,17 @@ async def _grpo_train_async(
             f"Launching teacher model ({config.trainer.teacher_model}) "
             f"on GPU {teacher_gpu_str}, port {teacher_engine.port}..."
         )
+        logger.info(
+            "teacher engine launch",
+            extra={
+                **run_context,
+                "event": "teacher_inference_engine_launch",
+                "engine_name": teacher_engine.name,
+                "engine_port": teacher_engine.port,
+                "engine_cuda_device_ids": list(teacher_engine.cuda_device_ids),
+                "teacher_model": config.trainer.teacher_model,
+            },
+        )
         teacher_engine.launch()
         teacher_engine.start_log_tailer()
 
@@ -1490,12 +1526,31 @@ async def _grpo_train_async(
     try:
         # Wait for all engines to be ready in parallel
         startup_timeout = config.inference.startup_timeout
+        logger.info(
+            "inference healthcheck start",
+            extra={
+                **run_context,
+                "event": "inference_healthcheck_start",
+                "startup_timeout": startup_timeout,
+                "num_engines": num_engines,
+                "teacher_engine": teacher_engine is not None,
+            },
+        )
         async with trio.open_nursery() as startup_nursery:
             for engine in inference_engines:
                 startup_nursery.start_soon(engine.wait_until_ready, startup_timeout)
             if teacher_engine is not None:
                 startup_nursery.start_soon(teacher_engine.wait_until_ready, startup_timeout)
         logger.info(f"All {num_engines} inference engine(s) ready")
+        logger.info(
+            "inference startup ready",
+            extra={
+                **run_context,
+                "event": "inference_ready",
+                "num_engines": num_engines,
+                "teacher_engine": teacher_engine is not None,
+            },
+        )
         if teacher_engine is not None:
             logger.info("Teacher engine ready")
 
@@ -2218,6 +2273,19 @@ async def _grpo_train_async(
 
         return {"metrics_history": metrics_history}
 
+    except Exception as e:
+        logger.error(
+            "inference startup or training failed",
+            extra={
+                **run_context,
+                "event": "inference_or_training_failed",
+                "error_type": type(e).__name__,
+                "error": str(e),
+                "num_engines": num_engines,
+                "teacher_engine": teacher_engine is not None,
+            },
+        )
+        raise
     finally:
         try:
             await _maybe_stop_environment_factory(environment_factory, logger)
