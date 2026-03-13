@@ -33,6 +33,22 @@ def _trio_wrap(coro_func: Callable) -> Callable:
     return trio_asyncio.aio_as_trio(coro_func)
 
 
+async def _close_sftp_client(sftp: object) -> None:
+    """Best-effort close for Paramiko-like and AsyncSSH-like SFTP clients."""
+    close = getattr(sftp, "close", None)
+    if callable(close):
+        result = close()
+        if hasattr(result, "__await__"):
+            await result
+        return
+
+    exit_method = getattr(sftp, "exit", None)
+    if callable(exit_method):
+        result = exit_method()
+        if hasattr(result, "__await__"):
+            await result
+
+
 class AsyncBifrostClient:
     """
     Async Bifrost SDK client for remote GPU execution and job management.
@@ -510,7 +526,7 @@ class AsyncBifrostClient:
                     duration_seconds=duration,
                 )
             finally:
-                sftp.close()
+                await _close_sftp_client(sftp)
 
         except Exception as e:
             if isinstance(e, (SSHConnectionError, TransferError)):
@@ -638,7 +654,7 @@ class AsyncBifrostClient:
                     duration_seconds=duration,
                 )
             finally:
-                sftp.close()
+                await _close_sftp_client(sftp)
 
         except Exception as e:
             if isinstance(e, (SSHConnectionError, TransferError)):

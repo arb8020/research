@@ -297,11 +297,12 @@ class DistributedConfig:
             trainer_gpus=(1,),
         )
 
-        # 4 GPUs: TP=2 for inference, DP=2 for training
+        # 4 GPUs: TP=2 for inference, DP=1 for training, 1 workspace GPU
         DistributedConfig(
             inference_gpus=(0, 1),
             inference_tp=2,
-            trainer_gpus=(2, 3),
+            trainer_gpus=(2,),
+            workspace_gpus=(3,),
             trainer_fsdp=True,
         )
     """
@@ -312,6 +313,7 @@ class DistributedConfig:
 
     # Training parallelism
     trainer_gpus: tuple[int, ...] = (0,)
+    workspace_gpus: tuple[int, ...] = ()
     trainer_fsdp: bool = True  # Use FSDP (ZeRO-3 style sharding)
     trainer_dp: int | None = None  # Data parallel size (derived from trainer_gpus if None)
 
@@ -340,7 +342,9 @@ class DistributedConfig:
     @property
     def all_gpus(self) -> tuple[int, ...]:
         """All unique GPUs used (for CUDA_VISIBLE_DEVICES)."""
-        return tuple(sorted(set(self.inference_gpus) | set(self.trainer_gpus)))
+        return tuple(
+            sorted(set(self.inference_gpus) | set(self.trainer_gpus) | set(self.workspace_gpus))
+        )
 
 
 @dataclass(frozen=True)

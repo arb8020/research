@@ -828,6 +828,41 @@ async def evaluate_sample(
                         "phase": event.data.get("phase", ""),
                     },
                 )
+            elif event.type == "tool_calls_detected":
+                _event_logger.info(
+                    "tool_calls_detected",
+                    extra={
+                        "sample_id": sample_id,
+                        "turn": event.data.get("turn", current_turn.get(sample_id, 0)),
+                        "count": event.data.get("count", 0),
+                        "tool_calls": event.data.get("tool_calls", []),
+                    },
+                )
+            elif event.type == "tool_call_dispatch":
+                _event_logger.info(
+                    "tool_call_dispatch",
+                    extra={
+                        "sample_id": sample_id,
+                        "turn": event.data.get("turn", current_turn.get(sample_id, 0)),
+                        "tool_call_id": event.data.get("tool_call_id"),
+                        "tool_name": event.data.get("tool_name"),
+                        "action": event.data.get("action"),
+                        "error": event.data.get("error"),
+                    },
+                )
+            elif event.type == "kernel_submission":
+                _event_logger.info(
+                    "kernel_submission",
+                    extra={
+                        "sample_id": sample_id,
+                        "turn": event.data.get("turn", current_turn.get(sample_id, 0)),
+                        "source": event.data.get("source"),
+                        "submission_state": event.data.get("submission_state"),
+                        "code_length": event.data.get("code_length"),
+                        "path": event.data.get("path"),
+                        "tool_call_id": event.data.get("tool_call_id"),
+                    },
+                )
 
         # Emit status changes (dedup to avoid flooding)
         if status is not None and status != last_status.get(sample_id):
@@ -976,13 +1011,20 @@ async def evaluate_sample(
         metadata=sample_data.get("metadata", {}),
     )
 
-    # Build AttemptRow with trajectory for score function
-    # Merge trajectory metadata (from environment) with sample_data metadata
-    # Trajectory metadata takes precedence (contains results from environment)
+    # Build AttemptRow with trajectory for score function.
+    # Trajectory metadata can lag behind the live environment state when tool
+    # execution serializes/deserializes the environment between turns, so merge
+    # in final runtime metadata from the last environment instance as well.
     combined_metadata = {
         **sample_data.get("metadata", {}),
         **final_trajectory.metadata,
     }
+    if final_env is not None:
+        runtime_metadata = getattr(final_env, "get_runtime_metadata", None)
+        if callable(runtime_metadata):
+            extra_metadata = runtime_metadata()
+            if isinstance(extra_metadata, dict):
+                combined_metadata.update(extra_metadata)
     sample = AttemptRow(
         attempt_id=sample_id,
         problem=problem,
@@ -998,10 +1040,15 @@ async def evaluate_sample(
         "total_tokens": sum(len(m.content or "") for m in final_trajectory.messages),
     }
 
+    final_state = states[-1]
+
     # Include error if agent execution failed
     if error_message:
         exec_metadata["error"] = error_message
         exec_metadata["status"] = "provider_error" if is_provider_error else "failed"
+    elif final_state.error:
+        exec_metadata["error"] = final_state.error
+        exec_metadata["status"] = "failed"
     else:
         exec_metadata["status"] = "success"
 
@@ -1013,7 +1060,7 @@ async def evaluate_sample(
         config.score_fn,
         sample,
         sample_scorer=config.sample_scorer,
-        scoring_context=ScoringContext(environment=environment),
+        scoring_context=ScoringContext(environment=final_env),
     )
 
     # Compute duration and log completion

@@ -102,6 +102,21 @@ async def test_async_client_owns_trio_asyncio_loop_when_missing(
     assert events == ["enter", "exit"]
 
 
+async def test_close_sftp_client_tolerates_clients_without_close() -> None:
+    class _ExitOnlySFTP:
+        def __init__(self) -> None:
+            self.exited = False
+
+        async def exit(self) -> None:
+            self.exited = True
+
+    sftp = _ExitOnlySFTP()
+
+    await async_client_module._close_sftp_client(sftp)
+
+    assert sftp.exited is True
+
+
 # Example usage documentation
 """
 Example usage of AsyncBifrostClient:

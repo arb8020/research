@@ -14,7 +14,8 @@ from typing import TYPE_CHECKING, Any
 
 import trio
 
-from .resources import CommandExecutionResult
+from .resources import CommandExecutionResult, WorkspaceInfraError
+from .runtime_probe import build_gpu_runtime_probe_script
 
 if TYPE_CHECKING:
     import modal
@@ -22,6 +23,7 @@ if TYPE_CHECKING:
 
 DEFAULT_WORKSPACE_DIR = "/workspace"
 SANDBOX_COMMAND_TIMEOUT_RETRIES = 1
+SANDBOX_COMMAND_RESET_RETRIES = 1
 
 logger = logging.getLogger(__name__)
 _event_logger = logging.getLogger("rollouts.eval.events")
@@ -58,6 +60,10 @@ class ModalSandboxResourceConfig:
             "PYTHONPATH": "/root:/root/src",
             "THUNDERKITTENS_ROOT": "/root/ThunderKittens",
         }
+    )
+    run_commands: tuple[str, ...] = (
+        f"mkdir -p {DEFAULT_WORKSPACE_DIR}",
+        "if [ ! -d /root/ThunderKittens ]; then git clone -b main https://github.com/HazyResearch/ThunderKittens.git /root/ThunderKittens; fi",
     )
 
 
@@ -111,6 +117,17 @@ class ModalSandboxResource:
         self._sandbox = None
         self._sandbox_id = None
         self._started = False
+
+    async def reset(self) -> None:
+        if self._sandbox is not None:
+            try:
+                self._sandbox.terminate()
+            except Exception as exc:
+                self._last_error = str(exc)
+        self._sandbox = None
+        self._sandbox_id = None
+        self._started = False
+        self._runtime_description = None
 
     async def describe_runtime(self) -> dict[str, Any]:
         sandbox = await self._ensure_sandbox()
@@ -233,7 +250,10 @@ class ModalSandboxResource:
             proc.wait()
             return proc.stdout.read(), proc.stderr.read(), proc.returncode
 
-        for attempt in range(SANDBOX_COMMAND_TIMEOUT_RETRIES + 1):
+        total_attempts = 1 + SANDBOX_COMMAND_TIMEOUT_RETRIES + SANDBOX_COMMAND_RESET_RETRIES
+        same_sandbox_attempts = 1 + SANDBOX_COMMAND_TIMEOUT_RETRIES
+
+        for attempt in range(total_attempts):
             started_at = time.perf_counter()
             _event_logger.info(
                 "sandbox_command_start",
@@ -242,7 +262,7 @@ class ModalSandboxResource:
                     "cwd": cwd,
                     "timeout_seconds": timeout_seconds,
                     "attempt": attempt + 1,
-                    "max_attempts": SANDBOX_COMMAND_TIMEOUT_RETRIES + 1,
+                    "max_attempts": total_attempts,
                     "problem_id": self.sample_data.get("problem_id"),
                     "problem_name": self.sample_data.get("problem_name"),
                     "command_preview": command_preview,
@@ -258,7 +278,7 @@ class ModalSandboxResource:
                         "cwd": cwd,
                         "timeout_seconds": timeout_seconds,
                         "attempt": attempt + 1,
-                        "max_attempts": SANDBOX_COMMAND_TIMEOUT_RETRIES + 1,
+                        "max_attempts": total_attempts,
                         "problem_id": self.sample_data.get("problem_id"),
                         "problem_name": self.sample_data.get("problem_name"),
                         "command_preview": command_preview,
@@ -274,20 +294,19 @@ class ModalSandboxResource:
                     cwd=cwd,
                 )
             except (concurrent.futures.CancelledError, TimeoutError) as exc:
-                self._last_error = (
-                    f"sandbox command timed out after {timeout_seconds}s"
-                )
-                if attempt < SANDBOX_COMMAND_TIMEOUT_RETRIES:
+                self._last_error = f"sandbox command timed out after {timeout_seconds}s"
+                if attempt + 1 < same_sandbox_attempts:
                     logger.warning(
                         "Retrying sandbox command after timeout",
                         extra={
                             "timeout_seconds": timeout_seconds,
                             "attempt": attempt + 1,
-                            "max_attempts": SANDBOX_COMMAND_TIMEOUT_RETRIES + 1,
+                            "max_attempts": total_attempts,
                             "sandbox_id": self._sandbox_id,
                             "cwd": cwd,
                             "problem_id": self.sample_data.get("problem_id"),
                             "problem_name": self.sample_data.get("problem_name"),
+                            "recovery_action": "same_sandbox_retry",
                         },
                     )
                     _event_logger.info(
@@ -295,18 +314,52 @@ class ModalSandboxResource:
                         extra={
                             "timeout_seconds": timeout_seconds,
                             "attempt": attempt + 1,
-                            "max_attempts": SANDBOX_COMMAND_TIMEOUT_RETRIES + 1,
+                            "max_attempts": total_attempts,
                             "sandbox_id": self._sandbox_id,
                             "cwd": cwd,
                             "problem_id": self.sample_data.get("problem_id"),
                             "problem_name": self.sample_data.get("problem_name"),
                             "command_preview": command_preview,
+                            "recovery_action": "same_sandbox_retry",
                         },
                     )
                     continue
-                raise RuntimeError(
+                if attempt + 1 < total_attempts:
+                    timed_out_sandbox_id = self._sandbox_id
+                    logger.warning(
+                        "Resetting sandbox after repeated command timeout",
+                        extra={
+                            "timeout_seconds": timeout_seconds,
+                            "attempt": attempt + 1,
+                            "max_attempts": total_attempts,
+                            "sandbox_id": timed_out_sandbox_id,
+                            "cwd": cwd,
+                            "problem_id": self.sample_data.get("problem_id"),
+                            "problem_name": self.sample_data.get("problem_name"),
+                            "recovery_action": "reset_sandbox",
+                        },
+                    )
+                    _event_logger.info(
+                        "sandbox_command_retry",
+                        extra={
+                            "timeout_seconds": timeout_seconds,
+                            "attempt": attempt + 1,
+                            "max_attempts": total_attempts,
+                            "sandbox_id": timed_out_sandbox_id,
+                            "cwd": cwd,
+                            "problem_id": self.sample_data.get("problem_id"),
+                            "problem_name": self.sample_data.get("problem_name"),
+                            "command_preview": command_preview,
+                            "recovery_action": "reset_sandbox",
+                        },
+                    )
+                    await self.reset()
+                    sandbox = await self._ensure_sandbox()
+                    continue
+                raise WorkspaceInfraError(
                     f"sandbox command timed out after {timeout_seconds}s while running "
-                    f"command in {cwd}"
+                    f"command in {cwd}; exhausted {total_attempts} attempts",
+                    kind="workspace_timeout",
                 ) from exc
 
     async def _ensure_sandbox(self) -> modal.Sandbox:
@@ -360,6 +413,7 @@ class ModalSandboxResource:
     def _build_sandbox_creation_script(self) -> str:
         apt_packages = ", ".join(repr(pkg) for pkg in self.config.apt_packages)
         pip_packages = ", ".join(repr(pkg) for pkg in self.config.pip_packages)
+        run_commands = ", ".join(repr(cmd) for cmd in self.config.run_commands)
         env_json = json.dumps(self.config.env)
         return f"""
 import asyncio
@@ -377,10 +431,7 @@ async def create_sandbox() -> None:
         .apt_install({apt_packages})
         .pip_install({pip_packages})
         .env(json.loads({env_json!r}))
-        .run_commands(
-            {f"mkdir -p {self.config.workspace_dir}"!r},
-            "if [ ! -d /root/ThunderKittens ]; then git clone -b main https://github.com/HazyResearch/ThunderKittens.git /root/ThunderKittens; fi",
-        )
+        .run_commands({run_commands})
     )
     sandbox = modal.Sandbox.create(
         app=app,
@@ -394,48 +445,7 @@ asyncio.run(create_sandbox())
 """
 
     async def _run_runtime_probe(self, sandbox: modal.Sandbox) -> dict[str, Any]:
-        script = """
-import json
-import os
-import socket
-runtime = {"hostname": socket.gethostname(), "runtime_ok": True}
-errors = []
-try:
-    import torch
-    tk_root = os.environ.get("THUNDERKITTENS_ROOT", "/root/ThunderKittens")
-    try:
-        import ninja  # noqa: F401
-        ninja_available = True
-    except Exception:
-        ninja_available = False
-    torch_info = {
-        "available": True,
-        "version": getattr(torch, "__version__", None),
-        "cuda_available": bool(torch.cuda.is_available()),
-        "cuda_version": getattr(torch.version, "cuda", None),
-        "ninja_available": ninja_available,
-        "thunderkittens_root_exists": os.path.isdir(tk_root),
-        "thunderkittens_root": tk_root,
-    }
-    for package_name in ("triton", "cupy", "tilelang", "cutlass"):
-        try:
-            __import__(package_name)
-            torch_info[f"{package_name}_available"] = True
-        except Exception:
-            torch_info[f"{package_name}_available"] = False
-    if torch_info["cuda_available"]:
-        torch_info["device_name"] = torch.cuda.get_device_name(0)
-    runtime["torch"] = torch_info
-    runtime["thunderkittens_root_exists"] = torch_info["thunderkittens_root_exists"]
-    runtime["thunderkittens_root"] = tk_root
-except Exception as exc:
-    runtime["torch"] = {"available": False}
-    runtime["runtime_ok"] = False
-    runtime["error"] = f"import torch failed: {exc!r}"
-    errors.append(runtime["error"])
-runtime["errors"] = errors
-print(json.dumps(runtime))
-"""
+        script = build_gpu_runtime_probe_script()
 
         def do_probe() -> tuple[str, str, int]:
             proc = sandbox.exec("python", "-c", script, timeout=30)

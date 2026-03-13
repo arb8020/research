@@ -163,7 +163,7 @@ def _trainer_realization(
     )
 
 
-def _megatron_lowering(config: GRPOConfig) -> MegatronLowering:
+def _megatron_lowering(config: GRPOConfig) -> Any:
     from ..training.lowering import MegatronLowering
 
     realization = _trainer_realization(
@@ -795,6 +795,26 @@ def _attach_runtime_observability(
         batch.metadata["environment_stats"] = environment_factory.stats()
 
 
+async def _maybe_start_environment_factory(
+    environment_factory: Any, logger: logging.Logger
+) -> None:
+    if environment_factory is None:
+        return
+    start = getattr(environment_factory, "start", None)
+    if callable(start):
+        logger.info("Starting rollout environment resources...")
+        await start()
+
+
+async def _maybe_stop_environment_factory(environment_factory: Any, logger: logging.Logger) -> None:
+    if environment_factory is None:
+        return
+    stop = getattr(environment_factory, "stop", None)
+    if callable(stop):
+        logger.info("Stopping rollout environment resources...")
+        await stop()
+
+
 async def _pause_pipeline_admissions(pipelined_manager: Any, logger: logging.Logger) -> None:
     """Pause new rollout admissions before a blocking weight-sync boundary."""
     pipelined_manager.pause_new_admissions("weight_sync")
@@ -1301,6 +1321,8 @@ async def _grpo_train_async(
         logger.info(f"All {num_engines} inference engine(s) ready")
         if teacher_engine is not None:
             logger.info("Teacher engine ready")
+
+        await _maybe_start_environment_factory(environment_factory, logger)
 
         # Setup training backend (pass pre-spawned workers for megatron)
         backend, tokenizer, endpoint, backend_cleanup = _setup_training_backend(
@@ -2007,6 +2029,11 @@ async def _grpo_train_async(
         return {"metrics_history": metrics_history}
 
     finally:
+        try:
+            await _maybe_stop_environment_factory(environment_factory, logger)
+        except Exception as e:
+            logger.warning(f"Environment resource cleanup failed: {e}")
+
         # Cleanup NCCL weight sync if it was initialized
         if config.checkpoint.weight_sync_mode == "nccl":
             try:

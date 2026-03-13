@@ -35,6 +35,7 @@ from ..dtypes import (
     ToolResult,
     ToolResultReceived,
 )
+from ..infra_errors import WorkspaceInfraError
 from ..progress import tqdm
 from .handlers import (
     handle_stop_max_turns,
@@ -374,6 +375,23 @@ async def run_agent_step(
     tool_calls = []
     if last_message and last_message.role == "assistant":
         tool_calls = last_message.get_tool_calls()
+        await rcfg.on_chunk(
+            StreamChunk(
+                "tool_calls_detected",
+                {
+                    "turn": state.turn_idx,
+                    "count": len(tool_calls),
+                    "tool_calls": [
+                        {
+                            "tool_call_id": tc.id,
+                            "tool_name": tc.name,
+                            "has_parse_error": tc.parse_error is not None,
+                        }
+                        for tc in tool_calls
+                    ],
+                },
+            )
+        )
 
     # Update state with new actor AND pending tools
     current_state = replace(state, actor=next_actor, pending_tool_calls=tool_calls, next_tool_idx=0)
@@ -459,6 +477,17 @@ async def process_pending_tools(
         messages_to_add: list[Message] = []
         for i in range(state.next_tool_idx, len(state.pending_tool_calls)):
             tool_call = state.pending_tool_calls[i]
+            await rcfg.on_chunk(
+                StreamChunk(
+                    "tool_call_dispatch",
+                    {
+                        "turn": state.turn_idx,
+                        "tool_call_id": tool_call.id,
+                        "tool_name": tool_call.name,
+                        "action": "missing_environment",
+                    },
+                )
+            )
             tool_result = ToolResult(
                 tool_call_id=tool_call.id,
                 is_error=True,
@@ -526,6 +555,18 @@ async def process_pending_tools(
         tool_duration_ms: float | None = None
 
         if tool_call.parse_error:
+            await rcfg.on_chunk(
+                StreamChunk(
+                    "tool_call_dispatch",
+                    {
+                        "turn": current_state.turn_idx,
+                        "tool_call_id": tool_call.id,
+                        "tool_name": tool_call.name,
+                        "action": "parse_error",
+                        "error": tool_call.parse_error,
+                    },
+                )
+            )
             tool_result = ToolResult(
                 tool_call_id=tool_call.id,
                 is_error=True,
@@ -538,6 +579,17 @@ async def process_pending_tools(
             current_state, confirm_result = await rcfg.confirm_tool(tool_call, current_state, rcfg)
 
             if confirm_result.proceed:
+                await rcfg.on_chunk(
+                    StreamChunk(
+                        "tool_call_dispatch",
+                        {
+                            "turn": current_state.turn_idx,
+                            "tool_call_id": tool_call.id,
+                            "tool_name": tool_call.name,
+                            "action": "execute",
+                        },
+                    )
+                )
                 # DESERIALIZE fresh environment for each tool call
                 assert current_state.environment is not None  # Maintained through loop
                 fresh_env = await current_state.environment.__class__.deserialize(env_data)
@@ -592,9 +644,49 @@ async def process_pending_tools(
                                 limiter_type="tool", wait_duration_ms=wait_duration_ms
                             )
                         )
-                        tool_result = await do_exec_tool()
+                        try:
+                            tool_result = await do_exec_tool()
+                        except WorkspaceInfraError as exc:
+                            await rcfg.on_chunk(
+                                StreamChunk(
+                                    "infra_failure_terminal",
+                                    {
+                                        "turn": current_state.turn_idx,
+                                        "tool_call_id": tool_call.id,
+                                        "tool_name": tool_call.name,
+                                        "kind": exc.kind,
+                                        "error": str(exc),
+                                    },
+                                )
+                            )
+                            return replace(
+                                current_state,
+                                stop=StopReason.ERROR,
+                                error=str(exc),
+                                pending_tool_calls=[],
+                            )
                 else:
-                    tool_result = await do_exec_tool()
+                    try:
+                        tool_result = await do_exec_tool()
+                    except WorkspaceInfraError as exc:
+                        await rcfg.on_chunk(
+                            StreamChunk(
+                                "infra_failure_terminal",
+                                {
+                                    "turn": current_state.turn_idx,
+                                    "tool_call_id": tool_call.id,
+                                    "tool_name": tool_call.name,
+                                    "kind": exc.kind,
+                                    "error": str(exc),
+                                },
+                            )
+                        )
+                        return replace(
+                            current_state,
+                            stop=StopReason.ERROR,
+                            error=str(exc),
+                            pending_tool_calls=[],
+                        )
 
                 # Calculate tool duration for profiling
                 tool_duration_ms = (time.perf_counter() - tool_start_time) * 1000
@@ -622,6 +714,22 @@ async def process_pending_tools(
                     environment=new_env,
                 )
             else:
+                await rcfg.on_chunk(
+                    StreamChunk(
+                        "tool_call_dispatch",
+                        {
+                            "turn": current_state.turn_idx,
+                            "tool_call_id": tool_call.id,
+                            "tool_name": tool_call.name,
+                            "action": "rejected",
+                            "error": (
+                                confirm_result.tool_result.error
+                                if confirm_result.tool_result is not None
+                                else None
+                            ),
+                        },
+                    )
+                )
                 # Use the provided tool result
                 tool_result = confirm_result.tool_result
                 # TODO: handle None on tool results

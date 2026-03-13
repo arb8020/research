@@ -8,10 +8,12 @@ Orchestrates distributed training across multiple GPU nodes using:
 Architecture (2 nodes × 8 GPUs example):
     Node 0 (master):
         GPU 0-1: Inference engines (2 servers, ports 30000-30001)
-        GPU 2-7: FSDP trainer (ranks 0-5)
+        GPU 2-5: FSDP trainer (ranks 0-3)
+        GPU 6-7: Workspace lease pool
     Node 1:
         GPU 0-1: Inference engines (2 servers, ports 30000-30001)
-        GPU 2-7: FSDP trainer (ranks 6-11)
+        GPU 2-5: FSDP trainer (ranks 4-7)
+        GPU 6-7: Workspace lease pool
 
 NCCL groups:
     1. FSDP training group: All trainer GPUs (12 total)
@@ -38,17 +40,18 @@ class MultiNodeConfig:
     Combines hardware provisioning (bifrost) with distributed strategy.
 
     Example:
-        # 2 nodes × 8 H100s: 4 inference GPUs + 12 trainer GPUs
+        # 2 nodes × 8 H100s: 4 inference GPUs + 2 workspace GPUs + 10 trainer GPUs
         config = MultiNodeConfig(
             num_nodes=2,
             gpus_per_node=8,
             inference_gpus_per_node=2,
+            workspace_gpus_per_node=1,
             gpu_type="H100",
         )
 
         # Resulting allocation:
         # - 4 inference engines total (2 per node)
-        # - 12 FSDP ranks total (6 per node)
+        # - 10 FSDP ranks total (5 per node)
         # - NCCL weight sync: trainer rank 0 → all 4 inference engines
     """
 
@@ -64,7 +67,8 @@ class MultiNodeConfig:
 
     # GPU allocation per node
     inference_gpus_per_node: int = 2  # First N GPUs for inference
-    # Remaining GPUs (gpus_per_node - inference_gpus_per_node) are for training
+    workspace_gpus_per_node: int = 0  # Last N GPUs reserved for workspace leases
+    # Remaining GPUs are for training
 
     # Inference settings
     inference_tp: int = 1  # Tensor parallel per inference engine
@@ -81,6 +85,14 @@ class MultiNodeConfig:
         assert self.inference_gpus_per_node >= 1, (
             f"inference_gpus_per_node must be >= 1, got {self.inference_gpus_per_node}"
         )
+        assert self.workspace_gpus_per_node >= 0, (
+            f"workspace_gpus_per_node must be >= 0, got {self.workspace_gpus_per_node}"
+        )
+        reserved_gpus = self.inference_gpus_per_node + self.workspace_gpus_per_node
+        assert reserved_gpus < self.gpus_per_node, (
+            "inference_gpus_per_node + workspace_gpus_per_node "
+            f"({reserved_gpus}) must be < gpus_per_node ({self.gpus_per_node})"
+        )
         assert self.inference_gpus_per_node < self.gpus_per_node, (
             f"inference_gpus_per_node ({self.inference_gpus_per_node}) must be < "
             f"gpus_per_node ({self.gpus_per_node})"
@@ -93,7 +105,7 @@ class MultiNodeConfig:
     @property
     def trainer_gpus_per_node(self) -> int:
         """Number of trainer GPUs per node."""
-        return self.gpus_per_node - self.inference_gpus_per_node
+        return self.gpus_per_node - self.inference_gpus_per_node - self.workspace_gpus_per_node
 
     @property
     def total_inference_gpus(self) -> int:
@@ -135,6 +147,9 @@ class NodeAllocation:
     # Trainer allocation
     trainer_gpus: tuple[int, ...]  # e.g., (2, 3, 4, 5, 6, 7)
     trainer_fsdp_ranks: tuple[int, ...]  # Global FSDP ranks, e.g., (0, 1, 2, 3, 4, 5)
+
+    # Workspace allocation
+    workspace_gpus: tuple[int, ...]  # e.g., (6, 7)
 
 
 @dataclass
@@ -181,14 +196,19 @@ def compute_cluster_allocation(
         Complete cluster allocation with per-node GPU assignments
 
     Example:
-        >>> config = MultiNodeConfig(num_nodes=2, gpus_per_node=8, inference_gpus_per_node=2)
+        >>> config = MultiNodeConfig(
+        ...     num_nodes=2,
+        ...     gpus_per_node=8,
+        ...     inference_gpus_per_node=2,
+        ...     workspace_gpus_per_node=1,
+        ... )
         >>> allocation = compute_cluster_allocation(config, ["1.2.3.4", "5.6.7.8"])
         >>> allocation.nodes[0].inference_gpus
         (0, 1)
         >>> allocation.nodes[0].trainer_gpus
-        (2, 3, 4, 5, 6, 7)
+        (2, 3, 4, 5, 6)
         >>> allocation.nodes[0].trainer_fsdp_ranks
-        (0, 1, 2, 3, 4, 5)
+        (0, 1, 2, 3, 4)
     """
     assert len(node_ips) == config.num_nodes, (
         f"Expected {config.num_nodes} node IPs, got {len(node_ips)}"
@@ -205,8 +225,16 @@ def compute_cluster_allocation(
         num_engines = config.inference_engines_per_node
         inference_ports = tuple(config.inference_base_port + i for i in range(num_engines))
 
-        # Trainer GPUs: remaining GPUs
-        trainer_gpus = tuple(range(config.inference_gpus_per_node, config.gpus_per_node))
+        # Workspace GPUs: last N GPUs
+        workspace_start = config.gpus_per_node - config.workspace_gpus_per_node
+        workspace_gpus = (
+            tuple(range(workspace_start, config.gpus_per_node))
+            if config.workspace_gpus_per_node > 0
+            else ()
+        )
+
+        # Trainer GPUs: middle GPUs after inference, before workspace pool
+        trainer_gpus = tuple(range(config.inference_gpus_per_node, workspace_start))
 
         # FSDP ranks: global ranks for this node's trainer GPUs
         num_trainer_gpus = len(trainer_gpus)
@@ -221,6 +249,7 @@ def compute_cluster_allocation(
             inference_ports=inference_ports,
             trainer_gpus=trainer_gpus,
             trainer_fsdp_ranks=trainer_fsdp_ranks,
+            workspace_gpus=workspace_gpus,
         )
         nodes.append(node)
 
