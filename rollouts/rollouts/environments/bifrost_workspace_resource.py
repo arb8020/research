@@ -272,13 +272,32 @@ class BrokerBifrostWorkspaceResource:
                     f"{self.config.provision_timeout_seconds}s"
                 )
 
-        ssh_key_path = self.config.ssh_key_path or client.get_ssh_key_path(provider=instance.provider)
+        ssh_key_path = self._resolve_ssh_key_path(client=client, provider=instance.provider)
         if ssh_key_path is None:
             raise ValueError(
                 f"No SSH key configured for provider {instance.provider!r}; "
                 "set broker SSH credentials or ssh_key_path explicitly."
             )
         return instance, ssh_key_path
+
+    def _resolve_ssh_key_path(self, *, client: Any, provider: str) -> str | None:
+        if self.config.ssh_key_path is not None:
+            return self.config.ssh_key_path
+
+        ssh_key_path = client.get_ssh_key_path(provider=provider)
+        if ssh_key_path is not None:
+            return ssh_key_path
+
+        from infra_utils.config import discover_ssh_keys, get_ssh_key_path
+
+        configured_key = get_ssh_key_path()
+        if configured_key is not None:
+            return configured_key
+
+        discovered_keys = discover_ssh_keys()
+        if discovered_keys:
+            return discovered_keys[0]
+        return None
 
     def _make_gpu_client(self) -> Any:
         from broker.client import GPUClient

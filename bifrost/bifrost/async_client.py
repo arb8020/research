@@ -4,6 +4,7 @@ import logging
 import os
 from collections.abc import AsyncIterator, Callable
 from pathlib import Path
+from typing import Any
 
 import asyncssh
 import trio
@@ -87,9 +88,24 @@ class AsyncBifrostClient:
 
         # Connection will be established on-demand
         self._ssh_conn: asyncssh.SSHClientConnection | None = None
+        self._owned_asyncio_loop_cm: Any | None = None
 
         # Track last deployed workspace for smart working_dir defaults
         self._last_workspace: str | None = None
+
+    async def _ensure_asyncio_loop(self) -> None:
+        """Ensure a trio-asyncio loop exists for asyncssh bridging.
+
+        AsyncBifrostClient is used from plain Trio callers in `rollouts`, not
+        only from `trio_asyncio.run(...)`. Own a loop when there isn't already
+        one in context so asyncssh operations have a live asyncio bridge.
+        """
+        if trio_asyncio.current_loop.get() is not None:
+            return
+        if self._owned_asyncio_loop_cm is None:
+            loop_cm = trio_asyncio.open_loop()
+            await loop_cm.__aenter__()
+            self._owned_asyncio_loop_cm = loop_cm
 
     async def _establish_connection(self) -> asyncssh.SSHClientConnection:
         """Establish SSH connection with retry logic using Trio.
@@ -145,6 +161,8 @@ class AsyncBifrostClient:
 
         Checks if connection is active, reconnects if needed.
         """
+        await self._ensure_asyncio_loop()
+
         # Check if we need to establish a new connection
         if self._ssh_conn is None:
             self._ssh_conn = await self._establish_connection()
@@ -729,9 +747,13 @@ class AsyncBifrostClient:
     async def close(self) -> None:
         """Close SSH connection."""
         if self._ssh_conn:
+            await self._ensure_asyncio_loop()
             self._ssh_conn.close()
             await _trio_wrap(self._ssh_conn.wait_closed)()
             self._ssh_conn = None
+        if self._owned_asyncio_loop_cm is not None:
+            await self._owned_asyncio_loop_cm.__aexit__(None, None, None)
+            self._owned_asyncio_loop_cm = None
 
     async def __aenter__(self) -> "AsyncBifrostClient":
         """Async context manager entry."""

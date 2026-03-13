@@ -1,12 +1,17 @@
 """Tests for AsyncBifrostClient using pytest-trio."""
 
+import contextvars
+import os
+
 import pytest
 import trio
 
+import bifrost.async_client as async_client_module
 from bifrost import AsyncBifrostClient
 
 # Mark all tests in this module as trio tests
 pytestmark = pytest.mark.trio
+TEST_SSH_KEY = os.path.expanduser("~/.ssh/id_ed25519")
 
 
 async def test_async_client_context_manager() -> None:
@@ -14,7 +19,7 @@ async def test_async_client_context_manager() -> None:
     # This test doesn't actually connect, just tests the interface
     # Real connection tests would require a live SSH server
 
-    client = AsyncBifrostClient(ssh_connection="user@example.com:22", ssh_key_path="~/.ssh/id_rsa")
+    client = AsyncBifrostClient(ssh_connection="user@example.com:22", ssh_key_path=TEST_SSH_KEY)
 
     # Verify client was created
     assert client is not None
@@ -25,7 +30,7 @@ async def test_async_client_context_manager() -> None:
 
 async def test_exec_stream_interface() -> None:
     """Test that exec_stream returns an async iterator."""
-    client = AsyncBifrostClient(ssh_connection="user@example.com:22", ssh_key_path="~/.ssh/id_rsa")
+    client = AsyncBifrostClient(ssh_connection="user@example.com:22", ssh_key_path=TEST_SSH_KEY)
 
     # Verify the method exists and has correct signature
     assert hasattr(client, "exec_stream")
@@ -66,6 +71,35 @@ async def test_timeout_with_trio() -> None:
 
     # Task was cancelled due to timeout
     assert cancel_scope.cancelled_caught
+
+
+async def test_async_client_owns_trio_asyncio_loop_when_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = AsyncBifrostClient(ssh_connection="user@example.com:22", ssh_key_path=TEST_SSH_KEY)
+    events: list[str] = []
+
+    class _FakeLoopContext:
+        async def __aenter__(self) -> object:
+            events.append("enter")
+            return object()
+
+        async def __aexit__(self, exc_type, exc, tb) -> None:
+            del exc_type, exc, tb
+            events.append("exit")
+
+    fake_current_loop: contextvars.ContextVar[object | None] = contextvars.ContextVar(
+        "fake_trio_asyncio_loop",
+        default=None,
+    )
+
+    monkeypatch.setattr(async_client_module.trio_asyncio, "current_loop", fake_current_loop)
+    monkeypatch.setattr(async_client_module.trio_asyncio, "open_loop", lambda: _FakeLoopContext())
+
+    await client._ensure_asyncio_loop()
+    await client.close()
+
+    assert events == ["enter", "exit"]
 
 
 # Example usage documentation
