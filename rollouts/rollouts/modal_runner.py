@@ -200,14 +200,11 @@ def _build_modal_image(modal: Any, deps: DepsConfig, gpu_type: str) -> Any:
         extra_index_url: str | None,
         pre: bool,
     ) -> str:
-        parts = [
-            UV_BIN,
-            "pip",
-            "install",
-            "--python",
-            image_python,
-            "--compile-bytecode",
-        ]
+        parts = [UV_BIN, "pip", "install", "--compile-bytecode"]
+        if spec.python_runtime == "image_owned":
+            parts.append("--system")
+        else:
+            parts.extend(["--python", image_python])
         if index_url:
             parts.extend(["--index-url", index_url])
         if extra_index_url:
