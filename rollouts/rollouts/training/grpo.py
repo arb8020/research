@@ -24,6 +24,7 @@ Usage:
 from __future__ import annotations
 
 import logging
+import socket
 from collections.abc import AsyncIterator, Callable
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -446,11 +447,6 @@ def _setup_training_backend(
         Tuple of (backend, tokenizer, endpoint, cleanup).
         cleanup is an optional callable to run at shutdown (e.g., destroy process group).
     """
-    # TODO: Remove HF transformers dependency. Use tokenizers library directly
-    # or load tokenizer.json with custom wrapper.
-    from transformers import AutoTokenizer
-
-    from ..dtypes import Endpoint
     from ..training.backends.pytorch_factory import create_pytorch_backend, parse_dtype
     from ..training.losses import grpo_loss, grpo_loss_clipped, grpo_loss_masked, opd_loss
 
@@ -667,19 +663,7 @@ def _setup_training_backend(
             "Use 'pytorch', 'fsdp', 'fsdp2', 'nmoe', 'megatron', or 'torchtitan'."
         )
 
-    tokenizer = AutoTokenizer.from_pretrained(config.model.name)
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
-
-    endpoint = Endpoint(
-        model=f"openai/{config.model.name}",
-        base_url=inference_engine.api_base,  # Include /v1 for OpenAI SDK
-        api_format="openai-completions",
-        temperature=config.rollout.temperature,
-        max_tokens=config.rollout.max_tokens,
-        extra_params=config.rollout.extra_params or None,
-    )
-
+    tokenizer, endpoint = _build_training_client_surface(config, inference_engine)
     return backend, tokenizer, endpoint, cleanup
 
 
@@ -790,15 +774,17 @@ def _build_training_preflight_datum(config: GRPOConfig, device: str) -> Any:
 
     from ..training.contracts import ModelInput, TrainableParameterPolicy, TrainingDatum
 
+    del device
+
     micro_batch_size = config.trainer.micro_batch_size or 1
     seq_len = min(config.rollout.max_seq_len, 32)
     vocab_size = 1024
 
-    tokens = torch.randint(0, vocab_size, (micro_batch_size, seq_len), device=device)
+    tokens = torch.randint(0, vocab_size, (micro_batch_size, seq_len))
     labels = tokens.clone()
-    loss_mask = torch.ones(micro_batch_size, seq_len, device=device)
-    advantages = torch.ones(micro_batch_size, device=device)
-    group_ids = torch.arange(micro_batch_size, device=device, dtype=torch.long)
+    loss_mask = torch.ones(micro_batch_size, seq_len)
+    advantages = torch.ones(micro_batch_size)
+    group_ids = torch.arange(micro_batch_size, dtype=torch.long)
 
     return TrainingDatum(
         model_input=ModelInput(tokens=tokens),
@@ -813,6 +799,45 @@ def _build_training_preflight_datum(config: GRPOConfig, device: str) -> Any:
     )
 
 
+def _build_megatron_preflight_batch(config: GRPOConfig) -> dict[str, Any]:
+    """Build a backend-native Megatron synthetic batch."""
+    import torch
+
+    micro_batch_size = config.trainer.micro_batch_size or 1
+    seq_len = min(config.rollout.max_seq_len, 32)
+    vocab_size = 1024
+
+    input_ids = torch.randint(0, vocab_size, (micro_batch_size, seq_len))
+    return {
+        "input_ids": input_ids,
+        "labels": input_ids.clone(),
+        "loss_mask": torch.ones(micro_batch_size, seq_len),
+        "advantages": torch.ones(micro_batch_size),
+        "group_ids": torch.arange(micro_batch_size, dtype=torch.long),
+    }
+
+
+def _build_training_client_surface(config: GRPOConfig, inference_engine: Any) -> tuple[Any, Any]:
+    """Build tokenizer + inference endpoint for training rollouts."""
+    from transformers import AutoTokenizer
+
+    from ..dtypes import Endpoint
+
+    tokenizer = AutoTokenizer.from_pretrained(config.model.name)
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+
+    endpoint = Endpoint(
+        model=f"openai/{config.model.name}",
+        base_url=inference_engine.api_base,
+        api_format="openai-completions",
+        temperature=config.rollout.temperature,
+        max_tokens=config.rollout.max_tokens,
+        extra_params=config.rollout.extra_params or None,
+    )
+    return tokenizer, endpoint
+
+
 async def _run_training_preflight(
     config: GRPOConfig,
     output_dir: Path,
@@ -821,7 +846,7 @@ async def _run_training_preflight(
     megatron_workers: list[Any] | None = None,
     node_id: str | None = None,
     run_context: dict[str, Any] | None = None,
-) -> None:
+) -> tuple[Any | None, Callable[[], None] | None]:
     """Initialize the training backend and run one synthetic step.
 
     This is a backend-health preflight, not a full startup or VRAM truth probe.
@@ -846,8 +871,10 @@ async def _run_training_preflight(
     preflight_output_dir = output_dir / "_training_preflight"
     preflight_output_dir.mkdir(parents=True, exist_ok=True)
 
-    backend = None
+    backend: Any | None = None
     cleanup: Callable[[], None] | None = None
+    reusable_backend: Any | None = None
+    reusable_cleanup: Callable[[], None] | None = None
     try:
         backend, _tokenizer, _endpoint, cleanup = _setup_training_backend(
             config,
@@ -866,12 +893,23 @@ async def _run_training_preflight(
             },
         )
 
-        device = f"cuda:{config.trainer.cuda_device_ids[0]}"
-        datum = _build_training_preflight_datum(config, device)
-        fb_future = backend.forward_backward(datum, loss_fn=rl_contract_loss)
-        fb_result = await fb_future.result()
-        optim_future = backend.optim_step()
-        optim_result = await optim_future.result()
+        if config.trainer.backend == "megatron":
+            preflight_step = getattr(backend, "preflight_step", None)
+            assert callable(preflight_step), "Megatron backend must expose preflight_step()"
+            fb_result = await preflight_step(_build_megatron_preflight_batch(config)).result()
+            optim_result = None
+            if hasattr(backend, "checkpoint_dir"):
+                backend.checkpoint_dir = output_dir
+            reusable_backend = backend
+            reusable_cleanup = cleanup
+            cleanup = None
+        else:
+            device = f"cuda:{config.trainer.cuda_device_ids[0]}"
+            datum = _build_training_preflight_datum(config, device)
+            fb_future = backend.forward_backward(datum, loss_fn=rl_contract_loss)
+            fb_result = await fb_future.result()
+            optim_future = backend.optim_step()
+            optim_result = await optim_future.result()
 
         logger.info(
             "training_preflight_synthetic_step_ok",
@@ -893,6 +931,7 @@ async def _run_training_preflight(
             torch.cuda.empty_cache()
         except Exception:
             pass
+    return reusable_backend, reusable_cleanup
 
 
 def _attach_runtime_observability(
@@ -1384,10 +1423,13 @@ async def _grpo_train_async(
         )
         logger.info(f"Spawned {len(megatron_workers)} megatron workers")
 
+    preflight_backend: Any | None = None
+    preflight_backend_cleanup: Callable[[], None] | None = None
+
     # Training preflight: initialize the backend and run one synthetic step
     # before paying inference startup cost. This is a backend-health check, not
     # a VRAM truth probe.
-    await _run_training_preflight(
+    preflight_backend, preflight_backend_cleanup = await _run_training_preflight(
         config,
         output_dir,
         logger,
@@ -1459,10 +1501,15 @@ async def _grpo_train_async(
 
         await _maybe_start_environment_factory(environment_factory, logger)
 
-        # Setup training backend (pass pre-spawned workers for megatron)
-        backend, tokenizer, endpoint, backend_cleanup = _setup_training_backend(
-            config, output_dir, inference_engine, megatron_workers=megatron_workers
-        )
+        if preflight_backend is not None:
+            backend = preflight_backend
+            tokenizer, endpoint = _build_training_client_surface(config, inference_engine)
+            backend_cleanup = preflight_backend_cleanup
+        else:
+            # Setup training backend (pass pre-spawned workers for megatron)
+            backend, tokenizer, endpoint, backend_cleanup = _setup_training_backend(
+                config, output_dir, inference_engine, megatron_workers=megatron_workers
+            )
         device = f"cuda:{config.trainer.cuda_device_ids[0]}"
 
         # Load checkpoint if provided (for SFT → RL pipeline)

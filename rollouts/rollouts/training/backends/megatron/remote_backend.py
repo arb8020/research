@@ -202,6 +202,15 @@ class MegatronRemoteBackend:
         self._step += 1
         return ImmediateTrainFuture(response["metrics"], operation="forward_backward")
 
+    def preflight_step(self, batch: dict[str, Any]) -> TrainFuture[dict[str, float]]:
+        """Run one backend-native synthetic step for health checking.
+
+        Megatron executes the optimizer step inside `forward_backward`, so this
+        surface exists to give GRPO an honest preflight hook without pretending
+        the remote backend supports the contract-native per-call loss API yet.
+        """
+        return self.forward_backward(batch)
+
     def optim_step(self) -> TrainFuture[dict[str, float]]:
         """Apply gradients (already done in forward_backward for Megatron)."""
         # Megatron does optimizer step inside forward_backward
