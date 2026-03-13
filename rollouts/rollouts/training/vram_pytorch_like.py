@@ -1,12 +1,9 @@
-"""VRAM preflight check.
+"""PyTorch-like VRAM preflight fallback.
 
-Runs one forward+backward pass at worst-case sequence length on the real
-backend before training starts.  If peak memory exceeds GPU capacity
-(minus what SGLang already grabbed), aborts with a clear breakdown.
-
-No heuristics — we measure the actual peak by running the real model.
-The only margin is a configurable safety margin (default 5%) for CUDA
-allocator fragmentation.
+This module is not the generic `TrainingBackend` preflight surface.
+It is a legacy fallback for backends that expose a raw PyTorch-shaped object
+model (`model`, `optimizer`, direct loss callsites). Backends with narrower or
+different operational surfaces should own their own VRAM preflight.
 """
 
 from __future__ import annotations

@@ -953,3 +953,122 @@ def require_torchtitan_runtime() -> RuntimePreflightResult:
     result = preflight_torchtitan_runtime()
     result.require_ok()
     return result
+
+
+def preflight_torchtitan_vram_check(
+    backend: Any,
+    config: Any,
+    device: str,
+) -> dict[str, float]:
+    """Run a TorchTitan-owned VRAM dry run.
+
+    This is intentionally backend-specific. TorchTitan does not expose the same
+    object-level surface as the older PyTorch-style backends, so the VRAM check
+    must use TorchTitan's actual backend state instead of pretending the
+    generic TrainingBackend protocol includes `.optimizer` / `.loss_fn`.
+    """
+
+    import torch
+
+    from .contract_witnesses import supervised_contract_loss
+    from .contracts import ModelInput, StepResult, TrainingDatum, TrainableParameterPolicy
+
+    gpu_index = int(device.split(":")[-1])
+    props = torch.cuda.get_device_properties(gpu_index)
+    gpu_total_bytes = props.total_memory
+
+    torch.cuda.reset_peak_memory_stats(gpu_index)
+    already_allocated = torch.cuda.memory_allocated(gpu_index)
+
+    micro_batch_size = _compute_micro_batch_size(config)
+    seq_len = config.rollout.max_seq_len
+    dummy_batch = _build_dummy_batch(
+        micro_batch_size=micro_batch_size,
+        seq_len=seq_len,
+        loss_type=config.trainer.loss_type,
+        device=device,
+    )
+
+    model = backend.model
+    was_training = model.training
+    model.train()
+    backend._optimizer.zero_grad()
+
+    labels = dummy_batch["labels"]
+    loss_mask = dummy_batch["loss_mask"]
+    datum = TrainingDatum(
+        model_input=ModelInput(tokens=dummy_batch["input_ids"]),
+        objective_inputs={
+            "labels": labels,
+            "loss_mask": loss_mask,
+        },
+        trainable_parameter_policy=TrainableParameterPolicy.full_weight(),
+    )
+
+    try:
+        output = model(dummy_batch["input_ids"])
+        logits = output.logits if hasattr(output, "logits") else output
+        step_result = supervised_contract_loss(
+            backend._forward_products_from_output(output),
+            datum,
+        )
+        assert isinstance(step_result, StepResult)
+        step_result.backprop_loss.backward()
+    except torch.cuda.OutOfMemoryError:
+        peak = torch.cuda.max_memory_allocated(gpu_index)
+        _raise_oom_error(
+            peak_bytes=peak,
+            gpu_total_bytes=gpu_total_bytes,
+            config=config,
+            micro_batch_size=micro_batch_size,
+            seq_len=seq_len,
+        )
+
+    peak_training_bytes = torch.cuda.max_memory_allocated(gpu_index)
+
+    backend._optimizer.zero_grad(set_to_none=True)
+    del dummy_batch, output, logits, step_result, datum, labels, loss_mask
+    torch.cuda.empty_cache()
+    torch.cuda.reset_peak_memory_stats(gpu_index)
+    if not was_training:
+        model.eval()
+
+    shared_gpu = set(config.trainer.cuda_device_ids) & set(config.inference.cuda_device_ids)
+    if shared_gpu:
+        inference_bytes = config.inference.mem_fraction * gpu_total_bytes
+    else:
+        inference_bytes = 0.0
+
+    safety_margin = config.trainer.vram_safety_margin
+    available_bytes = gpu_total_bytes - inference_bytes
+    safety_bytes = gpu_total_bytes * safety_margin
+    budget_bytes = available_bytes - safety_bytes
+
+    breakdown = {
+        "gpu_total_gb": gpu_total_bytes / 1e9,
+        "inference_gb": inference_bytes / 1e9,
+        "available_gb": available_bytes / 1e9,
+        "safety_margin_gb": safety_bytes / 1e9,
+        "budget_gb": budget_bytes / 1e9,
+        "peak_training_gb": peak_training_bytes / 1e9,
+        "weights_optimizer_gb": already_allocated / 1e9,
+        "activations_gb": (peak_training_bytes - already_allocated) / 1e9,
+        "micro_batch_size": micro_batch_size,
+        "seq_len": seq_len,
+        "shared_gpu": bool(shared_gpu),
+    }
+
+    if peak_training_bytes > budget_bytes:
+        _raise_budget_error(
+            peak_bytes=peak_training_bytes,
+            budget_bytes=budget_bytes,
+            gpu_total_bytes=gpu_total_bytes,
+            inference_bytes=inference_bytes,
+            safety_bytes=safety_bytes,
+            already_allocated=already_allocated,
+            config=config,
+            micro_batch_size=micro_batch_size,
+            seq_len=seq_len,
+        )
+
+    return breakdown

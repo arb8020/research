@@ -1350,11 +1350,19 @@ async def _grpo_train_async(
                     f"Invalid checkpoint path: {ckpt_path} (no pytorch_model.bin or config.json)"
                 )
 
-        # VRAM preflight: dry-run one forward+backward at worst-case seq_len
+        # VRAM preflight: dry-run one forward+backward at worst-case seq_len.
+        # This is backend-specific for now. The generic TrainingBackend
+        # protocol does not promise direct access to `.optimizer` / `.loss_fn`,
+        # so operational dry-runs must follow each backend's real surface.
         if not config.trainer.skip_vram_check and config.trainer.backend != "megatron":
-            from ..training.vram import preflight_vram_check
+            if config.trainer.backend == "torchtitan":
+                from ..training.preflight import preflight_torchtitan_vram_check
 
-            preflight_vram_check(backend, config, device)
+                preflight_torchtitan_vram_check(backend, config, device)
+            else:
+                from ..training.vram_pytorch_like import preflight_vram_check
+
+                preflight_vram_check(backend, config, device)
         else:
             reason = (
                 "backend=megatron"
