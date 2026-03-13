@@ -259,6 +259,40 @@ def load_config_module(config_path: Path) -> Any:
     return module
 
 
+def _modal_workload_tags(config: Any) -> dict[str, str]:
+    """Opaque workload tags supplied by rollouts config semantics."""
+    tags: dict[str, str] = {}
+    tags["workload"] = type(config).__name__.removesuffix("Config").lower() or "unknown"
+
+    model = getattr(config, "model", None)
+    model_name = getattr(model, "name", None)
+    if model_name:
+        tags["model"] = str(model_name)
+
+    trainer = getattr(config, "trainer", None)
+    trainer_backend = getattr(trainer, "backend", None)
+    if trainer_backend:
+        tags["backend"] = str(trainer_backend)
+
+    inference = getattr(config, "inference", None)
+    inference_backend = getattr(inference, "backend", None)
+    if inference_backend:
+        tags["inference_backend"] = str(inference_backend)
+
+    return tags
+
+
+def _argus_modal_tags(*, launcher_id: str, run_name: str, config_path: Path) -> dict[str, str]:
+    """Control-plane identity tags for Modal sandboxes."""
+    return {
+        "launcher_id": launcher_id,
+        "run_name": run_name,
+        "config_basename": config_path.name,
+        "provider": "modal",
+        "control_plane": "argus",
+    }
+
+
 def _setup_run_logging(run_dir: Path) -> _RunLogger:
     """Create run directory and return a generic event logger.
 
@@ -1365,6 +1399,14 @@ Examples:
                     log_path=f"results/rl/{run_name}",
                 )
 
+                modal_tags = _argus_modal_tags(
+                    launcher_id=launcher_id,
+                    run_name=run_name,
+                    config_path=config_path,
+                )
+                workload_tags = _modal_workload_tags(config_module.config)
+                for reserved_key in modal_tags:
+                    workload_tags.pop(reserved_key, None)
                 modal_config = ModalRunConfig(
                     config_path=str(config_path),
                     runtime=runtime,
@@ -1374,6 +1416,7 @@ Examples:
                     source_sync_policy=SourceSyncPolicy.committed_only(
                         dirty_action="warn" if args.force_deploy_committed else "fail"
                     ),
+                    tags={**modal_tags, **workload_tags},
                 )
                 log("modal_submit_dispatch")
                 results = trio.run(run_modal, modal_config)

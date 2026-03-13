@@ -116,6 +116,7 @@ class ModalRunConfig:
     pruning_recipe: str | None = (
         None  # Path to pruning recipe JSON (if set, model is pruned before caching)
     )
+    tags: dict[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if self.runtime is None:
@@ -1188,6 +1189,16 @@ async def _create_sandbox(
         "modal_sandbox_keepalive_configured",
         command=list(keepalive_cmd),
     )
+
+    if config.tags:
+        try:
+            sandbox.set_tags(config.tags)
+            emit("modal_sandbox_tags_set", tags=config.tags)
+        except Exception as exc:
+            emit(
+                "modal_sandbox_tags_failed",
+                error=f"{type(exc).__name__}: {exc}",
+            )
 
     return sandbox, sandbox.object_id
 
