@@ -88,6 +88,9 @@ UV_BIN = "/root/.local/bin/uv"
 IMAGE_VENV_DIR = "/opt/venvs/rollouts"
 IMAGE_VENV_PYTHON = f"{IMAGE_VENV_DIR}/bin/python"
 WORKLOAD_ENTRYPOINT_SENTINEL = "__ARGUS_WORKLOAD_ENTRYPOINT_STARTED__"
+MODAL_IMAGE_BUILD_HEARTBEAT_S = 15.0
+MODAL_IMAGE_BUILD_LOG_LINE_LIMIT = 200
+MODAL_IMAGE_BUILD_LOG_CHAR_LIMIT = 1000
 
 
 @dataclass
@@ -293,6 +296,123 @@ def _build_modal_image(modal: Any, deps: DepsConfig, gpu_type: str) -> Any:
     image = image.run_commands(manifest_write_command(manifest, spec.manifest_path))
 
     return image
+
+
+def _trim_modal_build_log_line(line: str) -> str:
+    trimmed = line.rstrip()
+    if len(trimmed) <= MODAL_IMAGE_BUILD_LOG_CHAR_LIMIT:
+        return trimmed
+    return trimmed[: MODAL_IMAGE_BUILD_LOG_CHAR_LIMIT - 3] + "..."
+
+
+async def _emit_private_modal_image_logs(
+    image: Any,
+    emit: Callable[..., None],
+) -> None:
+    """Best-effort image build log capture via Modal private API.
+
+    Modal already prints image build logs under `modal.enable_output()`, but that
+    text is not part of our structured run journal. The private `_logs()` stream
+    gives us a chance to persist the build log tail into `run.jsonl` as well.
+    """
+
+    image_id = getattr(image, "object_id", None)
+    if not image_id:
+        emit("modal_image_build_logs_unavailable", reason="missing_image_id")
+        return
+
+    logs_method = getattr(image, "_logs", None)
+    if logs_method is None or not hasattr(logs_method, "aio"):
+        emit("modal_image_build_logs_unavailable", image_id=image_id, reason="missing_private_logs")
+        return
+
+    emit("modal_image_build_logs_fetch_start", image_id=image_id)
+
+    lines_emitted = 0
+    truncated = False
+    try:
+        async for raw_line in logs_method.aio():
+            if lines_emitted >= MODAL_IMAGE_BUILD_LOG_LINE_LIMIT:
+                truncated = True
+                break
+            line = _trim_modal_build_log_line(raw_line)
+            if not line:
+                continue
+            logger.info("[modal image] %s", line)
+            emit("modal_image_build_log", image_id=image_id, line=line)
+            lines_emitted += 1
+    except Exception as exc:
+        emit(
+            "modal_image_build_logs_fetch_failed",
+            image_id=image_id,
+            error=f"{type(exc).__name__}: {exc}",
+        )
+        logger.warning("Failed to fetch Modal image build logs for %s: %s", image_id, exc)
+        return
+
+    emit(
+        "modal_image_build_logs_fetch_finished",
+        image_id=image_id,
+        line_count=lines_emitted,
+        truncated=truncated,
+    )
+
+
+async def _eager_build_modal_image(
+    image: Any,
+    app: Any,
+    emit: Callable[..., None],
+) -> Any:
+    """Build the Modal image explicitly before sandbox creation.
+
+    This separates "image materialization" from "sandbox creation" so hangs are
+    attributable to a real phase boundary instead of one opaque `Sandbox.create()`.
+    """
+
+    result: dict[str, Any] = {}
+    start = trio.current_time()
+    image_id = getattr(image, "object_id", None)
+    emit("modal_image_build_start", image_id=image_id)
+
+    async def _build_task() -> None:
+        try:
+            result["image"] = await image.build.aio(app)
+        except Exception as exc:
+            result["error"] = exc
+
+    async with trio.open_nursery() as nursery:
+        nursery.start_soon(_build_task)
+        while "image" not in result and "error" not in result:
+            elapsed = trio.current_time() - start
+            emit(
+                "modal_image_build_heartbeat",
+                image_id=getattr(image, "object_id", None),
+                elapsed_sec=round(elapsed, 3),
+            )
+            await trio.sleep(MODAL_IMAGE_BUILD_HEARTBEAT_S)
+        nursery.cancel_scope.cancel()
+
+    if "error" in result:
+        exc = result["error"]
+        elapsed = trio.current_time() - start
+        emit(
+            "modal_image_build_failed",
+            image_id=getattr(image, "object_id", None),
+            elapsed_sec=round(elapsed, 3),
+            error=f"{type(exc).__name__}: {exc}",
+        )
+        raise exc
+
+    built_image = result["image"]
+    elapsed = trio.current_time() - start
+    emit(
+        "modal_image_build_finished",
+        image_id=getattr(built_image, "object_id", None),
+        elapsed_sec=round(elapsed, 3),
+    )
+
+    await _emit_private_modal_image_logs(built_image, emit)
+    return built_image
 
 
 def _get_model_cache_key(model_name: str, pruning_recipe: str | None = None) -> str:
@@ -776,11 +896,6 @@ async def _create_sandbox(
             except Exception as e:
                 logger.warning(f"  Failed to terminate {sb.object_id}: {e}")
 
-    logger.info("Building image...")
-    assert config.deps is not None  # Validated in __post_init__
-    image = _build_modal_image(modal, config.deps, config.gpu_type)
-    logger.info("Image built")
-
     # GPU spec
     gpu_count = config.gpu_count
     gpu_type = config.gpu_type
@@ -811,8 +926,23 @@ async def _create_sandbox(
                 **data,
             )
 
+    logger.info("Constructing Modal image...")
+    assert config.deps is not None  # Validated in __post_init__
+    emit("modal_image_construct_start", app_id=app.app_id)
+    image = _build_modal_image(modal, config.deps, config.gpu_type)
+    emit(
+        "modal_image_construct_finished",
+        app_id=app.app_id,
+        source_ref=getattr(config.deps.resolved_image(config.gpu_type), "source_ref", None),
+    )
+    logger.info("Eagerly building Modal image...")
+    image = await _eager_build_modal_image(image, app, emit)
+    logger.info("Modal image ready: %s", getattr(image, "object_id", None))
+
     async def _create_once(attempt: int) -> Any:
-        logger.info(f"Creating sandbox: {sandbox_name} (gpu={gpu_spec}) attempt={attempt}/{create_attempts}")
+        logger.info(
+            f"Creating sandbox: {sandbox_name} (gpu={gpu_spec}) attempt={attempt}/{create_attempts}"
+        )
         emit("modal_sandbox_create_attempt_start", attempt=attempt, timeout_sec=create_timeout_s)
 
         result: dict[str, Any] = {}
