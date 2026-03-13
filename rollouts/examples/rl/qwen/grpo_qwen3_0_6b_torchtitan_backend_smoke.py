@@ -8,13 +8,22 @@ vLLM startup and before the full RL loop.
 from __future__ import annotations
 
 from copy import deepcopy
+import importlib.util
+from pathlib import Path
 
-from rollouts.examples.rl.qwen.grpo_qwen3_0_6b_torchtitan_modal_witness import (
-    config as _witness_config,
-)
 from rollouts.training.smoke import run_torchtitan_backend_init_smoke
 
-config = deepcopy(_witness_config)
+
+def _load_witness_config():
+    witness_path = Path(__file__).with_name("grpo_qwen3_0_6b_torchtitan_modal_witness.py")
+    spec = importlib.util.spec_from_file_location("torchtitan_modal_witness", witness_path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.config
+
+
+config = deepcopy(_load_witness_config())
 
 
 def train(config=config, **kwargs):
