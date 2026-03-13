@@ -32,6 +32,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+_CONTROL_MESSAGE_MAX_BYTES = 64 * 1024
+
 
 @dataclass
 class MegatronRemoteConfig:
@@ -96,6 +98,12 @@ class MegatronRemoteBackend:
     _step: int = field(default=0, init=False)
     _initialized: bool = field(default=False, init=False)
 
+    def _recv_response(self, worker: Worker, *, context: str, max_size: int) -> dict[str, Any]:
+        response = worker.recv(max_size=max_size)
+        if response.get("status") == "error":
+            raise RuntimeError(f"Megatron worker failed during {context}: {response.get('error')}")
+        return response
+
     def initialize(self) -> None:
         """Initialize all workers with config.
 
@@ -145,7 +153,11 @@ class MegatronRemoteBackend:
             })
 
         # Wait for rank 0 to confirm initialization
-        response = self.workers[0].recv(max_size=1024)
+        response = self._recv_response(
+            self.workers[0],
+            context="initialize",
+            max_size=_CONTROL_MESSAGE_MAX_BYTES,
+        )
         assert response["status"] == "initialized", f"Init failed: {response}"
 
         self._initialized = True
@@ -180,7 +192,11 @@ class MegatronRemoteBackend:
         })
 
         # Wait for metrics from rank 0
-        response = self.workers[0].recv(max_size=10 * 1024 * 1024)
+        response = self._recv_response(
+            self.workers[0],
+            context="train_step",
+            max_size=10 * 1024 * 1024,
+        )
         assert response["status"] == "ok", f"Train step failed: {response}"
 
         self._step += 1
@@ -196,7 +212,11 @@ class MegatronRemoteBackend:
         assert self._initialized, "Call initialize() first"
 
         self.workers[0].send({"cmd": "sync_weights"})
-        response = self.workers[0].recv(max_size=1024)
+        response = self._recv_response(
+            self.workers[0],
+            context="sync_weights",
+            max_size=_CONTROL_MESSAGE_MAX_BYTES,
+        )
         assert response["status"] == "synced", f"Weight sync failed: {response}"
         self.weight_version += 1
 
@@ -209,7 +229,11 @@ class MegatronRemoteBackend:
             "step": step,
             "path": str(self.checkpoint_dir),
         })
-        response = self.workers[0].recv(max_size=1024)
+        response = self._recv_response(
+            self.workers[0],
+            context="save_checkpoint",
+            max_size=_CONTROL_MESSAGE_MAX_BYTES,
+        )
         assert response["status"] == "saved", f"Checkpoint save failed: {response}"
         return ImmediateTrainFuture(Path(response["path"]), operation="save_checkpoint")
 
@@ -236,7 +260,11 @@ class MegatronRemoteBackend:
             "master_addr": master_addr,
             "master_port": master_port,
         })
-        response = self.workers[0].recv(max_size=1024)
+        response = self._recv_response(
+            self.workers[0],
+            context="init_nccl_weight_sync",
+            max_size=_CONTROL_MESSAGE_MAX_BYTES,
+        )
         assert response["status"] == "nccl_initialized", f"NCCL init failed: {response}"
         self._nccl_inference_endpoints = list(inference_endpoints)
         self._nccl_initialized = True
@@ -246,7 +274,11 @@ class MegatronRemoteBackend:
         """NCCL sync to inference engines."""
         assert self._initialized, "Call initialize() first"
         self.workers[0].send({"cmd": "sync_weights_nccl"})
-        response = self.workers[0].recv(max_size=1024)
+        response = self._recv_response(
+            self.workers[0],
+            context="sync_weights_nccl",
+            max_size=_CONTROL_MESSAGE_MAX_BYTES,
+        )
         assert response["status"] == "nccl_synced", f"NCCL weight sync failed: {response}"
         self.weight_version += 1
 
@@ -259,7 +291,11 @@ class MegatronRemoteBackend:
                 "cmd": "cleanup_nccl_weight_sync",
                 "inference_endpoints": self._nccl_inference_endpoints,
             })
-            _ = self.workers[0].recv(max_size=1024)
+            _ = self._recv_response(
+                self.workers[0],
+                context="cleanup_nccl_weight_sync",
+                max_size=_CONTROL_MESSAGE_MAX_BYTES,
+            )
         except Exception:
             pass
         self._nccl_initialized = False

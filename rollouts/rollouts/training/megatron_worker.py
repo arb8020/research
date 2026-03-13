@@ -175,10 +175,11 @@ def train(handle: Worker) -> None:
         logger.exception(error_msg)
         print(error_msg, file=sys.stderr, flush=True)
 
-        # Try to send error to coordinator (rank 0 only)
+        # Keep the control channel small and structured; full tracebacks already
+        # go to stderr/logs and can exceed the miniray init message size.
         if rank == 0:
             try:
-                handle.send({"status": "error", "error": str(e), "traceback": tb})
+                handle.send({"status": "error", "error": str(e)})
             except Exception:
                 pass  # Socket might be closed
 

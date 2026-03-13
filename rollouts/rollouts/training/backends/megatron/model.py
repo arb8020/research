@@ -27,6 +27,31 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _infer_rope_theta(hf_config: Any) -> float | int | None:
+    """Extract rope theta from common HuggingFace config layouts."""
+    rope_theta = getattr(hf_config, "rope_theta", None)
+    if rope_theta is not None:
+        return rope_theta
+
+    rope_parameters = getattr(hf_config, "rope_parameters", None)
+    if isinstance(rope_parameters, dict):
+        rope_theta = rope_parameters.get("rope_theta")
+        if rope_theta is not None:
+            return rope_theta
+
+    rope_scaling = getattr(hf_config, "rope_scaling", None)
+    if isinstance(rope_scaling, dict):
+        rope_theta = rope_scaling.get("rope_theta")
+        if rope_theta is not None:
+            return rope_theta
+
+    text_config = getattr(hf_config, "text_config", None)
+    if text_config is not None:
+        return _infer_rope_theta(text_config)
+
+    return None
+
+
 def _normalize_hf_config_for_megatron_bridge(hf_config: Any) -> Any:
     """Normalize HF config shape to match Megatron bridge expectations.
 
@@ -35,17 +60,16 @@ def _normalize_hf_config_for_megatron_bridge(hf_config: Any) -> Any:
     `hf_config.rope_theta`. Normalize that at the backend-native model boundary
     before touching bridge internals.
     """
-    text_config = getattr(hf_config, "text_config", None)
-    target = text_config if text_config is not None else hf_config
+    rope_theta = _infer_rope_theta(hf_config)
+    if rope_theta is None:
+        return hf_config
 
-    if not hasattr(target, "rope_theta"):
-        rope_parameters = getattr(target, "rope_parameters", None)
-        if isinstance(rope_parameters, dict) and "rope_theta" in rope_parameters:
-            target.rope_theta = rope_parameters["rope_theta"]
-        else:
-            rope_scaling = getattr(target, "rope_scaling", None)
-            if isinstance(rope_scaling, dict) and "rope_theta" in rope_scaling:
-                target.rope_theta = rope_scaling["rope_theta"]
+    if getattr(hf_config, "rope_theta", None) is None:
+        hf_config.rope_theta = rope_theta
+
+    text_config = getattr(hf_config, "text_config", None)
+    if text_config is not None and getattr(text_config, "rope_theta", None) is None:
+        text_config.rope_theta = rope_theta
 
     return hf_config
 
@@ -240,7 +264,6 @@ def _build_model_provider(config: MegatronModelConfig, bridge: Any) -> Any:
         get_gpt_layer_local_spec,
         get_gpt_layer_with_transformer_engine_spec,
     )
-    from transformers import AutoConfig
 
     # Backward-compatible path when the old API is available.
     if hasattr(bridge, "to_megatron_provider"):
@@ -259,9 +282,7 @@ def _build_model_provider(config: MegatronModelConfig, bridge: Any) -> Any:
             "Consider using a megatron.bridge build instead."
         )
 
-    hf_config = _normalize_hf_config_for_megatron_bridge(
-        AutoConfig.from_pretrained(config.model_name, trust_remote_code=config.trust_remote_code)
-    )
+    hf_config = _normalize_hf_config_for_megatron_bridge(bridge.hf_config)
     transformer_config = bridge._build_config()
 
     # Apply lightweight overrides from rollouts config.
