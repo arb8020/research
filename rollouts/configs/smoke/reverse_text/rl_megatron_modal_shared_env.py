@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import replace
 
 from configs.prime_ci.reverse_text.rl_megatron import config as _base_config
+from configs.prime_ci.reverse_text.rl_megatron import train
 
 from examples.rl.base_config import default_remote_megatron_training_deps
 from rollouts.training.configs import HardwareConfig
