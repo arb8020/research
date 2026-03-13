@@ -7,7 +7,7 @@ or training/inference coordination if the inference stack is broken.
 
 from __future__ import annotations
 
-from rollouts.examples.rl.qwen.grpo_qwen3_0_6b_torchtitan_modal_witness import config
+from examples.rl.qwen.grpo_qwen3_0_6b_torchtitan_modal_witness import config
 from rollouts.training.smoke import run_inference_startup_smoke
 
 
