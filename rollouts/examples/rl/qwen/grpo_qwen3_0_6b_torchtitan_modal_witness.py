@@ -27,6 +27,9 @@ QWEN_TORCHTITAN_MODAL_BASE_DEPS = DepsConfig(
         "libnuma1",
         "tmux",
     ),
+    pip_index_url="https://download.pytorch.org/whl/cu128",
+    pip_extra_index_url="https://pypi.org/simple",
+    pip_prerelease=True,
     bootstrap_commands=(),
 )
 
@@ -36,7 +39,7 @@ QWEN_TORCHTITAN_VLLM_TRAINER_DEPS = DepsConfig(
         "torch==2.9.0",
         "torchtitan==0.2.0",
         "torchmonarch==0.2.0",
-        "torchstore",
+        "torchstore @ git+https://github.com/meta-pytorch/torchstore.git@no-monarch-2026.01.05",
         "datasets>=2.21.0",
         "tokenizers",
         "accelerate>=0.20.0",
@@ -50,7 +53,6 @@ QWEN_TORCHTITAN_VLLM_TRAINER_DEPS = DepsConfig(
         "httpx",
         "markdownify",
     ),
-    pip_extra_index_url="https://pypi.org/simple",
 )
 
 QWEN_TORCHTITAN_VLLM_INFERENCE_DEPS = DepsConfig(
@@ -58,7 +60,6 @@ QWEN_TORCHTITAN_VLLM_INFERENCE_DEPS = DepsConfig(
     pip_packages=(
         "vllm>=0.13.0,<0.14.0",
     ),
-    pip_extra_index_url="https://pypi.org/simple",
 )
 
 hardware = HardwareConfig(
