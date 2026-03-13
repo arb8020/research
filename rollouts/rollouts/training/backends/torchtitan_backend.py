@@ -244,6 +244,10 @@ class TorchTitanBackend:
 
         # Build parallel dims
         self._parallel_dims = ParallelDims(
+            dp_replicate=1,
+            dp_shard=-1,
+            ep=parallel.ep,
+            etp=1,
             tp=parallel.tp,
             cp=parallel.cp,
             pp=parallel.pp,

@@ -914,9 +914,34 @@ def preflight_torchtitan_runtime() -> RuntimePreflightResult:
             error=f"train_spec import failed: {type(exc).__name__}: {exc}",
         )
 
+    try:
+        import inspect
+
+        from torchtitan.distributed import ParallelDims
+
+        details["parallel_dims_signature"] = str(inspect.signature(ParallelDims))
+        ParallelDims(
+            dp_replicate=1,
+            dp_shard=-1,
+            cp=1,
+            tp=1,
+            pp=1,
+            ep=1,
+            etp=1,
+            world_size=1,
+        )
+    except Exception as exc:  # pragma: no cover - exercised in target runtime
+        return RuntimePreflightResult(
+            name="torchtitan",
+            stage="TRAIN_BACKEND_API_OK",
+            ok=False,
+            details=details,
+            error=f"parallel dims api check failed: {type(exc).__name__}: {exc}",
+        )
+
     return RuntimePreflightResult(
         name="torchtitan",
-        stage="TRAIN_BACKEND_IMPORT_OK",
+        stage="TRAIN_BACKEND_API_OK",
         ok=True,
         details=details,
     )
