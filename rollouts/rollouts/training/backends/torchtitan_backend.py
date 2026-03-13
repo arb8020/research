@@ -248,7 +248,6 @@ class TorchTitanBackend:
             cp=parallel.cp,
             pp=parallel.pp,
             world_size=self.world_size,
-            enable_loss_parallel=parallel.enable_loss_parallel,
         )
 
         # Build a minimal job config for parallelize_fn
