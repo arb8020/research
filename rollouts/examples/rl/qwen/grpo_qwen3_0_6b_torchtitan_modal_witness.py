@@ -36,7 +36,9 @@ QWEN_TORCHTITAN_VLLM_TRAINER_DEPS = DepsConfig(
         "torch==2.9.0",
         "torchtitan==0.2.0",
         "torchmonarch==0.2.0",
-        "datasets>=4.4.1",
+        "torchstore",
+        "datasets>=2.21.0",
+        "tokenizers",
         "accelerate>=0.20.0",
         "peft>=0.7.0",
         "hf-transfer",
@@ -55,8 +57,6 @@ QWEN_TORCHTITAN_VLLM_INFERENCE_DEPS = DepsConfig(
     python_version="3.12",
     pip_packages=(
         "vllm>=0.13.0,<0.14.0",
-        "transformers>=4.57.1,<4.58.0",
-        "huggingface-hub>=1.4.0",
     ),
     pip_extra_index_url="https://pypi.org/simple",
 )
