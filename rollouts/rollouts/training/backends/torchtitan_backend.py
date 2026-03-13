@@ -172,15 +172,16 @@ class TorchTitanBackend:
 
         logger.info(f"[Rank {self.rank}] Building {self.model_name} model")
 
-        # Create model on meta device first (for large models)
+        # Create model on meta device first, then materialize empty tensors on
+        # the target device before initializing weights. Meta-initialized
+        # modules cannot be moved with `.to(...)`; they must be materialized
+        # with `to_empty(...)` first.
         with torch.device("meta"):
             self._model = self._train_spec.model_cls(self._model_args)
 
-        # Initialize weights
+        # Materialize parameters/buffers on the target device, then initialize.
+        self._model = self._model.to_empty(device=self._device)
         self._model.init_weights(buffer_device=self._device)
-
-        # Move to device
-        self._model = self._model.to(self._device)
 
     def _load_hf_checkpoint(self, checkpoint_path: str) -> None:
         """Load weights from HuggingFace checkpoint."""
