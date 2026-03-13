@@ -972,6 +972,7 @@ async def _run_training_in_sandbox(
     gpu_type: str,
     gpu_count: int = 1,
     use_torchrun: bool = True,
+    event_log: Callable[..., None] | None = None,
 ) -> dict[str, Any]:
     """Run training script inside Modal sandbox.
 
@@ -1011,6 +1012,7 @@ async def _run_training_in_sandbox(
         f"PYTHONUNBUFFERED=1 "
         f"PATH={image_path_prefix} "
         f"PYTHONPATH={workspace}:/workspace/research:/root/Megatron-LM:/root "
+        f"ARGUS_EMIT_STARTUP_SENTINEL=1 "
         f"ROLLOUTS_RUN_NAME={run_name} "
         f"ROLLOUTS_OUTPUT_DIR=results/rl/{run_name} "
     )
@@ -1019,10 +1021,77 @@ async def _run_training_in_sandbox(
     # explicit remote execution/session layer instead of reviving `torchrun config.py`.
     cmd = f"cd {workspace} && {env_vars} {image_python} -m argus.run --local --config {config_rel}"
 
-    def _train() -> tuple[str, str, int]:
-        return _exec_sync(sandbox, cmd, timeout=14400)  # 4 hour timeout
+    startup_seen = threading.Event()
+    done = threading.Event()
+    results: dict[str, Any] = {}
+    start_timeout_s = 60
 
-    stdout, stderr, exit_code = await trio.to_thread.run_sync(_train)
+    def emit(event: str, **data: Any) -> None:
+        if event_log is not None:
+            event_log(event, **data)
+
+    def _on_started() -> None:
+        emit("remote_entrypoint_invoked")
+        emit("remote_stdout_stream_open")
+        emit("remote_stderr_stream_open")
+
+    def _on_stdout_line(line: str) -> None:
+        if WORKLOAD_ENTRYPOINT_SENTINEL in line and not startup_seen.is_set():
+            startup_seen.set()
+            emit("workload_entrypoint_started")
+
+    def _on_heartbeat(elapsed_sec: float, silence_sec: float) -> None:
+        emit(
+            "remote_process_heartbeat",
+            elapsed_sec=round(elapsed_sec, 3),
+            silence_sec=round(silence_sec, 3),
+        )
+
+    def _train() -> None:
+        try:
+            stdout, stderr, exit_code = _exec_sync(
+                sandbox,
+                cmd,
+                timeout=14400,
+                on_started=_on_started,
+                on_stdout_line=_on_stdout_line,
+                on_heartbeat=_on_heartbeat,
+            )
+            results["stdout"] = stdout
+            results["stderr"] = stderr
+            results["exit_code"] = exit_code
+        finally:
+            done.set()
+
+    emit("remote_entrypoint_invoke_start", command=f"{image_python} -m argus.run --local")
+    train_thread = threading.Thread(target=_train, daemon=True)
+    train_thread.start()
+
+    deadline = trio.current_time() + start_timeout_s
+    while not done.is_set() and not startup_seen.is_set():
+        if trio.current_time() >= deadline:
+            emit("workload_entrypoint_start_timeout", timeout_sec=start_timeout_s)
+
+            def _terminate() -> None:
+                sandbox.terminate()
+
+            await trio.to_thread.run_sync(_terminate)
+            train_thread.join(timeout=5.0)
+            return {
+                "success": False,
+                "exit_code": 124,
+                "stderr": f"Workload entrypoint did not emit startup sentinel within {start_timeout_s}s",
+            }
+        await trio.sleep(1.0)
+
+    while not done.is_set():
+        await trio.sleep(1.0)
+
+    train_thread.join(timeout=1.0)
+    stdout = str(results.get("stdout", ""))
+    stderr = str(results.get("stderr", ""))
+    exit_code = int(results.get("exit_code", 1))
+    emit("remote_exit_observed", exit_code=exit_code)
 
     if exit_code != 0:
         logger.error(f"Training failed with exit code {exit_code}")
@@ -1159,6 +1228,7 @@ async def run_modal(config: ModalRunConfig) -> dict[str, Any]:
                     config.gpu_type,
                     config.gpu_count,
                     config.use_torchrun,
+                    config.event_log,
                 )
                 emit(
                     "modal_training_finished",

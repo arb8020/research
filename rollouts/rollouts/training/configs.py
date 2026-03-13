@@ -88,6 +88,63 @@ class DepsConfig:
     def resolved_runtime_overlay(self) -> RuntimeOverlay:
         return self.runtime_overlay
 
+    def merged_with(self, other: DepsConfig) -> DepsConfig:
+        """Merge two service-scoped dependency contracts into one shared env contract.
+
+        This is only valid when the non-additive parts of the contract agree.
+        If the two services want different base images, Python versions, or
+        package index policy, shared_env is not an honest realization and we
+        fail loudly.
+        """
+        if self.python_version != other.python_version:
+            raise ValueError(
+                f"shared_env deps mismatch: python_version {self.python_version!r} != {other.python_version!r}"
+            )
+        if self.base_image != other.base_image:
+            raise ValueError(
+                f"shared_env deps mismatch: base_image {self.base_image!r} != {other.base_image!r}"
+            )
+        if self.pip_index_url != other.pip_index_url:
+            raise ValueError(
+                f"shared_env deps mismatch: pip_index_url {self.pip_index_url!r} != {other.pip_index_url!r}"
+            )
+        if self.pip_extra_index_url != other.pip_extra_index_url:
+            raise ValueError(
+                "shared_env deps mismatch: pip_extra_index_url "
+                f"{self.pip_extra_index_url!r} != {other.pip_extra_index_url!r}"
+            )
+        if self.pip_prerelease != other.pip_prerelease:
+            raise ValueError(
+                f"shared_env deps mismatch: pip_prerelease {self.pip_prerelease!r} != {other.pip_prerelease!r}"
+            )
+        if self.image != other.image:
+            raise ValueError("shared_env deps mismatch: image specs differ")
+
+        return DepsConfig(
+            python_version=self.python_version,
+            base_image=self.base_image,
+            system_packages=tuple(dict.fromkeys(self.system_packages + other.system_packages)),
+            pip_packages=tuple(dict.fromkeys(self.pip_packages + other.pip_packages)),
+            pip_index_url=self.pip_index_url,
+            pip_extra_index_url=self.pip_extra_index_url,
+            pip_prerelease=self.pip_prerelease,
+            bootstrap_commands=tuple(
+                dict.fromkeys(self.bootstrap_commands + other.bootstrap_commands)
+            ),
+            image=self.image,
+            runtime_overlay=self.runtime_overlay.extended(
+                system_packages=other.runtime_overlay.system_packages,
+                pip_packages=other.runtime_overlay.pip_packages,
+                pip_index_url=other.runtime_overlay.pip_index_url,
+                pip_extra_index_url=other.runtime_overlay.pip_extra_index_url,
+                pip_prerelease=other.runtime_overlay.pip_prerelease,
+                commands=other.runtime_overlay.commands,
+                env=other.runtime_overlay.env,
+                features=other.runtime_overlay.features,
+                installed_groups=other.runtime_overlay.installed_groups,
+            ),
+        )
+
 
 def _image_spec_from_data(data: ImageSpec | dict[str, Any] | None) -> ImageSpec | None:
     if data is None or isinstance(data, ImageSpec):

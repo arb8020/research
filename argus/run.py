@@ -266,10 +266,12 @@ def _setup_run_logging(run_dir: Path) -> _RunLogger:
     Workload-specific stage names and semantics belong in Rollouts.
     """
     import json
+    import threading
     from datetime import datetime
 
     run_dir.mkdir(parents=True, exist_ok=True)
     log_file = run_dir / "run.jsonl"
+    write_lock = threading.Lock()
 
     def log_event(event: str, **data: Any) -> None:
         entry = {
@@ -277,8 +279,9 @@ def _setup_run_logging(run_dir: Path) -> _RunLogger:
             "event": event,
             **data,
         }
-        with open(log_file, "a") as f:
-            f.write(json.dumps(entry) + "\n")
+        with write_lock:
+            with open(log_file, "a") as f:
+                f.write(json.dumps(entry) + "\n")
 
     return log_event
 
@@ -1222,11 +1225,15 @@ Examples:
         )
 
     if trainer_service_deps is not None or inference_service_deps is not None:
-        raise ValueError(
-            "This config declares trainer.deps and/or inference.deps, but the current "
-            "launcher still realizes one shared env for the whole workload. Declare "
-            "that shared runtime contract explicitly in hardware.deps."
-        )
+        if trainer_service_deps is None:
+            shared_deps = inference_service_deps
+        elif inference_service_deps is None:
+            shared_deps = trainer_service_deps
+        else:
+            shared_deps = trainer_service_deps.merged_with(inference_service_deps)
+
+        if shared_deps is not None:
+            hardware = replace(hardware, deps=shared_deps)
 
     runtime = runtime_contract_from_hardware(hardware)
     materialization = materialization_plan_from_runtime(runtime)
@@ -1425,6 +1432,9 @@ Examples:
                 print(json.dumps(result.to_dict(), indent=2))
             else:
                 # Training run
+                if os.getenv("ARGUS_EMIT_STARTUP_SENTINEL") == "1":
+                    print("__ARGUS_WORKLOAD_ENTRYPOINT_STARTED__", flush=True)
+
                 kwargs = {}
                 if args.max_samples is not None:
                     kwargs["max_samples"] = args.max_samples
