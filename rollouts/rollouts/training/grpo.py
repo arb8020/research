@@ -48,7 +48,6 @@ from ..training.configs import (  # noqa: E402
     deps_config_from_data,
 )
 from ..training.lowering import (
-    MegatronLowering,
     ParallelIntent,
     RealizationPlan,
     dense_rl_realization,
@@ -141,23 +140,13 @@ class GRPOConfig:
             service_runtime_layout=data.get("service_runtime_layout", "shared_env"),
         )
 
-    def trainer_deps(self, fallback: DepsConfig | None = None) -> DepsConfig | None:
+    def trainer_deps(self) -> DepsConfig | None:
         """Runtime deps owned by the trainer service."""
-        return self.trainer.deps or fallback
+        return self.trainer.deps
 
-    def inference_deps(self, fallback: DepsConfig | None = None) -> DepsConfig | None:
+    def inference_deps(self) -> DepsConfig | None:
         """Runtime deps owned by the inference service."""
-        return self.inference.deps or fallback
-
-    def resolve_shared_env_deps(self, fallback: DepsConfig | None = None) -> DepsConfig | None:
-        """Resolve the single-env dependency contract for a shared-env realization."""
-        trainer_deps = self.trainer_deps(fallback)
-        inference_deps = self.inference_deps(fallback)
-        if trainer_deps is None:
-            return inference_deps
-        if inference_deps is None:
-            return trainer_deps
-        return trainer_deps.merged_with(inference_deps)
+        return self.inference.deps
 
 
 def _trainer_realization(
@@ -175,6 +164,8 @@ def _trainer_realization(
 
 
 def _megatron_lowering(config: GRPOConfig) -> MegatronLowering:
+    from ..training.lowering import MegatronLowering
+
     realization = _trainer_realization(
         config.trainer.realization_local_layouts,
         config.trainer.realization_collective_transitions,
