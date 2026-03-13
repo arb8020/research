@@ -1212,27 +1212,26 @@ Examples:
             "Use 'shared_env' or 'split_env'."
         )
 
-    effective_hardware_deps = hardware.deps
-    if workload_config is not None and service_runtime_layout == "shared_env":
-        effective_hardware_deps = workload_config.resolve_shared_env_deps(hardware.deps)
-    elif service_runtime_layout == "split_env" and (
-        trainer_service_deps is not None or inference_service_deps is not None
-    ):
-        # Current launchers cannot realize separate service envs yet.
-        effective_hardware_deps = hardware.deps
+    if service_runtime_layout != "shared_env":
+        raise ValueError(
+            "The current Argus launcher only realizes service_runtime_layout='shared_env'. "
+            "Split service runtimes need a launcher that provisions separate trainer "
+            "and inference environments."
+        )
 
-    hardware = replace(hardware, deps=effective_hardware_deps)
+    if trainer_service_deps is not None or inference_service_deps is not None:
+        merged_service_deps = trainer_service_deps
+        if merged_service_deps is None:
+            merged_service_deps = inference_service_deps
+        elif inference_service_deps is not None:
+            merged_service_deps = merged_service_deps.merged_with(inference_service_deps)
+
+        if merged_service_deps is not None:
+            base_deps = hardware.deps or DepsConfig()
+            hardware = replace(hardware, deps=base_deps.merged_with(merged_service_deps))
+
     runtime = runtime_contract_from_hardware(hardware)
     materialization = materialization_plan_from_runtime(runtime)
-
-    if runtime.provider == "modal" and service_runtime_layout == "split_env" and (
-        trainer_service_deps is not None or inference_service_deps is not None
-    ):
-        raise ValueError(
-            "This config requests split_env service runtimes with service-scoped deps, "
-            "but the current Modal path still launches a single shared sandbox/env. "
-            "Split service runtimes need a multi-sandbox Modal launcher first."
-        )
 
     launch_record = {
         "launcher_id": launcher_id,

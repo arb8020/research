@@ -616,6 +616,7 @@ def validate_config(config: Any, gpu_type: str) -> PreflightResult:
     trainer_tp = getattr(config.trainer, "tensor_parallel_size", 1)
     trainer_ep = getattr(config.trainer, "expert_parallel_size", 1)
     trainer_pp = getattr(config.trainer, "pipeline_parallel_size", 1)
+    trainer_cp = getattr(config.trainer, "context_parallel_size", 1)
     use_lora = getattr(config.model, "use_lora", False)
     activation_checkpointing = getattr(config.trainer, "activation_checkpointing", False)
 
@@ -653,6 +654,11 @@ def validate_config(config: Any, gpu_type: str) -> PreflightResult:
     trainer_cuda_device_ids = getattr(config.trainer, "cuda_device_ids", (0,))
     trainer_gpu_count = len(trainer_cuda_device_ids)
     if backend == "megatron":
+        if trainer_cp != 1:
+            raise ValueError(
+                "Megatron lowering does not support context_parallel_size != 1 in this path yet. "
+                "Keep context_parallel_size=1 and omit /cp from realization intent."
+            )
         # Megatron requires exactly TP * PP * EP GPUs
         required_gpus = trainer_tp * trainer_pp * trainer_ep
         if trainer_gpu_count != required_gpus:
@@ -884,15 +890,6 @@ def preflight_torchtitan_runtime() -> RuntimePreflightResult:
     details["has_torch_attention_varlen"] = (
         importlib.util.find_spec("torch.nn.attention.varlen") is not None
     )
-
-    if not details["has_torch_attention_varlen"]:
-        return RuntimePreflightResult(
-            name="torchtitan",
-            stage="TRAIN_BACKEND_IMPORT_OK",
-            ok=False,
-            details=details,
-            error="required module 'torch.nn.attention.varlen' is missing",
-        )
 
     try:
         torchtitan = importlib.import_module("torchtitan")
