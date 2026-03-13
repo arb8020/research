@@ -35,7 +35,6 @@ def _miles_stable_megatron_runtime_packages() -> tuple[str, ...]:
         f"torch_memory_saver @ git+https://github.com/fzyzcjy/torch_memory_saver.git@{MILES_STABLE_TORCH_MEMORY_SAVER_COMMIT}",
         "git+https://github.com/fzyzcjy/Megatron-Bridge.git@dev_rl",
         "nvidia-modelopt[torch]>=0.37.0",
-        "nvidia-cudnn-cu12==9.16.0.29",
         "numpy<2",
     )
 
@@ -108,6 +107,11 @@ def _apex_install_command() -> str:
     )
 
 
+def _cudnn_install_command() -> str:
+    runtime_python = f"$({_runtime_python_bin()})"
+    return f"{runtime_python} -m pip install --upgrade --no-deps 'nvidia-cudnn-cu12==9.16.0.29'"
+
+
 def _miles_stable_source_commands() -> tuple[str, ...]:
     return (
         "if [ ! -d /root/sglang ]; then "
@@ -130,6 +134,7 @@ def _miles_stable_source_commands() -> tuple[str, ...]:
             patch_name="megatron.patch",
             patch_dest="/tmp/miles-stable-megatron.patch",
         ),
+        _cudnn_install_command(),
         _apex_install_command(),
         _editable_install_command("/root/sglang", "python[all]"),
         _editable_install_command("/root/Megatron-LM"),
