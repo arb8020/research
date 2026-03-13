@@ -88,6 +88,86 @@ class DepsConfig:
     def resolved_runtime_overlay(self) -> RuntimeOverlay:
         return self.runtime_overlay
 
+    def merged_with(self, other: DepsConfig) -> DepsConfig:
+        """Merge two service-owned dependency contracts into one shared env contract.
+
+        This is only for explicit shared-env realizations. It rejects scalar
+        conflicts that would make the shared env ambiguous.
+        """
+
+        def _choose(name: str, left: Any, right: Any) -> Any:
+            if left is None:
+                return right
+            if right is None:
+                return left
+            if left != right:
+                raise ValueError(
+                    f"shared_env cannot merge conflicting dependency field {name}: "
+                    f"{left!r} vs {right!r}"
+                )
+            return left
+
+        return DepsConfig(
+            python_version=_choose("python_version", self.python_version, other.python_version),
+            base_image=_choose("base_image", self.base_image, other.base_image),
+            system_packages=_dedupe(self.system_packages + other.system_packages),
+            pip_packages=_dedupe(self.pip_packages + other.pip_packages),
+            pip_index_url=_choose("pip_index_url", self.pip_index_url, other.pip_index_url),
+            pip_extra_index_url=_choose(
+                "pip_extra_index_url",
+                self.pip_extra_index_url,
+                other.pip_extra_index_url,
+            ),
+            pip_prerelease=_choose(
+                "pip_prerelease",
+                self.pip_prerelease,
+                other.pip_prerelease,
+            ),
+            bootstrap_commands=self.bootstrap_commands + other.bootstrap_commands,
+            image=_choose("image", self.image, other.image),
+            runtime_overlay=self.runtime_overlay.extended(
+                system_packages=other.runtime_overlay.system_packages,
+                pip_packages=other.runtime_overlay.pip_packages,
+                pip_index_url=other.runtime_overlay.pip_index_url,
+                pip_extra_index_url=other.runtime_overlay.pip_extra_index_url,
+                pip_prerelease=other.runtime_overlay.pip_prerelease,
+                commands=other.runtime_overlay.commands,
+                env=other.runtime_overlay.env,
+                features=other.runtime_overlay.features,
+                installed_groups=other.runtime_overlay.installed_groups,
+            ),
+        )
+
+
+def _image_spec_from_data(data: ImageSpec | dict[str, Any] | None) -> ImageSpec | None:
+    if data is None or isinstance(data, ImageSpec):
+        return data
+    assert isinstance(data, dict), f"image must be ImageSpec|dict|None, got {type(data)}"
+    return ImageSpec(**data)
+
+
+def _runtime_overlay_from_data(
+    data: RuntimeOverlay | dict[str, Any] | None,
+) -> RuntimeOverlay:
+    if data is None:
+        return RuntimeOverlay()
+    if isinstance(data, RuntimeOverlay):
+        return data
+    assert isinstance(data, dict), (
+        f"runtime_overlay must be RuntimeOverlay|dict|None, got {type(data)}"
+    )
+    return RuntimeOverlay(**data)
+
+
+def deps_config_from_data(data: DepsConfig | dict[str, Any] | None) -> DepsConfig | None:
+    if data is None or isinstance(data, DepsConfig):
+        return data
+    assert isinstance(data, dict), f"deps must be DepsConfig|dict|None, got {type(data)}"
+    payload = dict(data)
+    payload["image"] = _image_spec_from_data(payload.get("image"))
+    payload["runtime_overlay"] = _runtime_overlay_from_data(payload.get("runtime_overlay"))
+    return DepsConfig(**payload)
+
 
 # Known GPU specs: (memory_gb, compute_capability)
 # Used for validation and auto-derivation
@@ -135,7 +215,9 @@ class HardwareConfig:
     gpu_count: int = 1
     provider: Literal["modal", "runpod", "lambdalabs", "vast", "local"] = "runpod"
 
-    # Environment dependencies (required for Modal and SSH providers)
+    # Shared runtime deps for the current single-env runners.
+    # Current launchers still realize one environment for the whole workload,
+    # so remote execution owns deps here rather than on trainer/inference.
     deps: DepsConfig | None = None
 
     # Remote provisioning/runtime settings
@@ -287,6 +369,11 @@ class TrainerConfig:
 
     # Training backend implementation (pluggable, see docs/training_architecture.md)
     backend: Literal["pytorch", "fsdp", "fsdp2", "nmoe", "megatron", "torchtitan"] = "pytorch"
+    # Service-scoped runtime deps for the trainer process.
+    # Current launchers do not realize per-service environments yet, so configs
+    # that set this should be rejected at the runner boundary rather than
+    # silently collapsing back to one shared env.
+    deps: DepsConfig | None = None
 
     # DEPRECATED: Use DistributedConfig.trainer_gpus instead
     cuda_device_ids: tuple[int, ...] = (0,)
@@ -329,6 +416,13 @@ class TrainerConfig:
     recompute_method: str = "uniform"  # "uniform" or "block"
     recompute_num_layers: int = 1  # Layers per recompute block
 
+    # Backend-neutral realization intent.
+    # These strings describe denotational layout/collective intent; backends
+    # validate and lower them into runtime-native configuration.
+    realization_local_layouts: tuple[str, ...] = ()
+    realization_collective_transitions: tuple[str, ...] = ()
+    realization_packed_sequences: bool = True
+
     # TorchTitan-specific settings (only used when backend="torchtitan")
     # Model name registered with torchtitan (e.g., "glm", "llama3", "qwen3")
     torchtitan_model: str = "glm"
@@ -338,10 +432,6 @@ class TrainerConfig:
     torchtitan_tp: int = 1
     torchtitan_cp: int = 1
     torchtitan_pp: int = 1
-    # Optional explicit realization override. Leave empty to use backend defaults.
-    torchtitan_local_layouts: tuple[str, ...] = ()
-    torchtitan_collective_transitions: tuple[str, ...] = ()
-    torchtitan_packed_sequences: bool = True
 
     def __post_init__(self) -> None:
         assert self.backend in ("pytorch", "fsdp", "fsdp2", "nmoe", "megatron", "torchtitan"), (
@@ -372,6 +462,9 @@ class InferenceConfig:
     """
 
     backend: str = "sglang"  # "sglang", "vllm", or "engine_v2"
+    # Service-scoped runtime deps for the inference process.
+    # Current launchers do not realize per-service environments yet.
+    deps: DepsConfig | None = None
     port: int = 30000  # Base port (engines use port, port+1, ...)
     cuda_device_ids: tuple[int, ...] = (0,)
     mem_fraction: float = 0.7

@@ -1162,6 +1162,17 @@ Examples:
 
     # Get hardware config (default to local if not specified)
     hardware: HardwareConfig = getattr(config_module, "hardware", HardwareConfig(provider="local"))
+    workload_config = getattr(config_module, "config", None)
+
+    trainer_service_deps = None
+    inference_service_deps = None
+    service_runtime_layout = "shared_env"
+    if workload_config is not None:
+        trainer = getattr(workload_config, "trainer", None)
+        inference = getattr(workload_config, "inference", None)
+        trainer_service_deps = getattr(trainer, "deps", None)
+        inference_service_deps = getattr(inference, "deps", None)
+        service_runtime_layout = getattr(workload_config, "service_runtime_layout", "shared_env")
 
     # Apply CLI overrides
     if args.local:
@@ -1195,8 +1206,33 @@ Examples:
             hardware,
             persistent_volume_location=args.persistent_volume_location,
         )
+    if service_runtime_layout not in {"shared_env", "split_env"}:
+        raise ValueError(
+            f"Unknown service_runtime_layout={service_runtime_layout!r}. "
+            "Use 'shared_env' or 'split_env'."
+        )
+
+    effective_hardware_deps = hardware.deps
+    if workload_config is not None and service_runtime_layout == "shared_env":
+        effective_hardware_deps = workload_config.resolve_shared_env_deps(hardware.deps)
+    elif service_runtime_layout == "split_env" and (
+        trainer_service_deps is not None or inference_service_deps is not None
+    ):
+        # Current launchers cannot realize separate service envs yet.
+        effective_hardware_deps = hardware.deps
+
+    hardware = replace(hardware, deps=effective_hardware_deps)
     runtime = runtime_contract_from_hardware(hardware)
     materialization = materialization_plan_from_runtime(runtime)
+
+    if runtime.provider == "modal" and service_runtime_layout == "split_env" and (
+        trainer_service_deps is not None or inference_service_deps is not None
+    ):
+        raise ValueError(
+            "This config requests split_env service runtimes with service-scoped deps, "
+            "but the current Modal path still launches a single shared sandbox/env. "
+            "Split service runtimes need a multi-sandbox Modal launcher first."
+        )
 
     launch_record = {
         "launcher_id": launcher_id,

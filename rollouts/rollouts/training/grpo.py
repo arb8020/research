@@ -39,11 +39,19 @@ if TYPE_CHECKING:
 
 from ..training.configs import (  # noqa: E402
     CheckpointConfig,
+    DepsConfig,
     InferenceConfig,
     ModelConfig,
     OutputConfig,
     RolloutConfig,
     TrainerConfig,
+    deps_config_from_data,
+)
+from ..training.lowering import (
+    MegatronLowering,
+    ParallelIntent,
+    RealizationPlan,
+    dense_rl_realization,
 )
 from ..training.scoring import FunctionSampleScorer
 from ..training.types import RolloutRuntime
@@ -86,6 +94,7 @@ class GRPOConfig:
     output: OutputConfig = field(
         default_factory=lambda: OutputConfig(output_dir="results/rl", experiment_name="grpo")
     )
+    service_runtime_layout: str = "shared_env"
 
     def save(self, path: Path | str) -> None:
         """Save config to JSON."""
@@ -112,8 +121,12 @@ class GRPOConfig:
         assert isinstance(data, dict), f"data must be dict, got {type(data)}"
 
         model = ModelConfig(**data.get("model", {}))
-        inference = InferenceConfig(**data.get("inference", {}))
-        trainer = TrainerConfig(**data.get("trainer", {}))
+        inference_data = dict(data.get("inference", {}))
+        trainer_data = dict(data.get("trainer", {}))
+        inference_data["deps"] = deps_config_from_data(inference_data.get("deps"))
+        trainer_data["deps"] = deps_config_from_data(trainer_data.get("deps"))
+        inference = InferenceConfig(**inference_data)
+        trainer = TrainerConfig(**trainer_data)
         rollout = RolloutConfig(**data.get("rollout", {}))
         checkpoint = CheckpointConfig(**data.get("checkpoint", {}))
         output = OutputConfig(**data.get("output", {}))
@@ -125,7 +138,64 @@ class GRPOConfig:
             rollout=rollout,
             checkpoint=checkpoint,
             output=output,
+            service_runtime_layout=data.get("service_runtime_layout", "shared_env"),
         )
+
+    def trainer_deps(self, fallback: DepsConfig | None = None) -> DepsConfig | None:
+        """Runtime deps owned by the trainer service."""
+        return self.trainer.deps or fallback
+
+    def inference_deps(self, fallback: DepsConfig | None = None) -> DepsConfig | None:
+        """Runtime deps owned by the inference service."""
+        return self.inference.deps or fallback
+
+    def resolve_shared_env_deps(self, fallback: DepsConfig | None = None) -> DepsConfig | None:
+        """Resolve the single-env dependency contract for a shared-env realization."""
+        trainer_deps = self.trainer_deps(fallback)
+        inference_deps = self.inference_deps(fallback)
+        if trainer_deps is None:
+            return inference_deps
+        if inference_deps is None:
+            return trainer_deps
+        return trainer_deps.merged_with(inference_deps)
+
+
+def _trainer_realization(
+    local_layouts: tuple[str, ...],
+    collective_transitions: tuple[str, ...],
+    packed_sequences: bool,
+) -> RealizationPlan | None:
+    if not local_layouts and not collective_transitions:
+        return None
+    return RealizationPlan(
+        local_layouts=local_layouts,
+        collective_transitions=collective_transitions,
+        packed_sequences=packed_sequences,
+    )
+
+
+def _megatron_lowering(config: GRPOConfig) -> MegatronLowering:
+    realization = _trainer_realization(
+        config.trainer.realization_local_layouts,
+        config.trainer.realization_collective_transitions,
+        config.trainer.realization_packed_sequences,
+    ) or dense_rl_realization(
+        tp=config.trainer.tensor_parallel_size,
+        cp=config.trainer.context_parallel_size,
+        pp=config.trainer.pipeline_parallel_size,
+        packed_sequences=config.trainer.realization_packed_sequences,
+    )
+    return MegatronLowering.from_realization(
+        parallel=ParallelIntent(
+            dp=1,
+            tp=config.trainer.tensor_parallel_size,
+            cp=config.trainer.context_parallel_size,
+            pp=config.trainer.pipeline_parallel_size,
+            ep=config.trainer.expert_parallel_size,
+            packed_sequences=config.trainer.realization_packed_sequences,
+        ),
+        realization=realization,
+    )
 
 
 # ──────────────────────── Training Function ──────────────────────────────────
@@ -544,12 +614,13 @@ def _setup_training_backend(
                 "Pass megatron_workers parameter from _grpo_train_async."
             )
 
+        lowering = _megatron_lowering(config)
+
         megatron_config = MegatronRemoteConfig(
             model_name=config.model.name,
             dtype=config.model.dtype,
-            tensor_parallel_size=config.trainer.tensor_parallel_size,
-            pipeline_parallel_size=config.trainer.pipeline_parallel_size,
-            expert_parallel_size=config.trainer.expert_parallel_size,
+            lowering=lowering,
+            sequence_parallel=config.trainer.sequence_parallel,
             lr=config.trainer.lr,
             weight_decay=config.trainer.weight_decay,
             max_grad_norm=config.trainer.max_grad_norm,
@@ -574,19 +645,13 @@ def _setup_training_backend(
         cleanup = _cleanup_megatron
     elif backend_name == "torchtitan":
         # TorchTitan backend for GLM and other models with 4D parallelism
-        from ..training import RealizationPlan
         from ..training.backends import create_torchtitan_backend
 
-        realization = None
-        if (
-            config.trainer.torchtitan_local_layouts
-            or config.trainer.torchtitan_collective_transitions
-        ):
-            realization = RealizationPlan(
-                local_layouts=config.trainer.torchtitan_local_layouts,
-                collective_transitions=config.trainer.torchtitan_collective_transitions,
-                packed_sequences=config.trainer.torchtitan_packed_sequences,
-            )
+        realization = _trainer_realization(
+            config.trainer.realization_local_layouts,
+            config.trainer.realization_collective_transitions,
+            config.trainer.realization_packed_sequences,
+        )
 
         backend, cleanup = create_torchtitan_backend(
             checkpoint_dir=output_dir,
@@ -601,7 +666,7 @@ def _setup_training_backend(
             tp=config.trainer.torchtitan_tp,
             cp=config.trainer.torchtitan_cp,
             pp=config.trainer.torchtitan_pp,
-            packed_sequences=config.trainer.torchtitan_packed_sequences,
+            packed_sequences=config.trainer.realization_packed_sequences,
             mode="rl",
             realization=realization,
         )
@@ -1168,13 +1233,14 @@ async def _grpo_train_async(
         num_trainer_gpus = len(config.trainer.cuda_device_ids)
         logger.info(f"Spawning {num_trainer_gpus} megatron workers (before CUDA init)...")
 
+        lowering = _megatron_lowering(config)
+
         # Create config for worker spawning (full config passed at init time)
         megatron_config = MegatronRemoteConfig(
             model_name=config.model.name,
             dtype=config.model.dtype,
-            tensor_parallel_size=config.trainer.tensor_parallel_size,
-            pipeline_parallel_size=config.trainer.pipeline_parallel_size,
-            expert_parallel_size=config.trainer.expert_parallel_size,
+            lowering=lowering,
+            sequence_parallel=config.trainer.sequence_parallel,
             lr=config.trainer.lr,
             weight_decay=config.trainer.weight_decay,
             max_grad_norm=config.trainer.max_grad_norm,
