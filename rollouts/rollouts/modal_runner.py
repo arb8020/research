@@ -1057,6 +1057,11 @@ async def _create_sandbox(
     sandbox_name = f"rollouts-{config.gpu_type.lower()}-{ts}"
 
     timeout_seconds = config.timeout_hours * 3600
+    keepalive_cmd = (
+        "bash",
+        "-lc",
+        "trap 'exit 0' TERM INT; while true; do sleep 3600; done",
+    )
 
     create_timeout_s = 300
     create_heartbeat_s = 15
@@ -1098,6 +1103,7 @@ async def _create_sandbox(
         async def _create_task() -> None:
             result["sandbox"] = await trio_asyncio.aio_as_trio(
                 modal.Sandbox.create.aio(
+                    *keepalive_cmd,
                     app=app,
                     image=image,
                     gpu=gpu_spec,
@@ -1178,6 +1184,10 @@ async def _create_sandbox(
     assert sandbox.object_id, "Sandbox missing object_id"
 
     logger.info(f"Sandbox created: {sandbox.object_id}")
+    emit(
+        "modal_sandbox_keepalive_configured",
+        command=list(keepalive_cmd),
+    )
 
     return sandbox, sandbox.object_id
 
@@ -1394,11 +1404,23 @@ async def _run_training_in_sandbox(
     startup_seen = threading.Event()
     done = threading.Event()
     results: dict[str, Any] = {}
+    process_state: dict[str, Any] = {
+        "stdout_line_count": 0,
+        "stderr_line_count": 0,
+        "last_stdout_line": None,
+        "last_stderr_line": None,
+        "last_stdout_elapsed_sec": None,
+        "last_stderr_elapsed_sec": None,
+    }
+    process_started_ts = time.monotonic()
     start_timeout_s = 60
 
     def emit(event: str, **data: Any) -> None:
         if event_log is not None:
             event_log(event, **data)
+
+    def _elapsed() -> float:
+        return time.monotonic() - process_started_ts
 
     def _on_started() -> None:
         emit("remote_entrypoint_invoked")
@@ -1406,15 +1428,27 @@ async def _run_training_in_sandbox(
         emit("remote_stderr_stream_open")
 
     def _on_stdout_line(line: str) -> None:
+        process_state["stdout_line_count"] += 1
+        process_state["last_stdout_line"] = line.rstrip()
+        process_state["last_stdout_elapsed_sec"] = round(_elapsed(), 3)
         if WORKLOAD_ENTRYPOINT_SENTINEL in line and not startup_seen.is_set():
             startup_seen.set()
             emit("workload_entrypoint_started")
+
+    def _on_stderr_line(line: str) -> None:
+        process_state["stderr_line_count"] += 1
+        process_state["last_stderr_line"] = line.rstrip()
+        process_state["last_stderr_elapsed_sec"] = round(_elapsed(), 3)
 
     def _on_heartbeat(elapsed_sec: float, silence_sec: float) -> None:
         emit(
             "remote_process_heartbeat",
             elapsed_sec=round(elapsed_sec, 3),
             silence_sec=round(silence_sec, 3),
+            stdout_line_count=process_state["stdout_line_count"],
+            stderr_line_count=process_state["stderr_line_count"],
+            last_stdout_elapsed_sec=process_state["last_stdout_elapsed_sec"],
+            last_stderr_elapsed_sec=process_state["last_stderr_elapsed_sec"],
         )
 
     def _train() -> None:
@@ -1425,6 +1459,7 @@ async def _run_training_in_sandbox(
                 timeout=14400,
                 on_started=_on_started,
                 on_stdout_line=_on_stdout_line,
+                on_stderr_line=_on_stderr_line,
                 on_heartbeat=_on_heartbeat,
             )
             results["stdout"] = stdout
@@ -1461,7 +1496,17 @@ async def _run_training_in_sandbox(
     stdout = str(results.get("stdout", ""))
     stderr = str(results.get("stderr", ""))
     exit_code = int(results.get("exit_code", 1))
-    emit("remote_exit_observed", exit_code=exit_code)
+    emit(
+        "remote_exit_observed",
+        exit_code=exit_code,
+        elapsed_sec=round(_elapsed(), 3),
+        stdout_line_count=process_state["stdout_line_count"],
+        stderr_line_count=process_state["stderr_line_count"],
+        last_stdout_line=process_state["last_stdout_line"],
+        last_stderr_line=process_state["last_stderr_line"],
+        last_stdout_elapsed_sec=process_state["last_stdout_elapsed_sec"],
+        last_stderr_elapsed_sec=process_state["last_stderr_elapsed_sec"],
+    )
 
     if exit_code != 0:
         failure_diagnostics = await _collect_modal_failure_diagnostics(
