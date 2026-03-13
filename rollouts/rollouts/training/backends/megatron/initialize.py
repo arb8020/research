@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 from argparse import Namespace
 from dataclasses import dataclass
 
@@ -66,11 +67,19 @@ def _build_megatron_args(
     try:
         from megatron.training.arguments import parse_args
 
+        # These worker processes inherit Argus's top-level CLI argv. Megatron
+        # should build its backend-native defaults from explicit config here,
+        # not try to interpret `argus.run --local --config ...` as Megatron CLI.
+        original_argv = sys.argv[:]
+        sys.argv = [original_argv[0]] if original_argv else [""]
         try:
-            args = parse_args()
-        except TypeError:
-            # Some Megatron versions use a callback hook for parser extension.
-            args = parse_args(lambda parser: parser)  # type: ignore[call-arg]
+            try:
+                args = parse_args()
+            except TypeError:
+                # Some Megatron versions use a callback hook for parser extension.
+                args = parse_args(lambda parser: parser)  # type: ignore[call-arg]
+        finally:
+            sys.argv = original_argv
     except Exception:
         # Conservative fallback if parser integration is unavailable.
         args = Namespace()
