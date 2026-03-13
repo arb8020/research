@@ -80,7 +80,6 @@ def _quiet_spinner(msg: str) -> Generator[None, None, None]:
 if TYPE_CHECKING:
     from bifrost import BifrostClient
     from broker import ClientGPUInstance
-
     from rollouts.training.configs import DepsConfig
     from rollouts.training.multi_node import MultiNodeConfig
 
@@ -132,8 +131,8 @@ _workspace_root = REPO_ROOT.parent
 if _workspace_root.exists() and str(_workspace_root) not in sys.path:
     sys.path.insert(0, str(_workspace_root))
 
-from rollouts.image_publisher import build_or_resolve_image
 from rollouts.config_contracts import validate_train_config_module
+from rollouts.image_publisher import build_or_resolve_image
 from rollouts.image_spec import (
     USER_IMAGE_MANIFEST_PATH,
     ImageManifest,
@@ -309,7 +308,6 @@ async def _deploy_and_submit(
     from broker import AccountError, ProvisionError
     from broker.types import ProvisionImage
     from pytui import Console
-
     from rollouts.jobs import register_job, update_job_node
 
     # Check HF_TOKEN before provisioning (downloads will be slow/rate-limited without it)
@@ -654,12 +652,14 @@ async def _deploy_and_submit(
             bootstrap_steps.append((
                 "Installing image Python packages",
                 (
-                    f"{_uv_pip_install_command(
-                        custom_image.pip_packages,
-                        index_url=custom_image.pip_index_url,
-                        extra_index_url=custom_image.pip_extra_index_url,
-                        pre=custom_image.pip_prerelease,
-                    )} && "
+                    f"{
+                        _uv_pip_install_command(
+                            custom_image.pip_packages,
+                            index_url=custom_image.pip_index_url,
+                            extra_index_url=custom_image.pip_extra_index_url,
+                            pre=custom_image.pip_prerelease,
+                        )
+                    } && "
                     f"{python_install_probe_command('image-pip-packages')} && "
                     f"{python_runtime_contract_snapshot_command('image-pip-packages')}"
                 ),
@@ -703,15 +703,17 @@ async def _deploy_and_submit(
             bootstrap_steps.append((
                 "Installing runtime Python packages",
                 (
-                    f"{_uv_pip_install_command(
-                        custom_overlay.pip_packages,
-                        index_url=custom_overlay.pip_index_url
-                        or (custom_image.pip_index_url if custom_image else None),
-                        extra_index_url=custom_overlay.pip_extra_index_url
-                        or (custom_image.pip_extra_index_url if custom_image else None),
-                        pre=custom_overlay.pip_prerelease
-                        or (custom_image.pip_prerelease if custom_image else False),
-                    )} && "
+                    f"{
+                        _uv_pip_install_command(
+                            custom_overlay.pip_packages,
+                            index_url=custom_overlay.pip_index_url
+                            or (custom_image.pip_index_url if custom_image else None),
+                            extra_index_url=custom_overlay.pip_extra_index_url
+                            or (custom_image.pip_extra_index_url if custom_image else None),
+                            pre=custom_overlay.pip_prerelease
+                            or (custom_image.pip_prerelease if custom_image else False),
+                        )
+                    } && "
                     f"{python_install_probe_command('overlay-pip-packages')} && "
                     f"{python_runtime_contract_snapshot_command('overlay-pip-packages')}"
                 ),
@@ -1220,15 +1222,11 @@ Examples:
         )
 
     if trainer_service_deps is not None or inference_service_deps is not None:
-        merged_service_deps = trainer_service_deps
-        if merged_service_deps is None:
-            merged_service_deps = inference_service_deps
-        elif inference_service_deps is not None:
-            merged_service_deps = merged_service_deps.merged_with(inference_service_deps)
-
-        if merged_service_deps is not None:
-            base_deps = hardware.deps or DepsConfig()
-            hardware = replace(hardware, deps=base_deps.merged_with(merged_service_deps))
+        raise ValueError(
+            "This config declares trainer.deps and/or inference.deps, but the current "
+            "launcher still realizes one shared env for the whole workload. Declare "
+            "that shared runtime contract explicitly in hardware.deps."
+        )
 
     runtime = runtime_contract_from_hardware(hardware)
     materialization = materialization_plan_from_runtime(runtime)
@@ -1267,7 +1265,7 @@ Examples:
         print("Warning: other active launchers for this config/provider:", file=sys.stderr)
         for launch in duplicates:
             print(
-                f"  - {launch['launcher_id']} pid={launch['pid']} started_at={launch.get('started_at','')}",
+                f"  - {launch['launcher_id']} pid={launch['pid']} started_at={launch.get('started_at', '')}",
                 file=sys.stderr,
             )
 

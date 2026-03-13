@@ -36,6 +36,8 @@ def infer_cuda_version(gpu_type: str, pip_index_url: str | None = None) -> str:
     if gpu_type in ("B200", "GB200"):
         return "12.8.0"
     if pip_index_url:
+        if "cu129" in pip_index_url:
+            return "12.9.1"
         if "cu128" in pip_index_url:
             return "12.8.0"
         if "cu126" in pip_index_url:
@@ -402,7 +404,7 @@ def manifest_write_command(manifest: ImageManifest, path: str = DEFAULT_IMAGE_MA
     encoded = base64.b64encode(payload.encode("utf-8")).decode("ascii")
     return (
         "python3 -c "
-        f"\"import base64; from pathlib import Path; path = Path({path!r}).expanduser(); "
+        f'"import base64; from pathlib import Path; path = Path({path!r}).expanduser(); '
         "path.parent.mkdir(parents=True, exist_ok=True); "
         f"path.write_text(base64.b64decode({encoded!r}).decode('utf-8'))\""
     )

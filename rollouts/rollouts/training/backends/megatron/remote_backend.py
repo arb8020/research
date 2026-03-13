@@ -24,6 +24,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from ...lowering import MegatronLowering
 from ...types import ImmediateTrainFuture, TrainFuture
 
 if TYPE_CHECKING:
@@ -34,16 +35,22 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class MegatronRemoteConfig:
-    """Configuration for remote Megatron backend."""
+    """Configuration for remote Megatron backend.
+
+    `lowering` is the semantic source for partition intent. This remote config
+    still executes Megatron's native runtime semantics; it does not ship an
+    executable collective program to the workers.
+    """
 
     # Model
     model_name: str
     dtype: str = "bfloat16"
 
-    # Parallelism
-    tensor_parallel_size: int = 1
-    pipeline_parallel_size: int = 1
-    expert_parallel_size: int = 1
+    # Lowered partition intent derived from RealizationPlan
+    lowering: MegatronLowering = field(default_factory=MegatronLowering)
+
+    # Backend-native Megatron runtime settings not modeled in RealizationPlan
+    sequence_parallel: bool = False
 
     # Training
     lr: float = 1e-6
@@ -107,9 +114,23 @@ class MegatronRemoteBackend:
                 "world_size": len(self.workers),
                 "config": {
                     "model_name": self.config.model_name,
-                    "tensor_parallel_size": self.config.tensor_parallel_size,
-                    "pipeline_parallel_size": self.config.pipeline_parallel_size,
-                    "expert_parallel_size": self.config.expert_parallel_size,
+                    "lowering": {
+                        "parallel": {
+                            "dp": self.config.lowering.parallel.dp,
+                            "tp": self.config.lowering.parallel.tp,
+                            "cp": self.config.lowering.parallel.cp,
+                            "pp": self.config.lowering.parallel.pp,
+                            "ep": self.config.lowering.parallel.ep,
+                            "enable_loss_parallel": self.config.lowering.parallel.enable_loss_parallel,
+                            "packed_sequences": self.config.lowering.parallel.packed_sequences,
+                        },
+                        "realization": {
+                            "local_layouts": self.config.lowering.realization.local_layouts,
+                            "collective_transitions": self.config.lowering.realization.collective_transitions,
+                            "packed_sequences": self.config.lowering.realization.packed_sequences,
+                        },
+                    },
+                    "sequence_parallel": self.config.sequence_parallel,
                     "lr": self.config.lr,
                     "bf16": self.config.dtype == "bfloat16",
                     "micro_batch_size": self.config.micro_batch_size,

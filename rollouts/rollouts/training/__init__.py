@@ -30,7 +30,12 @@ from ..training.contracts import (
     WeightVersion,
     WeightVisibilityPolicy,
 )
-from ..training.lowering import ParallelIntent, RealizationPlan, TorchTitanLowering
+from ..training.lowering import (
+    MegatronLowering,
+    ParallelIntent,
+    RealizationPlan,
+    TorchTitanLowering,
+)
 from ..training.types import (
     AttemptRow,
     ProblemRow,
@@ -246,6 +251,7 @@ __all__ = [
     "WeightSyncPolicy",
     "WeightVersion",
     "VersionedRolloutBatch",
+    "MegatronLowering",
     "ParallelIntent",
     "RealizationPlan",
     "TorchTitanLowering",

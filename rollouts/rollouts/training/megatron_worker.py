@@ -95,13 +95,22 @@ def train(handle: Worker) -> None:
             MegatronConfig,
             MegatronTrainingBackend,
         )
+        from rollouts.training.lowering import MegatronLowering, ParallelIntent, RealizationPlan
 
         logger.info("Megatron imports successful")
 
+        lowering_payload = config["lowering"]
+        lowering = MegatronLowering.from_realization(
+            parallel=ParallelIntent(**lowering_payload["parallel"]),
+            realization=RealizationPlan(**lowering_payload["realization"]),
+        )
+        parallel = lowering.parallel
+
         parallelism_config = MegatronParallelismConfig(
-            tensor_parallel_size=config.get("tensor_parallel_size", 1),
-            pipeline_parallel_size=config.get("pipeline_parallel_size", 1),
-            expert_parallel_size=config.get("expert_parallel_size", 1),
+            tensor_parallel_size=parallel.tp,
+            pipeline_parallel_size=parallel.pp,
+            expert_parallel_size=parallel.ep,
+            sequence_parallel=config.get("sequence_parallel", False),
         )
 
         logger.info("Calling init_megatron...")
@@ -134,6 +143,7 @@ def train(handle: Worker) -> None:
             tensor_model_parallel_size=parallelism_config.tensor_parallel_size,
             pipeline_model_parallel_size=parallelism_config.pipeline_parallel_size,
             expert_model_parallel_size=parallelism_config.expert_parallel_size,
+            sequence_parallel=parallelism_config.sequence_parallel,
             micro_batch_size=model_config.micro_batch_size,
             global_batch_size=model_config.global_batch_size,
             seq_length=model_config.seq_length,
@@ -146,6 +156,7 @@ def train(handle: Worker) -> None:
             optimizer=optimizer,
             opt_param_scheduler=scheduler,
             config=backend_config,
+            lowering=lowering,
         )
 
         logger.info("Model initialized, entering training loop")

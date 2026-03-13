@@ -4,8 +4,9 @@ These summarize backend provisioning choices derived from higher-level
 realization semantics. They are not the semantic center of training.
 
 Important:
-`RealizationPlan` is currently denotational. Backends like TorchTitan use it
-for validation and lowering, not as an executable collective program.
+`RealizationPlan` is currently denotational. Backends like TorchTitan and
+Megatron use it for validation and lowering, not as an executable collective
+program.
 """
 
 import re
@@ -100,6 +101,36 @@ class TorchTitanLowering:
         realization: RealizationPlan,
     ) -> "TorchTitanLowering":
         return TorchTitanLowering(
+            parallel=derive_parallel_intent(parallel, realization),
+            realization=realization,
+        )
+
+
+@dataclass(frozen=True)
+class MegatronLowering:
+    """Megatron-specific lowering summary.
+
+    This path keeps `RealizationPlan` as the denotational source of truth, then
+    derives the coarse partition intent Megatron can honestly consume today.
+    It does not mean Megatron executes the explicit collective transitions from
+    `realization`.
+    """
+
+    parallel: ParallelIntent = ParallelIntent()
+    realization: RealizationPlan = RealizationPlan()
+
+    @staticmethod
+    def from_realization(
+        parallel: ParallelIntent,
+        realization: RealizationPlan,
+    ) -> "MegatronLowering":
+        required_axes = set(realization.required_mesh_axes())
+        if parallel.cp > 1 or "cp" in required_axes:
+            raise ValueError(
+                "Megatron lowering does not support /cp realization intent in this path yet. "
+                "Keep cp=1 and omit /cp from RealizationPlan."
+            )
+        return MegatronLowering(
             parallel=derive_parallel_intent(parallel, realization),
             realization=realization,
         )

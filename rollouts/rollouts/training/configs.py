@@ -88,51 +88,6 @@ class DepsConfig:
     def resolved_runtime_overlay(self) -> RuntimeOverlay:
         return self.runtime_overlay
 
-    def merged_with(self, other: "DepsConfig") -> "DepsConfig":
-        """Merge two service-scoped deps contracts for a shared runtime.
-
-        Tuple fields are unioned in-order. Scalar/image fields must agree or
-        the shared env is rejected explicitly.
-        """
-
-        def _union(left: tuple[str, ...], right: tuple[str, ...]) -> tuple[str, ...]:
-            merged: list[str] = []
-            for value in (*left, *right):
-                if value not in merged:
-                    merged.append(value)
-            return tuple(merged)
-
-        def _pick(name: str, left: Any, right: Any) -> Any:
-            if left == right:
-                return left
-            if left is None:
-                return right
-            if right is None:
-                return left
-            raise ValueError(
-                f"Cannot realize shared_env with conflicting {name}: {left!r} vs {right!r}"
-            )
-
-        return DepsConfig(
-            python_version=_pick("python_version", self.python_version, other.python_version),
-            base_image=_pick("base_image", self.base_image, other.base_image),
-            system_packages=_union(self.system_packages, other.system_packages),
-            pip_packages=_union(self.pip_packages, other.pip_packages),
-            pip_index_url=_pick("pip_index_url", self.pip_index_url, other.pip_index_url),
-            pip_extra_index_url=_pick(
-                "pip_extra_index_url",
-                self.pip_extra_index_url,
-                other.pip_extra_index_url,
-            ),
-            pip_prerelease=self.pip_prerelease or other.pip_prerelease,
-            bootstrap_commands=_union(self.bootstrap_commands, other.bootstrap_commands),
-            image=_pick("image", self.image, other.image),
-            runtime_overlay=_pick(
-                "runtime_overlay",
-                self.runtime_overlay,
-                other.runtime_overlay,
-            ),
-        )
 
 def _image_spec_from_data(data: ImageSpec | dict[str, Any] | None) -> ImageSpec | None:
     if data is None or isinstance(data, ImageSpec):

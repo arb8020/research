@@ -11,6 +11,12 @@ Megatron-Core provides:
 Based on SLIME's megatron_utils implementation.
 Reference: https://github.com/THUDM/slime
 
+Semantic note:
+This backend does not execute our seqax-inspired realization semantics as an
+explicit collective program. `lowering.realization` is used for validation and
+coarse partition lowering only. Execution remains Megatron's backend-native
+runtime semantics.
+
 Usage:
     backend = MegatronTrainingBackend(
         model=megatron_model,
@@ -30,6 +36,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from ...training.lowering import MegatronLowering
 from ...training.types import ImmediateTrainFuture, TrainFuture
 
 if TYPE_CHECKING:
@@ -107,6 +114,7 @@ class MegatronTrainingBackend:
     optimizer: Any  # MegatronOptimizer
     opt_param_scheduler: Any | None = None
     config: MegatronConfig = field(default_factory=MegatronConfig)
+    lowering: MegatronLowering = field(default_factory=MegatronLowering)
     checkpoint_dir: Path = field(default_factory=lambda: Path("./checkpoints"))
     loss_fn: Any | None = None
 

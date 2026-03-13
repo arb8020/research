@@ -4,6 +4,11 @@ Sets up the distributed process groups for tensor/pipeline/expert parallelism.
 Must be called once per process before any Megatron operations.
 
 Based on SLIME's initialize.py but simplified - we just call Megatron's APIs.
+
+Semantic note:
+This module applies Megatron's backend-native process-group setup from a
+validated lowering summary. It does not interpret explicit collectives from
+`RealizationPlan`.
 """
 
 from __future__ import annotations
