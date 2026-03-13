@@ -331,16 +331,23 @@ async def _emit_private_modal_image_logs(
     lines_emitted = 0
     truncated = False
     try:
-        async for raw_line in logs_method.aio():
-            if lines_emitted >= MODAL_IMAGE_BUILD_LOG_LINE_LIMIT:
-                truncated = True
-                break
-            line = _trim_modal_build_log_line(raw_line)
-            if not line:
-                continue
-            logger.info("[modal image] %s", line)
-            emit("modal_image_build_log", image_id=image_id, line=line)
-            lines_emitted += 1
+        import trio_asyncio
+
+        async def _consume_logs() -> tuple[int, bool]:
+            nonlocal lines_emitted, truncated
+            async for raw_line in logs_method.aio():
+                if lines_emitted >= MODAL_IMAGE_BUILD_LOG_LINE_LIMIT:
+                    truncated = True
+                    break
+                line = _trim_modal_build_log_line(raw_line)
+                if not line:
+                    continue
+                logger.info("[modal image] %s", line)
+                emit("modal_image_build_log", image_id=image_id, line=line)
+                lines_emitted += 1
+            return lines_emitted, truncated
+
+        lines_emitted, truncated = await trio_asyncio.aio_as_trio(_consume_logs())
     except Exception as exc:
         emit(
             "modal_image_build_logs_fetch_failed",
@@ -376,7 +383,9 @@ async def _eager_build_modal_image(
 
     async def _build_task() -> None:
         try:
-            result["image"] = await image.build.aio(app)
+            import trio_asyncio
+
+            result["image"] = await trio_asyncio.aio_as_trio(image.build.aio(app))
         except Exception as exc:
             result["error"] = exc
 
