@@ -39,6 +39,18 @@ logger = logging.getLogger(__name__)  # Human/operator-oriented module logs.
 _event_logger = logging.getLogger("rollouts.eval.events")
 
 
+async def _maybe_start_environment_runtime(environment_or_factory: Any) -> None:
+    start = getattr(environment_or_factory, "start", None)
+    if callable(start):
+        await start()
+
+
+async def _maybe_stop_environment_runtime(environment_or_factory: Any) -> None:
+    stop = getattr(environment_or_factory, "stop", None)
+    if callable(stop):
+        await stop()
+
+
 # ── Runtime Context ───────────────────────────────────────────────────────────
 
 
@@ -1117,197 +1129,183 @@ async def evaluate(
         ... )
         >>> report = await evaluate(dataset, config)
     """
-    # Collect samples to evaluate
-    samples_to_eval: list[tuple[str, dict[str, Any]]] = []
-    samples_to_eval_dict: dict[str, dict[str, Any]] = {}  # For retry lookup
-    for i, sample_data in enumerate(dataset):
-        if config.max_samples and len(samples_to_eval) >= config.max_samples:
-            break
-        sample_id = f"sample_{i:04d}"
-        samples_to_eval.append((sample_id, sample_data))
-        samples_to_eval_dict[sample_id] = sample_data
-
-    if config.verbose:
-        logger.info(f"starting evaluation: {config.eval_name}")
-        logger.info(f"samples to evaluate: {len(samples_to_eval)}")
-        logger.info(f"max concurrent: {config.max_concurrent}")
-        logger.debug("=" * 50)
-
-    # Set up eval logging: events.jsonl (overview) + samples/{id}.jsonl (per-sample)
+    runtime_owner = config.environment_factory or config.environment
     eval_logging: EvalLoggingContext | None = None
-    if config.output_dir:
-        eval_logging = setup_eval_logging(config.output_dir)
-        _event_logger.info(
-            "eval_start",
-            extra={
-                "eval_name": config.eval_name,
-                "total": len(samples_to_eval),
-            },
-        )
-
-    # Evaluate samples (with concurrency control)
-    results = []
-
-    # Initialize progress display for sample-level tracking
-    # MultiProgress shows each concurrent sample with turn-by-turn updates
     progress: MultiProgress | None = None
-    if config.show_progress:
-        progress = MultiProgress(
-            total=len(samples_to_eval),
-            desc=config.eval_name,
-            unit="sample",
-            verbose=config.verbose,  # verbose=True shows INFO logs, False shows only WARNING+
-        )
-        progress.__enter__()
+    try:
+        if runtime_owner is not None:
+            await _maybe_start_environment_runtime(runtime_owner)
 
-    # Create two-level concurrency limiters if configured
-    api_limiter = (
-        trio.CapacityLimiter(config.max_api_concurrent)
-        if config.max_api_concurrent is not None
-        else None
-    )
-    tool_limiter = (
-        trio.CapacityLimiter(config.max_tool_concurrent)
-        if config.max_tool_concurrent is not None
-        else None
-    )
+        samples_to_eval: list[tuple[str, dict[str, Any]]] = []
+        samples_to_eval_dict: dict[str, dict[str, Any]] = {}
+        for i, sample_data in enumerate(dataset):
+            if config.max_samples and len(samples_to_eval) >= config.max_samples:
+                break
+            sample_id = f"sample_{i:04d}"
+            samples_to_eval.append((sample_id, sample_data))
+            samples_to_eval_dict[sample_id] = sample_data
 
-    # Create runtime context (bundles config + instantiated handles)
-    runtime = EvalRuntime(
-        config=config,
-        api_limiter=api_limiter,
-        tool_limiter=tool_limiter,
-        progress=progress,
-    )
+        if config.verbose:
+            logger.info(f"starting evaluation: {config.eval_name}")
+            logger.info(f"samples to evaluate: {len(samples_to_eval)}")
+            logger.info(f"max concurrent: {config.max_concurrent}")
+            logger.debug("=" * 50)
 
-    # Create callback for incremental report writing
-    last_report_count = 0
-    resume_from = 0
-
-    def on_sample_complete(sample: AttemptRow, all_results: list[AttemptRow]) -> None:
-        """Write partial report after batch_size samples complete."""
-        nonlocal last_report_count
-        if not config.output_dir:
-            return
-
-        # Write report every report_batch_size samples
-        if len(all_results) - last_report_count >= config.report_batch_size:
-            _write_partial_report(
-                config.output_dir,
-                all_results,
-                config,
-                interrupted=False,
-                resume_from=resume_from,
+        if config.output_dir:
+            eval_logging = setup_eval_logging(config.output_dir)
+            _event_logger.info(
+                "eval_start",
+                extra={
+                    "eval_name": config.eval_name,
+                    "total": len(samples_to_eval),
+                },
             )
-            last_report_count = len(all_results)
 
-    # Run initial evaluation batch
-    results = await _evaluate_batch(samples_to_eval, runtime, on_sample_complete)
+        if config.show_progress:
+            progress = MultiProgress(
+                total=len(samples_to_eval),
+                desc=config.eval_name,
+                unit="sample",
+                verbose=config.verbose,
+            )
+            progress.__enter__()
 
-    # Close progress display
-    if progress:
-        progress.__exit__(None, None, None)
-
-    # Sample-level retry for provider errors (rate limits, connection errors)
-    for retry_attempt in range(config.max_sample_retries):
-        failed_samples = [
-            (r.id, samples_to_eval_dict[r.id])
-            for r in results
-            if r.metadata.get("status") == "provider_error"
-        ]
-
-        if not failed_samples:
-            break  # All samples succeeded
-
-        # Wait before retry (exponential backoff: 30s, 60s, 120s)
-        wait_seconds = min(30 * (2**retry_attempt), 120)
-        retry_msg = (
-            f"Retrying {len(failed_samples)} failed samples "
-            f"(attempt {retry_attempt + 1}/{config.max_sample_retries}, waiting {wait_seconds}s)"
+        api_limiter = (
+            trio.CapacityLimiter(config.max_api_concurrent)
+            if config.max_api_concurrent is not None
+            else None
         )
-        if progress:
-            progress.log(retry_msg)
-        else:
-            logger.info(retry_msg)
-        await trio.sleep(wait_seconds)
+        tool_limiter = (
+            trio.CapacityLimiter(config.max_tool_concurrent)
+            if config.max_tool_concurrent is not None
+            else None
+        )
 
-        # Remove failed samples and retry
-        failed_ids = {sid for sid, _ in failed_samples}
-        results = [r for r in results if r.id not in failed_ids]
-        # Create runtime without progress for retries
-        retry_runtime = EvalRuntime(
+        runtime = EvalRuntime(
             config=config,
             api_limiter=api_limiter,
             tool_limiter=tool_limiter,
-            progress=None,
+            progress=progress,
         )
-        retry_results = await _evaluate_batch(failed_samples, retry_runtime)
-        results.extend(retry_results)
 
-        # Log retry results
-        still_failed = sum(1 for r in retry_results if r.metadata.get("status") == "provider_error")
-        succeeded = len(retry_results) - still_failed
-        retry_result_msg = (
-            f"Retry {retry_attempt + 1}: {succeeded} succeeded, {still_failed} still failing"
-        )
+        last_report_count = 0
+        resume_from = 0
+
+        def on_sample_complete(sample: AttemptRow, all_results: list[AttemptRow]) -> None:
+            nonlocal last_report_count
+            if not config.output_dir:
+                return
+            if len(all_results) - last_report_count >= config.report_batch_size:
+                _write_partial_report(
+                    config.output_dir,
+                    all_results,
+                    config,
+                    interrupted=False,
+                    resume_from=resume_from,
+                )
+                last_report_count = len(all_results)
+
+        results = await _evaluate_batch(samples_to_eval, runtime, on_sample_complete)
+
         if progress:
-            progress.log(retry_result_msg)
-        else:
-            logger.info(retry_result_msg)
+            progress.__exit__(None, None, None)
+            progress = None
 
-    # Compute summary metrics
-    summary_metrics = compute_summary_metrics(results)
+        for retry_attempt in range(config.max_sample_retries):
+            failed_samples = [
+                (r.id, samples_to_eval_dict[r.id])
+                for r in results
+                if r.metadata.get("status") == "provider_error"
+            ]
 
-    # Create report
-    # Sanitize endpoint config to exclude sensitive data
-    endpoint_config = sanitize_api_keys(asdict(config.endpoint))
+            if not failed_samples:
+                break
 
-    report = EvalReport(
-        eval_name=config.eval_name,
-        dataset_path=config.eval_name,  # Use eval_name as dataset identifier
-        total_samples=len(results),
-        summary_metrics=summary_metrics,
-        sample_results=results,
-        config={
-            "endpoint": endpoint_config,
-            "max_samples": config.max_samples,
-            "max_concurrent": config.max_concurrent,
-            "evaluation_timestamp": datetime.now().isoformat(),
-        },
-        provenance=_build_report_provenance(config, results),
-        config_path=config.config_path,
-    )
-
-    # Save if output directory specified
-    if config.output_dir:
-        await report.save(config.output_dir)
-
-    # Print summary
-    if config.verbose:
-        logger.info("")
-        logger.debug("=" * 50)
-        logger.info(f"Evaluation Summary: {config.eval_name}")
-        logger.debug("=" * 50)
-        logger.info(f"Samples evaluated: {len(results)}")
-        for key, value in summary_metrics.items():
-            # Handle both numeric and non-numeric values
-            if isinstance(value, int | float):
-                logger.info(f"{key}: {value:.3f}")
+            wait_seconds = min(30 * (2**retry_attempt), 120)
+            retry_msg = (
+                f"Retrying {len(failed_samples)} failed samples "
+                f"(attempt {retry_attempt + 1}/{config.max_sample_retries}, waiting {wait_seconds}s)"
+            )
+            if progress:
+                progress.log(retry_msg)
             else:
-                logger.info(f"{key}: {value}")
+                logger.info(retry_msg)
+            await trio.sleep(wait_seconds)
 
-    # Emit eval_end and clean up logging
-    if eval_logging:
-        _event_logger.info(
-            "eval_end",
-            extra={
-                "eval_name": config.eval_name,
-                "total": len(results),
+            failed_ids = {sid for sid, _ in failed_samples}
+            results = [r for r in results if r.id not in failed_ids]
+            retry_runtime = EvalRuntime(
+                config=config,
+                api_limiter=api_limiter,
+                tool_limiter=tool_limiter,
+                progress=None,
+            )
+            retry_results = await _evaluate_batch(failed_samples, retry_runtime)
+            results.extend(retry_results)
+
+            still_failed = sum(
+                1 for r in retry_results if r.metadata.get("status") == "provider_error"
+            )
+            succeeded = len(retry_results) - still_failed
+            retry_result_msg = (
+                f"Retry {retry_attempt + 1}: {succeeded} succeeded, {still_failed} still failing"
+            )
+            if progress:
+                progress.log(retry_result_msg)
+            else:
+                logger.info(retry_result_msg)
+
+        summary_metrics = compute_summary_metrics(results)
+        endpoint_config = sanitize_api_keys(asdict(config.endpoint))
+
+        report = EvalReport(
+            eval_name=config.eval_name,
+            dataset_path=config.eval_name,
+            total_samples=len(results),
+            summary_metrics=summary_metrics,
+            sample_results=results,
+            config={
+                "endpoint": endpoint_config,
+                "max_samples": config.max_samples,
+                "max_concurrent": config.max_concurrent,
+                "evaluation_timestamp": datetime.now().isoformat(),
             },
+            provenance=_build_report_provenance(config, results),
+            config_path=config.config_path,
         )
-        eval_logging.teardown()
 
-    return report
+        if config.output_dir:
+            await report.save(config.output_dir)
+
+        if config.verbose:
+            logger.info("")
+            logger.debug("=" * 50)
+            logger.info(f"Evaluation Summary: {config.eval_name}")
+            logger.debug("=" * 50)
+            logger.info(f"Samples evaluated: {len(results)}")
+            for key, value in summary_metrics.items():
+                if isinstance(value, int | float):
+                    logger.info(f"{key}: {value:.3f}")
+                else:
+                    logger.info(f"{key}: {value}")
+
+        if eval_logging:
+            _event_logger.info(
+                "eval_end",
+                extra={
+                    "eval_name": config.eval_name,
+                    "total": len(results),
+                },
+            )
+
+        return report
+    finally:
+        if progress is not None:
+            progress.__exit__(None, None, None)
+        if eval_logging is not None:
+            eval_logging.teardown()
+        if runtime_owner is not None:
+            await _maybe_stop_environment_runtime(runtime_owner)
 
 
 def compute_summary_metrics(results: list[AttemptRow]) -> dict[str, float]:
