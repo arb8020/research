@@ -33,10 +33,13 @@ import shlex
 import subprocess
 import sys
 import tempfile
+import threading
+import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any
 
 import trio
 
@@ -84,6 +87,7 @@ HF_CACHE_DIR = "/root/.cache/huggingface"
 UV_BIN = "/root/.local/bin/uv"
 IMAGE_VENV_DIR = "/opt/venvs/rollouts"
 IMAGE_VENV_PYTHON = f"{IMAGE_VENV_DIR}/bin/python"
+WORKLOAD_ENTRYPOINT_SENTINEL = "__ARGUS_WORKLOAD_ENTRYPOINT_STARTED__"
 
 
 @dataclass
@@ -140,9 +144,20 @@ def _build_modal_image(modal: Any, deps: DepsConfig, gpu_type: str) -> Any:
     spec = deps.resolved_image(gpu_type)
     overlay = deps.resolved_runtime_overlay()
     cuda_version = infer_cuda_version(gpu_type, spec.pip_index_url)
+    if spec.python_runtime == "image_owned":
+        image_python = spec.python_executable
+        image_path_prefix = (
+            "/root/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+        )
+    else:
+        image_python = IMAGE_VENV_PYTHON
+        image_path_prefix = f"{IMAGE_VENV_DIR}/bin:/root/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
     if spec.source_type == "registry":
-        image = modal.Image.from_registry(spec.source_ref, add_python=spec.python_version)
+        if spec.python_runtime == "image_owned":
+            image = modal.Image.from_registry(spec.source_ref)
+        else:
+            image = modal.Image.from_registry(spec.source_ref, add_python=spec.python_version)
     elif spec.source_type == "dockerfile_path":
         dockerfile_path = Path(spec.source_ref)
         image = modal.Image.from_dockerfile(
@@ -164,10 +179,16 @@ def _build_modal_image(modal: Any, deps: DepsConfig, gpu_type: str) -> Any:
 
     image = image.run_commands(
         "which curl >/dev/null 2>&1 || (apt-get update && apt-get install -y curl)",
-        "curl -LsSf https://astral.sh/uv/install.sh | sh",
-        f"{UV_BIN} python install {spec.python_version}",
-        f"{UV_BIN} venv {IMAGE_VENV_DIR} --python {spec.python_version}",
+        "if [ ! -x /root/.local/bin/uv ]; then curl -LsSf https://astral.sh/uv/install.sh | sh; fi",
     )
+
+    if spec.python_runtime == "managed_venv":
+        image = image.run_commands(
+            f"{UV_BIN} python install {spec.python_version}",
+            f"{UV_BIN} venv {IMAGE_VENV_DIR} --python {spec.python_version}",
+        )
+    else:
+        image = image.run_commands(f"{spec.python_executable} -c 'import sys; print(sys.version)'")
 
     def _uv_install_command(
         packages: tuple[str, ...],
@@ -181,7 +202,7 @@ def _build_modal_image(modal: Any, deps: DepsConfig, gpu_type: str) -> Any:
             "pip",
             "install",
             "--python",
-            IMAGE_VENV_PYTHON,
+            image_python,
             "--compile-bytecode",
         ]
         if index_url:
@@ -201,16 +222,16 @@ def _build_modal_image(modal: Any, deps: DepsConfig, gpu_type: str) -> Any:
                 extra_index_url=spec.pip_extra_index_url,
                 pre=spec.pip_prerelease,
             ),
-            f"{python_install_probe_command('image-pip-packages', python_bin=IMAGE_VENV_PYTHON, uv_bin=UV_BIN)} && "
-            f"{python_runtime_contract_snapshot_command('image-pip-packages', python_bin=IMAGE_VENV_PYTHON)}",
+            f"{python_install_probe_command('image-pip-packages', python_bin=image_python, uv_bin=UV_BIN)} && "
+            f"{python_runtime_contract_snapshot_command('image-pip-packages', python_bin=image_python)}",
         )
 
     for cmd in spec.build_commands:
         image = image.run_commands(cmd)
         if command_looks_like_install(cmd):
             image = image.run_commands(
-                f"{python_install_probe_command('image-build-command-post-install', python_bin=IMAGE_VENV_PYTHON, uv_bin=UV_BIN)} && "
-                f"{python_runtime_contract_verify_command('image-build-command-post-install', python_bin=IMAGE_VENV_PYTHON)}"
+                f"{python_install_probe_command('image-build-command-post-install', python_bin=image_python, uv_bin=UV_BIN)} && "
+                f"{python_runtime_contract_verify_command('image-build-command-post-install', python_bin=image_python)}"
             )
 
     if overlay.system_packages:
@@ -227,16 +248,16 @@ def _build_modal_image(modal: Any, deps: DepsConfig, gpu_type: str) -> Any:
                 extra_index_url=overlay.pip_extra_index_url or spec.pip_extra_index_url,
                 pre=overlay.pip_prerelease or spec.pip_prerelease,
             ),
-            f"{python_install_probe_command('overlay-pip-packages', python_bin=IMAGE_VENV_PYTHON, uv_bin=UV_BIN)} && "
-            f"{python_runtime_contract_snapshot_command('overlay-pip-packages', python_bin=IMAGE_VENV_PYTHON)}",
+            f"{python_install_probe_command('overlay-pip-packages', python_bin=image_python, uv_bin=UV_BIN)} && "
+            f"{python_runtime_contract_snapshot_command('overlay-pip-packages', python_bin=image_python)}",
         )
 
     for cmd in overlay.commands:
         image = image.run_commands(cmd)
         if command_looks_like_install(cmd):
             image = image.run_commands(
-                f"{python_install_probe_command('overlay-command-post-install', python_bin=IMAGE_VENV_PYTHON, uv_bin=UV_BIN)} && "
-                f"{python_runtime_contract_verify_command('overlay-command-post-install', python_bin=IMAGE_VENV_PYTHON)}"
+                f"{python_install_probe_command('overlay-command-post-install', python_bin=image_python, uv_bin=UV_BIN)} && "
+                f"{python_runtime_contract_verify_command('overlay-command-post-install', python_bin=image_python)}"
             )
 
     # Add force rebuild marker (change this to invalidate cache)
@@ -245,7 +266,7 @@ def _build_modal_image(modal: Any, deps: DepsConfig, gpu_type: str) -> Any:
     env_vars = {
         "HF_HOME": HF_CACHE_DIR,
         "HF_HUB_ENABLE_HF_TRANSFER": "1",
-        "PATH": f"{IMAGE_VENV_DIR}/bin:/root/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        "PATH": image_path_prefix,
         # Megatron-LM needs to be on PYTHONPATH for megatron.core imports
         "PYTHONPATH": "/root/Megatron-LM:/root",
         # NCCL settings for multi-GPU training
@@ -794,7 +815,17 @@ async def _create_sandbox(
     return sandbox, sandbox.object_id
 
 
-def _exec_sync(sandbox: Any, command: str, timeout: int = 300) -> tuple[str, str, int]:
+def _exec_sync(
+    sandbox: Any,
+    command: str,
+    timeout: int = 300,
+    *,
+    on_started: Callable[[], None] | None = None,
+    on_stdout_line: Callable[[str], None] | None = None,
+    on_stderr_line: Callable[[str], None] | None = None,
+    on_heartbeat: Callable[[float, float], None] | None = None,
+    heartbeat_interval_s: float = 15.0,
+) -> tuple[str, str, int]:
     """Execute command in sandbox with interleaved stdout/stderr streaming.
 
     Uses threads to read stdout and stderr concurrently so output is displayed
@@ -802,32 +833,60 @@ def _exec_sync(sandbox: Any, command: str, timeout: int = 300) -> tuple[str, str
 
     Returns (stdout, stderr, exit_code).
     """
-    import threading
-
     proc = sandbox.exec("bash", "-c", command, timeout=timeout)
+    if on_started is not None:
+        on_started()
 
     stdout_lines: list[str] = []
     stderr_lines: list[str] = []
+    stop_heartbeat = threading.Event()
+    activity_lock = threading.Lock()
+    last_activity_ts = time.monotonic()
+
+    def mark_activity() -> None:
+        nonlocal last_activity_ts
+        with activity_lock:
+            last_activity_ts = time.monotonic()
 
     def read_stdout() -> None:
         for line in proc.stdout:
             stdout_lines.append(line)
+            mark_activity()
             logger.info(f"[sandbox] {line.rstrip()}")
+            if on_stdout_line is not None:
+                on_stdout_line(line)
 
     def read_stderr() -> None:
         for line in proc.stderr:
             stderr_lines.append(line)
+            mark_activity()
             logger.warning(f"[sandbox stderr] {line.rstrip()}")
+            if on_stderr_line is not None:
+                on_stderr_line(line)
+
+    def emit_heartbeats() -> None:
+        if on_heartbeat is None:
+            return
+        started_ts = time.monotonic()
+        while not stop_heartbeat.wait(heartbeat_interval_s):
+            with activity_lock:
+                silence_sec = time.monotonic() - last_activity_ts
+            elapsed_sec = time.monotonic() - started_ts
+            on_heartbeat(elapsed_sec, silence_sec)
 
     # Read both streams concurrently
     stdout_thread = threading.Thread(target=read_stdout)
     stderr_thread = threading.Thread(target=read_stderr)
+    heartbeat_thread = threading.Thread(target=emit_heartbeats, daemon=True)
     stdout_thread.start()
     stderr_thread.start()
+    heartbeat_thread.start()
     stdout_thread.join()
     stderr_thread.join()
 
     proc.wait()
+    stop_heartbeat.set()
+    heartbeat_thread.join(timeout=1.0)
 
     return "".join(stdout_lines), "".join(stderr_lines), proc.returncode
 
@@ -909,6 +968,8 @@ async def _run_training_in_sandbox(
     workspace: str,
     config_path: str,
     run_name: str,
+    deps: DepsConfig | None,
+    gpu_type: str,
     gpu_count: int = 1,
     use_torchrun: bool = True,
 ) -> dict[str, Any]:
@@ -923,7 +984,17 @@ async def _run_training_in_sandbox(
     else:
         config_rel = config_p
 
-    logger.info("Using image-owned Python environment; skipping per-run dependency install")
+    image_python = IMAGE_VENV_PYTHON
+    image_path_prefix = f"{IMAGE_VENV_DIR}/bin:/root/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+    if deps is not None:
+        spec = deps.resolved_image(gpu_type)
+        if spec.python_runtime == "image_owned":
+            image_python = spec.python_executable
+            image_path_prefix = (
+                "/root/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+            )
+
+    logger.info("Using prepared image Python environment; skipping per-run dependency install")
 
     # Run training with PYTHONPATH set to include our code.
     #
@@ -938,7 +1009,7 @@ async def _run_training_in_sandbox(
     # - /root/Megatron-LM for megatron.core imports
     env_vars = (
         f"PYTHONUNBUFFERED=1 "
-        f"PATH={IMAGE_VENV_DIR}/bin:/root/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin "
+        f"PATH={image_path_prefix} "
         f"PYTHONPATH={workspace}:/workspace/research:/root/Megatron-LM:/root "
         f"ROLLOUTS_RUN_NAME={run_name} "
         f"ROLLOUTS_OUTPUT_DIR=results/rl/{run_name} "
@@ -946,10 +1017,7 @@ async def _run_training_in_sandbox(
 
     # TODO: If we need true multi-process Modal training later, route that through an
     # explicit remote execution/session layer instead of reviving `torchrun config.py`.
-    cmd = (
-        f"cd {workspace} && {env_vars} "
-        f"{IMAGE_VENV_PYTHON} -m argus.run --local --config {config_rel}"
-    )
+    cmd = f"cd {workspace} && {env_vars} {image_python} -m argus.run --local --config {config_rel}"
 
     def _train() -> tuple[str, str, int]:
         return _exec_sync(sandbox, cmd, timeout=14400)  # 4 hour timeout
@@ -1087,6 +1155,8 @@ async def run_modal(config: ModalRunConfig) -> dict[str, Any]:
                     workspace,
                     config.config_path,
                     run_name,
+                    config.deps,
+                    config.gpu_type,
                     config.gpu_count,
                     config.use_torchrun,
                 )

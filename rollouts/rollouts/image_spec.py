@@ -148,6 +148,8 @@ class ImageSpec:
     source_type: Literal["registry", "dockerfile_path", "nix"] = "registry"
     source_ref: str = "debian:bookworm-slim"
     python_version: str = "3.12"
+    python_runtime: Literal["managed_venv", "image_owned"] = "managed_venv"
+    python_executable: str = "python3"
     context_dir: str | None = None
     build_args: dict[str, str] = field(default_factory=dict)
     system_packages: tuple[str, ...] = ()
@@ -164,6 +166,7 @@ class ImageSpec:
     def __post_init__(self) -> None:
         assert self.source_ref, "source_ref cannot be empty"
         assert self.python_version, "python_version cannot be empty"
+        assert self.python_executable, "python_executable cannot be empty"
         assert self.manifest_path, "manifest_path cannot be empty"
 
     @classmethod
