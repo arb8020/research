@@ -1553,6 +1553,10 @@ async def _run_training_in_sandbox(
         emit("remote_stderr_stream_open")
 
     def _on_stdout_line(line: str) -> None:
+        if "\n" in line:
+            for subline in line.splitlines():
+                _on_stdout_line(subline)
+            return
         stripped = line.rstrip()
         if stripped.startswith(ARGUS_RUN_EVENT_SENTINEL):
             payload = stripped[len(ARGUS_RUN_EVENT_SENTINEL):]
