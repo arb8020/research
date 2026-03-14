@@ -55,11 +55,12 @@ config = GRPOConfig(
 )
 
 
-def train(config: GRPOConfig = config, max_samples: int = 128) -> dict:
+def train(config: GRPOConfig = config, max_samples: int = 128, **kwargs: object) -> dict:
     prompts = make_synthetic_reverse_text_prompts(max_samples=max_samples)
     return grpo_train(
         config=config,
         prompts=prompts,
         sample_scorer=FunctionSampleScorer(reverse_text_score_fn),
         environment_cls=BasicEnvironment,
+        **kwargs,
     )
