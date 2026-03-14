@@ -83,7 +83,7 @@ config = GRPOConfig(
         lr=3e-6,
         weight_decay=0.0,
         max_grad_norm=1.0,
-        num_minibatches=8,
+        num_minibatches=32,
         loss_type="masked",
         cuda_device_ids=(1,),
     ),
@@ -96,9 +96,9 @@ config = GRPOConfig(
     ),
     rollout=RolloutConfig(
         batch_size=8,
-        n_samples_per_prompt=8,
+        n_samples_per_prompt=16,
         temperature=1.0,
-        max_seq_len=512,
+        max_seq_len=256,
         max_tokens=128,
     ),
     checkpoint=CheckpointConfig(
