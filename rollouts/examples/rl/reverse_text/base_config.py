@@ -145,6 +145,7 @@ def reverse_text_score_fn(sample: Any) -> Score:
 def train(
     config: GRPOConfig | None = None,
     num_samples: int = 1000,
+    **kwargs: Any,
 ) -> dict[str, Any]:
     """Run reverse text RL training.
 
@@ -185,4 +186,5 @@ def train(
         prompts=prompts,
         sample_scorer=FunctionSampleScorer(reverse_text_score_fn),
         environment_cls=BasicEnvironment,
+        **kwargs,
     )
