@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import subprocess
 import sys
 import threading
 import time
@@ -43,6 +44,87 @@ def _read_meminfo() -> dict[str, int]:
     except Exception:
         return {}
     return values
+
+
+def _sample_nvidia_smi() -> list[dict[str, Any]]:
+    """Return system-level GPU/process usage from nvidia-smi.
+
+    Torch allocator stats only describe the current Python process. For our
+    training runs that is often the wrong process entirely: SGLang runs in tmux
+    and Megatron workers are separate children. Use nvidia-smi as the source of
+    truth for cross-process GPU pressure.
+    """
+    try:
+        gpu_result = subprocess.run(
+            [
+                "nvidia-smi",
+                "--query-gpu=index,uuid,name,memory.total,memory.used,memory.free",
+                "--format=csv,noheader,nounits",
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except Exception as e:
+        return [{"error": f"nvidia_smi_gpu_query_failed:{type(e).__name__}:{e}"}]
+
+    gpus: dict[str, dict[str, Any]] = {}
+    for raw_line in gpu_result.stdout.splitlines():
+        parts = [part.strip() for part in raw_line.split(",")]
+        if len(parts) != 6:
+            continue
+        index, uuid, name, total_mb, used_mb, free_mb = parts
+        try:
+            total = int(total_mb)
+            used = int(used_mb)
+            free = int(free_mb)
+        except ValueError:
+            continue
+        gpus[uuid] = {
+            "device": int(index),
+            "uuid": uuid,
+            "name": name,
+            "total_gb": round(total / 1024, 3),
+            "used_gb": round(used / 1024, 3),
+            "free_gb": round(free / 1024, 3),
+            "used_frac": round(used / total, 4) if total else 0.0,
+            "processes": [],
+        }
+
+    try:
+        proc_result = subprocess.run(
+            [
+                "nvidia-smi",
+                "--query-compute-apps=gpu_uuid,pid,process_name,used_gpu_memory",
+                "--format=csv,noheader,nounits",
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except Exception:
+        proc_result = None
+
+    if proc_result is not None:
+        for raw_line in proc_result.stdout.splitlines():
+            parts = [part.strip() for part in raw_line.split(",")]
+            if len(parts) != 4:
+                continue
+            gpu_uuid, pid, process_name, used_mb = parts
+            gpu = gpus.get(gpu_uuid)
+            if gpu is None:
+                continue
+            try:
+                used = int(used_mb)
+            except ValueError:
+                continue
+            gpu["processes"].append({
+                "pid": int(pid),
+                "name": process_name,
+                "used_gb": round(used / 1024, 3),
+            })
+
+    return [gpus[key] for key in sorted(gpus, key=lambda uuid: gpus[uuid]["device"])]
 
 
 class ResourceWatchdog:
@@ -161,6 +243,7 @@ class ResourceWatchdog:
             ),
             "host_mem_used_frac": round(mem_used_frac, 4) if mem_used_frac is not None else None,
             "gpus": self._sample_gpu(),
+            "system_gpus": _sample_nvidia_smi(),
         }
 
     def _emit_sample(self, event: str, sample: dict[str, Any]) -> None:
@@ -177,10 +260,12 @@ class ResourceWatchdog:
                 self._warned_host = False
 
         current_gpu_warns: set[int] = set()
-        for gpu in sample.get("gpus", []):
-            if "device" not in gpu or "reserved_frac" not in gpu:
+        gpu_samples = sample.get("system_gpus") or sample.get("gpus", [])
+        for gpu in gpu_samples:
+            frac = gpu.get("used_frac", gpu.get("reserved_frac"))
+            if "device" not in gpu or frac is None:
                 continue
-            if gpu["reserved_frac"] >= self.config.warn_gpu_reserved_frac:
+            if frac >= self.config.warn_gpu_reserved_frac:
                 current_gpu_warns.add(int(gpu["device"]))
                 if int(gpu["device"]) not in self._warned_gpu:
                     self._emit_sample("resource_watchdog_warning", sample)

@@ -1542,6 +1542,9 @@ async def _grpo_train_async(
             logger.info(f"  Engine {i}: {engine.name} on GPU {gpu_str}, port {engine.port}")
 
     for idx, engine in enumerate(inference_engines):
+        launch_cmd = engine.build_launch_cmd() if hasattr(engine, "build_launch_cmd") else None
+        session_name = getattr(engine, "session_name", None)
+        log_path = str(getattr(engine, "log_path", "")) if hasattr(engine, "log_path") else None
         logger.info(
             "inference engine launch",
             extra={
@@ -1551,6 +1554,11 @@ async def _grpo_train_async(
                 "engine_name": engine.name,
                 "engine_port": engine.port,
                 "engine_cuda_device_ids": list(engine.cuda_device_ids),
+                "engine_launch_cmd": launch_cmd,
+                "engine_session_name": session_name,
+                "engine_log_path": log_path,
+                "engine_mem_fraction": getattr(engine, "mem_fraction", None),
+                "engine_gpu_memory_utilization": getattr(engine, "gpu_memory_utilization", None),
             },
         )
         engine.launch()
