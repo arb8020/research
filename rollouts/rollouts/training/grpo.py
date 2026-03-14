@@ -38,6 +38,8 @@ if TYPE_CHECKING:
 
 # ──────────────────────── Sub-Configs (re-exported from shared) ───────────────
 
+from ..resource_watchdog import ResourceWatchdog, ResourceWatchdogConfig
+from ..run_logger import RunLogger
 from ..training.configs import (  # noqa: E402
     CheckpointConfig,
     DepsConfig,
@@ -91,6 +93,7 @@ class GRPOConfig:
     trainer: TrainerConfig = field(default_factory=TrainerConfig)
     rollout: RolloutConfig = field(default_factory=RolloutConfig)
     checkpoint: CheckpointConfig = field(default_factory=CheckpointConfig)
+    runtime_watchdog: ResourceWatchdogConfig = field(default_factory=ResourceWatchdogConfig)
     output: OutputConfig = field(
         default_factory=lambda: OutputConfig(output_dir="results/rl", experiment_name="grpo")
     )
@@ -129,6 +132,7 @@ class GRPOConfig:
         trainer = TrainerConfig(**trainer_data)
         rollout = RolloutConfig(**data.get("rollout", {}))
         checkpoint = CheckpointConfig(**data.get("checkpoint", {}))
+        runtime_watchdog = ResourceWatchdogConfig(**data.get("runtime_watchdog", {}))
         output = OutputConfig(**data.get("output", {}))
 
         return GRPOConfig(
@@ -137,6 +141,7 @@ class GRPOConfig:
             trainer=trainer,
             rollout=rollout,
             checkpoint=checkpoint,
+            runtime_watchdog=runtime_watchdog,
             output=output,
             service_runtime_layout=data.get("service_runtime_layout", "shared_env"),
         )
@@ -1300,7 +1305,6 @@ async def _grpo_train_async(
     run_logger: Any | None = None,
 ) -> dict[str, Any]:
     """Async GRPO training implementation."""
-    del run_logger  # TODO: thread outer run events into GRPO once the boundary is designed.
     from .._logging import setup_logging
     from ..training.datasets.data_buffer import DataBuffer
     from ..training.metrics import JSONLLogger
@@ -1444,10 +1448,28 @@ async def _grpo_train_async(
 
     preflight_backend: Any | None = None
     preflight_backend_cleanup: Callable[[], None] | None = None
+    runtime_run_logger = (
+        run_logger if isinstance(run_logger, RunLogger) else RunLogger(text_logger=logger)
+    )
+    resource_watchdog = ResourceWatchdog(
+        config=config.runtime_watchdog,
+        run_logger=runtime_run_logger,
+        run_context={
+            "run_name": run_name,
+            "output_dir": str(output_dir),
+            "model_name": config.model.name,
+            "trainer_backend": config.trainer.backend,
+            "inference_backend": config.inference.backend,
+            "node_id": os.environ.get("ROLLOUTS_NODE_ID"),
+            "hostname": socket.gethostname(),
+        },
+    )
+    resource_watchdog.start()
 
     # Training preflight: initialize the backend and run one synthetic step
     # before paying inference startup cost. This is a backend-health check, not
     # a VRAM truth probe.
+    resource_watchdog.set_phase("training_preflight")
     preflight_backend, preflight_backend_cleanup = await _run_training_preflight(
         config,
         output_dir,
@@ -1492,6 +1514,11 @@ async def _grpo_train_async(
             "inference_cuda_device_ids": list(config.inference.cuda_device_ids),
             "cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES"),
         },
+    )
+    resource_watchdog.set_phase(
+        "inference_startup",
+        num_engines=num_engines,
+        ports=list(config.inference.ports),
     )
 
     if num_engines == 1:
@@ -1651,8 +1678,9 @@ async def _grpo_train_async(
 
         # Setup data and rollout generation
         logger.info(f"Dataset: {len(prompts)} prompts")
+        resource_watchdog.set_phase("dataset_setup", prompt_count=len(prompts))
         data_buffer = DataBuffer(prompts=prompts)
-        generate_fn = _create_generate_fn(
+        _base_generate_fn = _create_generate_fn(
             config,
             endpoint,
             tokenizer,
@@ -1661,6 +1689,13 @@ async def _grpo_train_async(
             metadata_key,
             logger,
         )
+
+        async def generate_fn(*args: Any, **kwargs: Any) -> Any:
+            resource_watchdog.set_phase("rollout_generation")
+            try:
+                return await _base_generate_fn(*args, **kwargs)
+            finally:
+                resource_watchdog.set_phase("rollout_loop")
 
         rollout_config = RolloutConfig(
             batch_size=config.rollout.batch_size,
@@ -1756,6 +1791,7 @@ async def _grpo_train_async(
             f"pause_on_sync={admission_policy.pause_on_sync}, "
             f"queue_pressure_threshold={overload_policy.queue_pressure_threshold}"
         )
+        resource_watchdog.set_phase("rollout_loop", pipeline_mode=config.checkpoint.pipeline_mode)
 
         def _add_pipeline_policy_metrics(step_metrics: dict[str, Any]) -> dict[str, Any]:
             step_metrics["staleness_max_version_lag"] = float(staleness_policy.max_version_lag)
@@ -2048,6 +2084,7 @@ async def _grpo_train_async(
             async def _process_batch(step: int, batch: Any, _backend: Any) -> dict[str, Any] | None:
                 if _reject_stale_batch(step, batch):
                     return None
+                resource_watchdog.set_phase("train_step", step=step + 1)
                 _update_pipeline_state(
                     train_version=getattr(
                         _backend, "weight_version", pipeline_state.current_train_version
@@ -2073,6 +2110,7 @@ async def _grpo_train_async(
                 )
                 if step_metrics is None:
                     return None
+                resource_watchdog.set_phase("rollout_loop", step=step + 1)
                 return _annotate_pipeline_metrics(step_metrics)
 
             train_result = await _train_loop(
@@ -2143,6 +2181,7 @@ async def _grpo_train_async(
             async def _process_batch(step: int, batch: Any, _backend: Any) -> dict[str, Any] | None:
                 if _reject_stale_batch(step, batch):
                     return None
+                resource_watchdog.set_phase("train_step", step=step + 1)
                 _update_pipeline_state(
                     train_version=getattr(
                         _backend, "weight_version", pipeline_state.current_train_version
@@ -2236,6 +2275,7 @@ async def _grpo_train_async(
                         ),
                         inflight_batches=0,
                     )
+                    resource_watchdog.set_phase("rollout_loop", step=step + 1)
                     return None
                 _update_pipeline_state(
                     train_version=getattr(
@@ -2243,6 +2283,7 @@ async def _grpo_train_async(
                     ),
                     inflight_batches=0,
                 )
+                resource_watchdog.set_phase("rollout_loop", step=step + 1)
                 return _annotate_pipeline_metrics(step_metrics)
 
             async def _before_weight_sync() -> None:
@@ -2309,6 +2350,7 @@ async def _grpo_train_async(
         )
         raise
     finally:
+        resource_watchdog.stop()
         try:
             await _maybe_stop_environment_factory(environment_factory, logger)
         except Exception as e:
