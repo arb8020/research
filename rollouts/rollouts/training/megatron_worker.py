@@ -11,6 +11,7 @@ Usage:
 
 from __future__ import annotations
 
+import concurrent.futures
 import logging
 import os
 from enum import IntEnum
@@ -570,58 +571,49 @@ def _init_nccl_weight_sync(
     sender_holder: dict[str, Any] = {}
     errors: list[tuple[str, str]] = []
 
-    async def register_inference_endpoint(
-        endpoint: str,
-        rank: int,
-    ) -> None:
-        import httpx
+    def register_inference_endpoint(endpoint: str, rank: int) -> None:
+        import requests
 
-        async with httpx.AsyncClient(timeout=300.0) as client:
-            try:
-                response = await client.post(
-                    f"{endpoint}/init_weights_update_group",
-                    json={
-                        "master_address": master_addr,
-                        "master_port": master_port,
-                        "rank_offset": rank,
-                        "world_size": world_size,
-                        "group_name": group_name,
-                        "backend": "nccl",
-                    },
-                )
-                response.raise_for_status()
-            except Exception as e:
-                errors.append((endpoint, str(e)))
-
-    async def trainer_join() -> None:
-        def _join() -> None:
-            import os
-
-            os.environ.setdefault("NCCL_SHM_DISABLE", "1")
-            os.environ.setdefault("NCCL_CUMEM_ENABLE", "0")
-            sender = WeightSyncSender(
-                master_addr=master_addr,
-                master_port=master_port,
-                inference_world_size=len(inference_endpoints),
-                group_name=group_name,
+        try:
+            response = requests.post(
+                f"{endpoint}/init_weights_update_group",
+                json={
+                    "master_address": master_addr,
+                    "master_port": master_port,
+                    "rank_offset": rank,
+                    "world_size": world_size,
+                    "group_name": group_name,
+                    "backend": "nccl",
+                },
+                timeout=300.0,
             )
-            sender.init_group()
-            sender_holder["sender"] = sender
+            response.raise_for_status()
+        except Exception as e:
+            errors.append((endpoint, str(e)))
 
-        import trio
+    def trainer_join() -> None:
+        import os
 
-        await trio.to_thread.run_sync(_join)
+        os.environ.setdefault("NCCL_SHM_DISABLE", "1")
+        os.environ.setdefault("NCCL_CUMEM_ENABLE", "0")
+        sender = WeightSyncSender(
+            master_addr=master_addr,
+            master_port=master_port,
+            inference_world_size=len(inference_endpoints),
+            group_name=group_name,
+        )
+        sender.init_group()
+        sender_holder["sender"] = sender
 
-    import trio
-
-    async def _setup() -> None:
-        async with trio.open_nursery() as nursery:
-            for i, endpoint in enumerate(inference_endpoints):
-                inference_rank = i + 1
-                nursery.start_soon(register_inference_endpoint, endpoint, inference_rank)
-            nursery.start_soon(trainer_join)
-
-    trio.run(_setup)
+    with concurrent.futures.ThreadPoolExecutor(
+        max_workers=max(1, len(inference_endpoints) + 1)
+    ) as executor:
+        futures = [executor.submit(trainer_join)]
+        for i, endpoint in enumerate(inference_endpoints):
+            inference_rank = i + 1
+            futures.append(executor.submit(register_inference_endpoint, endpoint, inference_rank))
+        for future in futures:
+            future.result()
 
     if errors:
         raise RuntimeError(f"Failed to register inference endpoints for NCCL: {errors}")
