@@ -81,6 +81,7 @@ class TorchTitanConfig:
 
     # Activation checkpointing
     activation_checkpoint_mode: str = "none"
+    selective_ac_option: str = "op"
 
     # Compile
     compile_enabled: bool = False
@@ -306,6 +307,7 @@ class TorchTitanBackend:
             ),
             activation_checkpoint=_Cfg(
                 mode=self.config.activation_checkpoint_mode,
+                selective_ac_option=self.config.selective_ac_option,
             ),
             job=_Cfg(
                 dump_folder=str(self.checkpoint_dir),
