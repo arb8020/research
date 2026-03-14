@@ -131,6 +131,7 @@ def build_qwen3_transformer_config(
     fp16: bool,
 ) -> Any:
     """Construct a Megatron TransformerConfig from explicit Qwen3 semantics."""
+    import torch
     from megatron.training.arguments import core_transformer_config_from_args
 
     args = _parse_megatron_args(
@@ -152,4 +153,14 @@ def build_qwen3_transformer_config(
     args.max_position_embeddings = seq_length
     args.seq_length = seq_length
     args.untie_embeddings_and_output_weights = not denotation.architecture.tie_embeddings
+    params_dtype = getattr(args, "params_dtype", None) or getattr(args, "main_params_dtype", None)
+    if params_dtype is None:
+        if bf16:
+            params_dtype = torch.bfloat16
+        elif fp16:
+            params_dtype = torch.float16
+        else:
+            params_dtype = torch.float32
+    args.params_dtype = params_dtype
+    args.main_params_dtype = params_dtype
     return core_transformer_config_from_args(args)
