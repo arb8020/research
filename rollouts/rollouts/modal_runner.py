@@ -1529,6 +1529,10 @@ async def _run_training_in_sandbox(
     startup_seen = threading.Event()
     done = threading.Event()
     results: dict[str, Any] = {}
+    from collections import deque
+
+    stdout_tail: deque[str] = deque(maxlen=20)
+    stderr_tail: deque[str] = deque(maxlen=40)
     process_state: dict[str, Any] = {
         "stdout_line_count": 0,
         "stderr_line_count": 0,
@@ -1573,14 +1577,17 @@ async def _run_training_in_sandbox(
         process_state["stdout_line_count"] += 1
         process_state["last_stdout_line"] = stripped
         process_state["last_stdout_elapsed_sec"] = round(_elapsed(), 3)
+        stdout_tail.append(stripped)
         if WORKLOAD_ENTRYPOINT_SENTINEL in stripped and not startup_seen.is_set():
             startup_seen.set()
             emit("workload_entrypoint_started")
 
     def _on_stderr_line(line: str) -> None:
+        stripped = line.rstrip()
         process_state["stderr_line_count"] += 1
-        process_state["last_stderr_line"] = line.rstrip()
+        process_state["last_stderr_line"] = stripped
         process_state["last_stderr_elapsed_sec"] = round(_elapsed(), 3)
+        stderr_tail.append(stripped)
 
     def _on_heartbeat(elapsed_sec: float, silence_sec: float) -> None:
         emit(
@@ -1648,6 +1655,8 @@ async def _run_training_in_sandbox(
         last_stderr_line=process_state["last_stderr_line"],
         last_stdout_elapsed_sec=process_state["last_stdout_elapsed_sec"],
         last_stderr_elapsed_sec=process_state["last_stderr_elapsed_sec"],
+        stdout_tail=list(stdout_tail),
+        stderr_tail=list(stderr_tail),
     )
 
     if exit_code != 0:
