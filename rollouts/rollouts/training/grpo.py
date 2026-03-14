@@ -1685,7 +1685,11 @@ async def _grpo_train_async(
                 )
             await init_fn(
                 inference_endpoints=[e.base_url for e in inference_engines],
-                master_port=config.checkpoint.nccl_master_port,
+                # Weight sync uses its own rendezvous group. Reusing the Megatron
+                # training port is a real port collision, not a backend quirk.
+                # Start probing above the training port so the second distributed
+                # effect stays disjoint from the main process-group rendezvous.
+                master_port=config.checkpoint.nccl_master_port + 50,
             )
             logger.info("NCCL weight sync initialized")
 
