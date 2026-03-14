@@ -201,6 +201,7 @@ def grpo_train(
     metadata_key: str | None = None,
     environment_factory: Callable[[dict[str, Any]], Any] | None = None,
     sample_scorer: SampleScorer | None = None,
+    run_logger: Any | None = None,
 ) -> dict[str, Any]:
     """Run GRPO training.
 
@@ -216,6 +217,9 @@ def grpo_train(
             original prompt/sample dict and may be sync or async.
         sample_scorer: Explicit scoring stage. Prefer this over score_fn for
             resourceful scorers with their own dependencies and observability.
+        run_logger: Optional structured run logger from the outer runner. GRPO
+            does not consume it yet directly; this exists so config wrappers can
+            forward runner kwargs without lying about the call boundary.
         metadata_key: If set, extract this key from prompt dict to pass as metadata.
             If None, passes all non-"messages" keys as metadata.
 
@@ -243,6 +247,7 @@ def grpo_train(
         metadata_key,
         environment_factory,
         sample_scorer,
+        run_logger,
     )
 
 
@@ -1283,8 +1288,10 @@ async def _grpo_train_async(
     metadata_key: str | None = None,
     environment_factory: Callable[[dict[str, Any]], Any] | None = None,
     sample_scorer: SampleScorer | None = None,
+    run_logger: Any | None = None,
 ) -> dict[str, Any]:
     """Async GRPO training implementation."""
+    del run_logger  # TODO: thread outer run events into GRPO once the boundary is designed.
     from .._logging import setup_logging
     from ..training.datasets.data_buffer import DataBuffer
     from ..training.metrics import JSONLLogger
@@ -2277,7 +2284,7 @@ async def _grpo_train_async(
         return {"metrics_history": metrics_history}
 
     except Exception as e:
-        logger.error(
+        logger.exception(
             "inference startup or training failed",
             extra={
                 **run_context,
