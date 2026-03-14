@@ -74,6 +74,36 @@ def _resolve_train_future(future: Any) -> Any:
     return future._result
 
 
+def _select_native_loss_fn(config: dict[str, Any]) -> Any:
+    """Select the backend-native loss function fixed for this worker."""
+    from rollouts.training.losses import grpo_loss, grpo_loss_clipped, grpo_loss_masked, opd_loss
+
+    loss_type = config.get("loss_type", "vanilla")
+    if loss_type == "vanilla":
+        return grpo_loss
+    if loss_type == "clipped":
+        return grpo_loss_clipped
+    if loss_type == "masked":
+        ratio_low = float(config.get("mask_ratio_low", 0.125))
+        ratio_high = float(config.get("mask_ratio_high", 8.0))
+
+        def _masked(logits: Any, batch: dict[str, Any]) -> Any:
+            return grpo_loss_masked(
+                logits,
+                batch,
+                ratio_low=ratio_low,
+                ratio_high=ratio_high,
+            )
+
+        return _masked
+    if loss_type == "opd":
+        return opd_loss
+    raise ValueError(
+        f"Unknown Megatron worker loss_type={loss_type!r}. "
+        "Use 'vanilla', 'clipped', 'masked', or 'opd'."
+    )
+
+
 def train(handle: Worker) -> None:
     """Miniray work function for Megatron distributed training.
 
@@ -212,6 +242,7 @@ def train(handle: Worker) -> None:
             opt_param_scheduler=scheduler,
             config=backend_config,
             lowering=lowering,
+            loss_fn=_select_native_loss_fn(config),
         )
 
         logger.info("Model initialized, entering training loop")

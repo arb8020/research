@@ -813,13 +813,18 @@ def _build_megatron_preflight_batch(config: GRPOConfig) -> dict[str, Any]:
     vocab_size = 1024
 
     input_ids = torch.randint(0, vocab_size, (micro_batch_size, seq_len))
-    return {
+    batch = {
         "input_ids": input_ids,
         "labels": input_ids.clone(),
         "loss_mask": torch.ones(micro_batch_size, seq_len),
         "advantages": torch.ones(micro_batch_size),
         "group_ids": torch.arange(micro_batch_size, dtype=torch.long),
     }
+    if config.trainer.loss_type in {"clipped", "masked"}:
+        batch["old_logprobs"] = torch.zeros(micro_batch_size)
+    if config.trainer.loss_type == "opd":
+        batch["teacher_logprobs"] = torch.zeros(micro_batch_size, seq_len)
+    return batch
 
 
 def _build_training_client_surface(config: GRPOConfig, inference_engine: Any) -> tuple[Any, Any]:
@@ -1079,7 +1084,6 @@ async def _process_training_step(
     else:
         advantages = torch.tensor([r - mean_reward for r in rewards], device=device)
 
-    from ..training.contract_witnesses import rl_contract_loss
     from ..training.contracts import StepResult
 
     # Prepare batch tensors
@@ -1089,7 +1093,12 @@ async def _process_training_step(
 
     # Training step - forward/backward
     fb_start = time.perf_counter()
-    fb_future = backend.forward_backward(training_batch, loss_fn=rl_contract_loss)
+    if config.trainer.backend == "megatron":
+        fb_future = backend.forward_backward(training_batch)
+    else:
+        from ..training.contract_witnesses import rl_contract_loss
+
+        fb_future = backend.forward_backward(training_batch, loss_fn=rl_contract_loss)
     fb_result = await fb_future.result()
     fb_ms = (time.perf_counter() - fb_start) * 1000
 
@@ -1416,6 +1425,9 @@ async def _grpo_train_async(
             lr=config.trainer.lr,
             weight_decay=config.trainer.weight_decay,
             max_grad_norm=config.trainer.max_grad_norm,
+            loss_type=config.trainer.loss_type,
+            mask_ratio_low=config.trainer.mask_ratio_low,
+            mask_ratio_high=config.trainer.mask_ratio_high,
             micro_batch_size=config.trainer.micro_batch_size or 1,
             global_batch_size=config.rollout.batch_size,
             seq_length=config.trainer.seq_length,

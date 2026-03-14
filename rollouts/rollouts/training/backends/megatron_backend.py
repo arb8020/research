@@ -45,6 +45,16 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _extract_megatron_logits(output_tensor: Any) -> Any:
+    """Normalize Megatron forward output into a logits tensor."""
+    if isinstance(output_tensor, tuple):
+        assert output_tensor, "Megatron output tuple must be non-empty"
+        return output_tensor[0]
+    if hasattr(output_tensor, "logits"):
+        return output_tensor.logits
+    return output_tensor
+
+
 @dataclass
 class MegatronConfig:
     """Configuration for Megatron training backend.
@@ -94,7 +104,7 @@ class MegatronTrainingBackend:
         opt_param_scheduler: Learning rate scheduler
         config: MegatronConfig with parallelism settings
         checkpoint_dir: Directory for checkpoints
-        loss_fn: Loss function (logits, labels, loss_mask) -> loss
+        loss_fn: Optional backend-native loss function for dict batches.
 
     Example:
         >>> # Initialize Megatron (typically in worker process)
@@ -197,21 +207,26 @@ class MegatronTrainingBackend:
             tokens = batch["input_ids"]
             labels = batch["labels"]
             loss_mask = batch.get("loss_mask")
-            advantages = batch.get("advantages")
+            active_loss_fn = loss_fn if loss_fn is not None else self.loss_fn
 
             # Model forward
             output = model(
                 input_ids=tokens,
                 position_ids=None,
                 attention_mask=None,
-                labels=labels,
+                labels=None if active_loss_fn is not None else labels,
             )
 
             # Return for pipeline engine
             def loss_reducer(output_tensor: Any) -> dict[str, Any]:
-                active_loss_fn = loss_fn if loss_fn is not None else self.loss_fn
+                extra_metrics: dict[str, float] = {}
                 if active_loss_fn is not None:
-                    loss = active_loss_fn(output_tensor, labels, loss_mask)
+                    logits = _extract_megatron_logits(output_tensor)
+                    loss_result = active_loss_fn(logits, batch)
+                    if isinstance(loss_result, tuple):
+                        loss, extra_metrics = loss_result
+                    else:
+                        loss = loss_result
                 else:
                     # Default: assume model returns loss directly
                     loss = (
@@ -226,18 +241,24 @@ class MegatronTrainingBackend:
                         else:
                             loss = loss.float().mean()
 
-                if advantages is not None:
-                    loss = loss * advantages.mean()
-
                 detached_loss = loss.detach()
+                metric_tensors = {
+                    "loss": detached_loss.float(),
+                    **{
+                        key: torch.as_tensor(
+                            value, device=detached_loss.device, dtype=torch.float32
+                        )
+                        for key, value in extra_metrics.items()
+                    },
+                }
                 return (
                     loss,
                     torch.tensor(1, device=detached_loss.device),
                     {
-                        "keys": ["loss"],
+                        "keys": list(metric_tensors.keys()),
                         "values": torch.stack([
                             torch.tensor(1.0, device=detached_loss.device),
-                            detached_loss.float(),
+                            *metric_tensors.values(),
                         ]),
                     },
                 )
@@ -266,10 +287,9 @@ class MegatronTrainingBackend:
                 if isinstance(first_loss, dict) and "keys" in first_loss and "values" in first_loss:
                     keys = list(first_loss["keys"])
                     values = first_loss["values"]
-                    if "loss" in keys:
-                        loss_index = keys.index("loss")
-                        count = float(values[0])
-                        metrics["loss"] = float(values[loss_index + 1]) / max(count, 1.0)
+                    count = float(values[0])
+                    for metric_index, key in enumerate(keys, start=1):
+                        metrics[key] = float(values[metric_index]) / max(count, 1.0)
 
         return ImmediateTrainFuture(metrics)
 

@@ -58,6 +58,9 @@ class MegatronRemoteConfig:
     lr: float = 1e-6
     weight_decay: float = 0.0
     max_grad_norm: float = 1.0
+    loss_type: str = "vanilla"
+    mask_ratio_low: float = 0.125
+    mask_ratio_high: float = 8.0
     micro_batch_size: int = 1
     global_batch_size: int = 8
     seq_length: int = 4096
@@ -141,6 +144,9 @@ class MegatronRemoteBackend:
                     "sequence_parallel": self.config.sequence_parallel,
                     "lr": self.config.lr,
                     "bf16": self.config.dtype == "bfloat16",
+                    "loss_type": self.config.loss_type,
+                    "mask_ratio_low": self.config.mask_ratio_low,
+                    "mask_ratio_high": self.config.mask_ratio_high,
                     "micro_batch_size": self.config.micro_batch_size,
                     "global_batch_size": self.config.global_batch_size,
                     "seq_length": self.config.seq_length,
@@ -182,7 +188,7 @@ class MegatronRemoteBackend:
         if loss_fn is not None or loss_fn_config is not None:
             raise ValueError(
                 "MegatronRemoteBackend.forward_backward does not support per-call loss overrides yet. "
-                "Loss selection must happen inside the worker (or via an enum/string loss id carried in the request)."
+                "Megatron loss selection is fixed at worker initialization from trainer.loss_type."
             )
 
         # Send batch to rank 0 (it broadcasts to other ranks)
