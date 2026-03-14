@@ -193,7 +193,6 @@ async def _training_and_inference_startup_smoke_async(config: Any, run_logger: A
         emit(
             "combined_smoke_training_preflight_start",
             **run_context,
-            trainer_backend=getattr(config.trainer, "backend", None),
         )
         backend, backend_cleanup = await _run_training_preflight(
             config,
@@ -212,7 +211,6 @@ async def _training_and_inference_startup_smoke_async(config: Any, run_logger: A
         emit(
             "combined_smoke_inference_setup_start",
             **run_context,
-            inference_backend=getattr(config.inference, "backend", None),
         )
         inference_engines = _create_inference_engines(config, checkpoint_dir)
         teacher_engine = _create_teacher_engine(config, checkpoint_dir)
