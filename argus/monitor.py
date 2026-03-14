@@ -1,22 +1,19 @@
-"""Argus log-backed monitor.
+"""Argus monitor and transport wrapper.
 
-This monitor consumes local run artifacts only:
+Argus owns control-plane concerns:
 
-- `run.jsonl`
-- `monitor.jsonl`
-- `~/.rollouts/jobs.json` for run discovery
+- resolve run IDs
+- connect to remote logs/sync transports
+- keep local artifact streams fresh
 
-It does not query providers or reconstruct state from tmux. That keeps the
-monitor honest and makes it a usable control-plane viewer before the full
-Argus supervisor is in place.
+Rollouts owns workload-aware rendering:
 
-Important ownership boundary:
+- RL/SFT/eval TUI semantics
+- event/log interpretation beyond generic control-plane facts
 
-- Argus monitor renders generic event/log state.
-- It should not define the meaning of workload-specific stage names.
-
-If a payload contains a Rollouts-defined stage like `FIRST_FORWARD_OK`, Argus
-may display it, but Rollouts remains the owner of that ontology.
+This module therefore does two things:
+1. expose a small Argus-native snapshot viewer for generic control-plane facts
+2. delegate normal run watching/attach flows to the Rollouts monitor
 """
 
 from __future__ import annotations
@@ -276,11 +273,11 @@ def _print_launches() -> int:
     print("-" * 140)
     for record in records:
         print(
-            f"{record.get('launcher_id',''):<36} "
-            f"{str(record.get('pid','')):<8} "
+            f"{record.get('launcher_id', ''):<36} "
+            f"{str(record.get('pid', '')):<8} "
             f"{str(record.get('alive', False)):<6} "
-            f"{str(record.get('provider','')):<10} "
-            f"{record.get('config_path','')}"
+            f"{str(record.get('provider', '')):<10} "
+            f"{record.get('config_path', '')}"
         )
     return 0
 
@@ -306,10 +303,63 @@ def _watch_snapshot(run_dir: Path, refresh_sec: float = 1.0) -> int:
         return 0
 
 
+def _use_argus_snapshot_viewer(args: argparse.Namespace) -> bool:
+    """Return True when the user asked for the Argus-native generic viewer.
+
+    The Argus-native viewer is intentionally narrow: it renders generic
+    `run.jsonl` / `monitor.jsonl` control-plane facts and should not become a
+    second workload-aware TUI stack.
+    """
+    return bool(args.html or args.watch or args.launches)
+
+
+def _build_rollouts_monitor_argv(args: argparse.Namespace) -> list[str]:
+    """Translate Argus monitor args into the Rollouts monitor CLI surface."""
+    forwarded: list[str] = []
+
+    if args.output_dir:
+        forwarded.append(args.output_dir)
+    if args.latest:
+        forwarded.append("--latest")
+    if args.attach is not None:
+        forwarded.append("--attach")
+        if args.attach != "__latest__":
+            forwarded.append(args.attach)
+    if args.runs:
+        forwarded.append("--runs")
+    if getattr(args, "probe", False):
+        forwarded.append("--probe")
+    if args.tail:
+        forwarded.append("--tail")
+    if args.tail_lines is not None:
+        forwarded.extend(["--tail-lines", str(args.tail_lines)])
+    if getattr(args, "debug", False):
+        forwarded.append("--debug")
+        if getattr(args, "debug_interval", None) is not None:
+            forwarded.extend(["--debug-interval", str(args.debug_interval)])
+    if getattr(args, "keep_alive", False):
+        forwarded.append("--keep-alive")
+    if getattr(args, "terminate", False):
+        forwarded.append("--terminate")
+    if getattr(args, "cancel", None):
+        forwarded.extend(["--cancel", args.cancel])
+    if getattr(args, "sync_only", False):
+        forwarded.append("--sync-only")
+
+    return forwarded
+
+
+def _delegate_to_rollouts_monitor(args: argparse.Namespace) -> int:
+    """Hand off monitoring/rendering to the Rollouts monitor implementation."""
+    from rollouts.tui.monitor_cli import monitor_main as rollouts_monitor_main
+
+    return rollouts_monitor_main(_build_rollouts_monitor_argv(args))
+
+
 def monitor_main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="argus monitor",
-        description="Log-backed Argus monitor",
+        description="Argus run attach/sync wrapper with optional Rollouts viewer handoff",
     )
     parser.add_argument("output_dir", nargs="?", help="Run directory to inspect")
     parser.add_argument("--latest", action="store_true", help="Use the most recent run directory")
@@ -318,21 +368,62 @@ def monitor_main(argv: list[str] | None = None) -> int:
         nargs="?",
         const="__latest__",
         metavar="RUN_ID",
-        help="Resolve a run from ~/.rollouts/jobs.json instead of a direct path",
+        help="Resolve/sync a remote run from ~/.rollouts/jobs.json",
     )
     parser.add_argument("--runs", action="store_true", help="List known runs from local registry")
+    parser.add_argument(
+        "--probe",
+        action="store_true",
+        help="With --runs, check broker liveness and LogsServer reachability",
+    )
     parser.add_argument(
         "--launches",
         action="store_true",
         help="List active local Argus launcher records",
     )
-    parser.add_argument("--tail", action="store_true", help="Print recent events and exit")
+    parser.add_argument(
+        "--tail",
+        action="store_true",
+        help="Tail remote/local logs to stdout instead of launching the Rollouts TUI",
+    )
     parser.add_argument(
         "--tail-lines",
         type=int,
         default=None,
         metavar="N",
-        help="With --tail, print the last N events",
+        help="With --tail or --attach, print the last N lines and exit",
+    )
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Pass debug rendering through to the Rollouts monitor",
+    )
+    parser.add_argument(
+        "--debug-interval",
+        type=int,
+        default=100,
+        metavar="N",
+        help="Debug frame interval for the Rollouts monitor",
+    )
+    parser.add_argument(
+        "--keep-alive",
+        action="store_true",
+        help="Keep instance running after an attached remote run completes",
+    )
+    parser.add_argument(
+        "--terminate",
+        action="store_true",
+        help="Auto-terminate instance after an attached remote run completes",
+    )
+    parser.add_argument(
+        "--cancel",
+        metavar="RUN_ID",
+        help="Cancel a running remote job by killing its tmux session",
+    )
+    parser.add_argument(
+        "--sync-only",
+        action="store_true",
+        help="With --attach: sync logs locally without launching a viewer",
     )
     parser.add_argument(
         "--html",
@@ -347,10 +438,19 @@ def monitor_main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     if args.runs:
-        return _print_runs()
+        if _use_argus_snapshot_viewer(args):
+            return _print_runs()
+        return _delegate_to_rollouts_monitor(args)
 
     if args.launches:
         return _print_launches()
+
+    if args.attach is not None or args.cancel or args.sync_only:
+        return _delegate_to_rollouts_monitor(args)
+
+    if args.output_dir is not None or args.latest:
+        if not _use_argus_snapshot_viewer(args):
+            return _delegate_to_rollouts_monitor(args)
 
     run_dir = _resolve_run_dir(args.output_dir, args.latest, args.attach)
     snapshot = _build_snapshot(run_dir)

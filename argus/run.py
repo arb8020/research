@@ -18,6 +18,7 @@ into Argus as opaque workload events.
 Usage:
     # Preferred public entrypoint
     python -m argus run --config examples/rl/kernelbench/grpo_01_01.py
+    python -m argus run --config configs/trusted/eval_api.py
 
     # CLI overrides (optional, override config values)
     python -m argus run --config ... --gpu-type H100  # Override GPU type
@@ -28,10 +29,15 @@ Usage:
     python -m argus run --config ... --modal  # Same as --provider modal
     python -m argus run --config ... --provision  # Provision via config.hardware.provider
 
-The config file should export:
-    - config: A training config (e.g., GRPOConfig)
-    - hardware: HardwareConfig (optional, defaults to local execution)
-    - train(config, **kwargs): Function to run local training
+The config file should export one of:
+    - training contract:
+      - config: A training config (e.g., GRPOConfig)
+      - hardware: HardwareConfig (optional, defaults to local execution)
+      - train(config, **kwargs): Function to run local training
+    - eval contract:
+      - tasks or tasks_path
+      - run_spec or prepare_messages
+      - score_fn or sample_scorer
 
 Execution modes (determined by hardware.provider or CLI override):
     - "local":     Run on local GPU
@@ -131,7 +137,7 @@ _workspace_root = REPO_ROOT.parent
 if _workspace_root.exists() and str(_workspace_root) not in sys.path:
     sys.path.insert(0, str(_workspace_root))
 
-from rollouts.config_contracts import validate_train_config_module
+from rollouts.config_contracts import validate_eval_config_module, validate_train_config_module
 from rollouts.image_publisher import build_or_resolve_image
 from rollouts.image_spec import (
     USER_IMAGE_MANIFEST_PATH,
@@ -260,6 +266,30 @@ def load_config_module(config_path: Path) -> Any:
     return module
 
 
+def _classify_config_module(config_module: Any, config_path: Path) -> str:
+    """Classify a config module by the runner contract it satisfies."""
+    train_error: ValueError | None = None
+    eval_error: ValueError | None = None
+
+    try:
+        validate_train_config_module(config_module, config_path)
+        return "training"
+    except ValueError as exc:
+        train_error = exc
+
+    try:
+        validate_eval_config_module(config_module, config_path)
+        return "evaluation"
+    except ValueError as exc:
+        eval_error = exc
+
+    raise ValueError(
+        f"Config {config_path} is neither a valid training config nor a valid eval config.\n"
+        f"Training contract error: {train_error}\n"
+        f"Eval contract error: {eval_error}"
+    )
+
+
 def _modal_workload_tags(config: Any) -> dict[str, str]:
     """Opaque workload tags supplied by rollouts config semantics."""
     tags: dict[str, str] = {}
@@ -304,6 +334,71 @@ def _setup_run_logging(run_dir: Path) -> _RunLogger:
     run_dir.mkdir(parents=True, exist_ok=True)
     log_file = run_dir / "run.jsonl"
     return RunLogger(emit_event=JsonlEventSink(log_file))
+
+
+def _spawn_eval_subprocess(
+    *,
+    config_path: Path,
+    output_dir: Path,
+    max_samples: int | None,
+    log: _RunLogger,
+) -> int:
+    """Launch rollouts.eval.run as a detached local subprocess."""
+    import subprocess
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    stdout_log = output_dir / "stdout.log"
+    stderr_log = output_dir / "stderr.log"
+    command = [
+        sys.executable,
+        "-m",
+        "rollouts.eval.run",
+        "--config",
+        str(config_path),
+        "--output-dir",
+        str(output_dir),
+    ]
+    if max_samples is not None:
+        command.extend(["--limit", str(max_samples)])
+
+    stdout_handle = stdout_log.open("a")
+    stderr_handle = stderr_log.open("a")
+    try:
+        proc = subprocess.Popen(
+            command,
+            cwd=str(REPO_ROOT.parent),
+            stdout=stdout_handle,
+            stderr=stderr_handle,
+            start_new_session=True,
+            env=os.environ.copy(),
+        )
+    finally:
+        stdout_handle.close()
+        stderr_handle.close()
+
+    log(
+        "submit_done",
+        kind="evaluation",
+        pid=proc.pid,
+        output_dir=str(output_dir),
+        stdout_log=str(stdout_log),
+        stderr_log=str(stderr_log),
+        command=command,
+    )
+    return proc.pid
+
+
+def _launch_eval_monitor(
+    *,
+    run_dir: Path,
+    tail: bool,
+) -> int:
+    import subprocess
+
+    monitor_cmd = [sys.executable, "-m", "argus", "monitor", str(run_dir)]
+    if tail:
+        monitor_cmd.append("--tail")
+    return subprocess.run(monitor_cmd, check=False).returncode
 
 
 async def _deploy_and_submit(
@@ -1065,7 +1160,7 @@ async def run_remote(
         if not root_logger.handlers:
             root_logger.addHandler(logging.NullHandler())
 
-    monitor_cmd = [sys.executable, "-m", "rollouts", "monitor", "--attach", run_name]
+    monitor_cmd = [sys.executable, "-m", "argus", "monitor", "--attach", run_name]
     if tail:
         monitor_cmd.append("--tail")
     if keep_alive:
@@ -1082,12 +1177,15 @@ def main(argv: list[str] | None = None) -> int:
     from rollouts.training.configs import HardwareConfig
 
     parser = argparse.ArgumentParser(
-        description="Run RL training",
+        description="Run an Argus workload (training or eval)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-    # Config-driven (reads hardware from config file)
+    # Training config
     python -m argus run --config examples/rl/kernelbench/grpo_01_01.py
+
+    # Eval config
+    python -m argus run --config configs/prime_ci/reverse_text/eval_api.py
 
     # Override provider via CLI
     python -m argus run --config ... --provider modal
@@ -1180,7 +1278,7 @@ Examples:
     # Load config module
     config_module = load_config_module(config_path)
     try:
-        validate_train_config_module(config_module, config_path)
+        workload_kind = _classify_config_module(config_module, config_path)
     except ValueError as exc:
         print(str(exc), file=sys.stderr)
         return 1
@@ -1302,8 +1400,43 @@ Examples:
         multi_node = getattr(config_module, "multi_node", None)
 
     try:
-        # Dispatch based on provider
+        # Dispatch based on workload/provider
         from rollouts.inference.benchmark.config import BenchmarkConfig
+
+        if workload_kind == "evaluation":
+            if runtime.provider != "local" or args.node_id or multi_node is not None:
+                raise ValueError(
+                    "Argus evaluation launch currently supports only local orchestration. "
+                    "Provider-specific remote lifecycle belongs in the eval workload itself "
+                    "(for example via Modal/RunPod resources), not in the training SSH launcher."
+                )
+
+            timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+            run_name = f"run_{timestamp}"
+            local_run_dir = REPO_ROOT / "results" / "eval" / run_name
+            log = _setup_run_logging(local_run_dir)
+            log(
+                "run_start",
+                launcher_id=launcher_id,
+                kind="evaluation",
+                provider="local",
+                config=str(config_path),
+                output_dir=str(local_run_dir),
+            )
+            pid = _spawn_eval_subprocess(
+                config_path=config_path,
+                output_dir=local_run_dir,
+                max_samples=args.max_samples,
+                log=log,
+            )
+            print(f"Evaluation submitted: {run_name}")
+            print(f"  PID:    {pid}")
+            print(f"  Local:  results/eval/{run_name}/")
+
+            if not args.tui and not args.tail:
+                return 0
+
+            return _launch_eval_monitor(run_dir=local_run_dir, tail=args.tail)
 
         if not isinstance(config_module.config, BenchmarkConfig):
             train_fn = getattr(config_module, "train", None)

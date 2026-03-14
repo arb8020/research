@@ -66,12 +66,95 @@ This is intentional as a first compression step:
 
 ## Current monitoring model
 
-`argus monitor` now uses an honest local model:
+The intended split is:
 
-- resolve a run from a path, `--latest`, or the local jobs registry
-- consume `run.jsonl` and `monitor.jsonl`
-- render a terminal view or a static HTML snapshot
+- `argus monitor`
+  - resolve run identity
+  - attach/sync remote artifacts when needed
+  - hand off to a viewer
+- `rollouts monitor`
+  - render the workload-aware TUI over local artifacts
 
-It does not query providers or tmux directly. The monitor should consume
-durable run artifacts instead of reconstructing truth from substrate-specific
-state.
+So the local run directory is the seam between the control plane and the UI.
+
+## Running evaluations
+
+`argus run` now accepts both training configs and eval configs.
+
+For eval configs, the current launcher path is:
+
+1. classify the config as `evaluation`
+2. allocate a stable local run directory under `rollouts/results/eval/run_<timestamp>/`
+3. launch `python -m rollouts.eval.run ... --output-dir <run_dir>` as a detached subprocess
+4. optionally hand off to `argus monitor <run_dir>` for live viewing
+
+Examples:
+
+```bash
+# Fire-and-forget eval
+python -m argus run --config rollouts/configs/prime_ci/reverse_text/eval_api.py
+
+# Launch and watch in the TUI
+python -m argus run --config rollouts/configs/prime_ci/reverse_text/eval_api.py --tui
+
+# Launch and tail to stdout
+python -m argus run --config rollouts/configs/prime_ci/reverse_text/eval_api.py --tail
+```
+
+Current limitation:
+
+- this Argus eval launch path is local orchestration only
+- provider-specific runtime lifecycle for evals should still live in the eval workload itself
+  - for example, a Modal or RunPod workspace resource inside the eval environment
+
+## Writing an eval config
+
+An eval config must satisfy the `rollouts.config_contracts.validate_eval_config_module(...)` contract.
+
+It must export:
+
+- `tasks` or `tasks_path`
+- `run_spec: AgentRunSpec` or `prepare_messages`
+- `score_fn` or `sample_scorer`
+
+It may also export:
+
+- `run: EvalRunConfig`
+- `output: EvalOutputConfig`
+- `hardware: HardwareConfig`
+- `server: InferenceServerConfig`
+
+Minimal example:
+
+```python
+from rollouts.core import Message, Metric, Score
+from rollouts.eval import AgentRunSpec, EndpointConfig
+from rollouts.training.scoring import FunctionSampleScorer
+
+tasks = [{"text": "hello"}]
+
+run_spec = AgentRunSpec(
+    endpoint=EndpointConfig(
+        provider="anthropic",
+        model="claude-sonnet-4-20250514",
+        temperature=0.0,
+        max_tokens=128,
+    ),
+    prepare_messages=lambda sample: [
+        Message(role="user", content=f"Reverse this text: {sample['text']}")
+    ],
+)
+
+def score_attempt(sample):
+    expected = sample.input["text"][::-1]
+    correct = sample.response.strip() == expected
+    return Score(metrics=(Metric("exact_match", 1.0 if correct else 0.0),))
+
+sample_scorer = FunctionSampleScorer(score_attempt)
+```
+
+Then run it with:
+
+```bash
+python -m argus run --config /absolute/path/to/eval_config.py --tui
+```
