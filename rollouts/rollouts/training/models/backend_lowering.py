@@ -49,7 +49,19 @@ def lower_model_to_megatron(
     family = denotation.architecture.family
     notes: list[str] = []
 
-    if bridge_supports_provider:
+    if family in {"qwen3_5", "qwen3_5_moe"}:
+        adapter_kind: MegatronAdapterKind = "custom_spec"
+        notes.append(
+            "qwen3_5 lowers through an explicit Megatron custom spec and custom bridge registration; "
+            "this family is not honestly represented by the generic provider/raw_gpt paths"
+        )
+    elif family == "qwen3_next":
+        adapter_kind = "custom_spec"
+        notes.append(
+            "qwen3_next lowers through an explicit Megatron custom spec and custom bridge registration; "
+            "this family includes linear-attention semantics beyond the generic provider/raw_gpt paths"
+        )
+    elif bridge_supports_provider:
         adapter_kind: MegatronAdapterKind = "provider"
     elif family == "qwen3":
         adapter_kind = "custom_spec"

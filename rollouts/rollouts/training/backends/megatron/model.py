@@ -20,9 +20,12 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Protocol
 
 from rollouts.training.backends.megatron.qwen import build_qwen3_transformer_config
+from rollouts.training.backends.megatron.qwen3_5 import get_qwen3_5_spec
+from rollouts.training.backends.megatron.qwen3_next import get_qwen3_next_spec
 from rollouts.training.models import (
     HFModelSource,
     ModelConstructionAdapter,
@@ -85,7 +88,7 @@ class BridgeProviderMegatronAdapter:
         del denotation, runtime_config
         from megatron.core import mpu
 
-        provider = bridge.to_megatron_provider(load_weights=False)  # type: ignore[attr-defined]
+        provider = bridge.to_megatron_provider(load_weights=False)
         provider.tensor_model_parallel_size = mpu.get_tensor_model_parallel_world_size()
         provider.pipeline_model_parallel_size = mpu.get_pipeline_model_parallel_world_size()
         provider.expert_model_parallel_size = mpu.get_expert_model_parallel_world_size()
@@ -155,7 +158,7 @@ class RawGPTMegatronAdapter:
         _apply_architecture_overrides(transformer_config, runtime_config)
 
         if hasattr(bridge, "_get_gptmodel_args"):
-            gpt_kwargs = dict(bridge._get_gptmodel_args())  # type: ignore[attr-defined]
+            gpt_kwargs = dict(bridge._get_gptmodel_args())
         else:
             gpt_kwargs = {}
 
@@ -276,7 +279,7 @@ class Qwen3CustomSpecMegatronAdapter:
         hf_config = self.normalize_hf_config(bridge.hf_config)
         gpt_kwargs = {}
         if hasattr(bridge, "_get_gptmodel_args"):
-            gpt_kwargs = dict(bridge._get_gptmodel_args())  # type: ignore[attr-defined]
+            gpt_kwargs = dict(bridge._get_gptmodel_args())
         gpt_kwargs["max_sequence_length"] = runtime_config.seq_length
         _populate_gpt_model_defaults(
             gpt_kwargs=gpt_kwargs,
@@ -323,6 +326,104 @@ class Qwen3CustomSpecMegatronAdapter:
         )
 
 
+class BridgeCustomSpecMegatronAdapter:
+    """Megatron adapter for families that need a custom transformer layer spec."""
+
+    adapter_name = "custom_spec"
+    expected_families: tuple[str, ...] = ()
+    spec_builder: Any = None
+
+    def normalize_denotation(self, denotation: ModelDenotation) -> ModelDenotation:
+        return denotation
+
+    def validate_support(self, denotation: ModelDenotation, *, backend_name: str) -> None:
+        assert denotation.source, f"{backend_name} model source must be non-empty"
+        if denotation.architecture.family not in self.expected_families:
+            raise ValueError(
+                f"{backend_name} {self.adapter_name} expects one of {self.expected_families!r}, got "
+                f"{denotation.architecture.family!r}"
+            )
+        if self.spec_builder is None:
+            raise ValueError(f"{backend_name} {self.adapter_name} has no spec_builder configured")
+
+    def normalize_hf_config(self, hf_config: Any) -> Any:
+        return _normalize_hf_config_for_megatron_bridge(hf_config)
+
+    def build_provider(
+        self,
+        *,
+        denotation: ModelDenotation,
+        runtime_config: MegatronModelConfig,
+        bridge: Any,
+    ) -> Any:
+        from megatron.core.models.gpt import GPTModel
+
+        if not hasattr(bridge, "_build_config"):
+            raise AttributeError(
+                "Bridge object does not expose `_build_config` for custom-spec Megatron loading."
+            )
+
+        transformer_config = bridge._build_config()
+        _apply_architecture_overrides(transformer_config, runtime_config)
+
+        hf_config = self.normalize_hf_config(bridge.hf_config)
+        gpt_kwargs = {}
+        if hasattr(bridge, "_get_gptmodel_args"):
+            gpt_kwargs = dict(bridge._get_gptmodel_args())
+        _populate_gpt_model_defaults(
+            gpt_kwargs=gpt_kwargs,
+            hf_config=hf_config,
+            runtime_config=runtime_config,
+        )
+
+        spec_args = SimpleNamespace(
+            hf_checkpoint=denotation.source.name_or_path,
+            num_experts=runtime_config.num_experts,
+            sequence_parallel=runtime_config.sequence_parallel,
+        )
+
+        def model_provider(
+            pre_process: bool = True,
+            post_process: bool = True,
+            config: Any = None,
+            pg_collection: Any = None,
+            vp_stage: int | None = None,
+        ) -> GPTModel:
+            del config, pg_collection
+            transformer_layer_spec = self.spec_builder(spec_args, transformer_config, vp_stage)
+            kwargs = dict(gpt_kwargs)
+            kwargs.update({
+                "config": transformer_config,
+                "transformer_layer_spec": transformer_layer_spec,
+                "pre_process": pre_process,
+                "post_process": post_process,
+            })
+            if vp_stage is not None:
+                kwargs["vp_stage"] = vp_stage
+            return GPTModel(**kwargs)
+
+        return model_provider
+
+    def load_weights(self, *, bridge: Any, model: list[Any], denotation: ModelDenotation) -> None:
+        bridge.load_weights(
+            model,
+            _materialize_hf_checkpoint_snapshot(denotation.source),
+            memory_efficient=True,
+        )
+
+
+class Qwen35CustomSpecMegatronAdapter(BridgeCustomSpecMegatronAdapter):
+    adapter_name = "custom_spec:qwen3_5"
+    expected_families = ("qwen3_5", "qwen3_5_moe")
+    spec_builder = staticmethod(get_qwen3_5_spec)
+
+
+class Qwen3NextCustomSpecMegatronAdapter(BridgeCustomSpecMegatronAdapter):
+    adapter_name = "custom_spec:qwen3_next"
+    expected_families = ("qwen3_next",)
+    spec_builder = staticmethod(get_qwen3_next_spec)
+
+
 def _adapter_for_lowering(lowering: MegatronModelLowering) -> MegatronModelAdapter:
     """Select the honest Megatron model-construction adapter for lowered intent."""
     if lowering.adapter_kind == "provider":
@@ -332,6 +433,10 @@ def _adapter_for_lowering(lowering: MegatronModelLowering) -> MegatronModelAdapt
     if lowering.adapter_kind == "custom_spec":
         if lowering.denotation.architecture.family == "qwen3":
             return Qwen3CustomSpecMegatronAdapter()
+        if lowering.denotation.architecture.family in {"qwen3_5", "qwen3_5_moe"}:
+            return Qwen35CustomSpecMegatronAdapter()
+        if lowering.denotation.architecture.family == "qwen3_next":
+            return Qwen3NextCustomSpecMegatronAdapter()
     raise ValueError(f"Unsupported Megatron adapter kind: {lowering.adapter_kind!r}")
 
 

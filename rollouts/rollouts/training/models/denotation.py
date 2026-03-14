@@ -22,6 +22,9 @@ ModelFamily: TypeAlias = Literal[
     "llama",
     "qwen2",
     "qwen3",
+    "qwen3_5",
+    "qwen3_5_moe",
+    "qwen3_next",
     "qwen3_moe",
     "glm4",
     "glm4_moe",
@@ -157,6 +160,17 @@ def _infer_model_family(hf_config: Any, source: HFModelSource) -> ModelFamily:
     architectures = [str(x).lower() for x in getattr(hf_config, "architectures", []) or ()]
     source_name = source.name_or_path.lower()
 
+    if "qwen3_next" in model_type or "qwen3-next" in source_name or "qwen3_next" in source_name:
+        return "qwen3_next"
+    if (
+        "qwen3_5" in model_type
+        or "qwen3.5" in source_name
+        or "qwen3-5" in source_name
+        or "qwen3_5" in source_name
+    ):
+        if getattr(hf_config, "num_experts", None) or getattr(hf_config, "n_routed_experts", None):
+            return "qwen3_5_moe"
+        return "qwen3_5"
     if "qwen3_moe" in model_type or "qwen3moe" in source_name:
         return "qwen3_moe"
     if "qwen3" in model_type or any("qwen3" in arch for arch in architectures):
@@ -173,6 +187,11 @@ def _infer_model_family(hf_config: Any, source: HFModelSource) -> ModelFamily:
 
 
 def _infer_attention_kind(hf_config: Any, family: ModelFamily) -> AttentionKind:
+    layer_types = getattr(hf_config, "layer_types", None)
+    if isinstance(layer_types, list) and any(
+        str(x).lower() == "linear_attention" for x in layer_types
+    ):
+        return "linear_attention"
     if getattr(hf_config, "multi_latent_attention", False):
         return "mla"
     if family in {"glm4", "glm4_moe"}:
@@ -187,8 +206,20 @@ def _infer_attention_kind(hf_config: Any, family: ModelFamily) -> AttentionKind:
 def _infer_variant(source: HFModelSource, family: ModelFamily) -> str | None:
     name = source.name_or_path.split("/")[-1]
     lowered = name.lower()
-    if family in {"qwen2", "qwen3", "qwen3_moe"}:
-        for marker in ("0.6B", "1.7B", "4B", "8B", "14B", "30B", "32B", "235B"):
+    if family in {"qwen2", "qwen3", "qwen3_5", "qwen3_5_moe", "qwen3_next", "qwen3_moe"}:
+        for marker in (
+            "0.6B",
+            "1.7B",
+            "4B",
+            "8B",
+            "14B",
+            "27B",
+            "30B",
+            "32B",
+            "35B-A3B",
+            "80B-A3B",
+            "235B",
+        ):
             if marker.lower() in lowered:
                 return marker
     if family in {"glm4", "glm4_moe"}:

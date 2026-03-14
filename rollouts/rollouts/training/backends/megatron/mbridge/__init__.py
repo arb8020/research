@@ -28,9 +28,12 @@ def register_bridges() -> None:
     """
     try:
         # Import triggers @register_model decorators
-        from . import glm4, glm4moe, glm4moe_lite
+        from . import glm4, glm4moe, glm4moe_lite, qwen3_5, qwen3_next
 
-        logger.debug("Registered custom bridges: %s", [glm4, glm4moe, glm4moe_lite])
+        logger.debug(
+            "Registered custom bridges: %s",
+            [glm4, glm4moe, glm4moe_lite, qwen3_5, qwen3_next],
+        )
     except ImportError as e:
         logger.warning("Failed to register custom bridges: %s", e)
 
