@@ -207,23 +207,36 @@ class MegatronTrainingBackend:
                 labels=labels,
             )
 
-            # Compute loss
-            active_loss_fn = loss_fn if loss_fn is not None else self.loss_fn
-            if active_loss_fn is not None:
-                loss = active_loss_fn(output, labels, loss_mask)
-            else:
-                # Default: assume model returns loss directly
-                loss = output if isinstance(output, torch.Tensor) else output.loss
-
-            # Apply advantage weighting for RL
-            if advantages is not None:
-                loss = loss * advantages.mean()
-
             # Return for pipeline engine
             def loss_reducer(output_tensor: Any) -> dict[str, Any]:
-                return {"loss": output_tensor}
+                active_loss_fn = loss_fn if loss_fn is not None else self.loss_fn
+                if active_loss_fn is not None:
+                    loss = active_loss_fn(output_tensor, labels, loss_mask)
+                else:
+                    # Default: assume model returns loss directly
+                    loss = (
+                        output_tensor
+                        if isinstance(output_tensor, torch.Tensor)
+                        else output_tensor.loss
+                    )
 
-            return loss, loss_reducer
+                if advantages is not None:
+                    loss = loss * advantages.mean()
+
+                detached_loss = loss.detach()
+                return (
+                    loss,
+                    torch.tensor(1, device=detached_loss.device),
+                    {
+                        "keys": ["loss"],
+                        "values": torch.stack([
+                            torch.tensor(1.0, device=detached_loss.device),
+                            detached_loss.float(),
+                        ]),
+                    },
+                )
+
+            return output, loss_reducer
 
         # Run forward/backward through pipeline
         losses_reduced = self._forward_backward_func(
@@ -243,7 +256,14 @@ class MegatronTrainingBackend:
         metrics = {"loss": 0.0, "grad_norm": 0.0}
         if mpu.is_pipeline_last_stage():
             if losses_reduced:
-                metrics["loss"] = float(losses_reduced[0]["loss"])
+                first_loss = losses_reduced[0]
+                if isinstance(first_loss, dict) and "keys" in first_loss and "values" in first_loss:
+                    keys = list(first_loss["keys"])
+                    values = first_loss["values"]
+                    if "loss" in keys:
+                        loss_index = keys.index("loss")
+                        count = float(values[0])
+                        metrics["loss"] = float(values[loss_index + 1]) / max(count, 1.0)
 
         return ImmediateTrainFuture(metrics)
 
