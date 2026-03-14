@@ -182,10 +182,7 @@ async def _training_and_inference_startup_smoke_async(config: Any, run_logger: A
     emit(
         "combined_startup_smoke_start",
         **run_context,
-        trainer_cuda_device_ids=list(config.trainer.cuda_device_ids),
-        inference_gpu_assignments=[list(gpus) for gpus in config.inference.gpu_assignments],
         teacher_model=getattr(config.trainer, "teacher_model", None),
-        cuda_visible_devices=os.environ.get("CUDA_VISIBLE_DEVICES"),
         hostname=socket.gethostname(),
     )
 
@@ -198,7 +195,6 @@ async def _training_and_inference_startup_smoke_async(config: Any, run_logger: A
             "combined_smoke_training_preflight_start",
             **run_context,
             trainer_backend=getattr(config.trainer, "backend", None),
-            trainer_cuda_device_ids=list(config.trainer.cuda_device_ids),
         )
         backend, backend_cleanup = await _run_training_preflight(
             config,
@@ -218,7 +214,6 @@ async def _training_and_inference_startup_smoke_async(config: Any, run_logger: A
             "combined_smoke_inference_setup_start",
             **run_context,
             inference_backend=getattr(config.inference, "backend", None),
-            inference_gpu_assignments=[list(gpus) for gpus in config.inference.gpu_assignments],
         )
         inference_engines = _create_inference_engines(config, checkpoint_dir)
         teacher_engine = _create_teacher_engine(config, checkpoint_dir)
