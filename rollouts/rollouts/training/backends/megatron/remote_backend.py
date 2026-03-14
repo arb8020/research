@@ -24,6 +24,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from ...contracts import TrainingDatum
 from ...lowering import MegatronLowering
 from ...types import ImmediateTrainFuture, TrainFuture
 
@@ -171,7 +172,7 @@ class MegatronRemoteBackend:
 
     def forward_backward(
         self,
-        batch: dict[str, Any],
+        batch: TrainingDatum | dict[str, Any],
         *,
         loss_fn: Any | None = None,
         loss_fn_config: dict[str, float] | None = None,
@@ -194,7 +195,7 @@ class MegatronRemoteBackend:
         # Send batch to rank 0 (it broadcasts to other ranks)
         self.workers[0].send({
             "cmd": "train_step",
-            "batch": self._serialize_batch(batch),
+            "batch": self._serialize_batch(self._normalize_training_batch(batch)),
         })
 
         # Wait for metrics from rank 0
@@ -208,7 +209,9 @@ class MegatronRemoteBackend:
         self._step += 1
         return ImmediateTrainFuture(response["metrics"], operation="forward_backward")
 
-    def preflight_step(self, batch: dict[str, Any]) -> TrainFuture[dict[str, float]]:
+    def preflight_step(
+        self, batch: TrainingDatum | dict[str, Any]
+    ) -> TrainFuture[dict[str, float]]:
         """Run one backend-native synthetic step for health checking.
 
         Megatron executes the optimizer step inside `forward_backward`, so this
@@ -329,6 +332,41 @@ class MegatronRemoteBackend:
                 worker.send({"cmd": "shutdown"})
             except Exception as e:
                 logger.warning("Failed to shutdown worker: %s", e)
+
+    def _normalize_training_batch(self, batch: TrainingDatum | dict[str, Any]) -> dict[str, Any]:
+        """Lower shared training datum into Megatron's backend-native batch shape.
+
+        This is boundary normalization only. Megatron still executes its own
+        native runtime/loss semantics after this lowering.
+        """
+        if isinstance(batch, dict):
+            return batch
+
+        normalized: dict[str, Any] = {"input_ids": batch.model_input.tokens}
+
+        if batch.model_input.positions is not None:
+            normalized["position_ids"] = batch.model_input.positions
+        if batch.model_input.attention_mask is not None:
+            normalized["attention_mask"] = batch.model_input.attention_mask
+
+        supported_objective_keys = {
+            "labels",
+            "loss_mask",
+            "advantages",
+            "old_logprobs",
+            "teacher_logprobs",
+            "group_ids",
+            "returns",
+        }
+        unsupported_keys = set(batch.objective_inputs) - supported_objective_keys
+        if unsupported_keys:
+            raise ValueError(
+                "MegatronRemoteBackend does not support objective_inputs keys "
+                f"{sorted(unsupported_keys)!r} in TrainingDatum yet."
+            )
+
+        normalized.update(batch.objective_inputs)
+        return normalized
 
     def _serialize_batch(self, batch: dict[str, Any]) -> dict[str, Any]:
         """Serialize batch tensors for IPC.
