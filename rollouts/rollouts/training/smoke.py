@@ -149,7 +149,7 @@ def run_inference_startup_smoke(config: Any, **_: Any) -> dict[str, Any]:
     return trio.run(_inference_startup_smoke_async, config)
 
 
-async def _training_and_inference_startup_smoke_async(config: Any) -> dict[str, Any]:
+async def _training_and_inference_startup_smoke_async(config: Any, event_log: Any | None = None) -> dict[str, Any]:
     import logging
     import os
     import socket
@@ -168,6 +168,10 @@ async def _training_and_inference_startup_smoke_async(config: Any) -> dict[str, 
     logger = logging.getLogger("rollouts.training.smoke")
     logger.setLevel(logging.INFO)
 
+    def emit(event: str, **data: Any) -> None:
+        if event_log is not None:
+            event_log(event, **data)
+
     run_context = _build_grpo_run_context(
         config=config,
         run_name=checkpoint_dir.name,
@@ -175,17 +179,14 @@ async def _training_and_inference_startup_smoke_async(config: Any) -> dict[str, 
         node_id=os.environ.get("ROLLOUTS_NODE_ID"),
         num_inference_engines=config.inference.num_engines,
     )
-    logger.info(
-        "combined startup smoke",
-        extra={
-            **run_context,
-            "event": "combined_startup_smoke_start",
-            "trainer_cuda_device_ids": list(config.trainer.cuda_device_ids),
-            "inference_gpu_assignments": [list(gpus) for gpus in config.inference.gpu_assignments],
-            "teacher_model": getattr(config.trainer, "teacher_model", None),
-            "cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES"),
-            "hostname": socket.gethostname(),
-        },
+    emit(
+        "combined_startup_smoke_start",
+        **run_context,
+        trainer_cuda_device_ids=list(config.trainer.cuda_device_ids),
+        inference_gpu_assignments=[list(gpus) for gpus in config.inference.gpu_assignments],
+        teacher_model=getattr(config.trainer, "teacher_model", None),
+        cuda_visible_devices=os.environ.get("CUDA_VISIBLE_DEVICES"),
+        hostname=socket.gethostname(),
     )
 
     backend = None
@@ -193,14 +194,11 @@ async def _training_and_inference_startup_smoke_async(config: Any) -> dict[str, 
     inference_engines = []
     teacher_engine = None
     try:
-        logger.info(
-            "combined smoke training preflight start",
-            extra={
-                **run_context,
-                "event": "combined_smoke_training_preflight_start",
-                "trainer_backend": getattr(config.trainer, "backend", None),
-                "trainer_cuda_device_ids": list(config.trainer.cuda_device_ids),
-            },
+        emit(
+            "combined_smoke_training_preflight_start",
+            **run_context,
+            trainer_backend=getattr(config.trainer, "backend", None),
+            trainer_cuda_device_ids=list(config.trainer.cuda_device_ids),
         )
         backend, backend_cleanup = await _run_training_preflight(
             config,
@@ -209,88 +207,58 @@ async def _training_and_inference_startup_smoke_async(config: Any) -> dict[str, 
             node_id=os.environ.get("ROLLOUTS_NODE_ID"),
             run_context=run_context,
         )
-        logger.info(
-            "combined smoke training preflight finished",
-            extra={
-                **run_context,
-                "event": "combined_smoke_training_preflight_finished",
-                "backend_type": type(backend).__name__ if backend is not None else None,
-                "optimizer_type": type(getattr(backend, "_optimizer", None)).__name__ if backend is not None else None,
-            },
+        emit(
+            "combined_smoke_training_preflight_finished",
+            **run_context,
+            backend_type=type(backend).__name__ if backend is not None else None,
+            optimizer_type=type(getattr(backend, "_optimizer", None)).__name__ if backend is not None else None,
         )
 
-        logger.info(
-            "combined smoke inference setup start",
-            extra={
-                **run_context,
-                "event": "combined_smoke_inference_setup_start",
-                "inference_backend": getattr(config.inference, "backend", None),
-                "inference_gpu_assignments": [list(gpus) for gpus in config.inference.gpu_assignments],
-            },
+        emit(
+            "combined_smoke_inference_setup_start",
+            **run_context,
+            inference_backend=getattr(config.inference, "backend", None),
+            inference_gpu_assignments=[list(gpus) for gpus in config.inference.gpu_assignments],
         )
         inference_engines = _create_inference_engines(config, checkpoint_dir)
         teacher_engine = _create_teacher_engine(config, checkpoint_dir)
-        logger.info(
-            "combined smoke inference setup finished",
-            extra={
-                **run_context,
-                "event": "combined_smoke_inference_setup_finished",
-                "num_engines": len(inference_engines),
-                "teacher_engine": teacher_engine is not None,
-            },
+        emit(
+            "combined_smoke_inference_setup_finished",
+            **run_context,
+            num_engines=len(inference_engines),
+            teacher_engine=teacher_engine is not None,
         )
 
         for idx, engine in enumerate(inference_engines):
-            logger.info(
-                "combined smoke inference launch",
-                extra={
-                    **run_context,
-                    "event": "combined_smoke_inference_engine_launch",
-                    "engine_index": idx,
-                    "engine_name": getattr(engine, "name", "unknown"),
-                    "engine_port": getattr(engine, "port", None),
-                    "engine_cuda_device_ids": list(getattr(engine, "cuda_device_ids", ())),
-                },
+            emit(
+                "combined_smoke_inference_engine_launch",
+                **run_context,
+                engine_index=idx,
+                engine_name=getattr(engine, "name", "unknown"),
+                engine_port=getattr(engine, "port", None),
+                engine_cuda_device_ids=list(getattr(engine, "cuda_device_ids", ())),
             )
             engine.launch()
             engine.start_log_tailer()
-            logger.info(
-                "combined smoke inference launched",
-                extra={
-                    **run_context,
-                    "event": "combined_smoke_inference_engine_launched",
-                    "engine_index": idx,
-                    "engine_name": getattr(engine, "name", "unknown"),
-                },
+            emit(
+                "combined_smoke_inference_engine_launched",
+                **run_context,
+                engine_index=idx,
+                engine_name=getattr(engine, "name", "unknown"),
             )
 
         if teacher_engine is not None:
-            logger.info(
-                "combined smoke teacher inference launch",
-                extra={
-                    **run_context,
-                    "event": "combined_smoke_teacher_engine_launch",
-                },
-            )
+            emit("combined_smoke_teacher_engine_launch", **run_context)
             teacher_engine.launch()
             teacher_engine.start_log_tailer()
-            logger.info(
-                "combined smoke teacher inference launched",
-                extra={
-                    **run_context,
-                    "event": "combined_smoke_teacher_engine_launched",
-                },
-            )
+            emit("combined_smoke_teacher_engine_launched", **run_context)
 
         startup_timeout = float(getattr(config.inference, "startup_timeout", 300.0))
-        logger.info(
-            "combined smoke inference healthcheck",
-            extra={
-                **run_context,
-                "event": "combined_smoke_inference_healthcheck_start",
-                "startup_timeout": startup_timeout,
-                "teacher_engine": teacher_engine is not None,
-            },
+        emit(
+            "combined_smoke_inference_healthcheck_start",
+            **run_context,
+            startup_timeout=startup_timeout,
+            teacher_engine=teacher_engine is not None,
         )
         async with trio.open_nursery() as startup_nursery:
             for engine in inference_engines:
@@ -298,14 +266,11 @@ async def _training_and_inference_startup_smoke_async(config: Any) -> dict[str, 
             if teacher_engine is not None:
                 startup_nursery.start_soon(teacher_engine.wait_until_ready, startup_timeout)
 
-        logger.info(
-            "combined smoke inference healthcheck finished",
-            extra={
-                **run_context,
-                "event": "combined_smoke_inference_healthcheck_finished",
-                "num_engines": len(inference_engines),
-                "teacher_engine": teacher_engine is not None,
-            },
+        emit(
+            "combined_smoke_inference_healthcheck_finished",
+            **run_context,
+            num_engines=len(inference_engines),
+            teacher_engine=teacher_engine is not None,
         )
 
         return {
@@ -335,11 +300,11 @@ async def _training_and_inference_startup_smoke_async(config: Any) -> dict[str, 
                 pass
 
 
-def run_training_and_inference_startup_smoke(config: Any, **_: Any) -> dict[str, Any]:
+def run_training_and_inference_startup_smoke(config: Any, **kwargs: Any) -> dict[str, Any]:
     """Run training preflight plus inference startup, but no RL loop.
 
     This isolates the boundary where both services are alive together, which is
     the next stage after backend-only and inference-only smokes.
     """
 
-    return trio.run(_training_and_inference_startup_smoke_async, config)
+    return trio.run(_training_and_inference_startup_smoke_async, config, kwargs.get("event_log"))
