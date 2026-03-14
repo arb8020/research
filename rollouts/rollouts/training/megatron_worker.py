@@ -37,6 +37,31 @@ class Command(IntEnum):
     CLEANUP_NCCL_WEIGHT_SYNC = 6
 
 
+def _read_proc_status_snapshot() -> str:
+    """Return a compact /proc/self/status snapshot for import-stage debugging."""
+    wanted_keys = {"VmRSS", "VmHWM", "VmSize", "Threads"}
+    snapshot: dict[str, str] = {}
+    try:
+        with open("/proc/self/status", encoding="utf-8") as status_file:
+            for line in status_file:
+                key, _, value = line.partition(":")
+                if key in wanted_keys:
+                    snapshot[key] = value.strip()
+    except OSError as exc:
+        return f"proc_status=unavailable error={exc}"
+
+    parts = [f"pid={os.getpid()}"]
+    for key in ("VmRSS", "VmHWM", "VmSize", "Threads"):
+        value = snapshot.get(key)
+        if value is not None:
+            parts.append(f"{key}={value}")
+    return " ".join(parts)
+
+
+def _log_import_stage(stage: str) -> None:
+    logger.info("import_stage=%s %s", stage, _read_proc_status_snapshot())
+
+
 def train(handle: Worker) -> None:
     """Miniray work function for Megatron distributed training.
 
@@ -87,20 +112,32 @@ def train(handle: Worker) -> None:
 
     try:
         # Phase 2: Initialize Megatron
-        logger.info("Importing Megatron modules...")
+        _log_import_stage("start")
+        _log_import_stage("before_initialize_import")
         from rollouts.training.backends.megatron.initialize import (
             MegatronParallelismConfig,
             init_megatron,
         )
+
+        _log_import_stage("after_initialize_import")
+        _log_import_stage("before_model_import")
         from rollouts.training.backends.megatron.model import (
             MegatronModelConfig,
             setup_megatron_model,
         )
+
+        _log_import_stage("after_model_import")
+        _log_import_stage("before_backend_import")
         from rollouts.training.backends.megatron_backend import (
             MegatronConfig,
             MegatronTrainingBackend,
         )
+
+        _log_import_stage("after_backend_import")
+        _log_import_stage("before_lowering_import")
         from rollouts.training.lowering import MegatronLowering, ParallelIntent, RealizationPlan
+
+        _log_import_stage("after_lowering_import")
 
         logger.info("Megatron imports successful")
 
