@@ -132,6 +132,7 @@ def train(handle: Worker) -> None:
             micro_batch_size=config.get("micro_batch_size", 1),
             global_batch_size=config.get("global_batch_size", 8),
             seq_length=config.get("seq_length", 4096),
+            sequence_parallel=config.get("sequence_parallel", False),
         )
 
         logger.info("Setting up Megatron model...")

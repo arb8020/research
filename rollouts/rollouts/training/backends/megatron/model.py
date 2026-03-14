@@ -21,6 +21,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol
 
+from rollouts.training.backends.megatron.qwen import build_qwen3_transformer_config
 from rollouts.training.models import (
     HFModelSource,
     ModelConstructionAdapter,
@@ -211,12 +212,116 @@ class RawGPTMegatronAdapter:
         bridge.load_weights(model, denotation.source.name_or_path, memory_efficient=True)
 
 
+class Qwen3CustomSpecMegatronAdapter:
+    """Megatron adapter for plain Qwen3 explicit model construction."""
+
+    adapter_name = "custom_spec:qwen3"
+
+    def normalize_denotation(self, denotation: ModelDenotation) -> ModelDenotation:
+        return denotation
+
+    def validate_support(self, denotation: ModelDenotation, *, backend_name: str) -> None:
+        assert denotation.source, f"{backend_name} model source must be non-empty"
+        if denotation.architecture.family != "qwen3":
+            raise ValueError(
+                f"{backend_name} qwen3 custom spec only supports family='qwen3', got "
+                f"{denotation.architecture.family!r}"
+            )
+        if denotation.architecture.norm != "rmsnorm":
+            raise ValueError(
+                f"{backend_name} qwen3 custom spec expects RMSNorm, got {denotation.architecture.norm!r}"
+            )
+
+    def normalize_hf_config(self, hf_config: Any) -> Any:
+        return _normalize_hf_config_for_megatron_bridge(hf_config)
+
+    def build_provider(
+        self,
+        *,
+        denotation: ModelDenotation,
+        runtime_config: MegatronModelConfig,
+        bridge: Any,
+    ) -> Any:
+        from megatron.core import mpu
+        from megatron.core.models.gpt import GPTModel
+        from megatron.core.models.gpt.gpt_layer_specs import (
+            get_gpt_layer_local_spec,
+            get_gpt_layer_with_transformer_engine_spec,
+        )
+
+        tensor_parallel_size = mpu.get_tensor_model_parallel_world_size()
+        pipeline_parallel_size = mpu.get_pipeline_model_parallel_world_size()
+        expert_parallel_size = mpu.get_expert_model_parallel_world_size()
+
+        transformer_config = build_qwen3_transformer_config(
+            denotation,
+            seq_length=runtime_config.seq_length,
+            micro_batch_size=runtime_config.micro_batch_size,
+            global_batch_size=runtime_config.global_batch_size,
+            tensor_parallel_size=tensor_parallel_size,
+            pipeline_parallel_size=pipeline_parallel_size,
+            expert_parallel_size=expert_parallel_size,
+            sequence_parallel=runtime_config.sequence_parallel,
+            bf16=runtime_config.bf16,
+            fp16=runtime_config.fp16,
+        )
+        _apply_architecture_overrides(transformer_config, runtime_config)
+
+        hf_config = self.normalize_hf_config(bridge.hf_config)
+        gpt_kwargs = {}
+        if hasattr(bridge, "_get_gptmodel_args"):
+            gpt_kwargs = dict(bridge._get_gptmodel_args())  # type: ignore[attr-defined]
+        gpt_kwargs["max_sequence_length"] = runtime_config.seq_length
+        _populate_gpt_model_defaults(
+            gpt_kwargs=gpt_kwargs,
+            hf_config=hf_config,
+            runtime_config=runtime_config,
+        )
+
+        layer_spec_kwargs = _build_layer_spec_kwargs(
+            transformer_config=transformer_config,
+            num_experts=None,
+        )
+        use_te = getattr(transformer_config, "transformer_impl", "local") == "transformer_engine"
+        if use_te:
+            transformer_layer_spec = get_gpt_layer_with_transformer_engine_spec(**layer_spec_kwargs)
+        else:
+            transformer_layer_spec = get_gpt_layer_local_spec(**layer_spec_kwargs)
+
+        def model_provider(
+            pre_process: bool = True,
+            post_process: bool = True,
+            config: Any = None,
+            pg_collection: Any = None,
+            vp_stage: int | None = None,
+        ) -> GPTModel:
+            del config, pg_collection
+            kwargs = dict(gpt_kwargs)
+            kwargs.update({
+                "config": transformer_config,
+                "transformer_layer_spec": transformer_layer_spec,
+                "pre_process": pre_process,
+                "post_process": post_process,
+            })
+            if vp_stage is not None:
+                kwargs["vp_stage"] = vp_stage
+            return GPTModel(**kwargs)
+
+        return model_provider
+
+    def load_weights(self, *, bridge: Any, model: list[Any], denotation: ModelDenotation) -> None:
+        bridge.load_weights(model, denotation.source.name_or_path, memory_efficient=True)
+
+
 def _adapter_for_lowering(lowering: MegatronModelLowering) -> MegatronModelAdapter:
     """Select the honest Megatron model-construction adapter for lowered intent."""
     if lowering.adapter_kind == "provider":
         return BridgeProviderMegatronAdapter()
     if lowering.adapter_kind == "raw_gpt":
         return RawGPTMegatronAdapter()
+    if lowering.adapter_kind == "custom_spec":
+        if lowering.denotation.architecture.family == "qwen3":
+            return Qwen3CustomSpecMegatronAdapter()
     raise ValueError(f"Unsupported Megatron adapter kind: {lowering.adapter_kind!r}")
 
 
@@ -297,6 +402,7 @@ class MegatronModelConfig:
 
     # Sequence
     seq_length: int = 4096
+    sequence_parallel: bool = False
 
     # MoE (for GLM-4.7-Flash and similar)
     num_experts: int | None = None

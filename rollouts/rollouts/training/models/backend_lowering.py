@@ -51,6 +51,12 @@ def lower_model_to_megatron(
 
     if bridge_supports_provider:
         adapter_kind: MegatronAdapterKind = "provider"
+    elif family == "qwen3":
+        adapter_kind = "custom_spec"
+        notes.append(
+            "qwen3 lowers through explicit Megatron model args derived from model denotation; "
+            "this path mirrors the slime/miles plain-Qwen3 story more closely than raw_gpt fallback"
+        )
     else:
         adapter_kind = "raw_gpt"
         if family in {"qwen3", "qwen3_moe"} and denotation.architecture.norm == "rmsnorm":
