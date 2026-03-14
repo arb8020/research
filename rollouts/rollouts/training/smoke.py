@@ -193,6 +193,15 @@ async def _training_and_inference_startup_smoke_async(config: Any) -> dict[str, 
     inference_engines = []
     teacher_engine = None
     try:
+        logger.info(
+            "combined smoke training preflight start",
+            extra={
+                **run_context,
+                "event": "combined_smoke_training_preflight_start",
+                "trainer_backend": getattr(config.trainer, "backend", None),
+                "trainer_cuda_device_ids": list(config.trainer.cuda_device_ids),
+            },
+        )
         backend, backend_cleanup = await _run_training_preflight(
             config,
             checkpoint_dir,
@@ -200,9 +209,36 @@ async def _training_and_inference_startup_smoke_async(config: Any) -> dict[str, 
             node_id=os.environ.get("ROLLOUTS_NODE_ID"),
             run_context=run_context,
         )
+        logger.info(
+            "combined smoke training preflight finished",
+            extra={
+                **run_context,
+                "event": "combined_smoke_training_preflight_finished",
+                "backend_type": type(backend).__name__ if backend is not None else None,
+                "optimizer_type": type(getattr(backend, "_optimizer", None)).__name__ if backend is not None else None,
+            },
+        )
 
+        logger.info(
+            "combined smoke inference setup start",
+            extra={
+                **run_context,
+                "event": "combined_smoke_inference_setup_start",
+                "inference_backend": getattr(config.inference, "backend", None),
+                "inference_gpu_assignments": [list(gpus) for gpus in config.inference.gpu_assignments],
+            },
+        )
         inference_engines = _create_inference_engines(config, checkpoint_dir)
         teacher_engine = _create_teacher_engine(config, checkpoint_dir)
+        logger.info(
+            "combined smoke inference setup finished",
+            extra={
+                **run_context,
+                "event": "combined_smoke_inference_setup_finished",
+                "num_engines": len(inference_engines),
+                "teacher_engine": teacher_engine is not None,
+            },
+        )
 
         for idx, engine in enumerate(inference_engines):
             logger.info(
@@ -218,10 +254,33 @@ async def _training_and_inference_startup_smoke_async(config: Any) -> dict[str, 
             )
             engine.launch()
             engine.start_log_tailer()
+            logger.info(
+                "combined smoke inference launched",
+                extra={
+                    **run_context,
+                    "event": "combined_smoke_inference_engine_launched",
+                    "engine_index": idx,
+                    "engine_name": getattr(engine, "name", "unknown"),
+                },
+            )
 
         if teacher_engine is not None:
+            logger.info(
+                "combined smoke teacher inference launch",
+                extra={
+                    **run_context,
+                    "event": "combined_smoke_teacher_engine_launch",
+                },
+            )
             teacher_engine.launch()
             teacher_engine.start_log_tailer()
+            logger.info(
+                "combined smoke teacher inference launched",
+                extra={
+                    **run_context,
+                    "event": "combined_smoke_teacher_engine_launched",
+                },
+            )
 
         startup_timeout = float(getattr(config.inference, "startup_timeout", 300.0))
         logger.info(
@@ -238,6 +297,16 @@ async def _training_and_inference_startup_smoke_async(config: Any) -> dict[str, 
                 startup_nursery.start_soon(engine.wait_until_ready, startup_timeout)
             if teacher_engine is not None:
                 startup_nursery.start_soon(teacher_engine.wait_until_ready, startup_timeout)
+
+        logger.info(
+            "combined smoke inference healthcheck finished",
+            extra={
+                **run_context,
+                "event": "combined_smoke_inference_healthcheck_finished",
+                "num_engines": len(inference_engines),
+                "teacher_engine": teacher_engine is not None,
+            },
+        )
 
         return {
             "smoke": "training_and_inference_startup",
