@@ -62,6 +62,13 @@ def _log_import_stage(stage: str) -> None:
     logger.info("import_stage=%s %s", stage, _read_proc_status_snapshot())
 
 
+def _resolve_train_future(future: Any) -> Any:
+    """Resolve a TrainFuture from this synchronous worker."""
+    import trio
+
+    return trio.run(future.result)
+
+
 def train(handle: Worker) -> None:
     """Miniray work function for Megatron distributed training.
 
@@ -441,11 +448,11 @@ def _do_train_step(
 
     # All ranks call forward_backward
     metrics_future = backend.forward_backward(batch)
-    metrics = metrics_future.result()
+    metrics = _resolve_train_future(metrics_future)
 
     # Optimizer step
     step_future = backend.optim_step()
-    step_metrics = step_future.result()
+    step_metrics = _resolve_train_future(step_future)
     metrics.update(step_metrics)
 
     return metrics
@@ -465,7 +472,7 @@ def _do_sync_weights(backend: Any, inference_endpoints: list[str]) -> None:
 
     # Get weights (handles TP/PP gathering internally)
     weights_future = backend.get_weights()
-    weights = weights_future.result()
+    weights = _resolve_train_future(weights_future)
 
     if not weights:
         return  # Not rank 0, nothing to send
@@ -599,7 +606,7 @@ def _do_sync_weights_nccl(
 
     # Gather weights (rank 0 only has full state).
     weights_future = backend.get_weights()
-    weights = weights_future.result()
+    weights = _resolve_train_future(weights_future)
     if not weights:
         return
 
