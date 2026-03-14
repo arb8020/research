@@ -19,12 +19,205 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol
+
+from rollouts.training.models import (
+    HFModelSource,
+    ModelConstructionAdapter,
+    ModelDenotation,
+    lower_model_to_megatron,
+    normalize_hf_model_denotation,
+)
+from rollouts.training.models.backend_lowering import MegatronModelLowering
 
 if TYPE_CHECKING:
     from pathlib import Path
 
 logger = logging.getLogger(__name__)
+
+
+class MegatronModelAdapter(ModelConstructionAdapter, Protocol):
+    """Megatron-specific model construction adapter.
+
+    This is separate from `RealizationPlan` lowering. These adapters lower model
+    denotation into Megatron-native provider/model construction.
+    """
+
+    def normalize_hf_config(self, hf_config: Any) -> Any:
+        """Normalize HF config into the shape this adapter expects."""
+        ...
+
+    def build_provider(
+        self,
+        *,
+        denotation: ModelDenotation,
+        runtime_config: MegatronModelConfig,
+        bridge: Any,
+    ) -> Any:
+        """Construct a Megatron-native model provider."""
+        ...
+
+    def load_weights(self, *, bridge: Any, model: list[Any], denotation: ModelDenotation) -> None:
+        """Load weights for a constructed Megatron model."""
+        ...
+
+
+class BridgeProviderMegatronAdapter:
+    """Megatron adapter for bridge/provider-capable models."""
+
+    adapter_name = "provider"
+
+    def normalize_denotation(self, denotation: ModelDenotation) -> ModelDenotation:
+        return denotation
+
+    def validate_support(self, denotation: ModelDenotation, *, backend_name: str) -> None:
+        assert denotation.source, f"{backend_name} model source must be non-empty"
+
+    def normalize_hf_config(self, hf_config: Any) -> Any:
+        return hf_config
+
+    def build_provider(
+        self,
+        *,
+        denotation: ModelDenotation,
+        runtime_config: MegatronModelConfig,
+        bridge: Any,
+    ) -> Any:
+        del denotation, runtime_config
+        from megatron.core import mpu
+
+        provider = bridge.to_megatron_provider(load_weights=False)  # type: ignore[attr-defined]
+        provider.tensor_model_parallel_size = mpu.get_tensor_model_parallel_world_size()
+        provider.pipeline_model_parallel_size = mpu.get_pipeline_model_parallel_world_size()
+        provider.expert_model_parallel_size = mpu.get_expert_model_parallel_world_size()
+        provider.finalize()
+        return provider.provide
+
+    def load_weights(self, *, bridge: Any, model: list[Any], denotation: ModelDenotation) -> None:
+        bridge.load_weights(model, denotation.source.name_or_path, memory_efficient=True)
+
+
+class RawGPTMegatronAdapter:
+    """Megatron adapter for raw GPTModel construction from bridge internals.
+
+    This is still backend-native and intentionally conservative. It exists for
+    mbridge builds that do not expose `to_megatron_provider`, but it is not a
+    claim that every HF model can be lowered through generic GPT defaults.
+    """
+
+    adapter_name = "raw_gpt"
+
+    def normalize_denotation(self, denotation: ModelDenotation) -> ModelDenotation:
+        return denotation
+
+    def validate_support(self, denotation: ModelDenotation, *, backend_name: str) -> None:
+        assert denotation.source, f"{backend_name} model source must be non-empty"
+        if (
+            denotation.architecture.family in {"qwen3", "qwen3_moe"}
+            and denotation.architecture.norm == "rmsnorm"
+        ):
+            raise ValueError(
+                f"{backend_name} raw_gpt lowering does not honestly support "
+                f"{denotation.architecture.family} with RMSNorm. "
+                "Use a provider-capable bridge or add a custom_spec adapter."
+            )
+
+    def normalize_hf_config(self, hf_config: Any) -> Any:
+        return _normalize_hf_config_for_megatron_bridge(hf_config)
+
+    def build_provider(
+        self,
+        *,
+        denotation: ModelDenotation,
+        runtime_config: MegatronModelConfig,
+        bridge: Any,
+    ) -> Any:
+        del denotation
+        if not hasattr(bridge, "_build_config"):
+            raise AttributeError(
+                "Bridge object does not expose `to_megatron_provider` or `_build_config`. "
+                "This mbridge version cannot construct Megatron models directly. "
+                "Consider using a megatron.bridge build instead."
+            )
+
+        from megatron.core.models.gpt import GPTModel
+        from megatron.core.models.gpt.gpt_layer_specs import (
+            get_gpt_decoder_block_spec,
+            get_gpt_layer_local_spec,
+            get_gpt_layer_with_transformer_engine_spec,
+        )
+
+        hf_config = self.normalize_hf_config(bridge.hf_config)
+        transformer_config = bridge._build_config()
+        _apply_architecture_overrides(transformer_config, runtime_config)
+
+        if hasattr(bridge, "_get_gptmodel_args"):
+            gpt_kwargs = dict(bridge._get_gptmodel_args())  # type: ignore[attr-defined]
+        else:
+            gpt_kwargs = {}
+
+        _populate_gpt_model_defaults(
+            gpt_kwargs=gpt_kwargs,
+            hf_config=hf_config,
+            runtime_config=runtime_config,
+        )
+
+        num_experts = _infer_num_experts(runtime_config, hf_config)
+        use_te = False
+
+        # TODO: add an explicit custom-spec adapter path for model families that
+        # are not honestly supported by generic raw GPT construction.
+        def model_provider(
+            pre_process: bool = True,
+            post_process: bool = True,
+            config: Any = None,
+            pg_collection: Any = None,
+            vp_stage: int | None = None,
+        ) -> GPTModel:
+            del config, pg_collection
+            if num_experts:
+                layer_kwargs: dict[str, bool | int] = {"use_transformer_engine": use_te}
+                if vp_stage is not None:
+                    layer_kwargs["vp_stage"] = vp_stage
+                transformer_layer_spec = get_gpt_decoder_block_spec(
+                    transformer_config, **layer_kwargs
+                )
+            else:
+                layer_spec_kwargs = _build_layer_spec_kwargs(
+                    transformer_config=transformer_config,
+                    num_experts=num_experts,
+                )
+                if use_te:
+                    transformer_layer_spec = get_gpt_layer_with_transformer_engine_spec(
+                        **layer_spec_kwargs,
+                    )
+                else:
+                    transformer_layer_spec = get_gpt_layer_local_spec(**layer_spec_kwargs)
+
+            kwargs = dict(gpt_kwargs)
+            kwargs.update({
+                "config": transformer_config,
+                "transformer_layer_spec": transformer_layer_spec,
+                "pre_process": pre_process,
+                "post_process": post_process,
+            })
+            if vp_stage is not None and "vp_stage" not in kwargs:
+                kwargs["vp_stage"] = vp_stage
+            return GPTModel(**kwargs)
+
+        return model_provider
+
+    def load_weights(self, *, bridge: Any, model: list[Any], denotation: ModelDenotation) -> None:
+        bridge.load_weights(model, denotation.source.name_or_path, memory_efficient=True)
+
+
+def _adapter_for_lowering(lowering: MegatronModelLowering) -> MegatronModelAdapter:
+    """Select the honest Megatron model-construction adapter for lowered intent."""
+    if lowering.adapter_kind == "provider":
+        return BridgeProviderMegatronAdapter()
+    if lowering.adapter_kind == "raw_gpt":
+        return RawGPTMegatronAdapter()
+    raise ValueError(f"Unsupported Megatron adapter kind: {lowering.adapter_kind!r}")
 
 
 def _infer_rope_theta(hf_config: Any) -> float | int | None:
@@ -180,22 +373,50 @@ def setup_megatron_model(
             "See: https://github.com/NVIDIA/Megatron-LM"
         ) from e
 
-    logger.info("Loading model via AutoBridge: %s", config.model_name)
+    # Normalize published HF semantics first, then lower that denotation into
+    # honest Megatron-native model-construction intent.
+    source = HFModelSource(
+        name_or_path=config.model_name,
+        trust_remote_code=config.trust_remote_code,
+    )
+    denotation = normalize_hf_model_denotation(source)
+    logger.info("Loading model via AutoBridge: %s", denotation.source.name_or_path)
 
     try:
         bridge = AutoBridge.from_pretrained(
-            config.model_name,
-            trust_remote_code=config.trust_remote_code,
+            denotation.source.name_or_path,
+            trust_remote_code=denotation.source.trust_remote_code,
         )
     except Exception as e:
         raise ValueError(
-            f"AutoBridge failed to load model '{config.model_name}'. "
+            f"AutoBridge failed to load model '{denotation.source.name_or_path}'. "
             f"This architecture may not be supported. "
             f"Supported: Llama, Qwen, DeepseekV3, GLM-4, GLM-4.7-Flash. "
             f"Original error: {e}"
         ) from e
 
-    provider = _build_model_provider(config, bridge)
+    model_lowering = lower_model_to_megatron(
+        denotation,
+        bridge_supports_provider=hasattr(bridge, "to_megatron_provider"),
+        architecture_args=config.architecture_args,
+    )
+    for note in model_lowering.validation_notes:
+        logger.warning("Megatron model lowering note: %s", note)
+
+    adapter = _adapter_for_lowering(model_lowering)
+    denotation = adapter.normalize_denotation(denotation)
+    adapter.validate_support(denotation, backend_name="megatron")
+    logger.info(
+        "Using Megatron model adapter: %s for family=%s variant=%s",
+        adapter.adapter_name,
+        denotation.architecture.family,
+        denotation.variant,
+    )
+    provider = adapter.build_provider(
+        denotation=denotation,
+        runtime_config=config,
+        bridge=bridge,
+    )
 
     model = get_model(
         model_provider_func=provider,
@@ -204,8 +425,8 @@ def setup_megatron_model(
     )
 
     # Load weights from HuggingFace checkpoint
-    logger.info("Loading weights from: %s", config.model_name)
-    bridge.load_weights(model, config.model_name, memory_efficient=True)
+    logger.info("Loading weights from: %s", denotation.source.name_or_path)
+    adapter.load_weights(bridge=bridge, model=model, denotation=denotation)
 
     logger.info("Model created: %d chunks", len(model))
 
@@ -249,51 +470,13 @@ def setup_megatron_model(
     return model, optimizer, scheduler
 
 
-def _build_model_provider(config: MegatronModelConfig, bridge: Any) -> Any:
-    """Build a Megatron model provider without bridge-specific provider APIs.
-
-    Current mbridge pip package does not expose `to_megatron_provider` on
-    per-model bridge objects. In that case, we build the model directly from the
-    bridge-generated Megatron/Transformer config and rely on mbridge for weight
-    loading only.
-    """
-    from megatron.core import mpu
-    from megatron.core.models.gpt import GPTModel
-    from megatron.core.models.gpt.gpt_layer_specs import (
-        get_gpt_decoder_block_spec,
-        get_gpt_layer_local_spec,
-        get_gpt_layer_with_transformer_engine_spec,
-    )
-
-    # Backward-compatible path when the old API is available.
-    if hasattr(bridge, "to_megatron_provider"):
-        provider = bridge.to_megatron_provider(load_weights=False)  # type: ignore[attr-defined]
-        provider.tensor_model_parallel_size = mpu.get_tensor_model_parallel_world_size()
-        provider.pipeline_model_parallel_size = mpu.get_pipeline_model_parallel_world_size()
-        provider.expert_model_parallel_size = mpu.get_expert_model_parallel_world_size()
-        provider.finalize()
-        return provider.provide
-
-    logger.info("mbridge does not provide to_megatron_provider; using raw model-provider path")
-    if not hasattr(bridge, "_build_config"):
-        raise AttributeError(
-            "Bridge object does not expose `to_megatron_provider` or `_build_config`. "
-            "This mbridge version cannot construct Megatron models directly. "
-            "Consider using a megatron.bridge build instead."
-        )
-
-    hf_config = _normalize_hf_config_for_megatron_bridge(bridge.hf_config)
-    transformer_config = bridge._build_config()
-
-    # Apply lightweight overrides from rollouts config.
-    _apply_architecture_overrides(transformer_config, config)
-
-    if hasattr(bridge, "_get_gptmodel_args"):
-        gpt_kwargs = dict(bridge._get_gptmodel_args())  # type: ignore[attr-defined]
-    else:
-        gpt_kwargs = {}
-
-    # Fill args required by GPTModel defaults.
+def _populate_gpt_model_defaults(
+    *,
+    gpt_kwargs: dict[str, Any],
+    hf_config: Any,
+    runtime_config: MegatronModelConfig,
+) -> None:
+    """Populate GPTModel kwargs from model denotation plus runtime config."""
     gpt_kwargs.setdefault("vocab_size", getattr(hf_config, "vocab_size", None))
     max_sequence_length = gpt_kwargs.get("max_sequence_length")
     if max_sequence_length is None:
@@ -302,7 +485,7 @@ def _build_model_provider(config: MegatronModelConfig, bridge: Any) -> Any:
         max_sequence_length = getattr(hf_config, "max_seq_len", None)
     if max_sequence_length is None:
         raise ValueError(
-            f"Unable to infer max sequence length from model config: {config.model_name}"
+            f"Unable to infer max sequence length from model config: {runtime_config.model_name}"
         )
     gpt_kwargs["max_sequence_length"] = max_sequence_length
 
@@ -317,75 +500,31 @@ def _build_model_provider(config: MegatronModelConfig, bridge: Any) -> Any:
     if gpt_kwargs.get("share_embeddings_and_output_weights") is None:
         gpt_kwargs["share_embeddings_and_output_weights"] = True
     if gpt_kwargs.get("fp16_lm_cross_entropy") is None:
-        gpt_kwargs["fp16_lm_cross_entropy"] = config.fp16
+        gpt_kwargs["fp16_lm_cross_entropy"] = runtime_config.fp16
     if gpt_kwargs.get("parallel_output") is None:
         gpt_kwargs["parallel_output"] = True
 
-    gpt_kwargs.update(config.architecture_args)
+    gpt_kwargs.update(runtime_config.architecture_args)
 
-    # Determine expert settings.
-    num_experts = config.num_experts
-    if num_experts is None:
-        num_experts = getattr(hf_config, "n_routed_experts", 0) or getattr(
-            hf_config, "num_experts", 0
-        )
 
-    use_te = False
+def _infer_num_experts(runtime_config: MegatronModelConfig, hf_config: Any) -> int | None:
+    """Infer MoE expert count from explicit runtime config or HF config."""
+    if runtime_config.num_experts is not None:
+        return runtime_config.num_experts
+    return getattr(hf_config, "n_routed_experts", 0) or getattr(hf_config, "num_experts", 0)
 
-    def model_provider(
-        pre_process: bool = True,
-        post_process: bool = True,
-        config: Any = None,  # TransformerConfig from Megatron, we use transformer_config from closure
-        pg_collection: Any = None,  # ProcessGroupCollection, unused
-        vp_stage: int | None = None,
-    ) -> GPTModel:
-        if num_experts:
-            layer_kwargs: dict[str, bool | int] = {"use_transformer_engine": use_te}
-            if vp_stage is not None:
-                layer_kwargs["vp_stage"] = vp_stage
-            transformer_layer_spec = get_gpt_decoder_block_spec(transformer_config, **layer_kwargs)
-        else:
-            if use_te:
-                layer_spec_kwargs = {
-                    "num_experts": num_experts,
-                    "moe_grouped_gemm": getattr(transformer_config, "moe_grouped_gemm", False),
-                    "qk_layernorm": getattr(transformer_config, "qk_layernorm", False),
-                    "multi_latent_attention": getattr(
-                        transformer_config, "multi_latent_attention", False
-                    ),
-                    "moe_use_legacy_grouped_gemm": getattr(
-                        transformer_config, "moe_use_legacy_grouped_gemm", False
-                    ),
-                }
-                transformer_layer_spec = get_gpt_layer_with_transformer_engine_spec(
-                    **layer_spec_kwargs,
-                )
-            else:
-                layer_spec_kwargs = {
-                    "num_experts": num_experts,
-                    "moe_grouped_gemm": getattr(transformer_config, "moe_grouped_gemm", False),
-                    "qk_layernorm": getattr(transformer_config, "qk_layernorm", False),
-                    "multi_latent_attention": getattr(
-                        transformer_config, "multi_latent_attention", False
-                    ),
-                    "moe_use_legacy_grouped_gemm": getattr(
-                        transformer_config, "moe_use_legacy_grouped_gemm", False
-                    ),
-                }
-                transformer_layer_spec = get_gpt_layer_local_spec(**layer_spec_kwargs)
 
-        kwargs = dict(gpt_kwargs)
-        kwargs.update({
-            "config": transformer_config,
-            "transformer_layer_spec": transformer_layer_spec,
-            "pre_process": pre_process,
-            "post_process": post_process,
-        })
-        if vp_stage is not None and "vp_stage" not in kwargs:
-            kwargs["vp_stage"] = vp_stage
-        return GPTModel(**kwargs)
-
-    return model_provider
+def _build_layer_spec_kwargs(*, transformer_config: Any, num_experts: int | None) -> dict[str, Any]:
+    """Build shared Megatron GPT layer-spec kwargs."""
+    return {
+        "num_experts": num_experts,
+        "moe_grouped_gemm": getattr(transformer_config, "moe_grouped_gemm", False),
+        "qk_layernorm": getattr(transformer_config, "qk_layernorm", False),
+        "multi_latent_attention": getattr(transformer_config, "multi_latent_attention", False),
+        "moe_use_legacy_grouped_gemm": getattr(
+            transformer_config, "moe_use_legacy_grouped_gemm", False
+        ),
+    }
 
 
 def _apply_architecture_overrides(transformer_config: Any, config: MegatronModelConfig) -> None:

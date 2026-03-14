@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import socket
 from pathlib import Path
@@ -18,8 +19,15 @@ from ...training.lowering import (
     dense_rl_realization,
     dense_supervised_realization,
 )
+from ...training.models import (
+    HFModelSource,
+    lower_model_to_torchtitan,
+    normalize_hf_model_denotation,
+)
 from ...training.preflight import require_torchtitan_runtime
 from .torchtitan_backend import TorchTitanBackend, TorchTitanConfig
+
+logger = logging.getLogger(__name__)
 
 
 def _find_free_port(start_port: int, max_attempts: int = 100) -> int:
@@ -88,8 +96,22 @@ def create_torchtitan_backend(
     # incompatible with the current runtime.
     preflight = require_torchtitan_runtime()
 
+    # TorchTitan config still carries backend-native registry strings, but the
+    # semantic source of truth is the normalized HF model denotation.
+    model_denotation = normalize_hf_model_denotation(HFModelSource(name_or_path=hf_checkpoint))
+    model_lowering = lower_model_to_torchtitan(
+        model_denotation,
+        model_override=torchtitan_model,
+        size_override=torchtitan_model_size,
+    )
+    for note in model_lowering.validation_notes:
+        logger.warning("TorchTitan model lowering note: %s", note)
+
+    resolved_model = model_lowering.train_spec_name
+    resolved_size = model_lowering.model_size
+
     # Import GLM to register with torchtitan when requested.
-    if torchtitan_model == "glm":
+    if resolved_model == "glm":
         from ..models import glm  # noqa: F401
 
     cleanup = ensure_single_rank_torchtitan_dist(gpu_rank=gpu_rank)
@@ -138,13 +160,13 @@ def create_torchtitan_backend(
         )
 
     backend = TorchTitanBackend(
-        model_name=torchtitan_model,
-        model_size=torchtitan_model_size,
+        model_name=resolved_model,
+        model_size=resolved_size,
         checkpoint_dir=checkpoint_dir,
         loss_fn=loss_fn,
         config=config,
         lowering=lowering,
         hf_checkpoint=hf_checkpoint,
     )
-    setattr(backend, "_runtime_preflight", preflight)
+    backend._runtime_preflight = preflight
     return backend, cleanup
