@@ -35,5 +35,5 @@ config = replace(
 )
 
 
-def train(**kwargs: object) -> dict:
+def train(config: object = config, **kwargs: object) -> dict:
     return _base_train(config=config, **kwargs)
