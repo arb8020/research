@@ -183,7 +183,6 @@ async def _training_and_inference_startup_smoke_async(config: Any, run_logger: A
         "combined_startup_smoke_start",
         **run_context,
         teacher_model=getattr(config.trainer, "teacher_model", None),
-        hostname=socket.gethostname(),
     )
 
     backend = None
