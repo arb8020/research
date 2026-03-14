@@ -36,6 +36,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+import torch
+import torch.distributed as dist
+
 from ...training.lowering import MegatronLowering
 from ...training.types import ImmediateTrainFuture, TrainFuture
 
@@ -53,6 +56,256 @@ def _extract_megatron_logits(output_tensor: Any) -> Any:
     if hasattr(output_tensor, "logits"):
         return output_tensor.logits
     return output_tensor
+
+
+def _naive_per_token_logprobs(logits: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
+    log_probs = torch.nn.functional.log_softmax(logits, dim=-1)
+    return log_probs.gather(dim=-1, index=labels.unsqueeze(-1)).squeeze(-1)
+
+
+def _naive_entropy(logits: torch.Tensor) -> torch.Tensor:
+    probs = torch.nn.functional.softmax(logits, dim=-1)
+    log_probs = torch.nn.functional.log_softmax(logits, dim=-1)
+    return -(probs * log_probs).sum(dim=-1)
+
+
+def _tp_per_token_logprobs(
+    logits: torch.Tensor,
+    labels: torch.Tensor,
+    process_group: dist.ProcessGroup,
+) -> torch.Tensor:
+    from megatron.core.fusions.fused_cross_entropy import fused_vocab_parallel_cross_entropy
+
+    flat_logits = logits.reshape(-1, logits.size(-1)).contiguous()
+    flat_labels = labels.reshape(-1).contiguous()
+    losses = fused_vocab_parallel_cross_entropy(
+        flat_logits.unsqueeze(1),
+        flat_labels.unsqueeze(1),
+        process_group,
+    )
+    return (-losses.squeeze(1)).reshape_as(labels)
+
+
+class _VocabParallelEntropy(torch.autograd.Function):
+    """Entropy over tensor-parallel vocab shards.
+
+    TODO: If we later model sharded forward products explicitly, we can move
+    the shared GRPO formulas back above this backend layer. Until then, keep
+    the TP-specific realization glue local to Megatron.
+    """
+
+    @staticmethod
+    def forward(
+        ctx: Any,
+        vocab_parallel_logits: torch.Tensor,
+        process_group: dist.ProcessGroup,
+    ) -> torch.Tensor:
+        logits_max = vocab_parallel_logits.max(dim=-1, keepdim=True).values
+        dist.all_reduce(logits_max, op=dist.ReduceOp.MAX, group=process_group)
+
+        normalized_logits = vocab_parallel_logits - logits_max
+        exp_logits = normalized_logits.exp_()
+        sum_exp_logits = exp_logits.sum(dim=-1, keepdim=True)
+        dist.all_reduce(sum_exp_logits, group=process_group)
+
+        softmax_logits = exp_logits.div_(sum_exp_logits)
+        sum_softmax_times_logits = (softmax_logits * vocab_parallel_logits).sum(
+            dim=-1, keepdim=True
+        )
+        dist.all_reduce(sum_softmax_times_logits, group=process_group)
+
+        entropy = logits_max + sum_exp_logits.log() - sum_softmax_times_logits
+        ctx.save_for_backward(vocab_parallel_logits, softmax_logits, sum_softmax_times_logits)
+        return entropy.squeeze(dim=-1)
+
+    @staticmethod
+    def backward(ctx: Any, grad_output: torch.Tensor) -> tuple[torch.Tensor, None]:
+        vocab_parallel_logits, softmax_logits, sum_softmax_times_logits = ctx.saved_tensors
+        vocab_parallel_logits.sub_(sum_softmax_times_logits)
+        softmax_logits.mul_(vocab_parallel_logits)
+        softmax_logits.mul_(grad_output.unsqueeze(dim=-1))
+        vocab_parallel_logits.add_(sum_softmax_times_logits)
+        softmax_logits.mul_(-1)
+        return softmax_logits, None
+
+
+def _tp_entropy(logits: torch.Tensor, process_group: dist.ProcessGroup) -> torch.Tensor:
+    flat_logits = logits.reshape(-1, logits.size(-1)).contiguous()
+    entropy = _VocabParallelEntropy.apply(flat_logits, process_group)
+    return entropy.reshape(logits.shape[:-1])
+
+
+def _sequence_mean(values: torch.Tensor, loss_mask: torch.Tensor) -> torch.Tensor:
+    return (values * loss_mask).sum(dim=1) / loss_mask.sum(dim=1).clamp(min=1.0)
+
+
+def _masked_mean(values: torch.Tensor, loss_mask: torch.Tensor) -> torch.Tensor:
+    return (values * loss_mask).sum() / loss_mask.sum().clamp(min=1.0)
+
+
+def _megatron_per_token_logprobs(logits: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
+    from megatron.core import mpu
+
+    if mpu.get_tensor_model_parallel_world_size() <= 1:
+        return _naive_per_token_logprobs(logits, labels)
+    return _tp_per_token_logprobs(logits, labels, mpu.get_tensor_model_parallel_group())
+
+
+def _megatron_entropy(logits: torch.Tensor) -> torch.Tensor:
+    from megatron.core import mpu
+
+    if mpu.get_tensor_model_parallel_world_size() <= 1:
+        return _naive_entropy(logits)
+    return _tp_entropy(logits, mpu.get_tensor_model_parallel_group())
+
+
+def megatron_grpo_loss(
+    logits: torch.Tensor,
+    batch: dict[str, torch.Tensor],
+) -> tuple[torch.Tensor, dict[str, float]]:
+    labels = batch["labels"]
+    loss_mask = batch["loss_mask"]
+    advantages = batch["advantages"]
+
+    token_logprobs = _megatron_per_token_logprobs(logits, labels)
+    seq_logprobs = _sequence_mean(token_logprobs, loss_mask)
+    pg_loss = -(seq_logprobs * advantages).mean()
+
+    with torch.no_grad():
+        entropy = _masked_mean(_megatron_entropy(logits), loss_mask).item()
+
+    metrics = {
+        "pg_loss": pg_loss.item(),
+        "entropy": entropy,
+        "avg_logprob": seq_logprobs.mean().item(),
+        "avg_advantage": advantages.mean().item(),
+    }
+    return pg_loss, metrics
+
+
+def megatron_grpo_loss_clipped(
+    logits: torch.Tensor,
+    batch: dict[str, torch.Tensor],
+    clip_range: float = 0.2,
+    entropy_coef: float = 0.0,
+) -> tuple[torch.Tensor, dict[str, float]]:
+    labels = batch["labels"]
+    loss_mask = batch["loss_mask"]
+    advantages = batch["advantages"]
+    old_logprobs = batch["old_logprobs"]
+
+    token_logprobs = _megatron_per_token_logprobs(logits, labels)
+    seq_logprobs = _sequence_mean(token_logprobs, loss_mask)
+
+    log_ratio = seq_logprobs - old_logprobs
+    ratio = torch.exp(log_ratio)
+    pg_loss1 = -ratio * advantages
+    pg_loss2 = -torch.clamp(ratio, 1.0 - clip_range, 1.0 + clip_range) * advantages
+    pg_loss = torch.max(pg_loss1, pg_loss2).mean()
+
+    entropy = _masked_mean(_megatron_entropy(logits), loss_mask)
+    loss = pg_loss - entropy_coef * entropy
+
+    with torch.no_grad():
+        clipped = (ratio < 1.0 - clip_range) | (ratio > 1.0 + clip_range)
+        clipfrac = clipped.float().mean().item()
+        approx_kl = ((ratio - 1) - log_ratio).mean().item()
+
+    metrics = {
+        "pg_loss": pg_loss.item(),
+        "entropy": entropy.item(),
+        "clipfrac": clipfrac,
+        "approx_kl": approx_kl,
+        "avg_ratio": ratio.mean().item(),
+        "avg_logprob": seq_logprobs.mean().item(),
+        "avg_advantage": advantages.mean().item(),
+    }
+    return loss, metrics
+
+
+def megatron_grpo_loss_masked(
+    logits: torch.Tensor,
+    batch: dict[str, torch.Tensor],
+    ratio_low: float = 0.1,
+    ratio_high: float = 10.0,
+    kl_coef: float = 0.01,
+) -> tuple[torch.Tensor, dict[str, float]]:
+    labels = batch["labels"]
+    loss_mask = batch["loss_mask"]
+    advantages = batch["advantages"]
+    old_logprobs = batch["old_logprobs"]
+
+    token_logprobs = _megatron_per_token_logprobs(logits, labels)
+    seq_logprobs = _sequence_mean(token_logprobs, loss_mask)
+
+    log_ratio = seq_logprobs - old_logprobs
+    ratio = torch.exp(log_ratio)
+    is_masked_low = ratio < ratio_low
+    is_masked_high = ratio > ratio_high
+    keep_mask = ~(is_masked_low | is_masked_high)
+    coeff = ratio * (advantages - kl_coef * log_ratio)
+
+    if keep_mask.sum() > 0:
+        pg_loss = -(coeff.detach() * seq_logprobs)[keep_mask].sum() / keep_mask.sum()
+    else:
+        pg_loss = torch.tensor(0.0, device=logits.device, requires_grad=True)
+
+    with torch.no_grad():
+        entropy = _masked_mean(_megatron_entropy(logits), loss_mask).item()
+        mismatch_kl = (torch.exp(log_ratio) - log_ratio - 1).mean().item()
+
+    metrics = {
+        "pg_loss": pg_loss.item(),
+        "entropy": entropy,
+        "masked_frac": (~keep_mask).float().mean().item(),
+        "masked_low_frac": is_masked_low.float().mean().item(),
+        "masked_high_frac": is_masked_high.float().mean().item(),
+        "mismatch_kl": mismatch_kl,
+        "avg_ratio": ratio.mean().item(),
+        "avg_logprob": seq_logprobs.mean().item(),
+        "avg_advantage": advantages.mean().item(),
+        "avg_coeff": coeff.mean().item(),
+    }
+    return pg_loss, metrics
+
+
+def megatron_opd_loss(
+    logits: torch.Tensor,
+    batch: dict[str, torch.Tensor],
+) -> tuple[torch.Tensor, dict[str, float]]:
+    labels = batch["labels"]
+    loss_mask = batch["loss_mask"]
+    teacher_logprobs = batch["teacher_logprobs"]
+
+    student_logprobs = _megatron_per_token_logprobs(logits, labels)
+    if "advantages" in batch:
+        advantages = batch["advantages"]
+    else:
+        advantages = (teacher_logprobs - student_logprobs) * loss_mask
+
+    masked_pg = student_logprobs * advantages.detach() * loss_mask
+    num_tokens = loss_mask.sum().clamp(min=1.0)
+    pg_loss = -masked_pg.sum() / num_tokens
+
+    with torch.no_grad():
+        entropy = _masked_mean(_megatron_entropy(logits), loss_mask).item()
+        avg_student_lp = (student_logprobs * loss_mask).sum().item() / num_tokens.item()
+        avg_teacher_lp = (teacher_logprobs * loss_mask).sum().item() / num_tokens.item()
+        avg_advantage = (advantages * loss_mask).sum().item() / num_tokens.item()
+        kl_div = (
+            (student_logprobs - teacher_logprobs) * loss_mask
+        ).sum().item() / num_tokens.item()
+
+    metrics = {
+        "pg_loss": pg_loss.item(),
+        "entropy": entropy,
+        "avg_student_logprob": avg_student_lp,
+        "avg_teacher_logprob": avg_teacher_lp,
+        "avg_advantage": avg_advantage,
+        "kl_div": kl_div,
+        "num_tokens": num_tokens.item(),
+    }
+    return pg_loss, metrics
 
 
 @dataclass
