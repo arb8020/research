@@ -42,7 +42,7 @@ config = GRPOConfig(
         checkpoint_every=2,
         sync_weights_every=1,
         pipeline_mode="sync",
-        weight_sync_mode="disk",
+        weight_sync_mode="nccl",
     ),
     rollout=RolloutConfig(
         batch_size=4,

@@ -99,6 +99,14 @@ class GRPOConfig:
     )
     service_runtime_layout: str = "shared_env"
 
+    def __post_init__(self) -> None:
+        if self.trainer.backend == "megatron" and self.checkpoint.weight_sync_mode != "nccl":
+            raise ValueError(
+                "Megatron training currently supports only checkpoint.weight_sync_mode='nccl'. "
+                "The Megatron backend performs direct weight sync to inference and does not "
+                "implement disk checkpoint sync semantics for per-step sampler updates yet."
+            )
+
     def save(self, path: Path | str) -> None:
         """Save config to JSON."""
         import json
