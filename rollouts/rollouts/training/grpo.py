@@ -674,9 +674,7 @@ def _setup_training_backend(
             cp=config.trainer.torchtitan_cp,
             pp=config.trainer.torchtitan_pp,
             packed_sequences=config.trainer.realization_packed_sequences,
-            activation_checkpoint_mode=(
-                "selective" if config.trainer.activation_checkpointing else "none"
-            ),
+            activation_checkpointing=config.trainer.activation_checkpointing,
             mode="rl",
             realization=realization,
         )

@@ -30,6 +30,52 @@ from .torchtitan_backend import TorchTitanBackend, TorchTitanConfig
 logger = logging.getLogger(__name__)
 
 
+def _build_torchtitan_runtime_config(
+    *,
+    seq_len: int,
+    micro_batch_size: int | None,
+    num_minibatches: int,
+    learning_rate: float,
+    weight_decay: float,
+    max_grad_norm: float,
+    tp: int,
+    cp: int,
+    pp: int,
+    activation_checkpointing: bool,
+) -> TorchTitanConfig:
+    """Normalize Rollouts trainer semantics into an explicit TorchTitan config.
+
+    This is the adapter boundary for TorchTitan-specific runtime options.
+    Keep library defaults out of the GRPO call site and make the mapping
+    explicit here so missing fields fail close to the boundary.
+    """
+    assert seq_len >= 1
+    assert num_minibatches >= 1
+    assert tp >= 1
+    assert cp >= 1
+    assert pp >= 1
+    if micro_batch_size is not None:
+        assert micro_batch_size >= 1
+
+    activation_checkpoint_mode = "selective" if activation_checkpointing else "none"
+
+    config = TorchTitanConfig(
+        tp_degree=tp,
+        cp_degree=cp,
+        pp_degree=pp,
+        seq_len=seq_len,
+        micro_batch_size=micro_batch_size,
+        num_minibatches=num_minibatches,
+        lr=learning_rate,
+        weight_decay=weight_decay,
+        max_grad_norm=max_grad_norm,
+        activation_checkpoint_mode=activation_checkpoint_mode,
+    )
+
+    assert config.activation_checkpoint_mode in {"none", "selective"}
+    return config
+
+
 def _find_free_port(start_port: int, max_attempts: int = 100) -> int:
     for port in range(start_port, start_port + max_attempts):
         try:
@@ -88,7 +134,7 @@ def create_torchtitan_backend(
     pp: int = 1,
     enable_loss_parallel: bool = True,
     packed_sequences: bool = True,
-    activation_checkpoint_mode: str = "none",
+    activation_checkpointing: bool = False,
     mode: str = "supervised",
     realization: RealizationPlan | None = None,
     lowering: TorchTitanLowering | None = None,
@@ -119,17 +165,17 @@ def create_torchtitan_backend(
 
     cleanup = ensure_single_rank_torchtitan_dist(gpu_rank=gpu_rank)
 
-    config = TorchTitanConfig(
-        tp_degree=tp,
-        cp_degree=cp,
-        pp_degree=pp,
+    config = _build_torchtitan_runtime_config(
         seq_len=seq_len,
         micro_batch_size=micro_batch_size,
         num_minibatches=num_minibatches,
-        lr=learning_rate,
+        learning_rate=learning_rate,
         weight_decay=weight_decay,
         max_grad_norm=max_grad_norm,
-        activation_checkpoint_mode=activation_checkpoint_mode,
+        tp=tp,
+        cp=cp,
+        pp=pp,
+        activation_checkpointing=activation_checkpointing,
     )
 
     if mode == "supervised":
