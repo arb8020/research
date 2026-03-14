@@ -291,7 +291,8 @@ class MegatronTrainingBackend:
         # Scheduler step
         if self.opt_param_scheduler is not None:
             self.opt_param_scheduler.step(increment=self.config.global_batch_size)
-            lr = self.opt_param_scheduler.get_lr()
+            primary_group = self.optimizer.param_groups[0]
+            lr = self.opt_param_scheduler.get_lr(primary_group)
         else:
             lr = self.optimizer.param_groups[0].get("lr", 0.0)
 
