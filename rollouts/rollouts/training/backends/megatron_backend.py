@@ -219,6 +219,12 @@ class MegatronTrainingBackend:
                         if isinstance(output_tensor, torch.Tensor)
                         else output_tensor.loss
                     )
+                    if isinstance(loss, torch.Tensor) and loss.ndim > 0:
+                        if loss_mask is not None:
+                            masked = loss.float() * loss_mask.float()
+                            loss = masked.sum() / torch.clamp_min(loss_mask.sum(), 1.0)
+                        else:
+                            loss = loss.float().mean()
 
                 if advantages is not None:
                     loss = loss * advantages.mean()
