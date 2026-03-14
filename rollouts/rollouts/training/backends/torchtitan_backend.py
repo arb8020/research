@@ -35,6 +35,7 @@ Usage:
 from __future__ import annotations
 
 import logging
+import math
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -68,6 +69,8 @@ class TorchTitanConfig:
     # Training
     seq_len: int = 4096
     batch_size: int = 1
+    micro_batch_size: int | None = None
+    num_minibatches: int = 1
     mixed_precision_param: str = "bfloat16"
     mixed_precision_reduce: str = "float32"
 
@@ -431,8 +434,13 @@ class TorchTitanBackend:
         )
 
         batch_size = datum.model_input.tokens.shape[0]
-        num_minibatches = 1
-        micro_batch_size = batch_size
+        if self.config.micro_batch_size is not None:
+            micro_batch_size = min(self.config.micro_batch_size, batch_size)
+            num_minibatches = max(1, math.ceil(batch_size / micro_batch_size))
+        else:
+            configured_num_minibatches = max(1, self.config.num_minibatches)
+            micro_batch_size = max(1, math.ceil(batch_size / configured_num_minibatches))
+            num_minibatches = max(1, math.ceil(batch_size / micro_batch_size))
 
         total_primary_loss = 0.0
         accumulated_losses: dict[str, float] = {}
@@ -441,7 +449,9 @@ class TorchTitanBackend:
 
         for i in range(num_minibatches):
             start_idx = i * micro_batch_size
-            end_idx = start_idx + micro_batch_size
+            if start_idx >= batch_size:
+                break
+            end_idx = min(start_idx + micro_batch_size, batch_size)
             micro_datum = self._slice_datum(datum, start_idx, end_idx)
 
             model_kwargs: dict[str, Any] = {}

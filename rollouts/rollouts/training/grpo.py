@@ -657,6 +657,8 @@ def _setup_training_backend(
             torchtitan_model_size=config.trainer.torchtitan_model_size,
             gpu_rank=config.trainer.cuda_device_ids[0],
             seq_len=config.rollout.max_seq_len,
+            micro_batch_size=config.trainer.micro_batch_size,
+            num_minibatches=config.trainer.num_minibatches,
             learning_rate=config.trainer.lr,
             weight_decay=config.trainer.weight_decay,
             max_grad_norm=config.trainer.max_grad_norm,
@@ -664,6 +666,9 @@ def _setup_training_backend(
             cp=config.trainer.torchtitan_cp,
             pp=config.trainer.torchtitan_pp,
             packed_sequences=config.trainer.realization_packed_sequences,
+            activation_checkpoint_mode=(
+                "selective" if config.trainer.activation_checkpointing else "none"
+            ),
             mode="rl",
             realization=realization,
         )

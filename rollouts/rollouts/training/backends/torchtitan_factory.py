@@ -78,6 +78,8 @@ def create_torchtitan_backend(
     torchtitan_model_size: str,
     gpu_rank: int = 0,
     seq_len: int = 4096,
+    micro_batch_size: int | None = None,
+    num_minibatches: int = 1,
     learning_rate: float = 1e-5,
     weight_decay: float = 0.01,
     max_grad_norm: float = 1.0,
@@ -86,6 +88,7 @@ def create_torchtitan_backend(
     pp: int = 1,
     enable_loss_parallel: bool = True,
     packed_sequences: bool = True,
+    activation_checkpoint_mode: str = "none",
     mode: str = "supervised",
     realization: RealizationPlan | None = None,
     lowering: TorchTitanLowering | None = None,
@@ -121,9 +124,12 @@ def create_torchtitan_backend(
         cp_degree=cp,
         pp_degree=pp,
         seq_len=seq_len,
+        micro_batch_size=micro_batch_size,
+        num_minibatches=num_minibatches,
         lr=learning_rate,
         weight_decay=weight_decay,
         max_grad_norm=max_grad_norm,
+        activation_checkpoint_mode=activation_checkpoint_mode,
     )
 
     if mode == "supervised":
