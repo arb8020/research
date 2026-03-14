@@ -1469,6 +1469,9 @@ async def _grpo_train_async(
             "inference_mem_fraction": config.inference.mem_fraction,
             "inference_tensor_parallel_size": config.inference.tensor_parallel_size,
             "inference_startup_timeout": config.inference.startup_timeout,
+            "trainer_cuda_device_ids": list(config.trainer.cuda_device_ids),
+            "inference_cuda_device_ids": list(config.inference.cuda_device_ids),
+            "cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES"),
         },
     )
 
