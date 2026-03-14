@@ -82,6 +82,13 @@ class TorchTitanConfig:
     # Activation checkpointing
     activation_checkpoint_mode: str = "none"
     selective_ac_option: str = "op"
+    per_op_sac_force_recompute_mm_shapes_by_fqns: tuple[str, ...] = ()
+    early_stop: bool = False
+    memory_budget: float = 0.5
+    visualize_memory_budget_pareto: bool = False
+    preserve_rng_state: bool = True
+    determinism_check: str = "default"
+    debug: bool = False
 
     # Compile
     compile_enabled: bool = False
@@ -308,6 +315,15 @@ class TorchTitanBackend:
             activation_checkpoint=_Cfg(
                 mode=self.config.activation_checkpoint_mode,
                 selective_ac_option=self.config.selective_ac_option,
+                per_op_sac_force_recompute_mm_shapes_by_fqns=list(
+                    self.config.per_op_sac_force_recompute_mm_shapes_by_fqns
+                ),
+                early_stop=self.config.early_stop,
+                memory_budget=self.config.memory_budget,
+                visualize_memory_budget_pareto=self.config.visualize_memory_budget_pareto,
+                preserve_rng_state=self.config.preserve_rng_state,
+                determinism_check=self.config.determinism_check,
+                debug=self.config.debug,
             ),
             job=_Cfg(
                 dump_folder=str(self.checkpoint_dir),
