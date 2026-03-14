@@ -153,6 +153,7 @@ async def _training_and_inference_startup_smoke_async(config: Any, run_logger: A
     import logging
     import os
     import socket
+    import subprocess
 
     from .grpo import (
         _build_grpo_run_context,
@@ -171,6 +172,25 @@ async def _training_and_inference_startup_smoke_async(config: Any, run_logger: A
     def emit(event: str, **data: Any) -> None:
         if run_logger is not None:
             run_logger.event(event, **data)
+
+    def _compute_app_snapshot() -> str | None:
+        try:
+            result = subprocess.run(
+                [
+                    "nvidia-smi",
+                    "--query-compute-apps=gpu_uuid,pid,process_name,used_memory",
+                    "--format=csv,noheader,nounits",
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if result.returncode != 0:
+                return None
+            snapshot = result.stdout.strip()
+            return snapshot or "<none>"
+        except Exception:
+            return None
 
     run_context = _build_grpo_run_context(
         config=config,
@@ -229,6 +249,12 @@ async def _training_and_inference_startup_smoke_async(config: Any, run_logger: A
                 engine_name=getattr(engine, "name", "unknown"),
                 engine_port=getattr(engine, "port", None),
                 engine_cuda_device_ids=list(getattr(engine, "cuda_device_ids", ())),
+                session_name=getattr(engine, "session_name", None),
+                log_path=str(getattr(engine, "log_path", "")) or None,
+                launch_cmd=engine.build_launch_cmd() if hasattr(engine, "build_launch_cmd") else None,
+                gpu_memory_utilization=getattr(engine, "gpu_memory_utilization", None),
+                dtype=getattr(engine, "dtype", None),
+                prelaunch_compute_apps=_compute_app_snapshot(),
             )
             engine.launch()
             engine.start_log_tailer()
