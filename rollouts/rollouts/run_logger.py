@@ -6,7 +6,7 @@ import sys
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import IO, Any
 
 ARGUS_RUN_EVENT_SENTINEL = "__ARGUS_RUN_EVENT__"
 ARGUS_RUN_EVENT_STREAM_ENV = "ARGUS_RUN_EVENT_STREAM"
@@ -25,7 +25,7 @@ class RunLogger:
     emit_event: Any | None = None
     text_logger: logging.Logger | None = None
     stream_events: bool = False
-    stream = None
+    stream: IO[str] | None = None
 
     def __post_init__(self) -> None:
         if self.stream is None:
