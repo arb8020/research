@@ -131,10 +131,16 @@ class TorchTitanBackend:
 
         self.rank = dist.get_rank()
         self.world_size = dist.get_world_size()
-        self._device = torch.device(f"cuda:{self.rank}")
+        current_cuda_device = torch.cuda.current_device()
+        self._device = torch.device(f"cuda:{current_cuda_device}")
 
         # Get train spec
-        logger.info(f"[Rank {self.rank}] Loading train spec for {self.model_name}")
+        logger.info(
+            "[Rank %s] Loading train spec for %s on device %s",
+            self.rank,
+            self.model_name,
+            self._device,
+        )
         self._train_spec = get_train_spec(self.model_name)
         assert self._train_spec is not None, f"Train spec not found for {self.model_name}"
 
