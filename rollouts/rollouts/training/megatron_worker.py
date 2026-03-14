@@ -366,6 +366,13 @@ def _do_train_step(
             dist.broadcast(loss_mask.cuda(), src=0)
         if advantages is not None:
             dist.broadcast(advantages.cuda(), src=0)
+
+        batch = {
+            "input_ids": input_ids,
+            "labels": labels,
+            "loss_mask": loss_mask,
+            "advantages": advantages,
+        }
     else:
         # Receive shapes
         shapes = torch.zeros(4, dtype=torch.long, device="cuda")
