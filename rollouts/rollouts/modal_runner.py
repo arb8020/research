@@ -1117,13 +1117,12 @@ async def _create_sandbox(
     sandbox_name = f"rollouts-{config.gpu_type.lower()}-{ts}"
 
     timeout_seconds = config.timeout_hours * 3600
-    # Keep the sandbox alive with a minimal long-lived process. Avoid shell
-    # wrappers here: if the primary process dies before our first exec, the
-    # sandbox is already unusable and later diagnostics are much weaker.
+    # Keep the sandbox alive with a deterministic long-lived Python process.
+    # This avoids depending on shell/busybox/coreutils behavior in the built image.
     keepalive_cmd = (
-        "sleep",
-        "315360000",
-        "trap 'exit 0' TERM INT; while true; do sleep 3600; done",
+        "python3",
+        "-c",
+        "import signal,time; signal.signal(signal.SIGTERM, lambda *_: exit(0)); signal.signal(signal.SIGINT, lambda *_: exit(0)); time.sleep(315360000)",
     )
 
     create_timeout_s = 300
