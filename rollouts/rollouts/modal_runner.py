@@ -473,6 +473,12 @@ async def _emit_private_modal_image_logs(
 
     emit("modal_image_build_logs_fetch_start", image_id=image_id)
 
+    # TODO(chiraag): This direct ImageJoinStreaming consumer still trips Modal's
+    # asyncio task-context requirement under our Trio bridge ("no running event
+    # loop"). Keep it best-effort for now; after the current startup-debugging
+    # work, either move this fully inside the Modal asyncio loop/task context or
+    # drop it from the critical path and rely on console output for image logs.
+
     lines_emitted = 0
     truncated = False
     progress_updates = 0
@@ -1111,9 +1117,12 @@ async def _create_sandbox(
     sandbox_name = f"rollouts-{config.gpu_type.lower()}-{ts}"
 
     timeout_seconds = config.timeout_hours * 3600
+    # Keep the sandbox alive with a minimal long-lived process. Avoid shell
+    # wrappers here: if the primary process dies before our first exec, the
+    # sandbox is already unusable and later diagnostics are much weaker.
     keepalive_cmd = (
-        "bash",
-        "-lc",
+        "sleep",
+        "315360000",
         "trap 'exit 0' TERM INT; while true; do sleep 3600; done",
     )
 
@@ -1238,6 +1247,26 @@ async def _create_sandbox(
     assert sandbox.object_id, "Sandbox missing object_id"
 
     logger.info(f"Sandbox created: {sandbox.object_id}")
+    try:
+        import trio_asyncio
+
+        initial_returncode = await trio_asyncio.aio_as_trio(sandbox.poll.aio())
+    except Exception as exc:
+        emit("modal_sandbox_poll_failed", error=f"{type(exc).__name__}: {exc}")
+        initial_returncode = None
+
+    if initial_returncode is not None:
+        sandbox_result = getattr(sandbox, "_result", None)
+        emit(
+            "modal_sandbox_primary_exited_early",
+            returncode=initial_returncode,
+            status=getattr(sandbox_result, "status", None),
+            exception=getattr(sandbox_result, "exception", None),
+        )
+        raise RuntimeError(
+            f"Modal sandbox primary process exited before first exec: returncode={initial_returncode}"
+        )
+
     emit(
         "modal_sandbox_keepalive_configured",
         command=list(keepalive_cmd),
