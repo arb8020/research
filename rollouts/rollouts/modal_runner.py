@@ -69,6 +69,7 @@ from .remote_runtime import (
     materialization_plan_from_runtime,
     runtime_contract_from_hardware,
 )
+from .run_logger import ARGUS_RUN_EVENT_SENTINEL, RunLogger
 
 logger = logging.getLogger(__name__)
 
@@ -112,7 +113,7 @@ class ModalRunConfig:
     sandbox_id: str | None = None
     keep_alive: bool = False
     run_name: str | None = None
-    event_log: Callable[..., None] | None = None
+    run_logger: RunLogger | None = None
     model_name: str | None = None  # Model name for weight caching (e.g., "zai-org/GLM-4.7-Flash")
     pruning_recipe: str | None = (
         None  # Path to pruning recipe JSON (if set, model is pruned before caching)
@@ -1121,8 +1122,8 @@ async def _create_sandbox(
     create_attempts = 2
 
     def emit(event: str, **data: Any) -> None:
-        if config.event_log is not None:
-            config.event_log(
+        if config.run_logger is not None:
+            config.run_logger.event(
                 event,
                 provider="modal",
                 run_name=config.run_name,
@@ -1415,7 +1416,7 @@ async def _run_training_in_sandbox(
     gpu_type: str,
     gpu_count: int = 1,
     use_torchrun: bool = True,
-    event_log: Callable[..., None] | None = None,
+    run_logger: RunLogger | None = None,
 ) -> dict[str, Any]:
     """Run training script inside Modal sandbox.
 
@@ -1456,6 +1457,7 @@ async def _run_training_in_sandbox(
         f"PATH={image_path_prefix} "
         f"PYTHONPATH={workspace}:/workspace/research:/root/Megatron-LM:/root "
         f"ARGUS_EMIT_STARTUP_SENTINEL=1 "
+        f"ARGUS_RUN_EVENT_STREAM=1 "
         f"ROLLOUTS_RUN_NAME={run_name} "
         f"ROLLOUTS_OUTPUT_DIR=results/rl/{run_name} "
     )
@@ -1479,8 +1481,8 @@ async def _run_training_in_sandbox(
     start_timeout_s = 60
 
     def emit(event: str, **data: Any) -> None:
-        if event_log is not None:
-            event_log(event, **data)
+        if run_logger is not None:
+            run_logger.event(event, **data)
 
     def _elapsed() -> float:
         return time.monotonic() - process_started_ts
@@ -1491,10 +1493,23 @@ async def _run_training_in_sandbox(
         emit("remote_stderr_stream_open")
 
     def _on_stdout_line(line: str) -> None:
+        stripped = line.rstrip()
+        if stripped.startswith(ARGUS_RUN_EVENT_SENTINEL):
+            payload = stripped[len(ARGUS_RUN_EVENT_SENTINEL):]
+            try:
+                import json
+
+                event_data = json.loads(payload)
+                event_name = event_data.pop("event", None)
+                if event_name:
+                    emit(event_name, **event_data)
+            except Exception as exc:
+                emit("remote_event_stream_parse_failed", error=f"{type(exc).__name__}: {exc}")
+            return
         process_state["stdout_line_count"] += 1
-        process_state["last_stdout_line"] = line.rstrip()
+        process_state["last_stdout_line"] = stripped
         process_state["last_stdout_elapsed_sec"] = round(_elapsed(), 3)
-        if WORKLOAD_ENTRYPOINT_SENTINEL in line and not startup_seen.is_set():
+        if WORKLOAD_ENTRYPOINT_SENTINEL in stripped and not startup_seen.is_set():
             startup_seen.set()
             emit("workload_entrypoint_started")
 
@@ -1609,8 +1624,8 @@ async def run_modal(config: ModalRunConfig) -> dict[str, Any]:
     run_name = config.run_name or f"modal_{timestamp}"
 
     def emit(event: str, **data: Any) -> None:
-        if config.event_log is not None:
-            config.event_log(event, provider="modal", run_name=run_name, **data)
+        if config.run_logger is not None:
+            config.run_logger.event(event, provider="modal", run_name=run_name, **data)
 
     enforce_source_sync_policy(config.source_sync_policy, repo_root=REPO_ROOT, stream=sys.stderr)
     emit(
@@ -1717,7 +1732,7 @@ async def run_modal(config: ModalRunConfig) -> dict[str, Any]:
                     config.gpu_type,
                     config.gpu_count,
                     config.use_torchrun,
-                    config.event_log,
+                    config.run_logger,
                 )
                 emit(
                     "modal_training_finished",

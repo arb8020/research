@@ -149,7 +149,7 @@ def run_inference_startup_smoke(config: Any, **_: Any) -> dict[str, Any]:
     return trio.run(_inference_startup_smoke_async, config)
 
 
-async def _training_and_inference_startup_smoke_async(config: Any, event_log: Any | None = None) -> dict[str, Any]:
+async def _training_and_inference_startup_smoke_async(config: Any, run_logger: Any | None = None) -> dict[str, Any]:
     import logging
     import os
     import socket
@@ -169,8 +169,8 @@ async def _training_and_inference_startup_smoke_async(config: Any, event_log: An
     logger.setLevel(logging.INFO)
 
     def emit(event: str, **data: Any) -> None:
-        if event_log is not None:
-            event_log(event, **data)
+        if run_logger is not None:
+            run_logger.event(event, **data)
 
     run_context = _build_grpo_run_context(
         config=config,
@@ -307,4 +307,4 @@ def run_training_and_inference_startup_smoke(config: Any, **kwargs: Any) -> dict
     the next stage after backend-only and inference-only smokes.
     """
 
-    return trio.run(_training_and_inference_startup_smoke_async, config, kwargs.get("event_log"))
+    return trio.run(_training_and_inference_startup_smoke_async, config, kwargs.get("run_logger"))

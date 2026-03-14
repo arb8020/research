@@ -199,10 +199,11 @@ def _remove_launch_record(path: Path | None) -> None:
         pass
 
 
-class _RunLogger:
-    """Callable logger interface for structured run events."""
+from rollouts.run_logger import JsonlEventSink, RunLogger, stream_run_logger
 
-    def __call__(self, event: str, **data: Any) -> None: ...
+
+class _RunLogger(RunLogger):
+    pass
 
 
 def _read_remote_manifest(bifrost: BifrostClient) -> ImageManifest | None:
@@ -294,30 +295,15 @@ def _argus_modal_tags(*, launcher_id: str, run_name: str, config_path: Path) -> 
 
 
 def _setup_run_logging(run_dir: Path) -> _RunLogger:
-    """Create run directory and return a generic event logger.
+    """Create run directory and return the canonical structured run logger.
 
-    This logger intentionally knows only about a generic event envelope.
-    Workload-specific stage names and semantics belong in Rollouts.
+    Workload code should use this one object for structured run events. Argus
+    owns the durable JSONL sink; other projections can be attached later without
+    changing workload call sites.
     """
-    import json
-    import threading
-    from datetime import datetime
-
     run_dir.mkdir(parents=True, exist_ok=True)
     log_file = run_dir / "run.jsonl"
-    write_lock = threading.Lock()
-
-    def log_event(event: str, **data: Any) -> None:
-        entry = {
-            "ts": datetime.now().isoformat(),
-            "event": event,
-            **data,
-        }
-        with write_lock:
-            with open(log_file, "a") as f:
-                f.write(json.dumps(entry) + "\n")
-
-    return log_event
+    return RunLogger(emit_event=JsonlEventSink(log_file))
 
 
 async def _deploy_and_submit(
@@ -1412,7 +1398,7 @@ Examples:
                     runtime=runtime,
                     materialization=materialization,
                     run_name=run_name,
-                    event_log=log,
+                    run_logger=log,
                     source_sync_policy=SourceSyncPolicy.committed_only(
                         dirty_action="warn" if args.force_deploy_committed else "fail"
                     ),
@@ -1479,6 +1465,8 @@ Examples:
                     print("__ARGUS_WORKLOAD_ENTRYPOINT_STARTED__", flush=True)
 
                 kwargs = {}
+                if os.getenv("ARGUS_RUN_EVENT_STREAM") == "1":
+                    kwargs["run_logger"] = stream_run_logger()
                 if args.max_samples is not None:
                     kwargs["max_samples"] = args.max_samples
 
