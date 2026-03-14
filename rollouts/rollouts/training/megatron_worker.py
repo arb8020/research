@@ -88,9 +88,14 @@ def train(handle: Worker) -> None:
     try:
         # Phase 2: Initialize Megatron
         logger.info("Importing Megatron modules...")
-        from rollouts.training.backends.megatron import init_megatron, setup_megatron_model
-        from rollouts.training.backends.megatron.initialize import MegatronParallelismConfig
-        from rollouts.training.backends.megatron.model import MegatronModelConfig
+        from rollouts.training.backends.megatron.initialize import (
+            MegatronParallelismConfig,
+            init_megatron,
+        )
+        from rollouts.training.backends.megatron.model import (
+            MegatronModelConfig,
+            setup_megatron_model,
+        )
         from rollouts.training.backends.megatron_backend import (
             MegatronConfig,
             MegatronTrainingBackend,
