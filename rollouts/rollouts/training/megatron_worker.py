@@ -63,10 +63,15 @@ def _log_import_stage(stage: str) -> None:
 
 
 def _resolve_train_future(future: Any) -> Any:
-    """Resolve a TrainFuture from this synchronous worker."""
-    import trio
+    """Resolve the local synchronous future shape used by Megatron workers."""
+    from rollouts.training.types import ImmediateTrainFuture
 
-    return trio.run(future.result)
+    if not isinstance(future, ImmediateTrainFuture):
+        raise TypeError(
+            "Megatron worker expected ImmediateTrainFuture from local backend; "
+            f"got {type(future).__name__}"
+        )
+    return future._result
 
 
 def train(handle: Worker) -> None:
