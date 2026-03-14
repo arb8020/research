@@ -15,6 +15,25 @@ from typing import Any
 from rollouts.training.models import ModelDenotation
 
 
+def _normalize_torch_dtype(dtype: Any) -> Any:
+    import torch
+
+    if not isinstance(dtype, str):
+        return dtype
+
+    normalized = dtype.lower().replace("torch.", "")
+    mapping = {
+        "bfloat16": torch.bfloat16,
+        "bf16": torch.bfloat16,
+        "float16": torch.float16,
+        "fp16": torch.float16,
+        "half": torch.float16,
+        "float32": torch.float32,
+        "fp32": torch.float32,
+    }
+    return mapping.get(normalized, dtype)
+
+
 def _parse_megatron_args(argv: list[str]) -> Namespace:
     from megatron.training.arguments import parse_args
 
@@ -154,6 +173,7 @@ def build_qwen3_transformer_config(
     args.seq_length = seq_length
     args.untie_embeddings_and_output_weights = not denotation.architecture.tie_embeddings
     params_dtype = getattr(args, "params_dtype", None) or getattr(args, "main_params_dtype", None)
+    params_dtype = _normalize_torch_dtype(params_dtype)
     if params_dtype is None:
         if bf16:
             params_dtype = torch.bfloat16
