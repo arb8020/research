@@ -5,6 +5,7 @@ import logging
 import sys
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 ARGUS_RUN_EVENT_SENTINEL = "__ARGUS_RUN_EVENT__"
