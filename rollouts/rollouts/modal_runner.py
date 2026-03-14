@@ -1246,25 +1246,57 @@ async def _create_sandbox(
     assert sandbox.object_id, "Sandbox missing object_id"
 
     logger.info(f"Sandbox created: {sandbox.object_id}")
-    try:
-        import trio_asyncio
+    stabilize_window_s = 5.0
+    stabilize_interval_s = 1.0
+    stabilize_start = trio.current_time()
+    stabilize_attempt = 0
+    while True:
+        stabilize_attempt += 1
+        try:
+            import trio_asyncio
 
-        initial_returncode = await trio_asyncio.aio_as_trio(sandbox.poll.aio())
-    except Exception as exc:
-        emit("modal_sandbox_poll_failed", error=f"{type(exc).__name__}: {exc}")
-        initial_returncode = None
+            initial_returncode = await trio_asyncio.aio_as_trio(sandbox.poll.aio())
+        except Exception as exc:
+            emit(
+                "modal_sandbox_poll_failed",
+                phase="post_create_stabilization",
+                attempt=stabilize_attempt,
+                elapsed_sec=round(trio.current_time() - stabilize_start, 3),
+                error=f"{type(exc).__name__}: {exc}",
+            )
+            initial_returncode = None
 
-    if initial_returncode is not None:
         sandbox_result = getattr(sandbox, "_result", None)
+        elapsed = trio.current_time() - stabilize_start
         emit(
-            "modal_sandbox_primary_exited_early",
+            "modal_sandbox_stabilization_probe",
+            attempt=stabilize_attempt,
+            elapsed_sec=round(elapsed, 3),
             returncode=initial_returncode,
             status=getattr(sandbox_result, "status", None),
             exception=getattr(sandbox_result, "exception", None),
         )
-        raise RuntimeError(
-            f"Modal sandbox primary process exited before first exec: returncode={initial_returncode}"
-        )
+        if initial_returncode is not None:
+            emit(
+                "modal_sandbox_primary_exited_early",
+                elapsed_sec=round(elapsed, 3),
+                returncode=initial_returncode,
+                status=getattr(sandbox_result, "status", None),
+                exception=getattr(sandbox_result, "exception", None),
+            )
+            raise RuntimeError(
+                "Modal sandbox primary process exited before first exec: "
+                f"returncode={initial_returncode}"
+            )
+        if elapsed >= stabilize_window_s:
+            break
+        await trio.sleep(stabilize_interval_s)
+
+    emit(
+        "modal_sandbox_stabilized",
+        elapsed_sec=round(trio.current_time() - stabilize_start, 3),
+        probe_count=stabilize_attempt,
+    )
 
     emit(
         "modal_sandbox_keepalive_configured",
