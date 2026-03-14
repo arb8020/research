@@ -736,6 +736,12 @@ def setup_megatron_model(
         lr_warmup_steps=0,
         lr_decay_steps=1000000,  # Large number, we don't decay
         lr_decay_style="constant",
+        # Keep weight decay constant. Current Megatron requires the weight-decay
+        # schedule to be explicit even when we are not scheduling it.
+        start_wd=config.weight_decay,
+        end_wd=config.weight_decay,
+        wd_incr_steps=1,
+        wd_incr_style="constant",
     )
 
     # Load checkpoint if provided
