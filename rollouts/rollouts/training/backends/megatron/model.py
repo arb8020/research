@@ -19,7 +19,8 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Protocol
+from pathlib import Path
+from typing import Any, Protocol
 
 from rollouts.training.backends.megatron.qwen import build_qwen3_transformer_config
 from rollouts.training.models import (
@@ -30,9 +31,6 @@ from rollouts.training.models import (
     normalize_hf_model_denotation,
 )
 from rollouts.training.models.backend_lowering import MegatronModelLowering
-
-if TYPE_CHECKING:
-    from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -95,7 +93,11 @@ class BridgeProviderMegatronAdapter:
         return provider.provide
 
     def load_weights(self, *, bridge: Any, model: list[Any], denotation: ModelDenotation) -> None:
-        bridge.load_weights(model, denotation.source.name_or_path, memory_efficient=True)
+        bridge.load_weights(
+            model,
+            _materialize_hf_checkpoint_snapshot(denotation.source),
+            memory_efficient=True,
+        )
 
 
 class RawGPTMegatronAdapter:
@@ -209,7 +211,11 @@ class RawGPTMegatronAdapter:
         return model_provider
 
     def load_weights(self, *, bridge: Any, model: list[Any], denotation: ModelDenotation) -> None:
-        bridge.load_weights(model, denotation.source.name_or_path, memory_efficient=True)
+        bridge.load_weights(
+            model,
+            _materialize_hf_checkpoint_snapshot(denotation.source),
+            memory_efficient=True,
+        )
 
 
 class Qwen3CustomSpecMegatronAdapter:
@@ -310,7 +316,11 @@ class Qwen3CustomSpecMegatronAdapter:
         return model_provider
 
     def load_weights(self, *, bridge: Any, model: list[Any], denotation: ModelDenotation) -> None:
-        bridge.load_weights(model, denotation.source.name_or_path, memory_efficient=True)
+        bridge.load_weights(
+            model,
+            _materialize_hf_checkpoint_snapshot(denotation.source),
+            memory_efficient=True,
+        )
 
 
 def _adapter_for_lowering(lowering: MegatronModelLowering) -> MegatronModelAdapter:
@@ -323,6 +333,60 @@ def _adapter_for_lowering(lowering: MegatronModelLowering) -> MegatronModelAdapt
         if lowering.denotation.architecture.family == "qwen3":
             return Qwen3CustomSpecMegatronAdapter()
     raise ValueError(f"Unsupported Megatron adapter kind: {lowering.adapter_kind!r}")
+
+
+def _materialize_hf_checkpoint_snapshot(source: HFModelSource) -> str:
+    """Resolve an HF checkpoint source into a local snapshot with real weight files.
+
+    Passing a repo id directly into bridge-native loaders makes checkpoint
+    staging opaque. Materialize and validate the snapshot explicitly first so
+    backend model loading operates on a local, inspectable checkpoint boundary.
+    """
+    checkpoint_path = Path(source.name_or_path)
+    if checkpoint_path.exists():
+        _assert_hf_snapshot_has_weights(checkpoint_path)
+        return str(checkpoint_path)
+
+    try:
+        from huggingface_hub import snapshot_download
+    except ImportError as e:
+        raise ImportError(
+            "huggingface_hub is required to materialize HF checkpoints for Megatron loading"
+        ) from e
+
+    snapshot_path = Path(
+        snapshot_download(
+            repo_id=source.name_or_path,
+            revision=source.revision,
+            allow_patterns=[
+                "config.json",
+                "*.safetensors",
+                "*.safetensors.index.json",
+            ],
+        )
+    )
+    _assert_hf_snapshot_has_weights(snapshot_path)
+    return str(snapshot_path)
+
+
+def _assert_hf_snapshot_has_weights(snapshot_path: Path) -> None:
+    weight_files = sorted(snapshot_path.glob("*.safetensors"))
+    index_files = sorted(snapshot_path.glob("*.safetensors.index.json"))
+    if weight_files or index_files:
+        logger.info(
+            "Using local HF checkpoint snapshot %s with weight files: %s",
+            snapshot_path,
+            [p.name for p in (*weight_files, *index_files)],
+        )
+        return
+
+    available_files = (
+        sorted(p.name for p in snapshot_path.iterdir()) if snapshot_path.is_dir() else []
+    )
+    raise ValueError(
+        f"HF checkpoint snapshot {snapshot_path} does not contain safetensor weights. "
+        f"Available files: {available_files}"
+    )
 
 
 def _infer_rope_theta(hf_config: Any) -> float | int | None:
