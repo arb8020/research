@@ -353,14 +353,23 @@ def _training_loop(
             if rank == 0:
                 _init_nccl_weight_sync(
                     backend,
-                    inference_endpoints=config.get("inference_endpoints", []),
-                    model_name=config.get("model_name", ""),
-                    master_addr=config.get("master_addr"),
-                    master_port=config.get("master_port", 29500),
+                    inference_endpoints=msg.get(
+                        "inference_endpoints",
+                        config.get("inference_endpoints", []),
+                    ),
+                    model_name=msg.get("model_name", config.get("model_name", "")),
+                    master_addr=msg.get("master_addr", config.get("master_addr")),
+                    master_port=msg.get("master_port", config.get("master_port", 29500)),
                 )
                 handle.send({"status": "nccl_initialized"})
             else:
-                _init_nccl_weight_sync(backend, inference_endpoints=[], model_name="")
+                _init_nccl_weight_sync(
+                    backend,
+                    inference_endpoints=[],
+                    model_name=msg.get("model_name", config.get("model_name", "")),
+                    master_addr=msg.get("master_addr", config.get("master_addr")),
+                    master_port=msg.get("master_port", config.get("master_port", 29500)),
+                )
 
         elif cmd_id == Command.SYNC_WEIGHTS_NCCL:
             _do_sync_weights_nccl(
