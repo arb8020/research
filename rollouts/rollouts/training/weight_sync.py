@@ -87,7 +87,8 @@ async def update_vllm_weights_from_disk(
 ) -> dict[str, Any]:
     """Update vLLM server weights from checkpoint on disk.
 
-    Calls vLLM's collective_rpc endpoint with reload_weights method.
+    Uses vLLM's sleep-mode HTTP endpoints for RLHF-style in-place reload:
+    deep sleep, wake weights, reload weights, wake KV cache.
 
     Args:
         base_url: vLLM server URL (e.g. "http://localhost:30001")
@@ -112,18 +113,38 @@ async def update_vllm_weights_from_disk(
     assert base_url, "base_url cannot be empty"
     assert checkpoint_path, "checkpoint_path cannot be empty"
 
-    # Call vLLM's reload_weights RPC
-    # Note: No timeout parameter - caller should use trio.fail_after
+    # Note: These development endpoints require:
+    #   VLLM_SERVER_DEV_MODE=1
+    #   --enable-sleep-mode
+    # at vLLM server launch time.
     async with httpx.AsyncClient() as client:
-        response = await client.post(
+        sleep_response = await client.post(
+            f"{base_url}/sleep",
+            params={"level": 2},
+        )
+        sleep_response.raise_for_status()
+
+        wake_weights_response = await client.post(
+            f"{base_url}/wake_up",
+            params={"tags": "weights"},
+        )
+        wake_weights_response.raise_for_status()
+
+        reload_response = await client.post(
             f"{base_url}/collective_rpc",
             json={
                 "method": "reload_weights",
-                "params": {"model_path": checkpoint_path},
+                "kwargs": {"model_path": checkpoint_path},
             },
         )
-        response.raise_for_status()
-        return response.json()
+        reload_response.raise_for_status()
+
+        wake_kv_response = await client.post(
+            f"{base_url}/wake_up",
+            params={"tags": "kv_cache"},
+        )
+        wake_kv_response.raise_for_status()
+        return reload_response.json()
 
 
 def get_fast_sync_dir() -> Path:
@@ -712,6 +733,7 @@ class VLLMEngine:
         gpu_str = ",".join(str(g) for g in self.cuda_device_ids)
         return (
             f"CUDA_VISIBLE_DEVICES={gpu_str} "
+            f"VLLM_SERVER_DEV_MODE=1 "
             f"HF_HUB_DOWNLOAD_TIMEOUT=300 "  # 5 min timeout for model downloads
             f"python -m vllm.entrypoints.openai.api_server "
             f"--model {self.model_name} "
@@ -719,6 +741,7 @@ class VLLMEngine:
             f"--port {self.port} "
             f"--dtype {self.dtype} "
             f"--gpu-memory-utilization {self.gpu_memory_utilization} "
+            f"--enable-sleep-mode "
             f"--trust-remote-code"
         )
 
