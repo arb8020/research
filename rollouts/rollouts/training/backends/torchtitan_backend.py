@@ -36,6 +36,8 @@ from __future__ import annotations
 
 import logging
 import math
+import os
+import shutil
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -601,6 +603,79 @@ class TorchTitanBackend:
         assert self._model is not None, "Model not initialized"
         self._model.load_state_dict(weights)
         return ImmediateTrainFuture(None)
+
+    async def save_weights_for_sampler(self, path: Path | str) -> Path:
+        """Export inference-ready HuggingFace weights for sampler sync.
+
+        Current TorchTitan realization only supports filesystem sync for
+        single-rank adapter-based models. Build the complete HF checkpoint
+        explicitly at the backend boundary instead of leaking partial TorchTitan
+        state into weight_sync.py.
+        """
+        import torch.distributed as dist
+        from huggingface_hub import snapshot_download
+        from safetensors.torch import save_file
+        import trio
+
+        assert self._model is not None, "Model not initialized"
+        assert self._train_spec is not None, "Train spec not initialized"
+        assert self.hf_checkpoint, "TorchTitan sampler export requires hf_checkpoint"
+        assert (
+            self._train_spec.state_dict_adapter is not None
+        ), "TorchTitan sampler export requires a state_dict_adapter"
+
+        output_path = Path(path)
+        temp_path = output_path.parent / f"{output_path.name}_tmp_{self.weight_version}"
+        rank = dist.get_rank() if dist.is_initialized() else 0
+
+        source_assets_path = self.hf_checkpoint
+        if "/" in self.hf_checkpoint and not os.path.exists(self.hf_checkpoint):
+            source_assets_path = await trio.to_thread.run_sync(
+                lambda: snapshot_download(self.hf_checkpoint)
+            )
+
+        if rank == 0:
+            if temp_path.exists():
+                shutil.rmtree(temp_path)
+            temp_path.mkdir(parents=True, exist_ok=True)
+
+            adapter = self._train_spec.state_dict_adapter(self._model_args, source_assets_path)
+            native_state_dict = self._model.state_dict()
+            hf_state_dict = adapter.to_hf(native_state_dict)
+
+            cpu_state_dict: dict[str, torch.Tensor] = {}
+            for key, value in hf_state_dict.items():
+                if hasattr(value, "full_tensor"):
+                    value = value.full_tensor()
+                if isinstance(value, torch.Tensor):
+                    cpu_state_dict[key] = value.detach().cpu().contiguous()
+
+            await trio.to_thread.run_sync(
+                lambda: save_file(cpu_state_dict, str(temp_path / "model.safetensors"))
+            )
+
+            source_path = Path(source_assets_path)
+            for asset in source_path.iterdir():
+                if not asset.is_file():
+                    continue
+                if asset.name.endswith((".safetensors", ".bin", ".pt", ".pth")):
+                    continue
+                if asset.name == "model.safetensors.index.json":
+                    continue
+                shutil.copy2(asset, temp_path / asset.name)
+
+            config_path = temp_path / "config.json"
+            assert config_path.exists(), f"HF asset copy must produce config.json at {config_path}"
+
+            if output_path.exists():
+                shutil.rmtree(output_path)
+            temp_path.rename(output_path)
+
+        if dist.is_initialized():
+            dist.barrier()
+
+        self.weight_version += 1
+        return output_path
 
     async def save_checkpoint(self, step: int, metrics: dict[str, float]) -> Path:
         """Save checkpoint."""
