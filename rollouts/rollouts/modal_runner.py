@@ -91,6 +91,7 @@ WORKLOAD_ENTRYPOINT_SENTINEL = "__ARGUS_WORKLOAD_ENTRYPOINT_STARTED__"
 MODAL_IMAGE_BUILD_HEARTBEAT_S = 15.0
 MODAL_IMAGE_BUILD_LOG_LINE_LIMIT = 200
 MODAL_IMAGE_BUILD_LOG_CHAR_LIMIT = 1000
+MODAL_IMAGE_BUILD_LOG_FETCH_TIMEOUT_S = 30.0
 MODAL_FAILURE_DIAGNOSTICS_TIMEOUT_S = 30
 MODAL_FAILURE_DIAGNOSTICS_OUTPUT_CHAR_LIMIT = 4000
 
@@ -449,11 +450,12 @@ async def _emit_private_modal_image_logs(
     image: Any,
     emit: Callable[..., None],
 ) -> None:
-    """Best-effort image build log capture via Modal private API.
+    """Best-effort image build event capture via Modal ImageJoinStreaming.
 
-    Modal already prints image build logs under `modal.enable_output()`, but that
-    text is not part of our structured run journal. The private `_logs()` stream
-    gives us a chance to persist the build log tail into `run.jsonl` as well.
+    Modal's normal image-build path waits on ImageJoinStreaming and renders task
+    logs plus snapshot-upload progress. We consume the same lower-level stream
+    here so the run journal gets bounded, structured image-build events without
+    depending on the weaker private `_logs()` helper.
     """
 
     image_id = getattr(image, "object_id", None)
@@ -461,38 +463,86 @@ async def _emit_private_modal_image_logs(
         emit("modal_image_build_logs_unavailable", reason="missing_image_id")
         return
 
-    logs_method = getattr(image, "_logs", None)
-    if logs_method is None or not hasattr(logs_method, "aio"):
-        emit("modal_image_build_logs_unavailable", image_id=image_id, reason="missing_private_logs")
+    client = getattr(image, "client", None)
+    stub = getattr(client, "stub", None)
+    join_stream = getattr(stub, "ImageJoinStreaming", None)
+    if client is None or join_stream is None:
+        emit("modal_image_build_logs_unavailable", image_id=image_id, reason="missing_image_join_stream")
         return
 
     emit("modal_image_build_logs_fetch_start", image_id=image_id)
 
     lines_emitted = 0
     truncated = False
+    progress_updates = 0
+    last_entry_id = ""
+
     try:
         import trio_asyncio
+        from modal_proto import api_pb2
 
-        async def _consume_logs() -> tuple[int, bool]:
-            nonlocal lines_emitted, truncated
-            async for raw_line in logs_method.aio():
-                if lines_emitted >= MODAL_IMAGE_BUILD_LOG_LINE_LIMIT:
-                    truncated = True
-                    break
-                line = _trim_modal_build_log_line(raw_line)
-                if not line:
-                    continue
-                logger.info("[modal image] %s", line)
-                emit("modal_image_build_log", image_id=image_id, line=line)
-                lines_emitted += 1
-            return lines_emitted, truncated
+        async def _consume_stream() -> tuple[int, bool, int, str | None]:
+            nonlocal lines_emitted, truncated, progress_updates, last_entry_id
 
-        lines_emitted, truncated = await trio_asyncio.aio_as_trio(_consume_logs())
+            terminal_status: str | None = None
+            request = api_pb2.ImageJoinStreamingRequest(
+                image_id=image_id,
+                timeout=55,
+                last_entry_id=last_entry_id,
+                include_logs_for_finished=True,
+            )
+
+            async for response in join_stream.unary_stream(request):
+                if response.entry_id:
+                    last_entry_id = response.entry_id
+                if response.result.status:
+                    terminal_status = api_pb2.GenericResult.GenericStatus.Name(response.result.status)
+                for task_log in response.task_logs:
+                    progress = task_log.task_progress
+                    if progress.pos or progress.len:
+                        progress_updates += 1
+                        emit(
+                            "modal_image_build_progress",
+                            image_id=image_id,
+                            progress_type=api_pb2.ProgressType.Name(progress.progress_type),
+                            pos=int(progress.pos),
+                            total=int(progress.len),
+                        )
+                    elif task_log.data:
+                        if lines_emitted >= MODAL_IMAGE_BUILD_LOG_LINE_LIMIT:
+                            truncated = True
+                            continue
+                        line = _trim_modal_build_log_line(task_log.data)
+                        if not line:
+                            continue
+                        logger.info("[modal image] %s", line)
+                        emit("modal_image_build_log", image_id=image_id, line=line)
+                        lines_emitted += 1
+                if terminal_status is not None:
+                    return lines_emitted, truncated, progress_updates, terminal_status
+
+            return lines_emitted, truncated, progress_updates, terminal_status
+
+        with trio.move_on_after(MODAL_IMAGE_BUILD_LOG_FETCH_TIMEOUT_S) as scope:
+            lines_emitted, truncated, progress_updates, terminal_status = await trio_asyncio.aio_as_trio(_consume_stream())
+        if scope.cancelled_caught:
+            emit(
+                "modal_image_build_logs_fetch_timeout",
+                image_id=image_id,
+                timeout_sec=MODAL_IMAGE_BUILD_LOG_FETCH_TIMEOUT_S,
+                line_count=lines_emitted,
+                progress_updates=progress_updates,
+                truncated=truncated,
+            )
+            return
     except Exception as exc:
         emit(
             "modal_image_build_logs_fetch_failed",
             image_id=image_id,
             error=f"{type(exc).__name__}: {exc}",
+            line_count=lines_emitted,
+            progress_updates=progress_updates,
+            truncated=truncated,
         )
         logger.warning("Failed to fetch Modal image build logs for %s: %s", image_id, exc)
         return
@@ -501,7 +551,9 @@ async def _emit_private_modal_image_logs(
         "modal_image_build_logs_fetch_finished",
         image_id=image_id,
         line_count=lines_emitted,
+        progress_updates=progress_updates,
         truncated=truncated,
+        terminal_status=terminal_status,
     )
 
 
