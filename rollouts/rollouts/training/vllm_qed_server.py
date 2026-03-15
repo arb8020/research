@@ -216,11 +216,12 @@ async def run_server(args: Any, **uvicorn_kwargs: Any) -> None:
 
 
 def main() -> None:
+    import argparse
+
     import uvloop
     from vllm.entrypoints.openai.cli_args import make_arg_parser, validate_parsed_serve_args
-    from vllm.utils import FlexibleArgumentParser
 
-    parser = FlexibleArgumentParser(description="rollouts patched vLLM OpenAI server")
+    parser = argparse.ArgumentParser(description="rollouts patched vLLM OpenAI server")
     parser = make_arg_parser(parser)
     args = parser.parse_args()
     validate_parsed_serve_args(args)
