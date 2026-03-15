@@ -89,12 +89,182 @@ UV_BIN = "/root/.local/bin/uv"
 IMAGE_VENV_DIR = "/opt/venvs/rollouts"
 IMAGE_VENV_PYTHON = f"{IMAGE_VENV_DIR}/bin/python"
 WORKLOAD_ENTRYPOINT_SENTINEL = "__ARGUS_WORKLOAD_ENTRYPOINT_STARTED__"
+ARGUS_DIAG_EVENT_SENTINEL = "__ARGUS_DIAG__"
 MODAL_IMAGE_BUILD_HEARTBEAT_S = 15.0
 MODAL_IMAGE_BUILD_LOG_LINE_LIMIT = 200
 MODAL_IMAGE_BUILD_LOG_CHAR_LIMIT = 1000
 MODAL_IMAGE_BUILD_LOG_FETCH_TIMEOUT_S = 30.0
 MODAL_FAILURE_DIAGNOSTICS_TIMEOUT_S = 30
 MODAL_FAILURE_DIAGNOSTICS_OUTPUT_CHAR_LIMIT = 4000
+
+
+def _sandbox_runtime_diag_python() -> str:
+    """Return a small sibling-process monitor for hard-kill debugging.
+
+    This intentionally runs outside the main workload process. Threads inside
+    the workload die with SIGKILL; a sibling process can still emit the last
+    cgroup/host/GPU state if the main process alone is killed first.
+    """
+    return r"""
+import json
+import os
+import pathlib
+import subprocess
+import sys
+import time
+
+SENTINEL = "__ARGUS_DIAG__"
+
+
+def emit(event: str, **data: object) -> None:
+    payload = {"event": event, **data}
+    sys.stderr.write(f"{SENTINEL}{json.dumps(payload, sort_keys=True)}\n")
+    sys.stderr.flush()
+
+
+def pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+
+def read_text(path: str) -> str | None:
+    try:
+        return pathlib.Path(path).read_text(encoding="utf-8").strip()
+    except Exception:
+        return None
+
+
+def read_meminfo() -> dict[str, int]:
+    values: dict[str, int] = {}
+    text = read_text("/proc/meminfo")
+    if not text:
+        return values
+    for line in text.splitlines():
+        key, _, rest = line.partition(":")
+        parts = rest.split()
+        if parts:
+            try:
+                values[key] = int(parts[0])
+            except ValueError:
+                pass
+    return values
+
+
+def read_proc_status(pid: int) -> dict[str, str]:
+    wanted = {"VmRSS", "VmHWM", "VmSize", "Threads", "State"}
+    text = read_text(f"/proc/{pid}/status")
+    if not text:
+        return {}
+    values: dict[str, str] = {}
+    for line in text.splitlines():
+        key, _, value = line.partition(":")
+        if key in wanted:
+            values[key] = value.strip()
+    return values
+
+
+def parse_cgroup_events(text: str | None) -> dict[str, int] | None:
+    if not text:
+        return None
+    values: dict[str, int] = {}
+    for line in text.splitlines():
+        key, _, raw = line.partition(" ")
+        try:
+            values[key] = int(raw.strip())
+        except ValueError:
+            continue
+    return values
+
+
+def query_nvidia_smi() -> list[dict[str, object]]:
+    try:
+        gpu_result = subprocess.run(
+            [
+                "nvidia-smi",
+                "--query-gpu=index,name,memory.total,memory.used,memory.free",
+                "--format=csv,noheader,nounits",
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except Exception as exc:
+        return [{"error": f"{type(exc).__name__}: {exc}"}]
+
+    rows: list[dict[str, object]] = []
+    for raw_line in gpu_result.stdout.splitlines():
+        parts = [part.strip() for part in raw_line.split(",")]
+        if len(parts) != 5:
+            continue
+        index, name, total_mb, used_mb, free_mb = parts
+        try:
+            total = int(total_mb)
+            used = int(used_mb)
+            free = int(free_mb)
+        except ValueError:
+            continue
+        rows.append(
+            {
+                "device": int(index),
+                "name": name,
+                "total_gb": round(total / 1024, 3),
+                "used_gb": round(used / 1024, 3),
+                "free_gb": round(free / 1024, 3),
+                "used_frac": round(used / total, 4) if total else 0.0,
+            }
+        )
+    return rows
+
+
+def build_sample(main_pid: int, seq: int) -> dict[str, object]:
+    meminfo = read_meminfo()
+    mem_total_kb = meminfo.get("MemTotal", 0)
+    mem_available_kb = meminfo.get("MemAvailable", 0)
+    host_mem_used_frac = None
+    if mem_total_kb and mem_available_kb:
+        host_mem_used_frac = round(1.0 - (mem_available_kb / mem_total_kb), 4)
+
+    return {
+        "sample_seq": seq,
+        "time_unix_s": round(time.time(), 3),
+        "main_pid": main_pid,
+        "main_alive": pid_alive(main_pid),
+        "main_proc_status": read_proc_status(main_pid),
+        "host_mem_total_gb": round(mem_total_kb / (1024**2), 3) if mem_total_kb else None,
+        "host_mem_available_gb": round(mem_available_kb / (1024**2), 3) if mem_available_kb else None,
+        "host_mem_used_frac": host_mem_used_frac,
+        "cgroup_memory_current": read_text("/sys/fs/cgroup/memory.current"),
+        "cgroup_memory_max": read_text("/sys/fs/cgroup/memory.max"),
+        "cgroup_memory_events": parse_cgroup_events(read_text("/sys/fs/cgroup/memory.events")),
+        "nvidia_smi": query_nvidia_smi(),
+    }
+
+
+def main() -> int:
+    main_pid = int(sys.argv[1])
+    interval_s = float(sys.argv[2])
+    emit(
+        "remote_runtime_diag_started",
+        main_pid=main_pid,
+        monitor_pid=os.getpid(),
+        interval_s=interval_s,
+    )
+    seq = 0
+    while True:
+        emit("remote_runtime_diag_sample", **build_sample(main_pid, seq))
+        if not pid_alive(main_pid):
+            emit("remote_runtime_diag_target_gone", **build_sample(main_pid, seq + 1))
+            return 0
+        seq += 1
+        time.sleep(interval_s)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+"""
 
 
 @dataclass
@@ -468,7 +638,11 @@ async def _emit_private_modal_image_logs(
     stub = getattr(client, "stub", None)
     join_stream = getattr(stub, "ImageJoinStreaming", None)
     if client is None or join_stream is None:
-        emit("modal_image_build_logs_unavailable", image_id=image_id, reason="missing_image_join_stream")
+        emit(
+            "modal_image_build_logs_unavailable",
+            image_id=image_id,
+            reason="missing_image_join_stream",
+        )
         return
 
     emit("modal_image_build_logs_fetch_start", image_id=image_id)
@@ -503,7 +677,9 @@ async def _emit_private_modal_image_logs(
                 if response.entry_id:
                     last_entry_id = response.entry_id
                 if response.result.status:
-                    terminal_status = api_pb2.GenericResult.GenericStatus.Name(response.result.status)
+                    terminal_status = api_pb2.GenericResult.GenericStatus.Name(
+                        response.result.status
+                    )
                 for task_log in response.task_logs:
                     progress = task_log.task_progress
                     if progress.pos or progress.len:
@@ -531,7 +707,12 @@ async def _emit_private_modal_image_logs(
             return lines_emitted, truncated, progress_updates, terminal_status
 
         with trio.move_on_after(MODAL_IMAGE_BUILD_LOG_FETCH_TIMEOUT_S) as scope:
-            lines_emitted, truncated, progress_updates, terminal_status = await trio_asyncio.aio_as_trio(_consume_stream())
+            (
+                lines_emitted,
+                truncated,
+                progress_updates,
+                terminal_status,
+            ) = await trio_asyncio.aio_as_trio(_consume_stream())
         if scope.cancelled_caught:
             emit(
                 "modal_image_build_logs_fetch_timeout",
@@ -1524,7 +1705,18 @@ async def _run_training_in_sandbox(
 
     # TODO: If we need true multi-process Modal training later, route that through an
     # explicit remote execution/session layer instead of reviving `torchrun config.py`.
-    cmd = f"cd {workspace} && {env_vars} {image_python} -m argus.run --local --config {config_rel}"
+    diag_python = shlex.quote(_sandbox_runtime_diag_python())
+    cmd = (
+        f"cd {workspace} && {env_vars} "
+        f"{image_python} -m argus.run --local --config {config_rel} & "
+        "main_pid=$!; "
+        f'{image_python} -u -c {diag_python} "$main_pid" 1.0 & '
+        "diag_pid=$!; "
+        'wait "$main_pid"; '
+        "rc=$?; "
+        'wait "$diag_pid" || true; '
+        'exit "$rc"'
+    )
 
     startup_seen = threading.Event()
     done = threading.Event()
@@ -1563,7 +1755,7 @@ async def _run_training_in_sandbox(
             return
         stripped = line.rstrip()
         if stripped.startswith(ARGUS_RUN_EVENT_SENTINEL):
-            payload = stripped[len(ARGUS_RUN_EVENT_SENTINEL):]
+            payload = stripped[len(ARGUS_RUN_EVENT_SENTINEL) :]
             try:
                 import json
 
@@ -1584,6 +1776,18 @@ async def _run_training_in_sandbox(
 
     def _on_stderr_line(line: str) -> None:
         stripped = line.rstrip()
+        if stripped.startswith(ARGUS_DIAG_EVENT_SENTINEL):
+            payload = stripped[len(ARGUS_DIAG_EVENT_SENTINEL) :]
+            try:
+                import json
+
+                event_data = json.loads(payload)
+                event_name = event_data.pop("event", None)
+                if event_name:
+                    emit(event_name, **event_data)
+            except Exception as exc:
+                emit("remote_diag_stream_parse_failed", error=f"{type(exc).__name__}: {exc}")
+            return
         process_state["stderr_line_count"] += 1
         process_state["last_stderr_line"] = stripped
         process_state["last_stderr_elapsed_sec"] = round(_elapsed(), 3)
