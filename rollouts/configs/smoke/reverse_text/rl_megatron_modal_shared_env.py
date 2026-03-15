@@ -11,7 +11,7 @@ from examples.rl.base_config import default_remote_megatron_training_deps
 from rollouts.training.configs import HardwareConfig
 
 hardware = HardwareConfig(
-    gpu_type="A100",
+    gpu_type="A100-80GB",
     gpu_count=3,
     provider="modal",
     deps=default_remote_megatron_training_deps(),
