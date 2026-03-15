@@ -920,6 +920,10 @@ async def _run_training_preflight(
             fb_result = await fb_future.result()
             optim_future = backend.optim_step()
             optim_result = await optim_future.result()
+            if config.trainer.backend == "torchtitan":
+                reusable_backend = backend
+                reusable_cleanup = cleanup
+                cleanup = None
 
         logger.info(
             "training_preflight_synthetic_step_ok",
