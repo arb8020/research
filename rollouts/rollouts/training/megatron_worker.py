@@ -125,6 +125,77 @@ def _select_native_loss_fn(config: dict[str, Any]) -> Any:
     )
 
 
+def _pause_and_flush_inference_endpoints(inference_endpoints: list[str]) -> None:
+    """Quiesce SGLang before NCCL update.
+
+    Miles/Slime pause generation and flush request state before distributed
+    weight publication. Keep that effect backend-local instead of leaking it
+    into the training semantics layer.
+    """
+    if not inference_endpoints:
+        return
+
+    import time
+
+    import requests
+
+    def _pause(endpoint: str) -> None:
+        response = requests.post(f"{endpoint}/pause_generation", json={}, timeout=30.0)
+        response.raise_for_status()
+
+    def _flush(endpoint: str) -> None:
+        last_error: Exception | None = None
+        for _ in range(60):
+            try:
+                response = requests.get(f"{endpoint}/flush_cache", timeout=5.0)
+                if response.status_code == 200:
+                    return
+            except Exception as exc:
+                last_error = exc
+            time.sleep(1.0)
+        if last_error is not None:
+            raise RuntimeError(f"Timed out flushing inference cache for {endpoint}") from last_error
+        raise RuntimeError(f"Timed out flushing inference cache for {endpoint}")
+
+    logger.info("weight_sync_megatron_quiesce_start endpoints=%s", inference_endpoints)
+    with concurrent.futures.ThreadPoolExecutor(
+        max_workers=max(1, len(inference_endpoints))
+    ) as executor:
+        pause_futures = [executor.submit(_pause, endpoint) for endpoint in inference_endpoints]
+        for future in pause_futures:
+            future.result()
+        flush_futures = [executor.submit(_flush, endpoint) for endpoint in inference_endpoints]
+        for future in flush_futures:
+            future.result()
+    logger.info("weight_sync_megatron_quiesce_ok endpoints=%s", inference_endpoints)
+
+
+def _resume_inference_endpoints(inference_endpoints: list[str]) -> None:
+    """Resume SGLang generation after NCCL update."""
+    if not inference_endpoints:
+        return
+
+    import requests
+
+    logger.info("weight_sync_megatron_resume_start endpoints=%s", inference_endpoints)
+    with concurrent.futures.ThreadPoolExecutor(
+        max_workers=max(1, len(inference_endpoints))
+    ) as executor:
+        futures = [
+            executor.submit(
+                requests.post,
+                f"{endpoint}/continue_generation",
+                json={},
+                timeout=30.0,
+            )
+            for endpoint in inference_endpoints
+        ]
+        for future in futures:
+            response = future.result()
+            response.raise_for_status()
+    logger.info("weight_sync_megatron_resume_ok endpoints=%s", inference_endpoints)
+
+
 def train(handle: Worker) -> None:
     """Miniray work function for Megatron distributed training.
 
@@ -835,6 +906,8 @@ def _do_sync_weights_nccl(
     if sender is None:
         raise RuntimeError("NCCL sender not initialized. Call init_nccl_weight_sync first.")
 
+    _pause_and_flush_inference_endpoints(inference_endpoints)
+
     # Inform inference engines and broadcast in the same order.
     param_info = [
         {
@@ -844,35 +917,43 @@ def _do_sync_weights_nccl(
         }
         for name, p in state_dict.items()
     ]
-
     executor = concurrent.futures.ThreadPoolExecutor(max_workers=max(1, len(inference_endpoints)))
-    futures = []
-    for endpoint in inference_endpoints:
-        futures.append(
-            executor.submit(
-                requests.post,
-                f"{endpoint}/update_weights_from_distributed",
-                json={
-                    "names": [item["name"] for item in param_info],
-                    "shapes": [item["shape"] for item in param_info],
-                    "dtypes": [item["dtype"] for item in param_info],
-                    "group_name": "weight_sync",
-                    "weight_version": str(sender.weight_version + 1),
-                },
-                timeout=300.0,
+    try:
+        futures = []
+        for endpoint in inference_endpoints:
+            futures.append(
+                executor.submit(
+                    requests.post,
+                    f"{endpoint}/update_weights_from_distributed",
+                    json={
+                        "names": [item["name"] for item in param_info],
+                        "shapes": [item["shape"] for item in param_info],
+                        "dtypes": [item["dtype"] for item in param_info],
+                        "group_name": "weight_sync",
+                        "weight_version": str(sender.weight_version + 1),
+                    },
+                    timeout=300.0,
+                )
             )
-        )
 
-    handles = sender.broadcast_weights(state_dict, async_op=True)
+        handles = sender.broadcast_weights(state_dict, async_op=True)
 
-    for handle in handles:
-        handle.wait()
+        for handle in handles:
+            handle.wait()
 
-    for future in futures:
-        response = future.result()
-        response.raise_for_status()
+        for future in futures:
+            response = future.result()
+            response.raise_for_status()
+    finally:
+        executor.shutdown(wait=False)
+        try:
+            _resume_inference_endpoints(inference_endpoints)
+        except Exception:
+            logger.exception(
+                "weight_sync_megatron_resume_failed endpoints=%s",
+                inference_endpoints,
+            )
 
-    executor.shutdown(wait=False)
     torch.cuda.empty_cache()
 
 
