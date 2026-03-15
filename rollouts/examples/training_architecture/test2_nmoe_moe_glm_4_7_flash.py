@@ -1,6 +1,8 @@
-"""Training-architecture smoke test 2: NMOE backend + MoE model (10 steps).
+"""Historical `nmoe` config stub.
 
-Runs GRPO for a few steps on a tiny synthetic reverse-text prompt set.
+This config is kept as a placeholder for the future native `nmoe` backend.
+Today `trainer.backend="nmoe"` fails loudly because the old backend wrapper was
+removed as semantically dishonest.
 
 Run (from `rollouts/`):
   `python -m argus run --config examples/training_architecture/test2_nmoe_moe_glm_4_7_flash.py`

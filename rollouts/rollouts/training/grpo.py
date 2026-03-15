@@ -498,29 +498,9 @@ def _setup_training_backend(
             lora_alpha=config.model.lora_alpha,
         )
     elif backend_name == "nmoe":
-        from ..training.backends.nmoe_backend import NmoeConfig, NmoeTrainingBackend
+        from ..training.backends.nmoe_backend import raise_nmoe_backend_unavailable
 
-        gpu_rank = config.trainer.cuda_device_ids[0]
-        nmoe_cfg = NmoeConfig(
-            dtype=config.model.dtype,
-            lr_dense=config.trainer.lr,
-            lr_router=config.trainer.lr,
-            lr_muon=config.trainer.lr,
-            weight_decay=config.trainer.weight_decay,
-        )
-        backend = NmoeTrainingBackend(
-            model_name=config.model.name,
-            checkpoint_dir=output_dir,
-            loss_fn=loss_fn,
-            config=nmoe_cfg,
-            device_type="cuda",
-            gpu_rank=gpu_rank,
-            num_minibatches=config.trainer.num_minibatches,
-            max_grad_norm=config.trainer.max_grad_norm,
-            use_lora=config.model.use_lora,
-            lora_rank=config.model.lora_rank,
-            lora_alpha=config.model.lora_alpha,
-        )
+        raise_nmoe_backend_unavailable(context="_setup_training_backend(backend='nmoe')")
     elif backend_name in ("fsdp", "fsdp2"):
         if backend_name == "fsdp2":
             logging.getLogger(__name__).warning(
@@ -1927,14 +1907,21 @@ async def _grpo_train_async(
             return _add_pipeline_policy_metrics(step_metrics)
 
         # Step-level weight syncer (blocking). True PipelineRL uses non-blocking NCCLWeightSyncer instead.
-        from ..training.weight_sync import BackendNCCLWeightSyncer, FilesystemWeightSyncer
+        from ..training.weight_sync import (
+            BackendNCCLWeightSyncer,
+            FilesystemWeightSyncer,
+            ManagedChannelWeightSyncer,
+            ManagedWeightUpdateChannel,
+        )
+        from ..training.weight_sync_protocol import InferenceWeightUpdate, WeightSyncPolicy
 
         step_weight_syncer = None
         if config.checkpoint.pipeline_mode != "true_pipeline":
+            raw_step_syncer = None
             if config.checkpoint.weight_sync_mode == "nccl":
-                step_weight_syncer = BackendNCCLWeightSyncer(backend=backend, log=logger)
+                raw_step_syncer = BackendNCCLWeightSyncer(backend=backend, log=logger)
             elif config.checkpoint.weight_sync_mode == "disk":
-                step_weight_syncer = FilesystemWeightSyncer(
+                raw_step_syncer = FilesystemWeightSyncer(
                     backend=backend,
                     engines=inference_engines,
                     inference_sync_realization=config.checkpoint.inference_sync_realization,
@@ -1944,6 +1931,73 @@ async def _grpo_train_async(
                     f"Unknown weight_sync_mode: {config.checkpoint.weight_sync_mode!r}. "
                     "Use 'disk' or 'nccl'."
                 )
+            sync_policy = WeightSyncPolicy(
+                blocking=config.checkpoint.pipeline_mode != "true_pipeline",
+                sync_every=config.checkpoint.sync_weights_every,
+                realization=config.checkpoint.inference_sync_realization or "",
+                max_version_lag=0
+                if config.checkpoint.pipeline_mode == "sync"
+                else config.checkpoint.max_lag,
+            )
+
+            async def _publish_blocking_weight_update(
+                _update: InferenceWeightUpdate,
+                *,
+                _raw_step_syncer: Any = raw_step_syncer,
+            ) -> dict[str, Any]:
+                await _raw_step_syncer.sync()
+                return {
+                    "success": True,
+                    "version": _update.version,
+                    "realization": _update.realization,
+                }
+
+            def _build_blocking_weight_update() -> InferenceWeightUpdate:
+                current_version = getattr(backend, "weight_version", None)
+                next_version = current_version + 1 if isinstance(current_version, int) else None
+                return InferenceWeightUpdate(
+                    version=next_version,
+                    realization=config.checkpoint.inference_sync_realization,
+                    metadata={
+                        "pipeline_mode": config.checkpoint.pipeline_mode,
+                        "weight_sync_mode": config.checkpoint.weight_sync_mode,
+                    },
+                )
+
+            step_weight_syncer = ManagedChannelWeightSyncer(
+                channel=ManagedWeightUpdateChannel(
+                    inference=inference_engines[0],
+                    policy=sync_policy,
+                    publish_impl=_publish_blocking_weight_update,
+                ),
+                syncer=raw_step_syncer,
+                update_factory=_build_blocking_weight_update,
+            )
+
+        def _log_update_channel_state(event: str) -> None:
+            if step_weight_syncer is None:
+                return
+            state = getattr(step_weight_syncer, "state", None)
+            if state is None:
+                return
+            logger.info(
+                event,
+                extra={
+                    **run_context,
+                    "event": event,
+                    "channel_ready": state.channel_ready,
+                    "quiescing_for_update": state.quiescing_for_update,
+                    "update_in_progress": state.update_in_progress,
+                    "last_published_version": state.last_published_version,
+                    "serving_resumed": state.serving_resumed,
+                    "pipeline_mode": config.checkpoint.pipeline_mode,
+                    "weight_sync_mode": config.checkpoint.weight_sync_mode,
+                    "inference_sync_realization": config.checkpoint.inference_sync_realization,
+                },
+            )
+
+        if step_weight_syncer is not None:
+            _log_update_channel_state("weight_update_channel_created")
 
         async def _save_checkpoint(step: int, step_metrics: dict[str, Any]) -> Path:
             save_fn = getattr(backend, "save_checkpoint", None)
@@ -2239,6 +2293,7 @@ async def _grpo_train_async(
                 return _annotate_pipeline_metrics(step_metrics)
 
             async def _before_async_weight_sync() -> None:
+                _log_update_channel_state("weight_update_channel_before_sync")
                 _update_pipeline_state(
                     train_version=getattr(
                         backend, "weight_version", pipeline_state.current_train_version
@@ -2253,6 +2308,7 @@ async def _grpo_train_async(
                 current_version = getattr(
                     backend, "weight_version", pipeline_state.current_train_version
                 )
+                _log_update_channel_state("weight_update_channel_after_sync")
                 _update_pipeline_state(
                     train_version=current_version,
                     serving_version=current_version,
@@ -2316,6 +2372,7 @@ async def _grpo_train_async(
                 return _annotate_pipeline_metrics(step_metrics)
 
             async def _before_weight_sync() -> None:
+                _log_update_channel_state("weight_update_channel_before_sync")
                 _update_pipeline_state(
                     train_version=getattr(
                         backend, "weight_version", pipeline_state.current_train_version
@@ -2328,6 +2385,7 @@ async def _grpo_train_async(
                 current_version = getattr(
                     backend, "weight_version", pipeline_state.current_train_version
                 )
+                _log_update_channel_state("weight_update_channel_after_sync")
                 _update_pipeline_state(
                     train_version=current_version,
                     serving_version=current_version,

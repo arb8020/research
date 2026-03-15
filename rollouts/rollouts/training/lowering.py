@@ -37,6 +37,15 @@ class MegatronProvisioning:
 
 
 @dataclass(frozen=True)
+class NmoeProvisioning:
+    """Provisioning summary for a future native `nmoe` lowering."""
+
+    replicas: int = 1
+    expert_shards: int = 1
+    dispatch_kind: str = "rdep"
+
+
+@dataclass(frozen=True)
 class RealizationPlan:
     """Seqax-inspired realization summary.
 
@@ -134,6 +143,30 @@ def derive_megatron_provisioning(
     )
 
 
+def derive_nmoe_provisioning(
+    base: NmoeProvisioning,
+    realization: RealizationPlan,
+) -> NmoeProvisioning:
+    """Derive future `nmoe` provisioning from realization semantics."""
+
+    required_axes = _required_mesh_axes(realization)
+    unsupported_axes = {"tp", "cp", "pp"} & required_axes
+    if unsupported_axes:
+        raise ValueError(
+            "Nmoe lowering does not support explicit "
+            f"{tuple(sorted(unsupported_axes))} realization intent in this path."
+        )
+    if "ep" in required_axes:
+        assert base.expert_shards > 1, (
+            "realization requires /ep, but NmoeProvisioning.expert_shards <= 1"
+        )
+    if "d" in required_axes or "dp" in required_axes:
+        assert base.replicas > 1, "realization requires data replicas, but replicas <= 1"
+    if base.dispatch_kind != "rdep":
+        raise ValueError("Nmoe lowering currently only reserves dispatch_kind='rdep'")
+    return base
+
+
 @dataclass(frozen=True)
 class TorchTitanLowering:
     """TorchTitan-specific lowering summary."""
@@ -172,6 +205,30 @@ class MegatronLowering:
     ) -> "MegatronLowering":
         return MegatronLowering(
             provisioning=derive_megatron_provisioning(provisioning, realization),
+            realization=realization,
+        )
+
+
+@dataclass(frozen=True)
+class NmoeLowering:
+    """Reserved lowering shape for the future native `nmoe` backend."""
+
+    provisioning: NmoeProvisioning = NmoeProvisioning()
+    realization: RealizationPlan = RealizationPlan()
+    requires_lockstep_eval: bool = True
+    requires_lockstep_generation: bool = True
+    checkpoint_layout: str = "dense_replicated_plus_expert_local"
+    validation_notes: tuple[str, ...] = (
+        "placeholder lowering only; no runnable nmoe backend exists yet",
+    )
+
+    @staticmethod
+    def from_realization(
+        provisioning: NmoeProvisioning,
+        realization: RealizationPlan,
+    ) -> "NmoeLowering":
+        return NmoeLowering(
+            provisioning=derive_nmoe_provisioning(provisioning, realization),
             realization=realization,
         )
 

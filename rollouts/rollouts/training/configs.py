@@ -378,7 +378,9 @@ class TrainerConfig:
     When DistributedConfig is provided, it takes precedence.
     """
 
-    # Training backend implementation (pluggable, see docs/training_architecture.md)
+    # Training backend implementation.
+    # `nmoe` is a reserved backend name that currently fails loudly until a
+    # native runtime adapter lands.
     backend: Literal["pytorch", "fsdp", "fsdp2", "nmoe", "megatron", "torchtitan"] = "pytorch"
     # Service-scoped runtime deps for the trainer process.
     # Current launchers do not realize per-service environments yet, so configs

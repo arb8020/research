@@ -33,6 +33,8 @@ from ..training.contracts import (
 from ..training.lowering import (
     MegatronLowering,
     MegatronProvisioning,
+    NmoeLowering,
+    NmoeProvisioning,
     RealizationPlan,
     TorchTitanLowering,
     TorchTitanProvisioning,
@@ -254,6 +256,8 @@ __all__ = [
     "VersionedRolloutBatch",
     "MegatronLowering",
     "MegatronProvisioning",
+    "NmoeLowering",
+    "NmoeProvisioning",
     "RealizationPlan",
     "TorchTitanProvisioning",
     "TorchTitanLowering",
