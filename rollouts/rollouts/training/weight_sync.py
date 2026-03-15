@@ -41,6 +41,8 @@ from .weight_sync_protocol import (
     resolve_inference_sync_realization,
 )
 
+_startup_logger = logging.getLogger("rollouts.training.inference_startup")
+
 
 def _read_log_tail(path: Path, max_lines: int = 40) -> str:
     """Best-effort tail of a local log file for startup failures."""
@@ -52,6 +54,29 @@ def _read_log_tail(path: Path, max_lines: int = 40) -> str:
         return "\n".join(tail) if tail else "<log file empty>"
     except Exception as exc:  # pragma: no cover - diagnostic path
         return f"<failed to read log tail: {exc}>"
+
+
+def _classify_sglang_startup_phase(line: str) -> tuple[str, dict[str, Any]] | None:
+    """Extract one-shot SGLang startup phase transitions from raw log lines."""
+    if not line:
+        return None
+
+    lower = line.lower()
+    if "started server process" in lower:
+        return "process_spawned", {}
+    if "loading safetensors checkpoint shards" in lower:
+        return "model_load_start", {}
+    if "memory pool end" in lower or "max_total_num_tokens=" in lower:
+        return "kv_cache_ready", {}
+    if "capture cuda graph begin" in lower:
+        return "cuda_graph_capture_start", {}
+    if "capture cuda graph end" in lower:
+        return "cuda_graph_capture_ok", {}
+    if "application startup complete" in lower:
+        return "http_startup_complete", {}
+    if "the server is fired up and ready to roll" in lower:
+        return "server_ready_logged", {}
+    return None
 
 
 # ══════════════════════════════════════════════════════════════
@@ -682,6 +707,14 @@ class SGLangEngine:
     rl_on_policy_target: str | None = None
     _log_file: Path = field(init=False)
     _session_name: str = field(init=False)
+    _startup_event_lock: threading.Lock = field(
+        init=False,
+        repr=False,
+        default_factory=threading.Lock,
+    )
+    _emitted_startup_phases: set[str] = field(init=False, repr=False, default_factory=set)
+    _last_startup_phase: str | None = field(init=False, repr=False, default=None)
+    _last_health_state: str | None = field(init=False, repr=False, default=None)
 
     def __post_init__(self) -> None:
         # Include port for multi-engine runs (each engine gets its own tmux session + log).
@@ -747,6 +780,58 @@ class SGLangEngine:
         # NOTE: NCCL weight sync uses HTTP API (/init_weights_update_group),
         # not SGLang CLI flags. The --rl-on-policy-target flag only supports 'fsdp'.
         return cmd
+
+    def _startup_log_context(self) -> dict[str, Any]:
+        return {
+            "engine_name": self.name,
+            "engine_port": self.port,
+            "engine_cuda_device_ids": list(self.cuda_device_ids),
+            "engine_session_name": self._session_name,
+            "engine_log_path": str(self._log_file),
+            "model_name": self.model_name,
+        }
+
+    def _emit_startup_phase(self, phase: str, *, source: str, line: str | None = None) -> None:
+        with self._startup_event_lock:
+            if phase in self._emitted_startup_phases:
+                return
+            self._emitted_startup_phases.add(phase)
+            self._last_startup_phase = phase
+        _startup_logger.info(
+            "inference startup phase",
+            extra={
+                "event": "inference_startup_phase",
+                "phase": phase,
+                "phase_source": source,
+                "phase_line": line,
+                **self._startup_log_context(),
+            },
+        )
+
+    def _emit_health_state(
+        self,
+        state: str,
+        *,
+        attempt: int,
+        status_code: int | None = None,
+        error: str | None = None,
+    ) -> None:
+        with self._startup_event_lock:
+            if self._last_health_state == state:
+                return
+            self._last_health_state = state
+        _startup_logger.info(
+            "inference health state",
+            extra={
+                "event": "inference_health_state",
+                "health_state": state,
+                "health_attempt": attempt,
+                "health_status_code": status_code,
+                "health_error": error,
+                "last_startup_phase": self._last_startup_phase,
+                **self._startup_log_context(),
+            },
+        )
 
     def launch(self) -> str:
         """Launch SGLang server in tmux session.
@@ -814,6 +899,14 @@ class SGLangEngine:
                         if line:
                             line = line.strip()
                             if line:
+                                phase = _classify_sglang_startup_phase(line)
+                                if phase is not None:
+                                    phase_name, _phase_fields = phase
+                                    self._emit_startup_phase(
+                                        phase_name,
+                                        source="sglang_log",
+                                        line=line,
+                                    )
                                 sglang_logger.info(line)
                         else:
                             time.sleep(0.1)
@@ -835,21 +928,52 @@ class SGLangEngine:
     async def wait_until_ready(self, max_wait: float = 120.0) -> None:
         """Wait until SGLang health check passes."""
         async with httpx.AsyncClient(timeout=5.0) as client:
-            for _attempt in range(int(max_wait)):
+            for attempt in range(int(max_wait)):
                 # Check if tmux session crashed
                 if not self._is_session_alive():
-                    msg = f"SGLang server crashed during startup! Check {self._log_file}"
+                    self._emit_health_state(
+                        "session_dead",
+                        attempt=attempt,
+                    )
+                    msg = (
+                        "SGLang server crashed during startup! "
+                        f"last_phase={self._last_startup_phase!r} "
+                        f"log_path={self._log_file}"
+                    )
                     raise RuntimeError(msg)
 
                 try:
                     resp = await client.get(self.health_url)
                     if resp.status_code == 200:
+                        self._emit_health_state(
+                            "healthy",
+                            attempt=attempt,
+                            status_code=resp.status_code,
+                        )
+                        self._emit_startup_phase(
+                            "http_ready",
+                            source="healthcheck",
+                        )
                         return
+                    self._emit_health_state(
+                        "service_unavailable",
+                        attempt=attempt,
+                        status_code=resp.status_code,
+                    )
                 except Exception:
-                    pass
+                    self._emit_health_state(
+                        "transport_pending",
+                        attempt=attempt,
+                        error="request_failed",
+                    )
                 await trio.sleep(1.0)
 
-        msg = f"SGLang failed to start after {max_wait}s. Check {self._log_file}"
+        msg = (
+            f"SGLang failed to start after {max_wait}s. "
+            f"last_phase={self._last_startup_phase!r} "
+            f"last_health_state={self._last_health_state!r} "
+            f"log_path={self._log_file}"
+        )
         raise RuntimeError(msg)
 
     async def apply_weight_update(self, update: InferenceWeightUpdate) -> dict[str, Any]:
