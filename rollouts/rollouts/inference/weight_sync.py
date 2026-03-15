@@ -152,6 +152,7 @@ class WeightSyncSender:
     inference_world_size: int  # Number of inference GPUs (not including trainer)
     group_name: str = "weight_sync"
     timeout_seconds: float = 300.0
+    device: torch.device = field(default_factory=lambda: torch.device("cuda"))
 
     _process_group: Any = field(default=None, init=False, repr=False)
     _weight_version: int = field(default=0, init=False)
@@ -167,6 +168,8 @@ class WeightSyncSender:
     def init_group(self) -> None:
         """Initialize NCCL process group. Call once at startup."""
         logger.info(f"Initializing weight sync sender (world_size={self.world_size})")
+        if self.device.type == "cuda":
+            torch.cuda.set_device(self.device)
         self._process_group = create_stateless_process_group(
             master_addr=self.master_addr,
             master_port=self.master_port,
@@ -197,8 +200,8 @@ class WeightSyncSender:
         for _name, param in state_dict.items():
             # Ensure contiguous and on GPU
             data = param.data.contiguous()
-            if data.device.type != "cuda":
-                data = data.cuda()
+            if data.device != self.device:
+                data = data.to(self.device)
 
             handle = dist.broadcast(data, src=0, group=self._process_group, async_op=async_op)
             if async_op:

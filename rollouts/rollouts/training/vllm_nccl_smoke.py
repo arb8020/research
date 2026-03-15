@@ -39,10 +39,13 @@ async def run_vllm_nccl_smoke(config: Any, **kwargs: Any) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     gpu_assignments = config.inference.gpu_assignments
     ports = config.inference.ports
+    trainer_gpu_ids = tuple(getattr(config.trainer, "cuda_device_ids", ()) or ())
     assert gpu_assignments, "inference.gpu_assignments cannot be empty"
     assert ports, "inference.ports cannot be empty"
+    assert trainer_gpu_ids, "trainer.cuda_device_ids cannot be empty for NCCL smoke"
     gpus = gpu_assignments[0]
     port = ports[0]
+    trainer_device = torch.device(f"cuda:{trainer_gpu_ids[0]}")
 
     engine = VLLMEngine(
         model_name=config.model.name,
@@ -83,6 +86,7 @@ async def run_vllm_nccl_smoke(config: Any, **kwargs: Any) -> None:
                 master_port=master_port,
                 inference_world_size=1,
                 group_name="weight_sync",
+                device=trainer_device,
             )
 
             async with trio.open_nursery() as nursery:
