@@ -12,8 +12,10 @@ Usage:
 from __future__ import annotations
 
 import concurrent.futures
+import json
 import logging
 import os
+import sys
 from enum import IntEnum
 from typing import TYPE_CHECKING, Any
 
@@ -21,6 +23,18 @@ if TYPE_CHECKING:
     from miniray import Worker
 
 logger = logging.getLogger(__name__)
+_ARGUS_DIAG_EVENT_SENTINEL = "__ARGUS_DIAG__"
+
+
+def _emit_argus_diag(event: str, **data: object) -> None:
+    """Best-effort structured diagnostics for remote sandbox runs."""
+    try:
+        sys.stderr.write(
+            f"{_ARGUS_DIAG_EVENT_SENTINEL}{json.dumps({'event': event, **data}, sort_keys=True)}\n"
+        )
+        sys.stderr.flush()
+    except Exception:
+        return
 
 
 class Command(IntEnum):
@@ -579,6 +593,14 @@ def _init_nccl_weight_sync(
         inference_endpoints,
         group_name,
     )
+    _emit_argus_diag(
+        "weight_sync_megatron_init_start",
+        master_addr=master_addr,
+        master_port=master_port,
+        world_size=world_size,
+        endpoints=inference_endpoints,
+        group=group_name,
+    )
 
     def register_inference_endpoint(endpoint: str, rank: int) -> None:
         import requests
@@ -592,6 +614,15 @@ def _init_nccl_weight_sync(
                 master_port,
                 world_size,
                 group_name,
+            )
+            _emit_argus_diag(
+                "weight_sync_megatron_register_endpoint_start",
+                endpoint=endpoint,
+                rank=rank,
+                master_addr=master_addr,
+                master_port=master_port,
+                world_size=world_size,
+                group=group_name,
             )
             response = requests.post(
                 f"{endpoint}/init_weights_update_group",
@@ -612,11 +643,23 @@ def _init_nccl_weight_sync(
                 rank,
                 response.status_code,
             )
+            _emit_argus_diag(
+                "weight_sync_megatron_register_endpoint_ok",
+                endpoint=endpoint,
+                rank=rank,
+                status_code=response.status_code,
+            )
         except Exception as e:
             logger.exception(
                 "weight_sync_megatron_register_endpoint_failed endpoint=%s rank=%s",
                 endpoint,
                 rank,
+            )
+            _emit_argus_diag(
+                "weight_sync_megatron_register_endpoint_failed",
+                endpoint=endpoint,
+                rank=rank,
+                error=f"{type(e).__name__}: {e}",
             )
             errors.append((endpoint, str(e)))
 
@@ -631,6 +674,13 @@ def _init_nccl_weight_sync(
             master_port,
             world_size,
             group_name,
+        )
+        _emit_argus_diag(
+            "weight_sync_megatron_trainer_join_start",
+            master_addr=master_addr,
+            master_port=master_port,
+            world_size=world_size,
+            group=group_name,
         )
         sender = WeightSyncSender(
             master_addr=master_addr,
@@ -647,6 +697,13 @@ def _init_nccl_weight_sync(
             world_size,
             group_name,
         )
+        _emit_argus_diag(
+            "weight_sync_megatron_trainer_join_ok",
+            master_addr=master_addr,
+            master_port=master_port,
+            world_size=world_size,
+            group=group_name,
+        )
 
     with concurrent.futures.ThreadPoolExecutor(
         max_workers=max(1, len(inference_endpoints) + 1)
@@ -659,9 +716,19 @@ def _init_nccl_weight_sync(
             logger.info(
                 "weight_sync_megatron_future_wait_start index=%s total=%s", index, len(futures)
             )
+            _emit_argus_diag(
+                "weight_sync_megatron_future_wait_start",
+                index=index,
+                total=len(futures),
+            )
             future.result()
             logger.info(
                 "weight_sync_megatron_future_wait_ok index=%s total=%s", index, len(futures)
+            )
+            _emit_argus_diag(
+                "weight_sync_megatron_future_wait_ok",
+                index=index,
+                total=len(futures),
             )
 
     if errors:
@@ -681,6 +748,14 @@ def _init_nccl_weight_sync(
         world_size,
         inference_endpoints,
         group_name,
+    )
+    _emit_argus_diag(
+        "weight_sync_megatron_init_ok",
+        master_addr=master_addr,
+        master_port=master_port,
+        world_size=world_size,
+        endpoints=inference_endpoints,
+        group=group_name,
     )
 
 

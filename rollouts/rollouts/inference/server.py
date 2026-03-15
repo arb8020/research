@@ -17,8 +17,10 @@ from __future__ import annotations
 
 import argparse
 import functools
+import json
 import logging
 import queue
+import sys
 import threading
 import time
 import uuid
@@ -35,6 +37,18 @@ from .engine_v2 import EngineConfig, InferenceEngineV2
 from .models.weight import load_weights
 
 logger = logging.getLogger(__name__)
+_ARGUS_DIAG_EVENT_SENTINEL = "__ARGUS_DIAG__"
+
+
+def _emit_argus_diag(event: str, **data: object) -> None:
+    """Best-effort structured diagnostics for remote sandbox runs."""
+    try:
+        sys.stderr.write(
+            f"{_ARGUS_DIAG_EVENT_SENTINEL}{json.dumps({'event': event, **data}, sort_keys=True)}\n"
+        )
+        sys.stderr.flush()
+    except Exception:
+        return
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -741,6 +755,15 @@ def create_app(engine: InferenceEngineV2) -> Any:
                 master_port,
                 group_name,
             )
+            _emit_argus_diag(
+                "weight_sync_inference_http_init_start",
+                backend=backend,
+                rank=rank_offset,
+                world_size=world_size,
+                master_addr=master_addr,
+                master_port=master_port,
+                group=group_name,
+            )
 
             # Initialize process group
             logger.info(
@@ -750,6 +773,14 @@ def create_app(engine: InferenceEngineV2) -> Any:
                 world_size,
                 master_addr,
                 master_port,
+            )
+            _emit_argus_diag(
+                "weight_sync_inference_dist_init_start",
+                backend=backend,
+                rank=rank_offset,
+                world_size=world_size,
+                master_addr=master_addr,
+                master_port=master_port,
             )
             dist.init_process_group(
                 backend=backend,
@@ -763,6 +794,14 @@ def create_app(engine: InferenceEngineV2) -> Any:
                 world_size,
                 master_addr,
                 master_port,
+            )
+            _emit_argus_diag(
+                "weight_sync_inference_dist_init_ok",
+                backend=backend,
+                rank=rank_offset,
+                world_size=world_size,
+                master_addr=master_addr,
+                master_port=master_port,
             )
 
             # Store state
@@ -778,9 +817,26 @@ def create_app(engine: InferenceEngineV2) -> Any:
                 world_size,
                 group_name,
             )
+            _emit_argus_diag(
+                "weight_sync_inference_http_init_ok",
+                backend=backend,
+                rank=rank_offset,
+                world_size=world_size,
+                group=group_name,
+            )
             return {"status": "ok", "rank": rank_offset, "world_size": world_size}
         except Exception as e:
             logger.exception("Error in /init_weights_update_group")
+            _emit_argus_diag(
+                "weight_sync_inference_http_init_failed",
+                backend=backend,
+                rank=rank_offset,
+                world_size=world_size,
+                master_addr=master_addr,
+                master_port=master_port,
+                group=group_name,
+                error=f"{type(e).__name__}: {e}",
+            )
             raise HTTPException(status_code=500, detail=str(e)) from e
 
     @app.post("/update_weights_from_distributed")

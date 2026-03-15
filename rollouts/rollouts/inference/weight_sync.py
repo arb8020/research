@@ -38,7 +38,9 @@ Usage (receiver - inference engine):
 
 from __future__ import annotations
 
+import json
 import logging
+import sys
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -47,6 +49,18 @@ import torch.distributed as dist
 from torch import Tensor
 
 logger = logging.getLogger(__name__)
+_ARGUS_DIAG_EVENT_SENTINEL = "__ARGUS_DIAG__"
+
+
+def _emit_argus_diag(event: str, **data: object) -> None:
+    """Best-effort structured diagnostics for remote sandbox runs."""
+    try:
+        sys.stderr.write(
+            f"{_ARGUS_DIAG_EVENT_SENTINEL}{json.dumps({'event': event, **data}, sort_keys=True)}\n"
+        )
+        sys.stderr.flush()
+    except Exception:
+        return
 
 
 def _tensor_sync_metadata(name: str, tensor: Tensor) -> dict[str, object]:
@@ -122,6 +136,15 @@ def create_stateless_process_group(
         init_method,
         timeout_seconds,
     )
+    _emit_argus_diag(
+        "weight_sync_pg_create_start",
+        group=group_name,
+        backend=backend,
+        rank=rank,
+        world_size=world_size,
+        init_method=init_method,
+        timeout_s=timeout_seconds,
+    )
 
     # Rendezvous to get store
     logger.info(
@@ -129,6 +152,12 @@ def create_stateless_process_group(
         group_name,
         rank,
         world_size,
+    )
+    _emit_argus_diag(
+        "weight_sync_pg_rendezvous_start",
+        group=group_name,
+        rank=rank,
+        world_size=world_size,
     )
     rendezvous_iterator = rendezvous(init_method, rank, world_size, timeout=timeout)
     store, rank, world_size = next(rendezvous_iterator)
@@ -138,6 +167,12 @@ def create_stateless_process_group(
         group_name,
         rank,
         world_size,
+    )
+    _emit_argus_diag(
+        "weight_sync_pg_rendezvous_ok",
+        group=group_name,
+        rank=rank,
+        world_size=world_size,
     )
 
     # Use PrefixStore to namespace this group
@@ -166,6 +201,13 @@ def create_stateless_process_group(
         rank,
         world_size,
     )
+    _emit_argus_diag(
+        "weight_sync_pg_helper_start",
+        group=group_name,
+        backend=backend,
+        rank=rank,
+        world_size=world_size,
+    )
     pg, _ = _new_process_group_helper(
         world_size,
         rank,
@@ -183,6 +225,13 @@ def create_stateless_process_group(
         rank,
         world_size,
     )
+    _emit_argus_diag(
+        "weight_sync_pg_helper_ok",
+        group=group_name,
+        backend=backend,
+        rank=rank,
+        world_size=world_size,
+    )
 
     # Register in world for cleanup
     _world.pg_group_ranks[pg] = {i: i for i in range(world_size)}
@@ -192,6 +241,13 @@ def create_stateless_process_group(
         backend,
         rank,
         world_size,
+    )
+    _emit_argus_diag(
+        "weight_sync_pg_create_ok",
+        group=group_name,
+        backend=backend,
+        rank=rank,
+        world_size=world_size,
     )
 
     return pg
@@ -239,6 +295,14 @@ class WeightSyncSender:
             self.device,
             self.group_name,
         )
+        _emit_argus_diag(
+            "weight_sync_sender_init_start",
+            world_size=self.world_size,
+            master_addr=self.master_addr,
+            master_port=self.master_port,
+            device=str(self.device),
+            group=self.group_name,
+        )
         if self.device.type == "cuda":
             torch.cuda.set_device(self.device)
         self._process_group = create_stateless_process_group(
@@ -256,6 +320,14 @@ class WeightSyncSender:
             self.master_port,
             self.device,
             self.group_name,
+        )
+        _emit_argus_diag(
+            "weight_sync_sender_init_ok",
+            world_size=self.world_size,
+            master_addr=self.master_addr,
+            master_port=self.master_port,
+            device=str(self.device),
+            group=self.group_name,
         )
 
     def broadcast_weights(
@@ -375,6 +447,15 @@ class WeightSyncReceiver:
             self.device,
             self.group_name,
         )
+        _emit_argus_diag(
+            "weight_sync_receiver_init_start",
+            rank=self.rank,
+            world_size=self.world_size,
+            master_addr=self.master_addr,
+            master_port=self.master_port,
+            device=str(self.device),
+            group=self.group_name,
+        )
         self._process_group = create_stateless_process_group(
             master_addr=self.master_addr,
             master_port=self.master_port,
@@ -391,6 +472,15 @@ class WeightSyncReceiver:
             self.master_port,
             self.device,
             self.group_name,
+        )
+        _emit_argus_diag(
+            "weight_sync_receiver_init_ok",
+            rank=self.rank,
+            world_size=self.world_size,
+            master_addr=self.master_addr,
+            master_port=self.master_port,
+            device=str(self.device),
+            group=self.group_name,
         )
 
     def receive_weights(
