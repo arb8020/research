@@ -33,7 +33,10 @@ def _dtype_from_name(name: str) -> torch.dtype:
 
 
 async def run_vllm_nccl_smoke(config: Any, **kwargs: Any) -> None:
-    output_dir = Path(kwargs["output_dir"])
+    output_root = Path(getattr(getattr(config, "output", None), "output_dir", "results"))
+    experiment_name = getattr(getattr(config, "output", None), "experiment_name", "vllm_nccl")
+    output_dir = output_root / f"{experiment_name}_vllm_nccl_smoke"
+    output_dir.mkdir(parents=True, exist_ok=True)
     gpu_assignments = config.inference.gpu_assignments
     ports = config.inference.ports
     assert gpu_assignments, "inference.gpu_assignments cannot be empty"
