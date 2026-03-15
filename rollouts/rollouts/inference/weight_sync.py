@@ -469,6 +469,8 @@ class WeightSyncReceiver:
             device=str(self.device),
             group=self.group_name,
         )
+        if self.device.type == "cuda":
+            torch.cuda.set_device(self.device)
         self._process_group = create_stateless_process_group(
             master_addr=self.master_addr,
             master_port=self.master_port,

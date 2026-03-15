@@ -211,7 +211,7 @@ class EngineThread:
 
 # Global state for NCCL weight sync (one process group per server)
 _nccl_state: dict[str, Any] = {
-    "process_group": None,
+    "receiver": None,
     "group_name": None,
     "rank": None,
     "world_size": None,
@@ -730,9 +730,7 @@ def create_app(engine: InferenceEngineV2) -> Any:
             "backend": "nccl"
         }
         """
-        import os
-
-        import torch.distributed as dist
+        from .weight_sync import WeightSyncReceiver
 
         master_addr = request.get("master_address", "127.0.0.1")
         master_port = request.get("master_port", 29500)
@@ -740,10 +738,6 @@ def create_app(engine: InferenceEngineV2) -> Any:
         world_size = request.get("world_size", 2)
         group_name = request.get("group_name", "weight_sync")
         backend = request.get("backend", "nccl")
-
-        # Set environment for NCCL
-        os.environ["MASTER_ADDR"] = master_addr
-        os.environ["MASTER_PORT"] = str(master_port)
 
         try:
             logger.info(
@@ -765,9 +759,11 @@ def create_app(engine: InferenceEngineV2) -> Any:
                 group=group_name,
             )
 
-            # Initialize process group
+            if backend != "nccl":
+                raise ValueError(f"unsupported weight-sync backend: {backend}")
+
             logger.info(
-                "weight_sync_inference_dist_init_start backend=%s rank=%s world_size=%s master=%s:%s",
+                "weight_sync_inference_receiver_init_start backend=%s rank=%s world_size=%s master=%s:%s",
                 backend,
                 rank_offset,
                 world_size,
@@ -775,20 +771,24 @@ def create_app(engine: InferenceEngineV2) -> Any:
                 master_port,
             )
             _emit_argus_diag(
-                "weight_sync_inference_dist_init_start",
+                "weight_sync_inference_receiver_init_start",
                 backend=backend,
                 rank=rank_offset,
                 world_size=world_size,
                 master_addr=master_addr,
                 master_port=master_port,
             )
-            dist.init_process_group(
-                backend=backend,
+            receiver = WeightSyncReceiver(
+                master_addr=master_addr,
+                master_port=master_port,
                 rank=rank_offset,
                 world_size=world_size,
+                group_name=group_name,
+                device=engine.device,
             )
+            receiver.init_group()
             logger.info(
-                "weight_sync_inference_dist_init_ok backend=%s rank=%s world_size=%s master=%s:%s",
+                "weight_sync_inference_receiver_init_ok backend=%s rank=%s world_size=%s master=%s:%s",
                 backend,
                 rank_offset,
                 world_size,
@@ -796,7 +796,7 @@ def create_app(engine: InferenceEngineV2) -> Any:
                 master_port,
             )
             _emit_argus_diag(
-                "weight_sync_inference_dist_init_ok",
+                "weight_sync_inference_receiver_init_ok",
                 backend=backend,
                 rank=rank_offset,
                 world_size=world_size,
@@ -805,7 +805,7 @@ def create_app(engine: InferenceEngineV2) -> Any:
             )
 
             # Store state
-            _nccl_state["process_group"] = dist.group.WORLD
+            _nccl_state["receiver"] = receiver
             _nccl_state["group_name"] = group_name
             _nccl_state["rank"] = rank_offset
             _nccl_state["world_size"] = world_size
@@ -849,9 +849,10 @@ def create_app(engine: InferenceEngineV2) -> Any:
             "dtypes": ["bfloat16", ...],
         }
         """
-        import torch.distributed as dist
+        from .weight_sync import ParamInfo
 
-        if _nccl_state["process_group"] is None:
+        receiver = _nccl_state["receiver"]
+        if receiver is None:
             raise HTTPException(status_code=400, detail="NCCL group not initialized")
 
         names = request.get("names", [])
@@ -866,14 +867,15 @@ def create_app(engine: InferenceEngineV2) -> Any:
 
         try:
             logger.info(f"Receiving {len(names)} weight tensors via NCCL")
-            new_state_dict = {}
-
-            for name, shape, dtype_str in zip(names, shapes, dtypes, strict=True):
-                dtype = dtype_map.get(dtype_str, torch.bfloat16)
-                # Allocate tensor and receive broadcast from rank 0
-                tensor = torch.empty(shape, dtype=dtype, device=engine.device)
-                dist.broadcast(tensor, src=0)
-                new_state_dict[name] = tensor
+            param_infos = [
+                ParamInfo(
+                    name=name,
+                    shape=tuple(shape),
+                    dtype=dtype_map.get(dtype_str, torch.bfloat16),
+                )
+                for name, shape, dtype_str in zip(names, shapes, dtypes, strict=True)
+            ]
+            new_state_dict = receiver.receive_weights(param_infos)
 
             # Apply weights
             engine.reload_weights(new_state_dict)
@@ -886,15 +888,14 @@ def create_app(engine: InferenceEngineV2) -> Any:
     @app.post("/destroy_weights_update_group")
     async def destroy_weights_update_group(request: dict) -> dict:
         """Destroy NCCL process group."""
-        import torch.distributed as dist
-
         group_name = request.get("group_name", "weight_sync")
 
         try:
-            if _nccl_state["process_group"] is not None:
+            receiver = _nccl_state["receiver"]
+            if receiver is not None:
                 logger.info(f"Destroying NCCL group: {group_name}")
-                dist.destroy_process_group()
-                _nccl_state["process_group"] = None
+                receiver.cleanup()
+                _nccl_state["receiver"] = None
                 _nccl_state["group_name"] = None
                 _nccl_state["rank"] = None
                 _nccl_state["world_size"] = None
