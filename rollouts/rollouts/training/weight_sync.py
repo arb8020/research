@@ -36,6 +36,19 @@ from .weight_sync_protocol import (
     resolve_inference_sync_realization,
 )
 
+
+def _read_log_tail(path: Path, max_lines: int = 40) -> str:
+    """Best-effort tail of a local log file for startup failures."""
+    try:
+        if not path.exists():
+            return "<log file not found>"
+        lines = path.read_text(errors="replace").splitlines()
+        tail = lines[-max_lines:]
+        return "\n".join(tail) if tail else "<log file empty>"
+    except Exception as exc:  # pragma: no cover - diagnostic path
+        return f"<failed to read log tail: {exc}>"
+
+
 # ══════════════════════════════════════════════════════════════
 # Fine-grained immediate mode (Casey Muratori style)
 # ══════════════════════════════════════════════════════════════
@@ -921,7 +934,11 @@ class VLLMEngine:
             for _attempt in range(int(max_wait)):
                 # Check if tmux session crashed
                 if not self._is_session_alive():
-                    msg = f"vLLM server crashed during startup! Check {self._log_file}"
+                    log_tail = _read_log_tail(self._log_file)
+                    msg = (
+                        f"vLLM server crashed during startup! Log tail from {self._log_file}:\n"
+                        f"{log_tail}"
+                    )
                     raise RuntimeError(msg)
 
                 try:
