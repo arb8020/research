@@ -99,35 +99,72 @@ async def run_torchtitan_vllm_real_tensor_smoke(
             parameter_stride=list(first_tensor.stride()),
             parameter_is_contiguous=bool(first_tensor.is_contiguous()),
         )
+        cloned_tensor = first_tensor.clone()
+        materialized_tensor = cloned_tensor.new_empty(cloned_tensor.shape)
+        materialized_tensor.copy_(cloned_tensor)
+        emit(
+            "torchtitan_real_tensor_variants_ready",
+            parameter_name=first_name,
+            original_data_ptr=int(first_tensor.data_ptr()),
+            cloned_data_ptr=int(cloned_tensor.data_ptr()),
+            materialized_data_ptr=int(materialized_tensor.data_ptr()),
+        )
 
         sender = getattr(backend, "_nccl_weight_sender", None)
         assert sender is not None, "TorchTitan backend did not initialize NCCL sender"
 
         async with httpx.AsyncClient(timeout=300.0) as client:
-            async with trio.open_nursery() as nursery:
 
-                async def request_receive() -> None:
-                    emit("torchtitan_real_tensor_receive_request_start", parameter_name=first_name)
-                    response = await client.post(
-                        f"{engine.base_url}/receive_weight_update",
-                        json={
-                            "names": [first_name],
-                            "shapes": [list(first_tensor.shape)],
-                            "dtypes": [str(first_tensor.dtype).replace("torch.", "")],
-                        },
-                    )
-                    response.raise_for_status()
+            async def _attempt_broadcast(label: str, tensor: Any) -> None:
+                async with trio.open_nursery() as nursery:
+
+                    async def request_receive() -> None:
+                        emit(
+                            "torchtitan_real_tensor_receive_request_start",
+                            parameter_name=first_name,
+                            tensor_variant=label,
+                        )
+                        response = await client.post(
+                            f"{engine.base_url}/receive_weight_update",
+                            json={
+                                "names": [first_name],
+                                "shapes": [list(tensor.shape)],
+                                "dtypes": [str(tensor.dtype).replace("torch.", "")],
+                            },
+                        )
+                        response.raise_for_status()
+                        emit(
+                            "torchtitan_real_tensor_receive_request_finished",
+                            parameter_name=first_name,
+                            tensor_variant=label,
+                            response=response.json(),
+                        )
+
+                    nursery.start_soon(request_receive)
+                    await trio.sleep(0.2)
                     emit(
-                        "torchtitan_real_tensor_receive_request_finished",
+                        "torchtitan_real_tensor_broadcast_start",
                         parameter_name=first_name,
-                        response=response.json(),
+                        tensor_variant=label,
+                        data_ptr=int(tensor.data_ptr()),
+                    )
+                    await trio.to_thread.run_sync(sender.broadcast_weights, {first_name: tensor})
+                    emit(
+                        "torchtitan_real_tensor_broadcast_finished",
+                        parameter_name=first_name,
+                        tensor_variant=label,
                     )
 
-                nursery.start_soon(request_receive)
-                await trio.sleep(0.2)
-                emit("torchtitan_real_tensor_broadcast_start", parameter_name=first_name)
-                await trio.to_thread.run_sync(sender.broadcast_weights, {first_name: first_tensor})
-                emit("torchtitan_real_tensor_broadcast_finished", parameter_name=first_name)
+            try:
+                await _attempt_broadcast("original", first_tensor)
+            except Exception as exc:
+                emit(
+                    "torchtitan_real_tensor_original_failed",
+                    parameter_name=first_name,
+                    error=repr(exc),
+                )
+                await _attempt_broadcast("clone", cloned_tensor)
+                await _attempt_broadcast("materialized_copy", materialized_tensor)
 
         emit("torchtitan_real_tensor_smoke_finished", status="ok")
     finally:
