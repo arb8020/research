@@ -544,6 +544,7 @@ def _init_nccl_weight_sync(
 ) -> None:
     """Initialize NCCL sender and connect inference engines."""
     if hasattr(backend, "_nccl_weight_sender") and backend._nccl_weight_sender is not None:
+        logger.info("weight_sync_megatron_reuse_existing_sender")
         return
 
     backend._nccl_weight_sender = None
@@ -570,11 +571,28 @@ def _init_nccl_weight_sync(
 
     sender_holder: dict[str, Any] = {}
     errors: list[tuple[str, str]] = []
+    logger.info(
+        "weight_sync_megatron_init_start master=%s:%s world_size=%s endpoints=%s group=%s",
+        master_addr,
+        master_port,
+        world_size,
+        inference_endpoints,
+        group_name,
+    )
 
     def register_inference_endpoint(endpoint: str, rank: int) -> None:
         import requests
 
         try:
+            logger.info(
+                "weight_sync_megatron_register_endpoint_start endpoint=%s rank=%s master=%s:%s world_size=%s group=%s",
+                endpoint,
+                rank,
+                master_addr,
+                master_port,
+                world_size,
+                group_name,
+            )
             response = requests.post(
                 f"{endpoint}/init_weights_update_group",
                 json={
@@ -588,7 +606,18 @@ def _init_nccl_weight_sync(
                 timeout=300.0,
             )
             response.raise_for_status()
+            logger.info(
+                "weight_sync_megatron_register_endpoint_ok endpoint=%s rank=%s status=%s",
+                endpoint,
+                rank,
+                response.status_code,
+            )
         except Exception as e:
+            logger.exception(
+                "weight_sync_megatron_register_endpoint_failed endpoint=%s rank=%s",
+                endpoint,
+                rank,
+            )
             errors.append((endpoint, str(e)))
 
     def trainer_join() -> None:
@@ -596,6 +625,13 @@ def _init_nccl_weight_sync(
 
         os.environ.setdefault("NCCL_SHM_DISABLE", "1")
         os.environ.setdefault("NCCL_CUMEM_ENABLE", "0")
+        logger.info(
+            "weight_sync_megatron_trainer_join_start master=%s:%s world_size=%s group=%s",
+            master_addr,
+            master_port,
+            world_size,
+            group_name,
+        )
         sender = WeightSyncSender(
             master_addr=master_addr,
             master_port=master_port,
@@ -604,6 +640,13 @@ def _init_nccl_weight_sync(
         )
         sender.init_group()
         sender_holder["sender"] = sender
+        logger.info(
+            "weight_sync_megatron_trainer_join_ok master=%s:%s world_size=%s group=%s",
+            master_addr,
+            master_port,
+            world_size,
+            group_name,
+        )
 
     with concurrent.futures.ThreadPoolExecutor(
         max_workers=max(1, len(inference_endpoints) + 1)
@@ -612,8 +655,14 @@ def _init_nccl_weight_sync(
         for i, endpoint in enumerate(inference_endpoints):
             inference_rank = i + 1
             futures.append(executor.submit(register_inference_endpoint, endpoint, inference_rank))
-        for future in futures:
+        for index, future in enumerate(futures):
+            logger.info(
+                "weight_sync_megatron_future_wait_start index=%s total=%s", index, len(futures)
+            )
             future.result()
+            logger.info(
+                "weight_sync_megatron_future_wait_ok index=%s total=%s", index, len(futures)
+            )
 
     if errors:
         raise RuntimeError(f"Failed to register inference endpoints for NCCL: {errors}")
@@ -625,7 +674,14 @@ def _init_nccl_weight_sync(
     backend._nccl_weight_sender = sender
     backend._nccl_master_addr = master_addr
     backend._nccl_master_port = master_port
-    logger.info("Initialized NCCL weight sync: world_size=%d", world_size)
+    logger.info(
+        "weight_sync_megatron_init_ok master=%s:%s world_size=%s endpoints=%s group=%s",
+        master_addr,
+        master_port,
+        world_size,
+        inference_endpoints,
+        group_name,
+    )
 
 
 def _do_sync_weights_nccl(

@@ -732,13 +732,37 @@ def create_app(engine: InferenceEngineV2) -> Any:
         os.environ["MASTER_PORT"] = str(master_port)
 
         try:
-            logger.info(f"Initializing NCCL group: rank={rank_offset}, world_size={world_size}")
+            logger.info(
+                "weight_sync_inference_http_init_start backend=%s rank=%s world_size=%s master=%s:%s group=%s",
+                backend,
+                rank_offset,
+                world_size,
+                master_addr,
+                master_port,
+                group_name,
+            )
 
             # Initialize process group
+            logger.info(
+                "weight_sync_inference_dist_init_start backend=%s rank=%s world_size=%s master=%s:%s",
+                backend,
+                rank_offset,
+                world_size,
+                master_addr,
+                master_port,
+            )
             dist.init_process_group(
                 backend=backend,
                 rank=rank_offset,
                 world_size=world_size,
+            )
+            logger.info(
+                "weight_sync_inference_dist_init_ok backend=%s rank=%s world_size=%s master=%s:%s",
+                backend,
+                rank_offset,
+                world_size,
+                master_addr,
+                master_port,
             )
 
             # Store state
@@ -747,7 +771,13 @@ def create_app(engine: InferenceEngineV2) -> Any:
             _nccl_state["rank"] = rank_offset
             _nccl_state["world_size"] = world_size
 
-            logger.info("NCCL group initialized")
+            logger.info(
+                "weight_sync_inference_http_init_ok backend=%s rank=%s world_size=%s group=%s",
+                backend,
+                rank_offset,
+                world_size,
+                group_name,
+            )
             return {"status": "ok", "rank": rank_offset, "world_size": world_size}
         except Exception as e:
             logger.exception("Error in /init_weights_update_group")

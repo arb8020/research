@@ -104,11 +104,32 @@ def create_stateless_process_group(
 
     timeout = timedelta(seconds=timeout_seconds)
     init_method = f"tcp://{master_addr}:{master_port}"
+    logger.info(
+        "weight_sync_pg_create_start group=%s backend=%s rank=%s world_size=%s init_method=%s timeout_s=%.1f",
+        group_name,
+        backend,
+        rank,
+        world_size,
+        init_method,
+        timeout_seconds,
+    )
 
     # Rendezvous to get store
+    logger.info(
+        "weight_sync_pg_rendezvous_start group=%s rank=%s world_size=%s",
+        group_name,
+        rank,
+        world_size,
+    )
     rendezvous_iterator = rendezvous(init_method, rank, world_size, timeout=timeout)
     store, rank, world_size = next(rendezvous_iterator)
     store.set_timeout(timeout)
+    logger.info(
+        "weight_sync_pg_rendezvous_ok group=%s rank=%s world_size=%s",
+        group_name,
+        rank,
+        world_size,
+    )
 
     # Use PrefixStore to namespace this group
     store = PrefixStore(group_name, store)
@@ -129,6 +150,13 @@ def create_stateless_process_group(
             "'backend_options' nor 'pg_options' parameter."
         )
 
+    logger.info(
+        "weight_sync_pg_helper_start group=%s backend=%s rank=%s world_size=%s",
+        group_name,
+        backend,
+        rank,
+        world_size,
+    )
     pg, _ = _new_process_group_helper(
         world_size,
         rank,
@@ -139,9 +167,23 @@ def create_stateless_process_group(
         timeout=timeout,
         **pg_kwargs,
     )
+    logger.info(
+        "weight_sync_pg_helper_ok group=%s backend=%s rank=%s world_size=%s",
+        group_name,
+        backend,
+        rank,
+        world_size,
+    )
 
     # Register in world for cleanup
     _world.pg_group_ranks[pg] = {i: i for i in range(world_size)}
+    logger.info(
+        "weight_sync_pg_create_ok group=%s backend=%s rank=%s world_size=%s",
+        group_name,
+        backend,
+        rank,
+        world_size,
+    )
 
     return pg
 
@@ -179,7 +221,14 @@ class WeightSyncSender:
 
     def init_group(self) -> None:
         """Initialize NCCL process group. Call once at startup."""
-        logger.info(f"Initializing weight sync sender (world_size={self.world_size})")
+        logger.info(
+            "weight_sync_sender_init_start world_size=%s master=%s:%s device=%s group=%s",
+            self.world_size,
+            self.master_addr,
+            self.master_port,
+            self.device,
+            self.group_name,
+        )
         if self.device.type == "cuda":
             torch.cuda.set_device(self.device)
         self._process_group = create_stateless_process_group(
@@ -190,7 +239,14 @@ class WeightSyncSender:
             group_name=self.group_name,
             timeout_seconds=self.timeout_seconds,
         )
-        logger.info("Weight sync sender initialized")
+        logger.info(
+            "weight_sync_sender_init_ok world_size=%s master=%s:%s device=%s group=%s",
+            self.world_size,
+            self.master_addr,
+            self.master_port,
+            self.device,
+            self.group_name,
+        )
 
     def broadcast_weights(
         self,
@@ -300,7 +356,13 @@ class WeightSyncReceiver:
         """Initialize NCCL process group. Call once at startup."""
         assert self.rank > 0, "Rank 0 is reserved for trainer (sender)"
         logger.info(
-            f"Initializing weight sync receiver rank={self.rank} (world_size={self.world_size})"
+            "weight_sync_receiver_init_start rank=%s world_size=%s master=%s:%s device=%s group=%s",
+            self.rank,
+            self.world_size,
+            self.master_addr,
+            self.master_port,
+            self.device,
+            self.group_name,
         )
         self._process_group = create_stateless_process_group(
             master_addr=self.master_addr,
@@ -310,7 +372,15 @@ class WeightSyncReceiver:
             group_name=self.group_name,
             timeout_seconds=self.timeout_seconds,
         )
-        logger.info("Weight sync receiver initialized")
+        logger.info(
+            "weight_sync_receiver_init_ok rank=%s world_size=%s master=%s:%s device=%s group=%s",
+            self.rank,
+            self.world_size,
+            self.master_addr,
+            self.master_port,
+            self.device,
+            self.group_name,
+        )
 
     def receive_weights(
         self,
