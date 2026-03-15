@@ -366,19 +366,32 @@ class WeightSyncSender:
             if data.device != self.device:
                 data = data.to(self.device)
             tensor_meta = _tensor_sync_metadata(name, data)
+            broadcast_meta = {
+                **tensor_meta,
+                "param_device": str(param.device),
+                "current_cuda_device": (
+                    torch.cuda.current_device() if torch.cuda.is_available() else None
+                ),
+                "data_ptr": int(data.data_ptr()),
+                "storage_offset": int(data.storage_offset()),
+                "element_size": int(data.element_size()),
+                "nbytes": int(data.numel() * data.element_size()),
+                "group_rank": dist.get_rank(self._process_group),
+                "group_world_size": dist.get_world_size(self._process_group),
+            }
             logger.info(
                 "weight_sync_sender_broadcast_tensor index=%s total_tensors=%s async_op=%s tensor=%s",
                 index,
                 total_tensors,
                 async_op,
-                tensor_meta,
+                broadcast_meta,
             )
             try:
                 handle = dist.broadcast(data, src=0, group=self._process_group, async_op=async_op)
             except Exception as exc:
                 raise RuntimeError(
                     "Weight sync sender broadcast failed "
-                    f"index={index} total_tensors={total_tensors} tensor={tensor_meta}"
+                    f"index={index} total_tensors={total_tensors} tensor={broadcast_meta}"
                 ) from exc
             if async_op:
                 handles.append(handle)
@@ -519,18 +532,30 @@ class WeightSyncReceiver:
 
             # Receive broadcast from rank 0
             tensor_meta = _tensor_sync_metadata(info.name, buffer)
+            receive_meta = {
+                **tensor_meta,
+                "current_cuda_device": (
+                    torch.cuda.current_device() if torch.cuda.is_available() else None
+                ),
+                "data_ptr": int(buffer.data_ptr()),
+                "storage_offset": int(buffer.storage_offset()),
+                "element_size": int(buffer.element_size()),
+                "nbytes": int(buffer.numel() * buffer.element_size()),
+                "group_rank": dist.get_rank(self._process_group),
+                "group_world_size": dist.get_world_size(self._process_group),
+            }
             logger.info(
                 "weight_sync_receiver_receive_tensor index=%s total_tensors=%s tensor=%s",
                 index,
                 total_tensors,
-                tensor_meta,
+                receive_meta,
             )
             try:
                 dist.broadcast(buffer, src=0, group=self._process_group)
             except Exception as exc:
                 raise RuntimeError(
                     "Weight sync receiver broadcast failed "
-                    f"index={index} total_tensors={total_tensors} tensor={tensor_meta}"
+                    f"index={index} total_tensors={total_tensors} tensor={receive_meta}"
                 ) from exc
 
             state_dict[info.name] = buffer
