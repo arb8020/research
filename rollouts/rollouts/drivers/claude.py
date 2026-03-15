@@ -121,6 +121,7 @@ class ClaudeDriver:
             "--verbose",
             "--output-format",
             "stream-json",
+            "--dangerously-skip-permissions",
             "--model",
             self.model,
         ]

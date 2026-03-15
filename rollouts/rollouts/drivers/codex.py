@@ -122,6 +122,7 @@ class CodexDriver:
                 session_to_resume,
                 prompt,
                 "--json",
+                "--skip-git-repo-check",
                 "--model",
                 self.model,
             ]
@@ -132,6 +133,7 @@ class CodexDriver:
                 codex_bin,
                 "exec",
                 "--json",
+                "--skip-git-repo-check",
                 "--model",
                 self.model,
                 "--sandbox",
