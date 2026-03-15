@@ -105,7 +105,13 @@ class MegatronRemoteBackend:
     def _recv_response(self, worker: Worker, *, context: str, max_size: int) -> dict[str, Any]:
         response = worker.recv(max_size=max_size)
         if response.get("status") == "error":
-            raise RuntimeError(f"Megatron worker failed during {context}: {response.get('error')}")
+            error = response.get("error")
+            traceback_tail = response.get("traceback_tail")
+            if traceback_tail:
+                raise RuntimeError(
+                    f"Megatron worker failed during {context}: {error}\n{traceback_tail}"
+                )
+            raise RuntimeError(f"Megatron worker failed during {context}: {error}")
         return response
 
     def initialize(self) -> None:

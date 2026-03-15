@@ -196,6 +196,31 @@ def _resume_inference_endpoints(inference_endpoints: list[str]) -> None:
     logger.info("weight_sync_megatron_resume_ok endpoints=%s", inference_endpoints)
 
 
+def _send_rank0_command_error(
+    handle: Worker,
+    *,
+    rank: int,
+    command_name: str,
+    exc: BaseException,
+) -> None:
+    """Best-effort structured command failure for the control channel."""
+    if rank != 0:
+        return
+
+    import traceback
+
+    tb = traceback.format_exc()
+    error = f"Worker rank {rank} failed during {command_name}: {type(exc).__name__}: {exc}"
+    traceback_tail = tb[-8000:] if tb else ""
+    payload = {"status": "error", "error": error}
+    if traceback_tail:
+        payload["traceback_tail"] = traceback_tail
+    try:
+        handle.send(payload)
+    except Exception:
+        pass
+
+
 def train(handle: Worker) -> None:
     """Miniray work function for Megatron distributed training.
 
@@ -396,6 +421,7 @@ def _training_loop(
         "validate_inference_export": Command.VALIDATE_INFERENCE_EXPORT,
         "save_checkpoint": Command.SAVE_CHECKPOINT,
     }
+    CMD_NAME = {value: key for key, value in CMD_MAP.items()}
 
     while True:
         # All ranks wait for command from coordinator
@@ -423,80 +449,104 @@ def _training_loop(
             if cmd_id == -1:
                 raise ValueError(f"Unknown command ID: {cmd_id}")
 
+        command_name = CMD_NAME.get(Command(cmd_id), f"unknown_{cmd_id}")
+
         # Handle shutdown
         if cmd_id == Command.SHUTDOWN:
             if rank == 0:
                 logger.info("Shutdown requested")
             break
 
-        # Handle train_step
-        if cmd_id == Command.TRAIN_STEP:
-            batch = msg.get("batch") if rank == 0 else None
-            metrics = _do_train_step(backend, batch, rank)
-            if rank == 0:
-                handle.send({"status": "ok", "metrics": metrics})
+        try:
+            logger.info("command_start name=%s rank=%s", command_name, rank)
 
-        # Handle sync_weights
-        elif cmd_id == Command.SYNC_WEIGHTS:
-            _do_sync_weights(backend, config.get("inference_endpoints", []) if rank == 0 else [])
-            if rank == 0:
-                handle.send({"status": "synced"})
-        elif cmd_id == Command.INIT_NCCL_WEIGHT_SYNC:
-            if rank == 0:
-                _init_nccl_weight_sync(
+            # Handle train_step
+            if cmd_id == Command.TRAIN_STEP:
+                batch = msg.get("batch") if rank == 0 else None
+                metrics = _do_train_step(backend, batch, rank)
+                if rank == 0:
+                    handle.send({"status": "ok", "metrics": metrics})
+
+            # Handle sync_weights
+            elif cmd_id == Command.SYNC_WEIGHTS:
+                _do_sync_weights(
+                    backend, config.get("inference_endpoints", []) if rank == 0 else []
+                )
+                if rank == 0:
+                    handle.send({"status": "synced"})
+            elif cmd_id == Command.INIT_NCCL_WEIGHT_SYNC:
+                if rank == 0:
+                    _init_nccl_weight_sync(
+                        backend,
+                        inference_endpoints=msg.get(
+                            "inference_endpoints",
+                            config.get("inference_endpoints", []),
+                        ),
+                        model_name=msg.get("model_name", config.get("model_name", "")),
+                        master_addr=msg.get("master_addr", config.get("master_addr")),
+                        master_port=msg.get("master_port", config.get("master_port", 29500)),
+                    )
+                    handle.send({"status": "nccl_initialized"})
+                else:
+                    _init_nccl_weight_sync(
+                        backend,
+                        inference_endpoints=[],
+                        model_name=msg.get("model_name", config.get("model_name", "")),
+                        master_addr=msg.get("master_addr", config.get("master_addr")),
+                        master_port=msg.get("master_port", config.get("master_port", 29500)),
+                    )
+
+            elif cmd_id == Command.SYNC_WEIGHTS_NCCL:
+                _do_sync_weights_nccl(
                     backend,
-                    inference_endpoints=msg.get(
-                        "inference_endpoints",
+                    model_name=config.get("model_name", ""),
+                    inference_endpoints=config.get("inference_endpoints", []) if rank == 0 else [],
+                )
+                if rank == 0:
+                    handle.send({"status": "nccl_synced"})
+
+            elif cmd_id == Command.CLEANUP_NCCL_WEIGHT_SYNC:
+                if rank == 0:
+                    _cleanup_nccl_weight_sync(
+                        backend,
                         config.get("inference_endpoints", []),
-                    ),
-                    model_name=msg.get("model_name", config.get("model_name", "")),
-                    master_addr=msg.get("master_addr", config.get("master_addr")),
-                    master_port=msg.get("master_port", config.get("master_port", 29500)),
-                )
-                handle.send({"status": "nccl_initialized"})
-            else:
-                _init_nccl_weight_sync(
+                    )
+                    handle.send({"status": "nccl_cleanup"})
+                else:
+                    _cleanup_nccl_weight_sync(backend, [])
+
+            elif cmd_id == Command.VALIDATE_INFERENCE_EXPORT:
+                details = _do_validate_inference_export(
                     backend,
-                    inference_endpoints=[],
-                    model_name=msg.get("model_name", config.get("model_name", "")),
-                    master_addr=msg.get("master_addr", config.get("master_addr")),
-                    master_port=msg.get("master_port", config.get("master_port", 29500)),
+                    model_name=config.get("model_name", ""),
                 )
+                if rank == 0:
+                    handle.send({"status": "validated", "details": details})
 
-        elif cmd_id == Command.SYNC_WEIGHTS_NCCL:
-            _do_sync_weights_nccl(
-                backend,
-                model_name=config.get("model_name", ""),
-                inference_endpoints=config.get("inference_endpoints", []) if rank == 0 else [],
+            # Handle save_checkpoint
+            elif cmd_id == Command.SAVE_CHECKPOINT:
+                if rank == 0:
+                    path = msg.get("path", "./checkpoints")
+                    step = msg.get("step", 0)
+                    backend.save_checkpoint(step)
+                    handle.send({"status": "saved", "path": path})
+
+            logger.info("command_ok name=%s rank=%s", command_name, rank)
+        except Exception as exc:
+            logger.exception(
+                "command_failed name=%s rank=%s error=%s: %s",
+                command_name,
+                rank,
+                type(exc).__name__,
+                exc,
             )
-            if rank == 0:
-                handle.send({"status": "nccl_synced"})
-
-        elif cmd_id == Command.CLEANUP_NCCL_WEIGHT_SYNC:
-            if rank == 0:
-                _cleanup_nccl_weight_sync(
-                    backend,
-                    config.get("inference_endpoints", []),
-                )
-                handle.send({"status": "nccl_cleanup"})
-            else:
-                _cleanup_nccl_weight_sync(backend, [])
-
-        elif cmd_id == Command.VALIDATE_INFERENCE_EXPORT:
-            details = _do_validate_inference_export(
-                backend,
-                model_name=config.get("model_name", ""),
+            _send_rank0_command_error(
+                handle,
+                rank=rank,
+                command_name=command_name,
+                exc=exc,
             )
-            if rank == 0:
-                handle.send({"status": "validated", "details": details})
-
-        # Handle save_checkpoint
-        elif cmd_id == Command.SAVE_CHECKPOINT:
-            if rank == 0:
-                path = msg.get("path", "./checkpoints")
-                step = msg.get("step", 0)
-                backend.save_checkpoint(step)
-                handle.send({"status": "saved", "path": path})
+            raise
 
     logger.info("Worker exiting")
 
@@ -898,6 +948,11 @@ def _do_sync_weights_nccl(
     state_dict = export.tensors
     if not state_dict:
         raise RuntimeError("No weights produced for NCCL sync")
+    logger.info(
+        "weight_sync_megatron_export_ready tensors=%s dropped_unconverted=%s",
+        len(export.tensors),
+        len(export.dropped_unconverted_keys),
+    )
 
     if not inference_endpoints:
         return
@@ -907,6 +962,11 @@ def _do_sync_weights_nccl(
         raise RuntimeError("NCCL sender not initialized. Call init_nccl_weight_sync first.")
 
     _pause_and_flush_inference_endpoints(inference_endpoints)
+    logger.info(
+        "weight_sync_megatron_publish_prepare endpoints=%s next_weight_version=%s",
+        inference_endpoints,
+        sender.weight_version + 1,
+    )
 
     # Inform inference engines and broadcast in the same order.
     param_info = [
@@ -917,6 +977,11 @@ def _do_sync_weights_nccl(
         }
         for name, p in state_dict.items()
     ]
+    logger.info(
+        "weight_sync_megatron_param_info_ready tensors=%s first_tensors=%s",
+        len(param_info),
+        param_info[:3],
+    )
     executor = concurrent.futures.ThreadPoolExecutor(max_workers=max(1, len(inference_endpoints)))
     try:
         futures = []
@@ -935,15 +1000,26 @@ def _do_sync_weights_nccl(
                     timeout=300.0,
                 )
             )
+        logger.info(
+            "weight_sync_megatron_metadata_requests_sent endpoints=%s count=%s",
+            inference_endpoints,
+            len(futures),
+        )
 
         handles = sender.broadcast_weights(state_dict, async_op=True)
+        logger.info("weight_sync_megatron_broadcast_started tensors=%s", len(handles))
 
         for handle in handles:
             handle.wait()
+        logger.info("weight_sync_megatron_broadcast_wait_ok tensors=%s", len(handles))
 
         for future in futures:
             response = future.result()
             response.raise_for_status()
+        logger.info(
+            "weight_sync_megatron_metadata_responses_ok endpoints=%s",
+            inference_endpoints,
+        )
     finally:
         executor.shutdown(wait=False)
         try:
