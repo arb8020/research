@@ -61,6 +61,15 @@ def _tensor_sync_metadata(name: str, tensor: Tensor) -> dict[str, object]:
     }
 
 
+def _normalize_cuda_device(device: torch.device) -> torch.device:
+    """Resolve ambiguous CUDA devices to an explicit local index."""
+    if device.type != "cuda":
+        return device
+    if device.index is not None:
+        return device
+    return torch.device("cuda", torch.cuda.current_device())
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # STATELESS PROCESS GROUP (following vLLM pattern)
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -221,6 +230,7 @@ class WeightSyncSender:
 
     def init_group(self) -> None:
         """Initialize NCCL process group. Call once at startup."""
+        self.device = _normalize_cuda_device(self.device)
         logger.info(
             "weight_sync_sender_init_start world_size=%s master=%s:%s device=%s group=%s",
             self.world_size,
@@ -355,6 +365,7 @@ class WeightSyncReceiver:
     def init_group(self) -> None:
         """Initialize NCCL process group. Call once at startup."""
         assert self.rank > 0, "Rank 0 is reserved for trainer (sender)"
+        self.device = _normalize_cuda_device(self.device)
         logger.info(
             "weight_sync_receiver_init_start rank=%s world_size=%s master=%s:%s device=%s group=%s",
             self.rank,
