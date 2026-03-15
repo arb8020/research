@@ -976,6 +976,18 @@ class VLLMEngine:
                 "vllm_custom_nccl_broadcast requires metadata['dtypes']"
             )
             async with httpx.AsyncClient(timeout=self.timeout) as client:
+                sleep_response = await client.post(
+                    f"{self.base_url}/sleep",
+                    params={"level": 2},
+                )
+                sleep_response.raise_for_status()
+
+                wake_weights_response = await client.post(
+                    f"{self.base_url}/wake_up",
+                    params={"tags": "weights"},
+                )
+                wake_weights_response.raise_for_status()
+
                 response = await client.post(
                     f"{self.base_url}/receive_weight_update",
                     json={
@@ -985,6 +997,11 @@ class VLLMEngine:
                     },
                 )
                 response.raise_for_status()
+                wake_kv_response = await client.post(
+                    f"{self.base_url}/wake_up",
+                    params={"tags": "kv_cache"},
+                )
+                wake_kv_response.raise_for_status()
                 return response.json()
 
         raise NotImplementedError(

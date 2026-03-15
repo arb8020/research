@@ -57,6 +57,17 @@ from ..types import ImmediateTrainFuture, TrainFuture
 logger = logging.getLogger(__name__)
 
 
+def _parse_torch_dtype(name: str) -> torch.dtype:
+    normalized = name.replace("torch.", "").lower()
+    if normalized in {"bf16", "bfloat16"}:
+        return torch.bfloat16
+    if normalized in {"fp16", "float16", "half"}:
+        return torch.float16
+    if normalized in {"fp32", "float32", "float"}:
+        return torch.float32
+    raise ValueError(f"Unsupported torch dtype name for TorchTitan sync: {name!r}")
+
+
 @dataclass
 class TorchTitanConfig:
     """Configuration for TorchTitan backend."""
@@ -695,13 +706,16 @@ class TorchTitanBackend:
         adapter = self._train_spec.state_dict_adapter(self._model_args, source_assets_path)
         native_state_dict = self._model.state_dict()
         hf_state_dict = adapter.to_hf(native_state_dict)
+        target_dtype = _parse_torch_dtype(self.config.mixed_precision_param)
 
         prepared: dict[str, torch.Tensor] = {}
         for key, value in hf_state_dict.items():
             if hasattr(value, "full_tensor"):
                 value = value.full_tensor()
             if isinstance(value, torch.Tensor):
-                prepared[key] = value.detach().to(self._device).contiguous()
+                prepared[key] = (
+                    value.detach().to(device=self._device, dtype=target_dtype).contiguous()
+                )
 
         assert prepared, "TorchTitan NCCL sync produced no HF tensors"
         return prepared

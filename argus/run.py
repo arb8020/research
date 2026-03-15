@@ -268,6 +268,10 @@ def load_config_module(config_path: Path) -> Any:
 
 def _classify_config_module(config_module: Any, config_path: Path) -> str:
     """Classify a config module by the runner contract it satisfies."""
+    # TODO(argus-run): Move config loading + contract classification into a
+    # dedicated workload-resolution module. `run.py` should parse CLI args and
+    # dispatch on an already-resolved workload kind, not own config contract
+    # semantics directly.
     train_error: ValueError | None = None
     eval_error: ValueError | None = None
 
@@ -344,6 +348,9 @@ def _spawn_eval_subprocess(
     log: _RunLogger,
 ) -> int:
     """Launch rollouts.eval.run as a detached local subprocess."""
+    # TODO(argus-run): Extract local launch paths (eval + local training) into
+    # a separate launcher module. This is a distinct state machine from remote
+    # provisioning/bootstrap and should not stay interleaved in `run.py`.
     import subprocess
 
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -1075,6 +1082,9 @@ async def run_remote(
     block: bool = False,
 ) -> None:
     """Run training script on remote GPU via bifrost."""
+    # TODO(argus-run): Move the SSH/bifrost remote training launcher into its
+    # own module. This path mixes provisioning, bootstrap, sync, tmux/logserver
+    # lifecycle, and attach behavior, which overwhelms the top-level CLI file.
     (
         bifrost,
         instance,
@@ -1400,6 +1410,12 @@ Examples:
         multi_node = getattr(config_module, "multi_node", None)
 
     try:
+        # TODO(argus-run): Replace this large inline dispatch block with staged
+        # launcher selection over a resolved workload product type:
+        #   1. resolve workload/config
+        #   2. choose local vs modal vs remote launcher
+        #   3. invoke the selected launcher
+        # The current file still interleaves those state machines.
         # Dispatch based on workload/provider
         from rollouts.inference.benchmark.config import BenchmarkConfig
 
@@ -1471,6 +1487,9 @@ Examples:
             trio.run(_run_multi_node)
 
         elif runtime.provider == "modal":
+            # TODO(chiraag): Unify this Modal sandbox path with the broker/bifrost
+            # asset/session model so switching provider from "modal" to "runpod"
+            # changes procurement, not the entire execution/supervision stack.
             # Modal execution (fast cold start)
             import json
 
