@@ -200,7 +200,7 @@ async def run_server(args: Any, **uvicorn_kwargs: Any) -> None:
             payload = await maybe if maybe is not None else result
             return {"status": "ok", "results": payload}
 
-        await init_app_state(engine_client, app.state, args, supported_tasks)
+        await init_app_state(engine_client, app.state, args)
         shutdown_task = await serve_http(
             app,
             sock=sock,
