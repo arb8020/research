@@ -1937,6 +1937,17 @@ async def _run_training_in_sandbox(
     def _elapsed() -> float:
         return time.monotonic() - process_started_ts
 
+    def _emit_stream_line(event: str, line_count: int, text: str) -> None:
+        max_chars = 4000
+        truncated = len(text) > max_chars
+        emit(
+            event,
+            line_no=line_count,
+            elapsed_sec=round(_elapsed(), 3),
+            text=text[:max_chars],
+            truncated=truncated,
+        )
+
     def _on_started() -> None:
         emit("remote_entrypoint_invoked")
         emit("remote_stdout_stream_open")
@@ -1964,6 +1975,7 @@ async def _run_training_in_sandbox(
         process_state["last_stdout_line"] = stripped
         process_state["last_stdout_elapsed_sec"] = round(_elapsed(), 3)
         stdout_tail.append(stripped)
+        _emit_stream_line("remote_stdout_line", process_state["stdout_line_count"], stripped)
         if WORKLOAD_ENTRYPOINT_SENTINEL in stripped and not startup_seen.is_set():
             startup_seen.set()
             emit("workload_entrypoint_started")
@@ -1986,6 +1998,7 @@ async def _run_training_in_sandbox(
         process_state["last_stderr_line"] = stripped
         process_state["last_stderr_elapsed_sec"] = round(_elapsed(), 3)
         stderr_tail.append(stripped)
+        _emit_stream_line("remote_stderr_line", process_state["stderr_line_count"], stripped)
 
     def _on_heartbeat(elapsed_sec: float, silence_sec: float) -> None:
         emit(
