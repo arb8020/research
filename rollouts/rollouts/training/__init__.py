@@ -32,9 +32,10 @@ from ..training.contracts import (
 )
 from ..training.lowering import (
     MegatronLowering,
-    ParallelIntent,
+    MegatronProvisioning,
     RealizationPlan,
     TorchTitanLowering,
+    TorchTitanProvisioning,
 )
 from ..training.types import (
     AttemptRow,
@@ -252,8 +253,9 @@ __all__ = [
     "WeightVersion",
     "VersionedRolloutBatch",
     "MegatronLowering",
-    "ParallelIntent",
+    "MegatronProvisioning",
     "RealizationPlan",
+    "TorchTitanProvisioning",
     "TorchTitanLowering",
     # Contract witness helpers
     "distillation_contract_loss",

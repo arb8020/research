@@ -273,17 +273,17 @@ class TorchTitanBackend:
         from torchtitan.distributed import ParallelDims
 
         logger.info(f"[Rank {self.rank}] Applying parallelization")
-        parallel = self.lowering.parallel
+        provisioning = self.lowering.provisioning
 
         # Build parallel dims
         self._parallel_dims = ParallelDims(
             dp_replicate=1,
             dp_shard=-1,
-            ep=parallel.ep,
+            ep=provisioning.ep,
             etp=1,
-            tp=parallel.tp,
-            cp=parallel.cp,
-            pp=parallel.pp,
+            tp=provisioning.tp,
+            cp=provisioning.cp,
+            pp=provisioning.pp,
             world_size=self.world_size,
         )
 
@@ -303,7 +303,7 @@ class TorchTitanBackend:
 
         Creates a minimal object that mimics torchtitan's JobConfig structure.
         """
-        parallel = self.lowering.parallel
+        provisioning = self.lowering.provisioning
 
         # Use SimpleNamespace-style object that allows arbitrary attributes
         class _Cfg:
@@ -319,9 +319,9 @@ class TorchTitanBackend:
                 enable_cpu_offload=False,
             ),
             parallelism=_Cfg(
-                context_parallel_degree=parallel.cp,
+                context_parallel_degree=provisioning.cp,
                 enable_async_tensor_parallel=False,
-                disable_loss_parallel=not parallel.enable_loss_parallel,
+                disable_loss_parallel=not provisioning.enable_loss_parallel,
                 fsdp_reshard_after_forward="default",
             ),
             compile=_Cfg(

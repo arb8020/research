@@ -13,9 +13,9 @@ import torch.distributed as dist
 
 from ...training.contract_witnesses import rl_contract_loss, supervised_contract_loss
 from ...training.lowering import (
-    ParallelIntent,
     RealizationPlan,
     TorchTitanLowering,
+    TorchTitanProvisioning,
     dense_rl_realization,
     dense_supervised_realization,
 )
@@ -199,8 +199,7 @@ def create_torchtitan_backend(
 
     if lowering is None:
         lowering = TorchTitanLowering.from_realization(
-            parallel=ParallelIntent(
-                dp=1,
+            provisioning=TorchTitanProvisioning(
                 tp=tp,
                 cp=cp,
                 pp=pp,

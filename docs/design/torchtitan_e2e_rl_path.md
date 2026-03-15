@@ -65,7 +65,7 @@ This is the first actual end-to-end RL proof.
 After Phase 2 is clean:
 
 - consider DP > 1
-- consider richer `ParallelIntent`
+- consider richer backend-specific lowering/provisioning objects
 - consider MoE / low precision
 - consider stronger realization semantics
 

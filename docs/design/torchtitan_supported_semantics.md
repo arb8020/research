@@ -63,7 +63,7 @@ not:
   - LoRA-only
   - router-only / experts-only policy filtering in our backend glue
 - precision policy as configuration intent
-- parallel provisioning summary via `ParallelIntent`
+- backend-specific TorchTitan provisioning summary via `TorchTitanProvisioning`
 - validation of required mesh axes from `RealizationPlan`
 - loss-parallel intent derived from `RealizationPlan`
 - packed-sequence intent derived from `RealizationPlan`
@@ -77,7 +77,7 @@ not:
 These are used to:
 
 - validate that required mesh axes are provisioned
-- derive `ParallelIntent`
+- derive `TorchTitanProvisioning`
 - drive backend configuration choices
 
 They are **not** executed as explicit collective steps by TorchTitan.

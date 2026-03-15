@@ -197,7 +197,11 @@ def train(handle: Worker) -> None:
 
         _log_import_stage("after_backend_import")
         _log_import_stage("before_lowering_import")
-        from rollouts.training.lowering import MegatronLowering, ParallelIntent, RealizationPlan
+        from rollouts.training.lowering import (
+            MegatronLowering,
+            MegatronProvisioning,
+            RealizationPlan,
+        )
 
         _log_import_stage("after_lowering_import")
 
@@ -205,15 +209,15 @@ def train(handle: Worker) -> None:
 
         lowering_payload = config["lowering"]
         lowering = MegatronLowering.from_realization(
-            parallel=ParallelIntent(**lowering_payload["parallel"]),
+            provisioning=MegatronProvisioning(**lowering_payload["provisioning"]),
             realization=RealizationPlan(**lowering_payload["realization"]),
         )
-        parallel = lowering.parallel
+        provisioning = lowering.provisioning
 
         parallelism_config = MegatronParallelismConfig(
-            tensor_parallel_size=parallel.tp,
-            pipeline_parallel_size=parallel.pp,
-            expert_parallel_size=parallel.ep,
+            tensor_parallel_size=provisioning.tp,
+            pipeline_parallel_size=provisioning.pp,
+            expert_parallel_size=provisioning.ep,
             sequence_parallel=config.get("sequence_parallel", False),
         )
 

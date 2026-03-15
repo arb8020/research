@@ -14,12 +14,22 @@ from dataclasses import dataclass
 
 
 @dataclass(frozen=True)
-class ParallelIntent:
-    """Backend-neutral summary of parallel provisioning needs."""
+class TorchTitanProvisioning:
+    """TorchTitan-specific provisioning summary derived during lowering."""
 
-    dp: int = 1
     tp: int = 1
     cp: int = 1
+    pp: int = 1
+    ep: int = 1
+    enable_loss_parallel: bool = True
+    packed_sequences: bool = True
+
+
+@dataclass(frozen=True)
+class MegatronProvisioning:
+    """Megatron-specific provisioning summary derived during lowering."""
+
+    tp: int = 1
     pp: int = 1
     ep: int = 1
     enable_loss_parallel: bool = True
@@ -56,31 +66,67 @@ class RealizationPlan:
         )
 
 
-def derive_parallel_intent(base: ParallelIntent, realization: RealizationPlan) -> ParallelIntent:
-    """Derive and validate lowering intent from realization semantics.
+def _required_mesh_axes(realization: RealizationPlan) -> set[str]:
+    return set(realization.required_mesh_axes())
 
-    The realization layer does not choose device counts, but it does say which
-    mesh axes are semantically required. This function validates that the
-    lowering intent provisions those axes and derives secondary flags like loss
-    parallelism and sequence packing.
-    """
 
-    required_axes = set(realization.required_mesh_axes())
+def derive_torchtitan_provisioning(
+    base: TorchTitanProvisioning,
+    realization: RealizationPlan,
+) -> TorchTitanProvisioning:
+    """Derive TorchTitan provisioning from realization semantics."""
+
+    required_axes = _required_mesh_axes(realization)
+    if "d" in required_axes or "dp" in required_axes:
+        raise ValueError(
+            "TorchTitan lowering does not accept explicit /d or /dp realization intent yet. "
+            "Keep data parallelism as a backend-native runtime choice in this path."
+        )
     if "tp" in required_axes:
-        assert base.tp > 1, "realization requires tp, but ParallelIntent.tp <= 1"
+        assert base.tp > 1, "realization requires tp, but TorchTitanProvisioning.tp <= 1"
     if "cp" in required_axes:
-        assert base.cp > 1, "realization requires cp, but ParallelIntent.cp <= 1"
+        assert base.cp > 1, "realization requires cp, but TorchTitanProvisioning.cp <= 1"
     if "pp" in required_axes:
-        assert base.pp > 1, "realization requires pp, but ParallelIntent.pp <= 1"
+        assert base.pp > 1, "realization requires pp, but TorchTitanProvisioning.pp <= 1"
     if "ep" in required_axes:
-        assert base.ep > 1, "realization requires ep, but ParallelIntent.ep <= 1"
-    if "dp" in required_axes or "d" in required_axes:
-        assert base.dp > 1, "realization requires dp, but ParallelIntent.dp <= 1"
+        assert base.ep > 1, "realization requires ep, but TorchTitanProvisioning.ep <= 1"
 
-    return ParallelIntent(
-        dp=base.dp,
+    return TorchTitanProvisioning(
         tp=base.tp,
         cp=base.cp,
+        pp=base.pp,
+        ep=base.ep,
+        enable_loss_parallel=base.enable_loss_parallel and realization.requires_loss_parallel(),
+        packed_sequences=base.packed_sequences and realization.packed_sequences,
+    )
+
+
+def derive_megatron_provisioning(
+    base: MegatronProvisioning,
+    realization: RealizationPlan,
+) -> MegatronProvisioning:
+    """Derive Megatron provisioning from realization semantics."""
+
+    required_axes = _required_mesh_axes(realization)
+    if "cp" in required_axes:
+        raise ValueError(
+            "Megatron lowering does not support /cp realization intent in this path yet. "
+            "Keep cp=1 and omit /cp from RealizationPlan."
+        )
+    if "d" in required_axes or "dp" in required_axes:
+        raise ValueError(
+            "Megatron lowering does not accept explicit /d or /dp realization intent yet. "
+            "Megatron derives data parallel replicas from world size and lowered model parallel axes."
+        )
+    if "tp" in required_axes:
+        assert base.tp > 1, "realization requires tp, but MegatronProvisioning.tp <= 1"
+    if "pp" in required_axes:
+        assert base.pp > 1, "realization requires pp, but MegatronProvisioning.pp <= 1"
+    if "ep" in required_axes:
+        assert base.ep > 1, "realization requires ep, but MegatronProvisioning.ep <= 1"
+
+    return MegatronProvisioning(
+        tp=base.tp,
         pp=base.pp,
         ep=base.ep,
         enable_loss_parallel=base.enable_loss_parallel and realization.requires_loss_parallel(),
@@ -92,16 +138,16 @@ def derive_parallel_intent(base: ParallelIntent, realization: RealizationPlan) -
 class TorchTitanLowering:
     """TorchTitan-specific lowering summary."""
 
-    parallel: ParallelIntent = ParallelIntent()
+    provisioning: TorchTitanProvisioning = TorchTitanProvisioning()
     realization: RealizationPlan = RealizationPlan()
 
     @staticmethod
     def from_realization(
-        parallel: ParallelIntent,
+        provisioning: TorchTitanProvisioning,
         realization: RealizationPlan,
     ) -> "TorchTitanLowering":
         return TorchTitanLowering(
-            parallel=derive_parallel_intent(parallel, realization),
+            provisioning=derive_torchtitan_provisioning(provisioning, realization),
             realization=realization,
         )
 
@@ -116,22 +162,16 @@ class MegatronLowering:
     `realization`.
     """
 
-    parallel: ParallelIntent = ParallelIntent()
+    provisioning: MegatronProvisioning = MegatronProvisioning()
     realization: RealizationPlan = RealizationPlan()
 
     @staticmethod
     def from_realization(
-        parallel: ParallelIntent,
+        provisioning: MegatronProvisioning,
         realization: RealizationPlan,
     ) -> "MegatronLowering":
-        required_axes = set(realization.required_mesh_axes())
-        if parallel.cp > 1 or "cp" in required_axes:
-            raise ValueError(
-                "Megatron lowering does not support /cp realization intent in this path yet. "
-                "Keep cp=1 and omit /cp from RealizationPlan."
-            )
         return MegatronLowering(
-            parallel=derive_parallel_intent(parallel, realization),
+            provisioning=derive_megatron_provisioning(provisioning, realization),
             realization=realization,
         )
 

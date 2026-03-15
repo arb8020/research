@@ -49,7 +49,7 @@ class MegatronRemoteConfig:
     model_name: str
     dtype: str = "bfloat16"
 
-    # Lowered partition intent derived from RealizationPlan
+    # Lowered Megatron provisioning derived from RealizationPlan
     lowering: MegatronLowering = field(default_factory=MegatronLowering)
 
     # Backend-native Megatron runtime settings not modeled in RealizationPlan
@@ -127,14 +127,12 @@ class MegatronRemoteBackend:
                 "config": {
                     "model_name": self.config.model_name,
                     "lowering": {
-                        "parallel": {
-                            "dp": self.config.lowering.parallel.dp,
-                            "tp": self.config.lowering.parallel.tp,
-                            "cp": self.config.lowering.parallel.cp,
-                            "pp": self.config.lowering.parallel.pp,
-                            "ep": self.config.lowering.parallel.ep,
-                            "enable_loss_parallel": self.config.lowering.parallel.enable_loss_parallel,
-                            "packed_sequences": self.config.lowering.parallel.packed_sequences,
+                        "provisioning": {
+                            "tp": self.config.lowering.provisioning.tp,
+                            "pp": self.config.lowering.provisioning.pp,
+                            "ep": self.config.lowering.provisioning.ep,
+                            "enable_loss_parallel": self.config.lowering.provisioning.enable_loss_parallel,
+                            "packed_sequences": self.config.lowering.provisioning.packed_sequences,
                         },
                         "realization": {
                             "local_layouts": self.config.lowering.realization.local_layouts,

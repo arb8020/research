@@ -51,7 +51,7 @@ from ..training.configs import (  # noqa: E402
     deps_config_from_data,
 )
 from ..training.lowering import (
-    ParallelIntent,
+    MegatronProvisioning,
     RealizationPlan,
     dense_rl_realization,
 )
@@ -191,10 +191,8 @@ def _megatron_lowering(config: GRPOConfig) -> Any:
         packed_sequences=config.trainer.realization_packed_sequences,
     )
     return MegatronLowering.from_realization(
-        parallel=ParallelIntent(
-            dp=1,
+        provisioning=MegatronProvisioning(
             tp=config.trainer.tensor_parallel_size,
-            cp=config.trainer.context_parallel_size,
             pp=config.trainer.pipeline_parallel_size,
             ep=config.trainer.expert_parallel_size,
             packed_sequences=config.trainer.realization_packed_sequences,
