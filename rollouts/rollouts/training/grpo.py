@@ -338,6 +338,10 @@ def _create_inference_engines(
                 mem_fraction=config.inference.mem_fraction,
             )
         elif config.inference.backend == "vllm":
+            requested_sync_realization = config.checkpoint.inference_sync_realization
+            available_sync_realizations = (
+                (requested_sync_realization,) if requested_sync_realization else ()
+            )
             engine = VLLMEngine(
                 model_name=config.model.name,
                 port=port,
@@ -345,6 +349,8 @@ def _create_inference_engines(
                 output_dir=output_dir,
                 dtype=config.model.dtype,
                 gpu_memory_utilization=config.inference.mem_fraction,
+                available_sync_realizations=available_sync_realizations,
+                default_sync_realization=requested_sync_realization,
             )
         elif config.inference.backend == "engine_v2":
             # Rollouts native inference engine
@@ -1931,7 +1937,9 @@ async def _grpo_train_async(
                 step_weight_syncer = BackendNCCLWeightSyncer(backend=backend, log=logger)
             elif config.checkpoint.weight_sync_mode == "disk":
                 step_weight_syncer = FilesystemWeightSyncer(
-                    backend=backend, engines=inference_engines
+                    backend=backend,
+                    engines=inference_engines,
+                    inference_sync_realization=config.checkpoint.inference_sync_realization,
                 )
             else:
                 raise ValueError(

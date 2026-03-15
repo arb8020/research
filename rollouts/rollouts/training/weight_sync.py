@@ -26,6 +26,16 @@ from typing import Any, Protocol
 import httpx
 import trio
 
+from .weight_sync_protocol import (
+    ENGINE_V2_HTTP_PATH_RELOAD,
+    SGLANG_HTTP_PATH_RELOAD,
+    VLLM_CUSTOM_NCCL_BROADCAST,
+    VLLM_DEV_CURRENT_MODEL_ROOT_RELOAD,
+    InferenceBackendCapabilities,
+    InferenceWeightUpdate,
+    resolve_inference_sync_realization,
+)
+
 # ══════════════════════════════════════════════════════════════
 # Fine-grained immediate mode (Casey Muratori style)
 # ══════════════════════════════════════════════════════════════
@@ -136,6 +146,39 @@ async def update_vllm_weights_from_disk(
                 "method": "reload_weights",
                 "kwargs": {"model_path": checkpoint_path},
             },
+        )
+        reload_response.raise_for_status()
+
+        wake_kv_response = await client.post(
+            f"{base_url}/wake_up",
+            params={"tags": "kv_cache"},
+        )
+        wake_kv_response.raise_for_status()
+        return reload_response.json()
+
+
+async def update_vllm_current_model_root(
+    base_url: str,
+) -> dict[str, Any]:
+    """Reload vLLM weights from the model root it was launched with."""
+    assert base_url, "base_url cannot be empty"
+
+    async with httpx.AsyncClient() as client:
+        sleep_response = await client.post(
+            f"{base_url}/sleep",
+            params={"level": 2},
+        )
+        sleep_response.raise_for_status()
+
+        wake_weights_response = await client.post(
+            f"{base_url}/wake_up",
+            params={"tags": "weights"},
+        )
+        wake_weights_response.raise_for_status()
+
+        reload_response = await client.post(
+            f"{base_url}/collective_rpc",
+            json={"method": "reload_weights", "kwargs": {}},
         )
         reload_response.raise_for_status()
 
@@ -335,8 +378,8 @@ def cleanup_nccl_weight_sync(
 # ══════════════════════════════════════════════════════════════
 
 
-class InferenceEngine(Protocol):
-    """Protocol for inference engines with full lifecycle management.
+class InferenceBackend(Protocol):
+    """Protocol for inference backends with explicit runtime capabilities.
 
     Tiger Style: This is JUST a type annotation (Protocol), not a base class.
     No inheritance! Just duck typing.
@@ -345,7 +388,7 @@ class InferenceEngine(Protocol):
     1. launch() -> str               # Start server in tmux, return session name
     2. start_log_tailer() -> Thread  # Tail logs via Python logging
     3. wait_until_ready() -> None    # Block until health check passes
-    4. update_weights_from_checkpoint() -> dict  # Sync weights
+    4. apply_weight_update() -> dict            # Sync weights via explicit realization
     5. shutdown() -> None            # Kill tmux session
     """
 
@@ -372,6 +415,11 @@ class InferenceEngine(Protocol):
     @property
     def api_base(self) -> str:
         """Base URL for OpenAI-compatible API (e.g., 'http://localhost:30000/v1')."""
+        ...
+
+    @property
+    def capabilities(self) -> InferenceBackendCapabilities:
+        """Concrete capabilities of this backend/runtime realization."""
         ...
 
     def build_launch_cmd(self) -> str:
@@ -405,23 +453,16 @@ class InferenceEngine(Protocol):
         """
         ...
 
-    async def update_weights_from_checkpoint(
-        self,
-        checkpoint_path: str,
-    ) -> dict[str, Any]:
-        """Update model weights from checkpoint on disk.
-
-        Args:
-            checkpoint_path: Path to checkpoint directory or HF model ID
-
-        Returns:
-            Response dict from inference engine
-        """
+    async def apply_weight_update(self, update: InferenceWeightUpdate) -> dict[str, Any]:
+        """Apply a concrete weight update request."""
         ...
 
     def shutdown(self) -> None:
         """Shutdown the inference server (kill tmux session)."""
         ...
+
+
+InferenceEngine = InferenceBackend
 
 
 # ══════════════════════════════════════════════════════════════
@@ -478,6 +519,8 @@ class SGLangEngine:
     dtype: str = "bfloat16"
     mem_fraction: float = 0.7
     timeout: float = 300.0
+    available_sync_realizations: tuple[str, ...] = (SGLANG_HTTP_PATH_RELOAD.name,)
+    default_sync_realization: str | None = SGLANG_HTTP_PATH_RELOAD.name
     # NOTE: NCCL weight sync is done via HTTP API (/init_weights_update_group),
     # not via CLI flags. This field is kept for compatibility but not used.
     rl_on_policy_target: str | None = None
@@ -510,6 +553,16 @@ class SGLangEngine:
     @property
     def api_base(self) -> str:
         return f"http://localhost:{self.port}/v1"
+
+    @property
+    def capabilities(self) -> InferenceBackendCapabilities:
+        return InferenceBackendCapabilities(
+            backend_name=self.name,
+            supported_sync_realizations=self.available_sync_realizations,
+            default_sync_realization=self.default_sync_realization,
+            supports_blocking_updates=True,
+            supports_inflight_updates=False,
+        )
 
     @property
     def base_url(self) -> str:
@@ -643,18 +696,22 @@ class SGLangEngine:
         msg = f"SGLang failed to start after {max_wait}s. Check {self._log_file}"
         raise RuntimeError(msg)
 
-    async def update_weights_from_checkpoint(
-        self,
-        checkpoint_path: str,
-    ) -> dict[str, Any]:
-        """Update SGLang server weights from checkpoint."""
-        assert checkpoint_path, "checkpoint_path cannot be empty"
+    async def apply_weight_update(self, update: InferenceWeightUpdate) -> dict[str, Any]:
+        realization = resolve_inference_sync_realization(self.capabilities, update.realization)
+        assert realization.name == SGLANG_HTTP_PATH_RELOAD.name, (
+            f"SGLangEngine only supports {SGLANG_HTTP_PATH_RELOAD.name!r}, got {realization.name!r}"
+        )
+        checkpoint_path = update.checkpoint_path
+        assert checkpoint_path, "checkpoint_path cannot be empty for sglang_http_path_reload"
 
         with trio.fail_after(self.timeout):
-            return await update_sglang_weights_from_disk(
-                self.base_url,
-                checkpoint_path,
-            )
+            return await update_sglang_weights_from_disk(self.base_url, checkpoint_path)
+
+    async def update_weights_from_checkpoint(self, checkpoint_path: str) -> dict[str, Any]:
+        """Compatibility wrapper for older call sites."""
+        return await self.apply_weight_update(
+            InferenceWeightUpdate(checkpoint_path=checkpoint_path)
+        )
 
     def shutdown(self) -> None:
         """Kill the tmux session running SGLang."""
@@ -693,6 +750,8 @@ class VLLMEngine:
     dtype: str = "bfloat16"
     gpu_memory_utilization: float = 0.7
     timeout: float = 300.0
+    available_sync_realizations: tuple[str, ...] = ()
+    default_sync_realization: str | None = None
     _log_file: Path = field(init=False)
     _session_name: str = field(init=False)
 
@@ -724,6 +783,30 @@ class VLLMEngine:
         return f"http://localhost:{self.port}/v1"
 
     @property
+    def capabilities(self) -> InferenceBackendCapabilities:
+        notes: list[str] = []
+        if not self.available_sync_realizations:
+            notes.append(
+                "Current upstream vLLM launch has no truthful default live weight-sync adapter. "
+                "Use an explicit patched adapter or launch vLLM against a mutable local model root."
+            )
+        if (
+            self.default_sync_realization == VLLM_DEV_CURRENT_MODEL_ROOT_RELOAD.name
+            and not self.model_name.startswith("/")
+        ):
+            notes.append(
+                "vllm_dev_current_model_root_reload requires model_name to be a mutable local path."
+            )
+        return InferenceBackendCapabilities(
+            backend_name=self.name,
+            supported_sync_realizations=self.available_sync_realizations,
+            default_sync_realization=self.default_sync_realization,
+            supports_blocking_updates=True,
+            supports_inflight_updates=False,
+            capability_notes=tuple(notes),
+        )
+
+    @property
     def base_url(self) -> str:
         """Base URL without /v1 suffix (for weight sync API)."""
         return f"http://localhost:{self.port}"
@@ -731,11 +814,14 @@ class VLLMEngine:
     def build_launch_cmd(self) -> str:
         """Build vLLM launch command (without redirection - tmux handles that)."""
         gpu_str = ",".join(str(g) for g in self.cuda_device_ids)
+        entrypoint = "vllm.entrypoints.openai.api_server"
+        if self.default_sync_realization == VLLM_CUSTOM_NCCL_BROADCAST.name:
+            entrypoint = "rollouts.training.vllm_qed_server"
         return (
             f"CUDA_VISIBLE_DEVICES={gpu_str} "
             f"VLLM_SERVER_DEV_MODE=1 "
             f"HF_HUB_DOWNLOAD_TIMEOUT=300 "  # 5 min timeout for model downloads
-            f"python -m vllm.entrypoints.openai.api_server "
+            f"python -m {entrypoint} "
             f"--model {self.model_name} "
             f"--host 0.0.0.0 "
             f"--port {self.port} "
@@ -849,18 +935,56 @@ class VLLMEngine:
         msg = f"vLLM failed to start after {max_wait}s. Check {self._log_file}"
         raise RuntimeError(msg)
 
-    async def update_weights_from_checkpoint(
-        self,
-        checkpoint_path: str,
-    ) -> dict[str, Any]:
-        """Update vLLM server weights from checkpoint."""
-        assert checkpoint_path, "checkpoint_path cannot be empty"
+    async def apply_weight_update(self, update: InferenceWeightUpdate) -> dict[str, Any]:
+        realization = resolve_inference_sync_realization(self.capabilities, update.realization)
 
-        with trio.fail_after(self.timeout):
-            return await update_vllm_weights_from_disk(
-                self.base_url,
-                checkpoint_path,
+        if realization.name == VLLM_DEV_CURRENT_MODEL_ROOT_RELOAD.name:
+            if not self.model_name.startswith("/"):
+                raise ValueError(
+                    "vllm_dev_current_model_root_reload requires VLLMEngine.model_name to be "
+                    "a mutable local model root, not a HF repo id."
+                )
+            with trio.fail_after(self.timeout):
+                return await update_vllm_current_model_root(self.base_url)
+
+        if realization.name == VLLM_CUSTOM_NCCL_BROADCAST.name:
+            names = update.metadata.get("names")
+            shapes = update.metadata.get("shapes")
+            dtypes = update.metadata.get("dtypes")
+            assert isinstance(names, list), "vllm_custom_nccl_broadcast requires metadata['names']"
+            assert isinstance(shapes, list), (
+                "vllm_custom_nccl_broadcast requires metadata['shapes']"
             )
+            assert isinstance(dtypes, list), (
+                "vllm_custom_nccl_broadcast requires metadata['dtypes']"
+            )
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                response = await client.post(
+                    f"{self.base_url}/receive_weight_update",
+                    json={
+                        "names": names,
+                        "shapes": shapes,
+                        "dtypes": dtypes,
+                    },
+                )
+                response.raise_for_status()
+                return response.json()
+
+        raise NotImplementedError(
+            f"VLLMEngine does not implement sync realization {realization.name!r}. "
+            "Wire a patched worker/server adapter for vllm_custom_path_reload or "
+            "vllm_custom_nccl_broadcast."
+        )
+
+    async def update_weights_from_checkpoint(self, checkpoint_path: str) -> dict[str, Any]:
+        """Compatibility wrapper for older call sites.
+
+        vLLM must not pretend arbitrary checkpoint-path reload is always
+        supported. Callers should set an explicit sync realization instead.
+        """
+        return await self.apply_weight_update(
+            InferenceWeightUpdate(checkpoint_path=checkpoint_path)
+        )
 
     def shutdown(self) -> None:
         """Kill the tmux session running vLLM."""
@@ -910,6 +1034,8 @@ class EngineV2Engine:
     max_batch_size: int = 32
     max_seq_len: int = 4096
     attention_backend: str = "auto"
+    available_sync_realizations: tuple[str, ...] = (ENGINE_V2_HTTP_PATH_RELOAD.name,)
+    default_sync_realization: str | None = ENGINE_V2_HTTP_PATH_RELOAD.name
     _log_file: Path = field(init=False)
     _session_name: str = field(init=False)
 
@@ -938,6 +1064,16 @@ class EngineV2Engine:
     @property
     def api_base(self) -> str:
         return f"http://localhost:{self.port}/v1"
+
+    @property
+    def capabilities(self) -> InferenceBackendCapabilities:
+        return InferenceBackendCapabilities(
+            backend_name=self.name,
+            supported_sync_realizations=self.available_sync_realizations,
+            default_sync_realization=self.default_sync_realization,
+            supports_blocking_updates=True,
+            supports_inflight_updates=False,
+        )
 
     @property
     def base_url(self) -> str:
@@ -1063,14 +1199,14 @@ class EngineV2Engine:
         msg = f"engine_v2 failed to start after {max_wait}s. Check {self._log_file}"
         raise RuntimeError(msg)
 
-    async def update_weights_from_checkpoint(
-        self,
-        checkpoint_path: str,
-    ) -> dict[str, Any]:
-        """Update engine_v2 server weights from checkpoint."""
-        assert checkpoint_path, "checkpoint_path cannot be empty"
+    async def apply_weight_update(self, update: InferenceWeightUpdate) -> dict[str, Any]:
+        realization = resolve_inference_sync_realization(self.capabilities, update.realization)
+        assert realization.name == ENGINE_V2_HTTP_PATH_RELOAD.name, (
+            f"EngineV2Engine only supports {ENGINE_V2_HTTP_PATH_RELOAD.name!r}, got {realization.name!r}"
+        )
+        checkpoint_path = update.checkpoint_path
+        assert checkpoint_path, "checkpoint_path cannot be empty for engine_v2_http_path_reload"
 
-        # Use same endpoint as SGLang for compatibility
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             response = await client.post(
                 f"{self.base_url}/update_weights_from_disk",
@@ -1078,6 +1214,12 @@ class EngineV2Engine:
             )
             response.raise_for_status()
             return response.json()
+
+    async def update_weights_from_checkpoint(self, checkpoint_path: str) -> dict[str, Any]:
+        """Compatibility wrapper for older call sites."""
+        return await self.apply_weight_update(
+            InferenceWeightUpdate(checkpoint_path=checkpoint_path)
+        )
 
     def shutdown(self) -> None:
         """Kill the tmux session running engine_v2."""
@@ -1400,6 +1542,7 @@ class FilesystemWeightSyncer:
     backend: Any
     engines: list[InferenceEngine]
     sync_dir: Path | None = None
+    inference_sync_realization: str | None = None
 
     async def sync(self) -> None:
         assert self.backend is not None, "backend cannot be None"
@@ -1418,7 +1561,11 @@ class FilesystemWeightSyncer:
         if dist.is_initialized() and dist.get_rank() != 0:
             return
 
-        await sync_weights_to_engines(self.engines, str(checkpoint_path))
+        await sync_weights_to_engines(
+            self.engines,
+            str(checkpoint_path),
+            requested_sync_realization=self.inference_sync_realization,
+        )
 
     async def close(self) -> None:
         # No resources to cleanup for filesystem-based sync.
@@ -1457,6 +1604,7 @@ class BackendNCCLWeightSyncer:
 async def sync_weights_to_engines(
     engines: list[InferenceEngine],
     checkpoint_path: str,
+    requested_sync_realization: str | None = None,
 ) -> list[dict[str, Any]]:
     """Sync checkpoint to multiple inference engines in parallel.
 
@@ -1495,7 +1643,12 @@ async def sync_weights_to_engines(
 
         async def sync_one(engine: InferenceEngine) -> None:
             """Sync to single engine and append result."""
-            response = await engine.update_weights_from_checkpoint(checkpoint_path)
+            response = await engine.apply_weight_update(
+                InferenceWeightUpdate(
+                    checkpoint_path=checkpoint_path,
+                    realization=requested_sync_realization,
+                )
+            )
             results.append(response)
 
         # Start all syncs in parallel

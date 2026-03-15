@@ -541,6 +541,9 @@ class CheckpointConfig:
     # Weight sync mode: "disk" (save to /dev/shm, reload) or "nccl" (GPU-to-GPU broadcast)
     # "nccl" enables PipelineRL-style in-flight updates (faster, non-blocking)
     weight_sync_mode: str = "disk"
+    # Concrete inference-side sync adapter. This is the realized engine/backend
+    # contract, not the high-level semantic policy.
+    inference_sync_realization: str | None = None
     # NCCL master port for weight sync (only used if weight_sync_mode="nccl")
     nccl_master_port: int = 29500
     # Pipeline mode:

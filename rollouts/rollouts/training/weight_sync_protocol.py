@@ -28,14 +28,163 @@ Usage:
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import httpx
 import trio
 
 logger = logging.getLogger(__name__)
+
+
+InferenceSyncTransport = Literal["filesystem", "nccl", "http", "custom_rpc", "in_process"]
+InferenceSyncMode = Literal["blocking", "inflight"]
+InferenceSyncMechanism = Literal[
+    "checkpoint_path_reload",
+    "current_model_root_reload",
+    "tensor_broadcast",
+]
+
+
+@dataclass(frozen=True)
+class InferenceSyncRealization:
+    """Concrete runtime sync adapter for one inference backend realization."""
+
+    name: str
+    transport: InferenceSyncTransport
+    mode: InferenceSyncMode
+    mechanism: InferenceSyncMechanism
+    requires_custom_server_patch: bool = False
+    requires_worker_extension: bool = False
+    requires_mutable_model_root: bool = False
+    requires_sleep_wake: bool = False
+    notes: str = ""
+
+
+@dataclass(frozen=True)
+class InferenceBackendCapabilities:
+    """Capabilities of a concrete inference backend/runtime realization."""
+
+    backend_name: str
+    supported_sync_realizations: tuple[str, ...] = ()
+    default_sync_realization: str | None = None
+    supports_blocking_updates: bool = True
+    supports_inflight_updates: bool = False
+    capability_notes: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if self.default_sync_realization is not None:
+            assert self.default_sync_realization in self.supported_sync_realizations, (
+                "default_sync_realization must be included in supported_sync_realizations"
+            )
+
+
+@dataclass(frozen=True)
+class InferenceWeightUpdate:
+    """Concrete update request issued to an inference backend."""
+
+    checkpoint_path: str | None = None
+    version: int | None = None
+    realization: str | None = None
+    metadata: Mapping[str, Any] = field(default_factory=dict)
+
+
+SGLANG_HTTP_PATH_RELOAD = InferenceSyncRealization(
+    name="sglang_http_path_reload",
+    transport="http",
+    mode="blocking",
+    mechanism="checkpoint_path_reload",
+    notes="SGLang /update_weights_from_disk with a checkpoint path.",
+)
+
+ENGINE_V2_HTTP_PATH_RELOAD = InferenceSyncRealization(
+    name="engine_v2_http_path_reload",
+    transport="http",
+    mode="blocking",
+    mechanism="checkpoint_path_reload",
+    notes="rollouts engine_v2 /update_weights_from_disk with a checkpoint path.",
+)
+
+VLLM_DEV_CURRENT_MODEL_ROOT_RELOAD = InferenceSyncRealization(
+    name="vllm_dev_current_model_root_reload",
+    transport="custom_rpc",
+    mode="blocking",
+    mechanism="current_model_root_reload",
+    requires_mutable_model_root=True,
+    requires_sleep_wake=True,
+    notes=(
+        "vLLM dev sleep/wake + collective_rpc reload_weights() with no model_path. "
+        "Only honest when launched against a mutable local model root."
+    ),
+)
+
+VLLM_CUSTOM_PATH_RELOAD = InferenceSyncRealization(
+    name="vllm_custom_path_reload",
+    transport="custom_rpc",
+    mode="blocking",
+    mechanism="checkpoint_path_reload",
+    requires_custom_server_patch=True,
+    requires_worker_extension=True,
+    requires_sleep_wake=True,
+    notes="PRIME-style custom vLLM route/worker extension for arbitrary checkpoint paths.",
+)
+
+VLLM_CUSTOM_NCCL_BROADCAST = InferenceSyncRealization(
+    name="vllm_custom_nccl_broadcast",
+    transport="nccl",
+    mode="inflight",
+    mechanism="tensor_broadcast",
+    requires_custom_server_patch=True,
+    requires_worker_extension=True,
+    notes="QED-Nano-style direct tensor broadcast into vLLM workers.",
+)
+
+
+INFERENCE_SYNC_REALIZATIONS: dict[str, InferenceSyncRealization] = {
+    realization.name: realization
+    for realization in (
+        SGLANG_HTTP_PATH_RELOAD,
+        ENGINE_V2_HTTP_PATH_RELOAD,
+        VLLM_DEV_CURRENT_MODEL_ROOT_RELOAD,
+        VLLM_CUSTOM_PATH_RELOAD,
+        VLLM_CUSTOM_NCCL_BROADCAST,
+    )
+}
+
+
+def get_inference_sync_realization(name: str) -> InferenceSyncRealization:
+    """Return the named sync realization or fail loudly."""
+    try:
+        return INFERENCE_SYNC_REALIZATIONS[name]
+    except KeyError as exc:
+        known = ", ".join(sorted(INFERENCE_SYNC_REALIZATIONS))
+        raise ValueError(f"Unknown inference sync realization {name!r}. Known: {known}") from exc
+
+
+def resolve_inference_sync_realization(
+    capabilities: InferenceBackendCapabilities,
+    requested: str | None,
+) -> InferenceSyncRealization:
+    """Resolve and validate the explicit sync realization for one backend."""
+    realization_name = requested or capabilities.default_sync_realization
+    if realization_name is None:
+        notes = (
+            " ".join(capabilities.capability_notes).strip()
+            or f"{capabilities.backend_name} exposes no default sync realization."
+        )
+        raise ValueError(
+            f"Inference backend {capabilities.backend_name!r} requires an explicit sync realization. "
+            f"{notes}"
+        )
+    if realization_name not in capabilities.supported_sync_realizations:
+        supported = ", ".join(capabilities.supported_sync_realizations) or "<none>"
+        raise ValueError(
+            f"Inference backend {capabilities.backend_name!r} does not support "
+            f"sync realization {realization_name!r}. Supported: {supported}"
+        )
+    return get_inference_sync_realization(realization_name)
 
 
 # ============================================================================
