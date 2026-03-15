@@ -19,6 +19,7 @@ import logging
 import subprocess
 import threading
 import time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
@@ -33,6 +34,10 @@ from .weight_sync_protocol import (
     VLLM_DEV_CURRENT_MODEL_ROOT_RELOAD,
     InferenceBackendCapabilities,
     InferenceWeightUpdate,
+    UpdateChannelState,
+    WeightSyncPolicy,
+    WeightUpdatePlan,
+    lower_weight_sync_policy,
     resolve_inference_sync_realization,
 )
 
@@ -496,6 +501,144 @@ class WeightSyncer(Protocol):
     async def close(self) -> None:
         """Cleanup resources (process groups, temp dirs, etc.)."""
         ...
+
+
+class WeightUpdateChannel(Protocol):
+    """Long-lived runtime owner for one trainer<->inference update path."""
+
+    @property
+    def state(self) -> UpdateChannelState:
+        """Observable update-channel state."""
+        ...
+
+    async def initialize(self) -> None:
+        """Prepare the update channel for later publications."""
+        ...
+
+    async def publish(self, update: InferenceWeightUpdate) -> dict[str, Any]:
+        """Publish one concrete version update through this channel."""
+        ...
+
+    async def close(self) -> None:
+        """Release channel resources."""
+        ...
+
+
+@dataclass
+class ManagedWeightUpdateChannel:
+    """Small resource-owning update channel for one inference backend.
+
+    This is the truthful owner for channel lifecycle:
+    - initialize
+    - publish
+    - close
+
+    It is intentionally transitional:
+    - policy lowering is explicit
+    - runtime state is explicit
+    - transport-specific details still live in inference.apply_weight_update()
+    """
+
+    inference: InferenceBackend
+    policy: WeightSyncPolicy
+    plan: WeightUpdatePlan | None = None
+    publish_impl: Callable[[InferenceWeightUpdate], Awaitable[dict[str, Any]]] | None = None
+    _state: UpdateChannelState = field(default_factory=UpdateChannelState, init=False, repr=False)
+
+    @property
+    def state(self) -> UpdateChannelState:
+        return self._state
+
+    async def initialize(self) -> None:
+        if self.plan is None and self.policy.realization:
+            self.plan = lower_weight_sync_policy(
+                capabilities=self.inference.capabilities,
+                policy=self.policy,
+            )
+        self._state = UpdateChannelState(
+            channel_ready=True,
+            quiescing_for_update=False,
+            update_in_progress=False,
+            last_published_version=self._state.last_published_version,
+            serving_resumed=self._state.serving_resumed,
+        )
+
+    async def publish(self, update: InferenceWeightUpdate) -> dict[str, Any]:
+        assert self.state.channel_ready, "initialize() must be called before publish()"
+        self._state = UpdateChannelState(
+            channel_ready=True,
+            quiescing_for_update=True,
+            update_in_progress=False,
+            last_published_version=self._state.last_published_version,
+            serving_resumed=False,
+        )
+        update = InferenceWeightUpdate(
+            checkpoint_path=update.checkpoint_path,
+            version=update.version,
+            realization=(
+                update.realization
+                or (self.plan.realization.name if self.plan is not None else None)
+            ),
+            metadata=update.metadata,
+        )
+        self._state = UpdateChannelState(
+            channel_ready=True,
+            quiescing_for_update=False,
+            update_in_progress=True,
+            last_published_version=self._state.last_published_version,
+            serving_resumed=False,
+        )
+        if self.publish_impl is not None:
+            response = await self.publish_impl(update)
+        else:
+            # TODO(train-infer-sync): split apply_weight_update() into explicit
+            # quiesce/begin_update/finish_update/resume methods on
+            # InferenceBackend once the update-channel lifecycle is fully owned
+            # here instead of hidden behind one engine call.
+            response = await self.inference.apply_weight_update(update)
+        self._state = UpdateChannelState(
+            channel_ready=True,
+            quiescing_for_update=False,
+            update_in_progress=False,
+            last_published_version=update.version,
+            serving_resumed=True,
+        )
+        return response
+
+    async def close(self) -> None:
+        self._state = UpdateChannelState(
+            channel_ready=False,
+            quiescing_for_update=False,
+            update_in_progress=False,
+            last_published_version=self._state.last_published_version,
+            serving_resumed=False,
+        )
+
+
+@dataclass
+class ManagedChannelWeightSyncer:
+    """Bridge existing sync implementations onto an explicit update channel."""
+
+    channel: ManagedWeightUpdateChannel
+    syncer: WeightSyncer
+    update_factory: Callable[[], InferenceWeightUpdate]
+    _initialized: bool = field(default=False, init=False, repr=False)
+
+    @property
+    def state(self) -> UpdateChannelState:
+        return self.channel.state
+
+    async def sync(self) -> None:
+        if not self._initialized:
+            await self.channel.initialize()
+            self._initialized = True
+        await self.channel.publish(self.update_factory())
+
+    async def close(self) -> None:
+        try:
+            await self.syncer.close()
+        finally:
+            await self.channel.close()
 
 
 # ══════════════════════════════════════════════════════════════

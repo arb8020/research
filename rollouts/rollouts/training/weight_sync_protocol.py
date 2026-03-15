@@ -49,6 +49,51 @@ InferenceSyncMechanism = Literal[
 
 
 @dataclass(frozen=True)
+class WeightSyncPolicy:
+    """Semantic policy for trainer->inference weight publication.
+
+    This is intentionally transport-agnostic. It answers:
+    - when publication happens
+    - whether publication is blocking or inflight
+    - which concrete runtime realization has been chosen
+    """
+
+    blocking: bool = True
+    sync_every: int = 1
+    realization: str = ""
+    max_version_lag: int = 0
+
+
+@dataclass(frozen=True)
+class WeightTensorSpec:
+    """Schema entry for one published tensor."""
+
+    name: str
+    shape: tuple[int, ...]
+    dtype: str
+
+
+@dataclass(frozen=True)
+class WeightUpdatePlan:
+    """Lowered trainer<->inference plan for one concrete sync realization."""
+
+    realization: InferenceSyncRealization
+    tensor_schema: tuple[WeightTensorSpec, ...] = ()
+    channel_metadata: Mapping[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class UpdateChannelState:
+    """Observable runtime state of the train<->infer update channel."""
+
+    channel_ready: bool = False
+    quiescing_for_update: bool = False
+    update_in_progress: bool = False
+    last_published_version: int | None = None
+    serving_resumed: bool = False
+
+
+@dataclass(frozen=True)
 class InferenceSyncRealization:
     """Concrete runtime sync adapter for one inference backend realization."""
 
@@ -185,6 +230,32 @@ def resolve_inference_sync_realization(
             f"sync realization {realization_name!r}. Supported: {supported}"
         )
     return get_inference_sync_realization(realization_name)
+
+
+def lower_weight_sync_policy(
+    *,
+    capabilities: InferenceBackendCapabilities,
+    policy: WeightSyncPolicy,
+    tensor_schema: tuple[WeightTensorSpec, ...] = (),
+    channel_metadata: Mapping[str, Any] | None = None,
+) -> WeightUpdatePlan:
+    """Lower semantic weight-sync policy to one validated runtime plan."""
+
+    assert policy.sync_every >= 1, "sync_every must be >= 1"
+    realization = resolve_inference_sync_realization(capabilities, policy.realization or None)
+    if policy.blocking:
+        assert capabilities.supports_blocking_updates, (
+            f"{capabilities.backend_name!r} does not support blocking weight updates"
+        )
+    else:
+        assert capabilities.supports_inflight_updates, (
+            f"{capabilities.backend_name!r} does not support inflight weight updates"
+        )
+    return WeightUpdatePlan(
+        realization=realization,
+        tensor_schema=tensor_schema,
+        channel_metadata=dict(channel_metadata or {}),
+    )
 
 
 # ============================================================================
