@@ -441,6 +441,7 @@ class WeightSyncReceiver:
     device: torch.device = field(default_factory=lambda: torch.device("cuda"))
 
     _process_group: Any = field(default=None, init=False, repr=False)
+    _communicator: Any = field(default=None, init=False, repr=False)
     _weight_version: int = field(default=0, init=False)
 
     @property
@@ -479,6 +480,28 @@ class WeightSyncReceiver:
             group_name=self.group_name,
             timeout_seconds=self.timeout_seconds,
         )
+        try:
+            from vllm.distributed.device_communicators.pynccl import PyNcclCommunicator
+            from vllm.distributed.utils import StatelessProcessGroup
+
+            stateless_pg = StatelessProcessGroup.create(
+                host=self.master_addr,
+                port=self.master_port,
+                rank=self.rank,
+                world_size=self.world_size,
+                store_timeout=int(self.timeout_seconds),
+            )
+            self._communicator = PyNcclCommunicator(stateless_pg, device=self.device)
+        except Exception as exc:
+            logger.warning(
+                "weight_sync_receiver_communicator_init_failed rank=%s world_size=%s device=%s error=%r; "
+                "falling back to torch.distributed broadcast",
+                self.rank,
+                self.world_size,
+                self.device,
+                exc,
+            )
+            self._communicator = None
         logger.info(
             "weight_sync_receiver_init_ok rank=%s world_size=%s master=%s:%s device=%s group=%s",
             self.rank,
@@ -553,7 +576,10 @@ class WeightSyncReceiver:
                 receive_meta,
             )
             try:
-                dist.broadcast(buffer, src=0, group=self._process_group)
+                if self._communicator is not None:
+                    self._communicator.broadcast(buffer, src=0, stream=torch.cuda.current_stream())
+                else:
+                    dist.broadcast(buffer, src=0, group=self._process_group)
             except Exception as exc:
                 raise RuntimeError(
                     "Weight sync receiver broadcast failed "
@@ -581,13 +607,19 @@ class WeightSyncReceiver:
 
         for _name, param in state_dict.items():
             # Receive broadcast from rank 0 directly into existing tensor
-            dist.broadcast(param.data, src=0, group=self._process_group)
+            if self._communicator is not None:
+                self._communicator.broadcast(param.data, src=0, stream=torch.cuda.current_stream())
+            else:
+                dist.broadcast(param.data, src=0, group=self._process_group)
 
         self._weight_version += 1
         logger.info(f"Received weights v{self._weight_version} (in-place)")
 
     def cleanup(self) -> None:
         """Cleanup process group."""
+        if self._communicator is not None:
+            del self._communicator
+            self._communicator = None
         if self._process_group is not None:
             dist.destroy_process_group(self._process_group)
             self._process_group = None
