@@ -50,6 +50,7 @@ class Command(IntEnum):
     INIT_NCCL_WEIGHT_SYNC = 4
     SYNC_WEIGHTS_NCCL = 5
     CLEANUP_NCCL_WEIGHT_SYNC = 6
+    VALIDATE_INFERENCE_EXPORT = 7
 
 
 def _read_proc_status_snapshot() -> str:
@@ -321,6 +322,7 @@ def _training_loop(
         "init_nccl_weight_sync": Command.INIT_NCCL_WEIGHT_SYNC,
         "sync_weights_nccl": Command.SYNC_WEIGHTS_NCCL,
         "cleanup_nccl_weight_sync": Command.CLEANUP_NCCL_WEIGHT_SYNC,
+        "validate_inference_export": Command.VALIDATE_INFERENCE_EXPORT,
         "save_checkpoint": Command.SAVE_CHECKPOINT,
     }
 
@@ -408,6 +410,14 @@ def _training_loop(
                 handle.send({"status": "nccl_cleanup"})
             else:
                 _cleanup_nccl_weight_sync(backend, [])
+
+        elif cmd_id == Command.VALIDATE_INFERENCE_EXPORT:
+            details = _do_validate_inference_export(
+                backend,
+                model_name=config.get("model_name", ""),
+            )
+            if rank == 0:
+                handle.send({"status": "validated", "details": details})
 
         # Handle save_checkpoint
         elif cmd_id == Command.SAVE_CHECKPOINT:
@@ -551,6 +561,39 @@ def _do_sync_weights(backend: Any, inference_endpoints: list[str]) -> None:
     logger.info(
         "Weight sync: %d parameters to %d endpoints", len(weights), len(inference_endpoints)
     )
+
+
+def _do_validate_inference_export(
+    backend: Any,
+    model_name: str,
+) -> dict[str, Any]:
+    """Validate Megatron runtime export before inference startup.
+
+    All trainer ranks participate in the runtime export collectives. Rank 0
+    returns a small summary for the control channel.
+    """
+    from megatron.core import mpu
+
+    from rollouts.training.backends.megatron.inference_export import (
+        build_megatron_inference_export_from_runtime,
+    )
+
+    export = build_megatron_inference_export_from_runtime(model_name, backend.model)
+    details = {
+        "tensor_count": len(export.tensors),
+        "dropped_unconverted_keys": len(export.dropped_unconverted_keys),
+        "tp_world_size": int(mpu.get_tensor_model_parallel_world_size()),
+        "pp_world_size": int(mpu.get_pipeline_model_parallel_world_size()),
+        "ep_world_size": int(mpu.get_expert_model_parallel_world_size()),
+    }
+    logger.info(
+        "Validated Megatron runtime inference export: tensors=%s tp=%s pp=%s ep=%s",
+        details["tensor_count"],
+        details["tp_world_size"],
+        details["pp_world_size"],
+        details["ep_world_size"],
+    )
+    return details
 
 
 def _init_nccl_weight_sync(

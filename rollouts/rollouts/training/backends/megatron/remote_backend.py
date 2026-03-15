@@ -218,6 +218,23 @@ class MegatronRemoteBackend:
         """
         return self.forward_backward(batch)
 
+    def validate_inference_export(self) -> TrainFuture[dict[str, Any]]:
+        """Validate the Megatron runtime -> inference export boundary.
+
+        This is an explicit preflight for the backend-local export/update slice.
+        It should fail before inference startup if the current Megatron runtime
+        state cannot be lowered into the HF/SGLang tensor contract honestly.
+        """
+        assert self._initialized, "Call initialize() first"
+        self.workers[0].send({"cmd": "validate_inference_export"})
+        response = self._recv_response(
+            self.workers[0],
+            context="validate_inference_export",
+            max_size=_CONTROL_MESSAGE_MAX_BYTES,
+        )
+        assert response["status"] == "validated", f"Inference export validation failed: {response}"
+        return ImmediateTrainFuture(response["details"], operation="validate_inference_export")
+
     def optim_step(self) -> TrainFuture[dict[str, float]]:
         """Apply gradients (already done in forward_backward for Megatron)."""
         # Megatron does optimizer step inside forward_backward

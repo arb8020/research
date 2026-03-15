@@ -200,8 +200,17 @@ def _load_conversion_context(model_name: str) -> dict[str, int | None] | None:
     vocab_size = int(getattr(hf_config, "vocab_size", 0))
     num_attention_heads = int(getattr(hf_config, "num_attention_heads", 0))
     hidden_size = int(getattr(hf_config, "hidden_size", 0))
-    num_query_groups = getattr(hf_config, "num_query_groups", num_attention_heads)
+    # HF Qwen-family configs typically publish grouped-query semantics as
+    # `num_key_value_heads`, not `num_query_groups`. Normalize that boundary
+    # here so the backend-local Megatron->HF converters receive the same
+    # denotation miles/slime give them from Megatron args.
+    num_query_groups = getattr(hf_config, "num_query_groups", None)
+    if num_query_groups is None:
+        num_query_groups = getattr(hf_config, "num_key_value_heads", num_attention_heads)
+
     kv_channels = getattr(hf_config, "kv_channels", None)
+    if kv_channels is None:
+        kv_channels = getattr(hf_config, "head_dim", None)
     q_lora_rank = getattr(hf_config, "q_lora_rank", None)
 
     return {
