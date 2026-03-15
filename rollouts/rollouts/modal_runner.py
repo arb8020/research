@@ -1428,8 +1428,8 @@ async def _create_sandbox(
         key: value for key in ("control_plane", "launcher_id") if (value := config.tags.get(key))
     }
 
-    async def _list_owned_sandboxes() -> list[Any]:
-        return [sandbox async for sandbox in modal.Sandbox.list(app_id=app.app_id, tags=owner_tags)]
+    def _list_owned_sandboxes() -> list[Any]:
+        return list(modal.Sandbox.list(app_id=app.app_id, tags=owner_tags))
 
     # TODO(chiraag): Modal sandbox ownership/lifecycle should move out of
     # rollouts and into a real execution substrate layer. For now, keep the
@@ -1438,7 +1438,7 @@ async def _create_sandbox(
     if config.keep_alive:
         logger.info("Skipping pre-create sandbox cleanup because keep_alive=True")
     elif owner_tags:
-        existing = await trio_asyncio.aio_as_trio(_list_owned_sandboxes())
+        existing = await trio.to_thread.run_sync(_list_owned_sandboxes)
         if existing:
             logger.info(
                 "Cleaning up %s existing sandbox(es) for owner tags %s...",
