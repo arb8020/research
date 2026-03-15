@@ -1256,6 +1256,12 @@ Examples:
     )
     parser.add_argument("--keep-alive", action="store_true", help="Keep GPU after completion")
     parser.add_argument(
+        "--modal-cleanup-scope",
+        choices=["app", "tag", "run", "none"],
+        default="run",
+        help="Modal pre-create sandbox cleanup scope (default: run)",
+    )
+    parser.add_argument(
         "--force-deploy-committed",
         action="store_true",
         help="Proceed despite uncommitted changes (only committed code is deployed)",
@@ -1554,6 +1560,7 @@ Examples:
                     config_path=str(config_path),
                     runtime=runtime,
                     materialization=materialization,
+                    cleanup_scope=args.modal_cleanup_scope,
                     run_name=run_name,
                     run_logger=log,
                     source_sync_policy=SourceSyncPolicy.committed_only(

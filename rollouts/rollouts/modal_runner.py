@@ -96,6 +96,7 @@ MODAL_IMAGE_BUILD_LOG_CHAR_LIMIT = 1000
 MODAL_IMAGE_BUILD_LOG_FETCH_TIMEOUT_S = 30.0
 MODAL_FAILURE_DIAGNOSTICS_TIMEOUT_S = 30
 MODAL_FAILURE_DIAGNOSTICS_OUTPUT_CHAR_LIMIT = 4000
+MODAL_CLEANUP_SCOPES = ("app", "tag", "run", "none")
 
 
 def _sandbox_runtime_diag_python() -> str:
@@ -432,6 +433,7 @@ class ModalRunConfig:
     timeout_hours: int = 4
     sandbox_id: str | None = None
     keep_alive: bool = False
+    cleanup_scope: str = "run"
     run_name: str | None = None
     run_logger: RunLogger | None = None
     model_name: str | None = None  # Model name for weight caching (e.g., "zai-org/GLM-4.7-Flash")
@@ -444,6 +446,11 @@ class ModalRunConfig:
         if self.runtime is None:
             raise ValueError(
                 "ModalRunConfig requires a RuntimeContract. Build it from HardwareConfig."
+            )
+        if self.cleanup_scope not in MODAL_CLEANUP_SCOPES:
+            raise ValueError(
+                f"Unknown Modal cleanup_scope={self.cleanup_scope!r}. "
+                f"Use one of {MODAL_CLEANUP_SCOPES!r}."
             )
 
     @property
@@ -1427,23 +1434,52 @@ async def _create_sandbox(
     owner_tags = {
         key: value for key in ("control_plane", "launcher_id") if (value := config.tags.get(key))
     }
+    group_tags = {
+        key: value
+        for key in ("control_plane", "config_basename", "provider")
+        if (value := config.tags.get(key))
+    }
 
     def _list_owned_sandboxes() -> list[Any]:
+        if config.cleanup_scope == "none":
+            return []
+        if config.cleanup_scope == "app":
+            return list(modal.Sandbox.list(app_id=app.app_id))
+        if config.cleanup_scope == "tag":
+            return list(modal.Sandbox.list(app_id=app.app_id, tags=group_tags))
+        assert config.cleanup_scope == "run"
         return list(modal.Sandbox.list(app_id=app.app_id, tags=owner_tags))
+
+    cleanup_event: tuple[str, dict[str, Any]]
 
     # TODO(chiraag): Modal sandbox ownership/lifecycle should move out of
     # rollouts and into a real execution substrate layer. For now, keep the
-    # cleanup policy honest: never kill every sandbox in the app, only sandboxes
-    # explicitly owned by the same launcher identity.
+    # cleanup policy explicit and honest.
     if config.keep_alive:
         logger.info("Skipping pre-create sandbox cleanup because keep_alive=True")
-    elif owner_tags:
+        cleanup_event = ("modal_sandbox_cleanup_skipped", {"reason": "keep_alive_enabled"})
+    elif config.cleanup_scope == "none":
+        logger.info("Skipping pre-create sandbox cleanup because cleanup_scope=none")
+        cleanup_event = ("modal_sandbox_cleanup_skipped", {"reason": "cleanup_scope_none"})
+    elif config.cleanup_scope == "run" and not owner_tags:
+        logger.info("Skipping pre-create sandbox cleanup because run owner tags are missing")
+        cleanup_event = ("modal_sandbox_cleanup_skipped", {"reason": "missing_run_tags"})
+    elif config.cleanup_scope == "tag" and not group_tags:
+        logger.info("Skipping pre-create sandbox cleanup because tag scope tags are missing")
+        cleanup_event = ("modal_sandbox_cleanup_skipped", {"reason": "missing_tag_tags"})
+    else:
+        if config.cleanup_scope == "run":
+            cleanup_event = ("modal_sandbox_cleanup_scope", {"scope": "run", "tags": owner_tags})
+        elif config.cleanup_scope == "tag":
+            cleanup_event = ("modal_sandbox_cleanup_scope", {"scope": "tag", "tags": group_tags})
+        else:
+            cleanup_event = ("modal_sandbox_cleanup_scope", {"scope": "app"})
         existing = await trio.to_thread.run_sync(_list_owned_sandboxes)
         if existing:
             logger.info(
-                "Cleaning up %s existing sandbox(es) for owner tags %s...",
+                "Cleaning up %s existing sandbox(es) for cleanup_scope=%s...",
                 len(existing),
-                owner_tags,
+                config.cleanup_scope,
             )
             for sb in existing:
                 try:
@@ -1452,9 +1488,7 @@ async def _create_sandbox(
                 except Exception as e:
                     logger.warning("  Failed to terminate %s: %s", sb.object_id, e)
         else:
-            logger.info("No existing sandboxes found for owner tags %s", owner_tags)
-    else:
-        logger.info("Skipping pre-create sandbox cleanup because owner tags are missing")
+            logger.info("No existing sandboxes found for cleanup_scope=%s", config.cleanup_scope)
 
     # GPU spec
     gpu_count = config.gpu_count
@@ -1493,12 +1527,8 @@ async def _create_sandbox(
                 **data,
             )
 
-    if config.keep_alive:
-        emit("modal_sandbox_cleanup_skipped", reason="keep_alive_enabled")
-    elif owner_tags:
-        emit("modal_sandbox_cleanup_scope", scope="owner_tags", tags=owner_tags)
-    else:
-        emit("modal_sandbox_cleanup_skipped", reason="missing_owner_tags")
+    cleanup_event_name, cleanup_event_data = cleanup_event
+    emit(cleanup_event_name, **cleanup_event_data)
 
     logger.info("Constructing Modal image...")
     assert config.deps is not None  # Validated in __post_init__
@@ -2372,6 +2402,12 @@ def main() -> None:
         help="Keep sandbox running after completion",
     )
     parser.add_argument(
+        "--cleanup-scope",
+        choices=list(MODAL_CLEANUP_SCOPES),
+        default="run",
+        help="Pre-create sandbox cleanup scope (default: run)",
+    )
+    parser.add_argument(
         "--force-deploy-committed",
         action="store_true",
         help="Proceed despite uncommitted changes (only committed code is deployed)",
@@ -2466,6 +2502,7 @@ def main() -> None:
         timeout_hours=args.timeout_hours,
         sandbox_id=args.sandbox_id,
         keep_alive=args.keep_alive,
+        cleanup_scope=args.cleanup_scope,
         model_name=model_name,
         pruning_recipe=pruning_recipe,
     )
