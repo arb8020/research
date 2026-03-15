@@ -161,6 +161,11 @@ from rollouts.remote_runtime import (
     runtime_contract_from_hardware,
 )
 
+# TODO(chiraag): This import cluster is the current control-plane leak. Argus
+# should choose an execution substrate and own run/attempt lifecycle, but the
+# runtime/image/materialization machinery itself should move into that substrate
+# layer. See docs/design/runtime_ownership_cleanup.md.
+
 
 def _process_alive(pid: int) -> bool:
     try:

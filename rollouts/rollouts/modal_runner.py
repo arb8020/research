@@ -1424,16 +1424,37 @@ async def _create_sandbox(
         modal.App.lookup.aio(MODAL_APP_NAME, create_if_missing=True)
     )
 
-    # Clean up any existing sandboxes from this app to avoid hitting limits
-    existing = list(modal.Sandbox.list(app_id=app.app_id))
-    if existing:
-        logger.info(f"Cleaning up {len(existing)} existing sandbox(es)...")
-        for sb in existing:
-            try:
-                sb.terminate()
-                logger.info(f"  Terminated {sb.object_id}")
-            except Exception as e:
-                logger.warning(f"  Failed to terminate {sb.object_id}: {e}")
+    owner_tags = {
+        key: value for key in ("control_plane", "launcher_id") if (value := config.tags.get(key))
+    }
+
+    async def _list_owned_sandboxes() -> list[Any]:
+        return [sandbox async for sandbox in modal.Sandbox.list(app_id=app.app_id, tags=owner_tags)]
+
+    # TODO(chiraag): Modal sandbox ownership/lifecycle should move out of
+    # rollouts and into a real execution substrate layer. For now, keep the
+    # cleanup policy honest: never kill every sandbox in the app, only sandboxes
+    # explicitly owned by the same launcher identity.
+    if config.keep_alive:
+        logger.info("Skipping pre-create sandbox cleanup because keep_alive=True")
+    elif owner_tags:
+        existing = await trio_asyncio.aio_as_trio(_list_owned_sandboxes())
+        if existing:
+            logger.info(
+                "Cleaning up %s existing sandbox(es) for owner tags %s...",
+                len(existing),
+                owner_tags,
+            )
+            for sb in existing:
+                try:
+                    await trio_asyncio.aio_as_trio(sb.terminate.aio())
+                    logger.info("  Terminated %s", sb.object_id)
+                except Exception as e:
+                    logger.warning("  Failed to terminate %s: %s", sb.object_id, e)
+        else:
+            logger.info("No existing sandboxes found for owner tags %s", owner_tags)
+    else:
+        logger.info("Skipping pre-create sandbox cleanup because owner tags are missing")
 
     # GPU spec
     gpu_count = config.gpu_count
@@ -1471,6 +1492,13 @@ async def _create_sandbox(
                 gpu_count=config.gpu_count,
                 **data,
             )
+
+    if config.keep_alive:
+        emit("modal_sandbox_cleanup_skipped", reason="keep_alive_enabled")
+    elif owner_tags:
+        emit("modal_sandbox_cleanup_scope", scope="owner_tags", tags=owner_tags)
+    else:
+        emit("modal_sandbox_cleanup_skipped", reason="missing_owner_tags")
 
     logger.info("Constructing Modal image...")
     assert config.deps is not None  # Validated in __post_init__
