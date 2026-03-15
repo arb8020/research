@@ -1576,7 +1576,12 @@ def _exec_sync(
     return "".join(stdout_lines), "".join(stderr_lines), proc.returncode
 
 
-async def _sync_code_to_sandbox(sandbox: Any, local_root: Path) -> str:
+async def _sync_code_to_sandbox(
+    sandbox: Any,
+    local_root: Path,
+    *,
+    emit: Callable[[str], None] | None = None,
+) -> str:
     """Sync local code to sandbox via sandbox.open() file API.
 
     Uses git bundle + sandbox.open() for efficient file transfer.
@@ -1587,6 +1592,10 @@ async def _sync_code_to_sandbox(sandbox: Any, local_root: Path) -> str:
     # The rollouts code is at /workspace/research/rollouts
     clone_dir = "/workspace/research"
     workspace = "/workspace/research/rollouts"
+
+    def _emit_progress(stage: str, **data: Any) -> None:
+        if emit is not None:
+            emit("modal_repo_sync_progress", stage=stage, **data)
 
     def _sync() -> None:
         # Create git bundle of current HEAD (fast, includes all needed objects)
@@ -1604,6 +1613,7 @@ async def _sync_code_to_sandbox(sandbox: Any, local_root: Path) -> str:
             )
             commit = result.stdout.strip()
             logger.info(f"Bundling commit {commit[:8]}...")
+            _emit_progress("bundle_create_start", commit=commit)
 
             # Create bundle
             subprocess.run(
@@ -1615,31 +1625,67 @@ async def _sync_code_to_sandbox(sandbox: Any, local_root: Path) -> str:
 
             bundle_size = os.path.getsize(bundle_path)
             logger.info(f"Bundle size: {bundle_size / 1024 / 1024:.1f} MB")
+            _emit_progress(
+                "bundle_create_finished",
+                commit=commit,
+                bundle_size_mb=round(bundle_size / 1024 / 1024, 3),
+            )
 
             # Read bundle data
             with open(bundle_path, "rb") as f:
                 bundle_data = f.read()
 
             # Create workspace directory
+            _emit_progress("workspace_prepare_start", path="/workspace")
             _exec_sync(sandbox, "mkdir -p /workspace", timeout=30)
+            _emit_progress("workspace_prepare_finished", path="/workspace")
 
             # Use sandbox.open() for proper file transfer (Alpha API)
             logger.info("Uploading bundle via sandbox.open()...")
+            _emit_progress(
+                "bundle_upload_start",
+                remote_path="/tmp/repo.bundle",
+                bundle_size_mb=round(len(bundle_data) / 1024 / 1024, 3),
+            )
             remote_file = sandbox.open("/tmp/repo.bundle", "wb")
             remote_file.write(bundle_data)
             remote_file.close()
             logger.info(f"Uploaded {len(bundle_data) / 1024 / 1024:.1f} MB")
+            _emit_progress(
+                "bundle_upload_finished",
+                remote_path="/tmp/repo.bundle",
+                bundle_size_mb=round(len(bundle_data) / 1024 / 1024, 3),
+            )
 
             logger.info("Extracting bundle...")
+            _emit_progress("clone_start", clone_dir=clone_dir, workspace=workspace)
+
+            def _on_clone_stderr_line(line: str) -> None:
+                stripped = line.rstrip()
+                if not stripped:
+                    return
+                if "Cloning into" in stripped:
+                    _emit_progress("clone_progress", message=stripped)
+                    return
+                if "switching to" in stripped:
+                    _emit_progress("checkout_progress", message=stripped)
+                    return
+                if "Updating files:" in stripped:
+                    _emit_progress("checkout_progress", message=stripped)
+                    return
+
             # Clone from bundle - clones parent repo (research) to /workspace/research
             _exec_sync(
                 sandbox,
                 "cd /workspace && git clone /tmp/repo.bundle research && "
                 "cd research && git checkout HEAD",
                 timeout=120,
+                on_stderr_line=_on_clone_stderr_line,
             )
+            _emit_progress("clone_finished", clone_dir=clone_dir, workspace=workspace)
 
             logger.info(f"Code synced to {workspace}")
+            _emit_progress("sync_finished", workspace=workspace, commit=commit)
 
         finally:
             os.unlink(bundle_path)
@@ -1993,7 +2039,7 @@ async def run_modal(config: ModalRunConfig) -> dict[str, Any]:
                 # Sync code (always uses local git bundle)
                 logger.info("Syncing code to sandbox...")
                 emit("modal_repo_sync_start", sandbox_id=sandbox_id)
-                workspace = await _sync_code_to_sandbox(sandbox, REPO_ROOT)
+                workspace = await _sync_code_to_sandbox(sandbox, REPO_ROOT, emit=emit)
                 logger.info(f"Code synced to {workspace}")
                 emit("modal_repo_synced", sandbox_id=sandbox_id, workspace=workspace)
 
