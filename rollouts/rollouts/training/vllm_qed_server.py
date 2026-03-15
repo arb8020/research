@@ -151,7 +151,7 @@ async def run_server(args: Any, **uvicorn_kwargs: Any) -> None:
 
     async with build_async_engine_client(args) as engine_client:
         supported_tasks = await engine_client.get_supported_tasks()
-        app = build_app(args, supported_tasks)
+        app = build_app(args)
 
         @app.get("/weight_update_schema")
         async def weight_update_schema(limit: int = 1) -> dict[str, Any]:
