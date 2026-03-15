@@ -113,19 +113,60 @@ def _all_gather_param(name: str, param: Tensor) -> Tensor:
 
     partition_dim = getattr(param, "partition_dim", -1)
     partition_stride = getattr(param, "partition_stride", 1)
-    assert partition_stride == 1, f"{name} has unsupported partition_stride={partition_stride}"
+    partition_stride, partition_dim = _check_and_fix_partition(
+        name=name,
+        partition_stride=partition_stride,
+        partition_dim=partition_dim,
+    )
+    return _gather_with_stride(
+        param_partitions=param_partitions,
+        partition_dim=partition_dim,
+        partition_stride=partition_stride,
+    )
 
-    # Megatron's GLU path shards the fused gate/up projection; reconstruct the
-    # concatenated HF order after TP all-gather.
+
+def _gather_with_stride(
+    *,
+    param_partitions: list[Tensor],
+    partition_dim: int,
+    partition_stride: int,
+) -> Tensor:
+    if partition_stride == 1:
+        return torch.cat(param_partitions, dim=partition_dim)
+
+    chunks_per_rank = [
+        partition.chunk(partition_stride, dim=partition_dim) for partition in param_partitions
+    ]
+    interleaved = [
+        chunks_per_rank[rank][stride]
+        for stride in range(partition_stride)
+        for rank in range(len(param_partitions))
+    ]
+    return torch.cat(interleaved, dim=partition_dim)
+
+
+def _check_and_fix_partition(
+    *, name: str, partition_stride: int, partition_dim: int
+) -> tuple[int, int]:
+    # Megatron's fused GLU/SwiGLU fc1 is interleaved across TP ranks.
     if "linear_fc1.weight" in name:
-        param_partitions = [p.chunk(2, dim=0) for p in param_partitions]
-        param_partitions = [p[0] for p in param_partitions] + [p[1] for p in param_partitions]
+        if partition_stride not in (1, 2):
+            raise RuntimeError(
+                f"Expected partition_stride in (1, 2) for {name}, got {partition_stride}"
+            )
+        return partition_stride, partition_dim
 
     # Grouped MoE fc2 uses a transposed shard dimension in Megatron.
-    if "linear_fc2.weight" in name and partition_dim == 0:
-        partition_dim = 1
+    if "linear_fc2.weight" in name:
+        if partition_stride != 1:
+            raise RuntimeError(f"Expected partition_stride=1 for {name}, got {partition_stride}")
+        if partition_dim == 0:
+            partition_dim = 1
+        return partition_stride, partition_dim
 
-    return torch.cat(param_partitions, dim=partition_dim)
+    if partition_stride != 1:
+        raise RuntimeError(f"Expected partition_stride=1 for {name}, got {partition_stride}")
+    return partition_stride, partition_dim
 
 
 def _named_params_and_buffers_global(model_chunks: Sequence[Any]) -> Iterator[tuple[str, Tensor]]:
