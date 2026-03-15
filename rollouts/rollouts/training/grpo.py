@@ -50,10 +50,9 @@ from ..training.configs import (  # noqa: E402
     TrainerConfig,
     deps_config_from_data,
 )
-from ..training.lowering import (
-    MegatronProvisioning,
-    RealizationPlan,
-    dense_rl_realization,
+from ..training.runtime_factory import (
+    build_megatron_lowering,
+    create_training_backend_runtime,
 )
 from ..training.scoring import FunctionSampleScorer
 from ..training.types import RolloutRuntime
@@ -163,42 +162,8 @@ class GRPOConfig:
         return self.inference.deps
 
 
-def _trainer_realization(
-    local_layouts: tuple[str, ...],
-    collective_transitions: tuple[str, ...],
-    packed_sequences: bool,
-) -> RealizationPlan | None:
-    if not local_layouts and not collective_transitions:
-        return None
-    return RealizationPlan(
-        local_layouts=local_layouts,
-        collective_transitions=collective_transitions,
-        packed_sequences=packed_sequences,
-    )
-
-
 def _megatron_lowering(config: GRPOConfig) -> Any:
-    from ..training.lowering import MegatronLowering
-
-    realization = _trainer_realization(
-        config.trainer.realization_local_layouts,
-        config.trainer.realization_collective_transitions,
-        config.trainer.realization_packed_sequences,
-    ) or dense_rl_realization(
-        tp=config.trainer.tensor_parallel_size,
-        cp=config.trainer.context_parallel_size,
-        pp=config.trainer.pipeline_parallel_size,
-        packed_sequences=config.trainer.realization_packed_sequences,
-    )
-    return MegatronLowering.from_realization(
-        provisioning=MegatronProvisioning(
-            tp=config.trainer.tensor_parallel_size,
-            pp=config.trainer.pipeline_parallel_size,
-            ep=config.trainer.expert_parallel_size,
-            packed_sequences=config.trainer.realization_packed_sequences,
-        ),
-        realization=realization,
-    )
+    return build_megatron_lowering(config.trainer, training_mode="rl")
 
 
 # ──────────────────────── Training Function ──────────────────────────────────
@@ -469,7 +434,6 @@ def _setup_training_backend(
         Tuple of (backend, tokenizer, endpoint, cleanup).
         cleanup is an optional callable to run at shutdown (e.g., destroy process group).
     """
-    from ..training.backends.pytorch_factory import create_pytorch_backend, parse_dtype
     from ..training.losses import grpo_loss, grpo_loss_clipped, grpo_loss_masked, opd_loss
 
     # Select loss function based on config
@@ -477,196 +441,18 @@ def _setup_training_backend(
         config.trainer, grpo_loss, grpo_loss_clipped, grpo_loss_masked, opd_fn=opd_loss
     )
 
-    cleanup: Callable[[], None] | None = None
-    backend_name = config.trainer.backend
-
-    if backend_name == "pytorch":
-        gpu_rank = config.trainer.cuda_device_ids[0]
-        backend = create_pytorch_backend(
-            model_name=config.model.name,
-            checkpoint_dir=output_dir,
-            device_type="cuda",
-            dtype=config.model.dtype,
-            gpu_rank=gpu_rank,
-            learning_rate=config.trainer.lr,
-            weight_decay=config.trainer.weight_decay,
-            loss_fn=loss_fn,
-            num_minibatches=config.trainer.num_minibatches,
-            max_grad_norm=config.trainer.max_grad_norm,
-            use_lora=config.model.use_lora,
-            lora_rank=config.model.lora_rank,
-            lora_alpha=config.model.lora_alpha,
-        )
-    elif backend_name == "nmoe":
-        from ..training.backends.nmoe_backend import raise_nmoe_backend_unavailable
-
-        raise_nmoe_backend_unavailable(context="_setup_training_backend(backend='nmoe')")
-    elif backend_name in ("fsdp", "fsdp2"):
-        if backend_name == "fsdp2":
-            logging.getLogger(__name__).warning(
-                "trainer.backend='fsdp2' selected; using FSDPTrainingBackend (fully_shard) "
-                "bring-up path for now."
-            )
-        # Single-process FSDP bring-up path.
-        # Multi-process/multi-node FSDP is orchestrated via rollouts.training.multi_node + fsdp_worker.
-        import os
-        import socket
-
-        import torch
-        import torch.distributed as dist
-        from transformers import AutoModelForCausalLM
-
-        from ..training.backends.fsdp import FSDPConfig, FSDPTrainingBackend
-
-        trainer_gpu = config.trainer.cuda_device_ids[0]
-        torch.cuda.set_device(trainer_gpu)
-
-        if not dist.is_initialized():
-            # Find an available port (avoid conflicts with weight sync ports / stale processes).
-            def find_free_port(start_port: int, max_attempts: int = 100) -> int:
-                for port in range(start_port, start_port + max_attempts):
-                    try:
-                        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-                            s.bind(("", port))
-                            return port
-                    except OSError:
-                        continue
-                raise RuntimeError(
-                    f"No free port found in range {start_port}-{start_port + max_attempts}"
-                )
-
-            master_addr = os.environ.get("MASTER_ADDR", "127.0.0.1")
-            master_port = find_free_port(config.checkpoint.nccl_master_port + 50)
-
-            dist.init_process_group(
-                backend="nccl",
-                init_method=f"tcp://{master_addr}:{master_port}",
-                rank=0,
-                world_size=1,
-            )
-
-            def _cleanup_dist() -> None:
-                if dist.is_initialized():
-                    dist.destroy_process_group()
-
-            cleanup = _cleanup_dist
-
-        # Load model on CPU then let backend move it to the correct CUDA device.
-        torch_dtype = parse_dtype(config.model.dtype)
-        model = AutoModelForCausalLM.from_pretrained(
-            config.model.name,
-            torch_dtype=torch_dtype,
-            trust_remote_code=True,
-        )
-
-        # Optimizer factory (called AFTER FSDP wrapping).
-        def make_optimizer(fsdp_model: torch.nn.Module) -> torch.optim.Optimizer:
-            return torch.optim.AdamW(
-                fsdp_model.parameters(),
-                lr=config.trainer.lr,
-                weight_decay=config.trainer.weight_decay,
-            )
-
-        fsdp_config = FSDPConfig(
-            sharding_strategy="FULL_SHARD",
-            mixed_precision=(torch_dtype in (torch.bfloat16, torch.float16)),
-            gradient_checkpointing=False,
-            clip_grad=config.trainer.max_grad_norm,
-        )
-
-        backend = FSDPTrainingBackend(
-            model=model,
-            optimizer_fn=make_optimizer,
-            loss_fn=loss_fn,
-            checkpoint_dir=output_dir,
-            config=fsdp_config,
-            device=torch.device(f"cuda:{trainer_gpu}"),
-        )
-    elif backend_name == "megatron":
-        # Megatron backend using miniray for multi-process orchestration.
-        # Workers run megatron_worker.py and communicate via miniray IPC.
-        #
-        # IMPORTANT: Workers must be pre-spawned (forked) BEFORE any CUDA context
-        # is created (e.g., before SGLang starts). This is because CUDA contexts
-        # don't survive fork() - the child inherits a broken context.
-        # See: docs/code_style/archive/domain/multiprocessing_heinrich.md
-        from ..training.backends.megatron.remote_backend import (
-            MegatronRemoteBackend,
-            MegatronRemoteConfig,
-        )
-
-        if megatron_workers is None:
-            raise ValueError(
-                "megatron backend requires pre-spawned workers. "
-                "Workers must be forked before CUDA initialization (before SGLang starts). "
-                "Pass megatron_workers parameter from _grpo_train_async."
-            )
-
-        lowering = _megatron_lowering(config)
-
-        megatron_config = MegatronRemoteConfig(
-            model_name=config.model.name,
-            dtype=config.model.dtype,
-            lowering=lowering,
-            sequence_parallel=config.trainer.sequence_parallel,
-            lr=config.trainer.lr,
-            weight_decay=config.trainer.weight_decay,
-            max_grad_norm=config.trainer.max_grad_norm,
-            micro_batch_size=config.trainer.micro_batch_size or 1,
-            global_batch_size=config.rollout.batch_size,
-            seq_length=config.trainer.seq_length,
-            master_port=config.checkpoint.nccl_master_port,
-            inference_endpoints=[f"http://localhost:{config.inference.port}"],
-            cuda_device_ids=config.trainer.cuda_device_ids,
-        )
-
-        backend = MegatronRemoteBackend(
-            workers=megatron_workers,
-            config=megatron_config,
-            checkpoint_dir=output_dir,
-        )
-        backend.initialize()
-
-        def _cleanup_megatron() -> None:
-            backend.shutdown()
-
-        cleanup = _cleanup_megatron
-    elif backend_name == "torchtitan":
-        # TorchTitan backend for GLM and other models with 4D parallelism
-        from ..training.backends import create_torchtitan_backend
-
-        realization = _trainer_realization(
-            config.trainer.realization_local_layouts,
-            config.trainer.realization_collective_transitions,
-            config.trainer.realization_packed_sequences,
-        )
-
-        backend, cleanup = create_torchtitan_backend(
-            checkpoint_dir=output_dir,
-            hf_checkpoint=config.model.name,
-            torchtitan_model=config.trainer.torchtitan_model,
-            torchtitan_model_size=config.trainer.torchtitan_model_size,
-            gpu_rank=config.trainer.cuda_device_ids[0],
-            seq_len=config.rollout.max_seq_len,
-            micro_batch_size=config.trainer.micro_batch_size,
-            num_minibatches=config.trainer.num_minibatches,
-            learning_rate=config.trainer.lr,
-            weight_decay=config.trainer.weight_decay,
-            max_grad_norm=config.trainer.max_grad_norm,
-            tp=config.trainer.torchtitan_tp,
-            cp=config.trainer.torchtitan_cp,
-            pp=config.trainer.torchtitan_pp,
-            packed_sequences=config.trainer.realization_packed_sequences,
-            activation_checkpointing=config.trainer.activation_checkpointing,
-            mode="rl",
-            realization=realization,
-        )
-    else:
-        raise ValueError(
-            f"Unknown trainer backend: {backend_name!r}. "
-            "Use 'pytorch', 'fsdp', 'fsdp2', 'nmoe', 'megatron', or 'torchtitan'."
-        )
+    backend, cleanup = create_training_backend_runtime(
+        model=config.model,
+        trainer=config.trainer,
+        checkpoint=config.checkpoint,
+        output_dir=output_dir,
+        seq_len=config.rollout.max_seq_len,
+        global_batch_size=config.rollout.batch_size,
+        loss_fn=loss_fn,
+        training_mode="rl",
+        megatron_workers=megatron_workers,
+        megatron_inference_endpoints=(f"http://localhost:{config.inference.port}",),
+    )
 
     tokenizer, endpoint = _build_training_client_surface(config, inference_engine)
     return backend, tokenizer, endpoint, cleanup
