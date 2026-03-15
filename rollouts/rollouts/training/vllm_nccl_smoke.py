@@ -67,6 +67,12 @@ async def run_vllm_nccl_smoke(
     exercise_generation_before_sync: bool = False,
     **kwargs: Any,
 ) -> None:
+    run_logger = kwargs.get("run_logger")
+
+    def emit(event: str, **data: Any) -> None:
+        if run_logger is not None:
+            run_logger.event(event, **data)
+
     output_root = Path(getattr(getattr(config, "output", None), "output_dir", "results"))
     experiment_name = getattr(getattr(config, "output", None), "experiment_name", "vllm_nccl")
     output_dir = output_root / f"{experiment_name}_vllm_nccl_smoke"
@@ -92,14 +98,24 @@ async def run_vllm_nccl_smoke(
         default_sync_realization=VLLM_CUSTOM_NCCL_BROADCAST.name,
     )
 
+    emit(
+        "vllm_nccl_smoke_start",
+        model=config.model.name,
+        trainer_device=str(trainer_device),
+        inference_cuda_device_ids=list(gpus),
+        exercise_generation_before_sync=exercise_generation_before_sync,
+    )
     logger.info("Launching patched vLLM NCCL smoke server on port %s", port)
     engine.launch()
     engine.start_log_tailer()
     try:
+        emit("vllm_nccl_smoke_wait_ready_start", base_url=engine.base_url)
         await engine.wait_until_ready(max_wait=600.0)
+        emit("vllm_nccl_smoke_wait_ready_finished", base_url=engine.base_url)
         logger.info("Patched vLLM server is ready")
 
         async with httpx.AsyncClient(timeout=300.0) as client:
+            emit("vllm_nccl_smoke_schema_request_start", base_url=engine.base_url)
             schema_resp = await client.get(
                 f"{engine.base_url}/weight_update_schema", params={"limit": 1}
             )
@@ -107,6 +123,12 @@ async def run_vllm_nccl_smoke(
             schema = schema_resp.json()["parameters"]
             assert schema, "Patched vLLM server returned empty weight schema"
             param = schema[0]
+            emit(
+                "vllm_nccl_smoke_schema_request_finished",
+                parameter_name=param["name"],
+                parameter_shape=param["shape"],
+                parameter_dtype=param["dtype"],
+            )
             logger.info(
                 "Using smoke tensor target: %s shape=%s dtype=%s",
                 param["name"],
@@ -126,6 +148,12 @@ async def run_vllm_nccl_smoke(
             init_result: dict[str, Any] = {}
 
             async def _init_group() -> None:
+                emit(
+                    "vllm_nccl_smoke_group_init_start",
+                    master_addr="127.0.0.1",
+                    master_port=master_port,
+                    world_size=2,
+                )
                 async with trio.open_nursery() as nursery:
 
                     async def init_receiver() -> None:
@@ -149,21 +177,30 @@ async def run_vllm_nccl_smoke(
 
             await _init_group()
 
+            emit("vllm_nccl_smoke_group_init_finished", results=init_result)
             logger.info("Initialized NCCL group: %s", init_result)
 
             if exercise_generation_before_sync:
+                emit("vllm_nccl_smoke_generation_start", requests=8)
                 logger.info("Exercising vLLM generation traffic before NCCL sync")
                 await _exercise_generation_traffic(
                     client,
                     base_url=engine.base_url,
                     model_name=config.model.name,
                 )
+                emit("vllm_nccl_smoke_generation_finished", requests=8)
 
             receive_result: dict[str, Any] = {}
 
             async with trio.open_nursery() as nursery:
 
                 async def request_receive() -> None:
+                    emit(
+                        "vllm_nccl_smoke_receive_request_start",
+                        parameter_name=param["name"],
+                        parameter_shape=param["shape"],
+                        parameter_dtype=param["dtype"],
+                    )
                     resp = await client.post(
                         f"{engine.base_url}/receive_weight_update",
                         json={
@@ -174,6 +211,7 @@ async def run_vllm_nccl_smoke(
                     )
                     resp.raise_for_status()
                     receive_result.update(resp.json())
+                    emit("vllm_nccl_smoke_receive_request_finished", result=receive_result)
 
                 nursery.start_soon(request_receive)
                 await trio.sleep(0.2)
@@ -181,12 +219,22 @@ async def run_vllm_nccl_smoke(
                     tuple(param["shape"]),
                     dtype=_dtype_from_name(param["dtype"]),
                 )
+                emit(
+                    "vllm_nccl_smoke_sender_broadcast_start",
+                    parameter_name=param["name"],
+                    parameter_shape=param["shape"],
+                    parameter_dtype=param["dtype"],
+                    trainer_device=str(trainer_device),
+                )
                 await trio.to_thread.run_sync(sender.broadcast_weights, {param["name"]: tensor})
+                emit("vllm_nccl_smoke_sender_broadcast_finished", parameter_name=param["name"])
 
+            emit("vllm_nccl_smoke_sync_finished", result=receive_result)
             logger.info("Received weight update result: %s", receive_result)
             destroy_resp = await client.post(f"{engine.base_url}/destroy_weights_update_group")
             destroy_resp.raise_for_status()
             sender.cleanup()
+            emit("vllm_nccl_smoke_finished", status="ok")
 
     finally:
         engine.shutdown()
