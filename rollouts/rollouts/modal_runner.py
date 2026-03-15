@@ -267,6 +267,156 @@ if __name__ == "__main__":
 """
 
 
+def _sandbox_runtime_supervisor_python() -> str:
+    """Return a small supervisor for the remote workload process tree.
+
+    This is the top-level process for `sandbox.exec(...)`. It launches the real
+    workload child plus the sibling diagnostics sampler, then emits an explicit
+    child-exit event if the child dies before the container does.
+    """
+    return r"""
+import json
+import os
+import signal
+import subprocess
+import sys
+import time
+
+ARGUS_DIAG_EVENT_SENTINEL = "__ARGUS_DIAG__"
+
+
+def emit(event: str, **data: object) -> None:
+    payload = {"event": event, **data}
+    sys.stderr.write(f"{ARGUS_DIAG_EVENT_SENTINEL}{json.dumps(payload, sort_keys=True)}\n")
+    sys.stderr.flush()
+
+
+def read_proc_status(pid: int) -> dict[str, str]:
+    wanted = {"Name", "State", "VmRSS", "VmHWM", "VmSize", "Threads"}
+    path = f"/proc/{pid}/status"
+    try:
+        text = open(path, encoding="utf-8").read()
+    except Exception:
+        return {}
+    values: dict[str, str] = {}
+    for line in text.splitlines():
+        key, _, value = line.partition(":")
+        if key in wanted:
+            values[key] = value.strip()
+    return values
+
+
+def read_children(pid: int) -> list[int]:
+    path = f"/proc/{pid}/task/{pid}/children"
+    try:
+        raw = open(path, encoding="utf-8").read().strip()
+    except Exception:
+        return []
+    if not raw:
+        return []
+    out: list[int] = []
+    for item in raw.split():
+        try:
+            out.append(int(item))
+        except ValueError:
+            continue
+    return out
+
+
+def snapshot_tree(root_pid: int) -> list[dict[str, object]]:
+    seen: set[int] = set()
+    queue = [root_pid]
+    rows: list[dict[str, object]] = []
+    while queue:
+        pid = queue.pop(0)
+        if pid in seen:
+            continue
+        seen.add(pid)
+        status = read_proc_status(pid)
+        if not status:
+            continue
+        children = read_children(pid)
+        rows.append({"pid": pid, "status": status, "children": children})
+        queue.extend(children)
+    return rows
+
+
+def terminate_process(proc: subprocess.Popen[bytes] | None) -> None:
+    if proc is None or proc.poll() is not None:
+        return
+    try:
+        proc.terminate()
+    except Exception:
+        pass
+
+
+def main() -> int:
+    workspace = sys.argv[1]
+    image_python = sys.argv[2]
+    diag_python = sys.argv[3]
+    config_rel = sys.argv[4]
+    child = None
+    diag = None
+    started_at = time.monotonic()
+    env = os.environ.copy()
+
+    def _handle_signal(signum, _frame):
+        emit("remote_supervisor_signal", signum=signum)
+        terminate_process(child)
+        terminate_process(diag)
+        raise SystemExit(128 + signum)
+
+    signal.signal(signal.SIGTERM, _handle_signal)
+    signal.signal(signal.SIGINT, _handle_signal)
+
+    try:
+        child = subprocess.Popen(
+            [image_python, "-m", "argus.run", "--local", "--config", config_rel],
+            cwd=workspace,
+            env=env,
+        )
+        emit(
+            "remote_supervisor_child_started",
+            child_pid=child.pid,
+            process_tree=snapshot_tree(child.pid),
+        )
+        diag = subprocess.Popen(
+            [image_python, "-u", "-c", diag_python, str(child.pid), "1.0"],
+            cwd=workspace,
+            env=env,
+        )
+        emit(
+            "remote_supervisor_diag_started",
+            child_pid=child.pid,
+            diag_pid=diag.pid,
+        )
+        rc = child.wait()
+        emit(
+            "remote_supervisor_child_exit",
+            child_pid=child.pid,
+            child_returncode=rc,
+            child_was_signaled=(rc < 0),
+            child_signal=(-rc if rc < 0 else None),
+            elapsed_sec=round(time.monotonic() - started_at, 3),
+            process_tree=snapshot_tree(child.pid),
+        )
+        if diag.poll() is None:
+            try:
+                diag.wait(timeout=3.0)
+            except subprocess.TimeoutExpired:
+                terminate_process(diag)
+        if rc < 0:
+            return 128 + (-rc)
+        return rc
+    finally:
+        terminate_process(diag)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+"""
+
+
 @dataclass
 class ModalRunConfig:
     """Configuration for a Modal training run.
@@ -1752,16 +1902,14 @@ async def _run_training_in_sandbox(
     # TODO: If we need true multi-process Modal training later, route that through an
     # explicit remote execution/session layer instead of reviving `torchrun config.py`.
     diag_python = shlex.quote(_sandbox_runtime_diag_python())
+    supervisor_python = shlex.quote(_sandbox_runtime_supervisor_python())
     cmd = (
         f"cd {workspace} && {env_vars} "
-        f"{image_python} -m argus.run --local --config {config_rel} & "
-        "main_pid=$!; "
-        f'{image_python} -u -c {diag_python} "$main_pid" 1.0 & '
-        "diag_pid=$!; "
-        'wait "$main_pid"; '
-        "rc=$?; "
-        'wait "$diag_pid" || true; '
-        'exit "$rc"'
+        f"{image_python} -u -c {supervisor_python} "
+        f"{shlex.quote(workspace)} "
+        f"{shlex.quote(image_python)} "
+        f"{diag_python} "
+        f"{shlex.quote(str(config_rel))}"
     )
 
     startup_seen = threading.Event()
