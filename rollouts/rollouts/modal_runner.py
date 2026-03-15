@@ -2129,20 +2129,62 @@ async def run_modal(config: ModalRunConfig) -> dict[str, Any]:
                 # 3. Modal has per-app sandbox limits that cause exec() to block
                 logger.info("Verifying GPU access...")
                 emit("modal_gpu_verify_start", sandbox_id=sandbox_id)
-                start = trio.current_time()
-                proc = await trio_asyncio.aio_as_trio(sandbox.exec.aio("nvidia-smi", timeout=30))
-                stdout = await trio_asyncio.aio_as_trio(proc.stdout.read.aio())
-                elapsed = trio.current_time() - start
-                if elapsed > 10:
-                    logger.warning(
-                        f"GPU verification took {elapsed:.1f}s (expected <5s). "
-                        "If this persists, check for pending sandboxes in Modal dashboard."
+                gpu_verify_attempts = 3
+                gpu_verify_retry_delay_s = 3.0
+                verified = False
+                for attempt in range(1, gpu_verify_attempts + 1):
+                    emit(
+                        "modal_gpu_verify_attempt_start",
+                        sandbox_id=sandbox_id,
+                        attempt=attempt,
+                        timeout_sec=30,
                     )
-                logger.info(f"[sandbox] {stdout}")
-                exit_code = await trio_asyncio.aio_as_trio(proc.wait.aio())
-                assert exit_code == 0, f"nvidia-smi failed with exit code {exit_code}"
-                logger.info("GPU access verified")
-                emit("modal_gpu_verified", sandbox_id=sandbox_id, elapsed_sec=round(elapsed, 3))
+                    start = trio.current_time()
+                    proc = await trio_asyncio.aio_as_trio(
+                        sandbox.exec.aio("nvidia-smi", timeout=30)
+                    )
+                    stdout = await trio_asyncio.aio_as_trio(proc.stdout.read.aio())
+                    stderr = await trio_asyncio.aio_as_trio(proc.stderr.read.aio())
+                    exit_code = await trio_asyncio.aio_as_trio(proc.wait.aio())
+                    elapsed = trio.current_time() - start
+                    if elapsed > 10:
+                        logger.warning(
+                            f"GPU verification took {elapsed:.1f}s (expected <5s). "
+                            "If this persists, check for pending sandboxes in Modal dashboard."
+                        )
+                    if stdout:
+                        logger.info(f"[sandbox] {stdout}")
+                    if stderr:
+                        logger.warning(f"[sandbox stderr] {stderr}")
+                    if exit_code == 0:
+                        logger.info("GPU access verified")
+                        emit(
+                            "modal_gpu_verified",
+                            sandbox_id=sandbox_id,
+                            elapsed_sec=round(elapsed, 3),
+                            attempt=attempt,
+                        )
+                        verified = True
+                        break
+                    emit(
+                        "modal_gpu_verify_attempt_failed",
+                        sandbox_id=sandbox_id,
+                        attempt=attempt,
+                        exit_code=exit_code,
+                        elapsed_sec=round(elapsed, 3),
+                        stdout_tail=stdout[-1000:],
+                        stderr_tail=stderr[-1000:],
+                    )
+                    if attempt < gpu_verify_attempts:
+                        emit(
+                            "modal_gpu_verify_retrying",
+                            sandbox_id=sandbox_id,
+                            attempt=attempt,
+                            retry_delay_sec=gpu_verify_retry_delay_s,
+                        )
+                        await trio.sleep(gpu_verify_retry_delay_s)
+                if not verified:
+                    raise RuntimeError(f"nvidia-smi failed after {gpu_verify_attempts} attempts")
 
                 # Model weight caching: check for cached snapshot or download and cache
                 # If pruning_recipe is set, the cache key includes a hash of the recipe
