@@ -50,6 +50,7 @@ async def run_torchtitan_vllm_real_tensor_smoke(
     backend_cleanup = None
     engine = None
     try:
+        emit("torchtitan_real_tensor_preflight_start")
         backend, backend_cleanup = await _run_training_preflight(
             config,
             output_dir,
@@ -59,6 +60,7 @@ async def run_torchtitan_vllm_real_tensor_smoke(
         assert backend is not None
         emit("torchtitan_real_tensor_backend_ready")
 
+        emit("torchtitan_real_tensor_engine_construct_start")
         engine = VLLMEngine(
             model_name=config.model.name,
             port=config.inference.ports[0],
@@ -69,14 +71,18 @@ async def run_torchtitan_vllm_real_tensor_smoke(
             available_sync_realizations=(VLLM_CUSTOM_NCCL_BROADCAST.name,),
             default_sync_realization=VLLM_CUSTOM_NCCL_BROADCAST.name,
         )
+        emit("torchtitan_real_tensor_engine_constructed", port=engine.port)
+        emit("torchtitan_real_tensor_engine_launch_start", port=engine.port)
         engine.launch()
         engine.start_log_tailer()
-        emit("torchtitan_real_tensor_engine_launch", port=engine.port)
+        emit("torchtitan_real_tensor_engine_launched", port=engine.port)
+        emit("torchtitan_real_tensor_engine_wait_ready_start", port=engine.port)
         await engine.wait_until_ready(max_wait=600.0)
         emit("torchtitan_real_tensor_engine_ready", base_url=engine.base_url)
 
         init_fn = getattr(backend, "init_nccl_weight_sync", None)
         assert init_fn is not None, "TorchTitan backend does not implement init_nccl_weight_sync()"
+        emit("torchtitan_real_tensor_sender_init_start", endpoint=engine.base_url)
         await init_fn(
             [engine.base_url],
             master_addr="127.0.0.1",
