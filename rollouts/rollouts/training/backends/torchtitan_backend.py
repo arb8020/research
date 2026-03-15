@@ -53,6 +53,7 @@ from ..contracts import (
 )
 from ..lowering import TorchTitanLowering
 from ..types import ImmediateTrainFuture, TrainFuture
+from ..weight_sync_protocol import WeightUpdatePayload, WeightWireTensor
 
 logger = logging.getLogger(__name__)
 
@@ -691,7 +692,7 @@ class TorchTitanBackend:
         self.weight_version += 1
         return output_path
 
-    def _build_hf_state_dict_for_inference_sync(self) -> dict[str, torch.Tensor]:
+    def _build_inference_weight_update_payload(self) -> WeightUpdatePayload:
         import torch
 
         assert self._model is not None, "Model not initialized"
@@ -705,20 +706,61 @@ class TorchTitanBackend:
 
         adapter = self._train_spec.state_dict_adapter(self._model_args, source_assets_path)
         native_state_dict = self._model.state_dict()
-        hf_state_dict = adapter.to_hf(native_state_dict)
         target_dtype = _parse_torch_dtype(self.config.mixed_precision_param)
 
-        prepared: dict[str, torch.Tensor] = {}
-        for key, value in hf_state_dict.items():
+        tensors: list[WeightWireTensor] = []
+        for key, value in native_state_dict.items():
             if hasattr(value, "full_tensor"):
                 value = value.full_tensor()
             if isinstance(value, torch.Tensor):
-                prepared[key] = (
-                    value.detach().to(device=self._device, dtype=target_dtype).contiguous()
+                mapped = adapter.to_hf({key: value})
+                if not mapped:
+                    continue
+                if len(mapped) != 1:
+                    raise RuntimeError(
+                        "TorchTitan trainer-parameter sync requires a 1:1 native->HF mapping; "
+                        f"native key {key!r} mapped to {list(mapped.keys())!r}"
+                    )
+                load_name, mapped_value = next(iter(mapped.items()))
+                if hasattr(mapped_value, "full_tensor"):
+                    mapped_value = mapped_value.full_tensor()
+                if not isinstance(mapped_value, torch.Tensor):
+                    raise RuntimeError(
+                        "TorchTitan trainer-parameter sync requires tensor-valued adapter outputs; "
+                        f"native key {key!r} produced {type(mapped_value)!r}"
+                    )
+                if tuple(mapped_value.shape) != tuple(value.shape):
+                    raise RuntimeError(
+                        "TorchTitan trainer-parameter sync requires shape-preserving adapter mapping; "
+                        f"native key {key!r} shape {tuple(value.shape)!r} mapped to "
+                        f"{load_name!r} shape {tuple(mapped_value.shape)!r}"
+                    )
+                prepared = value.detach().to(device=self._device, dtype=target_dtype).contiguous()
+                tensors.append(
+                    WeightWireTensor(
+                        wire_name=key,
+                        load_name=load_name,
+                        shape=tuple(prepared.shape),
+                        dtype=str(prepared.dtype).replace("torch.", ""),
+                        tensor=prepared,
+                        payload_kind="trainer_parameter",
+                        metadata={
+                            "source": "torchtitan_native_state_dict",
+                            "adapter_load_name": load_name,
+                        },
+                    )
                 )
 
-        assert prepared, "TorchTitan NCCL sync produced no HF tensors"
-        return prepared
+        assert tensors, "TorchTitan NCCL sync produced no trainer-parameter tensors"
+        return WeightUpdatePayload(
+            tensors=tuple(tensors),
+            payload_kind="trainer_parameter",
+            version=self.weight_version + 1,
+            metadata={
+                "source_contract": "trainer_parameter",
+                "adapter": "torchtitan_state_dict_adapter.to_hf",
+            },
+        )
 
     async def init_nccl_weight_sync(
         self,
@@ -808,29 +850,39 @@ class TorchTitanBackend:
         if not self._nccl_inference_endpoints:
             return
 
-        hf_state_dict = self._build_hf_state_dict_for_inference_sync()
+        payload = self._build_inference_weight_update_payload()
         param_info = [
-            {"name": name, "shape": list(t.shape), "dtype": str(t.dtype).replace("torch.", "")}
-            for name, t in hf_state_dict.items()
+            {
+                "name": item.wire_name,
+                "load_name": item.load_name,
+                "shape": list(item.shape),
+                "dtype": item.dtype,
+            }
+            for item in payload.tensors
         ]
-        total_bytes = sum(int(t.numel() * t.element_size()) for t in hf_state_dict.values())
+        total_bytes = sum(
+            int(item.tensor.numel() * item.tensor.element_size()) for item in payload.tensors
+        )
         first_tensors = [
             {
-                "name": name,
-                "shape": list(t.shape),
-                "dtype": str(t.dtype).replace("torch.", ""),
-                "device": str(t.device),
-                "numel": int(t.numel()),
-                "is_contiguous": bool(t.is_contiguous()),
-                "stride": list(t.stride()),
+                "wire_name": item.wire_name,
+                "load_name": item.load_name,
+                "shape": list(item.shape),
+                "dtype": item.dtype,
+                "device": str(item.tensor.device),
+                "numel": int(item.tensor.numel()),
+                "is_contiguous": bool(item.tensor.is_contiguous()),
+                "stride": list(item.tensor.stride()),
+                "payload_kind": item.payload_kind,
             }
-            for name, t in list(hf_state_dict.items())[:3]
+            for item in list(payload.tensors[:3])
         ]
         responses: list[dict[str, Any]] = []
 
         logger.info(
-            "[Rank %s] torchtitan_nccl_sync_start tensors=%s total_bytes=%s endpoints=%s first_tensors=%s",
+            "[Rank %s] torchtitan_nccl_sync_start payload_kind=%s tensors=%s total_bytes=%s endpoints=%s first_tensors=%s",
             self.rank,
+            payload.payload_kind,
             len(param_info),
             total_bytes,
             self._nccl_inference_endpoints,
@@ -845,6 +897,7 @@ class TorchTitanBackend:
                         f"{endpoint}/receive_weight_update",
                         json={
                             "names": [item["name"] for item in param_info],
+                            "load_names": [item["load_name"] for item in param_info],
                             "shapes": [item["shape"] for item in param_info],
                             "dtypes": [item["dtype"] for item in param_info],
                         },
@@ -856,7 +909,7 @@ class TorchTitanBackend:
                     nursery.start_soon(request_receive, endpoint)
 
                 await trio.sleep(0.2)
-                await trio.to_thread.run_sync(sender.broadcast_weights, hf_state_dict)
+                await trio.to_thread.run_sync(sender.broadcast_payload, payload)
 
         logger.info(
             "[Rank %s] torchtitan_nccl_sync_receive_acks responses=%s",

@@ -48,6 +48,8 @@ import torch
 import torch.distributed as dist
 from torch import Tensor
 
+from ..training.weight_sync_protocol import WeightUpdatePayload, WeightWireTensor
+
 logger = logging.getLogger(__name__)
 _ARGUS_DIAG_EVENT_SENTINEL = "__ARGUS_DIAG__"
 
@@ -330,15 +332,15 @@ class WeightSyncSender:
             group=self.group_name,
         )
 
-    def broadcast_weights(
+    def broadcast_payload(
         self,
-        state_dict: dict[str, Tensor],
+        payload: WeightUpdatePayload,
         async_op: bool = False,
     ) -> list[Any] | None:
-        """Broadcast state_dict to all inference GPUs.
+        """Broadcast explicit wire payload to all inference GPUs.
 
         Args:
-            state_dict: Model weights to broadcast
+            payload: Concrete payload to broadcast
             async_op: If True, return handles for async wait
 
         Returns:
@@ -347,20 +349,23 @@ class WeightSyncSender:
         assert self._process_group is not None, "Call init_group() first"
 
         handles = []
-        total_tensors = len(state_dict)
+        total_tensors = len(payload.tensors)
         total_bytes = sum(
-            int(param.numel() * param.element_size()) for param in state_dict.values()
+            int(item.tensor.numel() * item.tensor.element_size()) for item in payload.tensors
         )
-        first_items = list(state_dict.items())[:3]
+        first_items = list(payload.tensors[:3])
         logger.info(
-            "weight_sync_sender_broadcast_start world_size=%s total_tensors=%s total_bytes=%s first_tensors=%s",
+            "weight_sync_sender_broadcast_start world_size=%s payload_kind=%s total_tensors=%s total_bytes=%s first_tensors=%s",
             self.world_size,
+            payload.payload_kind,
             total_tensors,
             total_bytes,
-            [_tensor_sync_metadata(name, tensor) for name, tensor in first_items],
+            [_tensor_sync_metadata(item.wire_name, item.tensor) for item in first_items],
         )
 
-        for index, (name, param) in enumerate(state_dict.items()):
+        for index, item in enumerate(payload.tensors):
+            name = item.wire_name
+            param = item.tensor
             # Ensure contiguous and on GPU
             data = param.data.contiguous()
             if data.device != self.device:
@@ -368,6 +373,8 @@ class WeightSyncSender:
             tensor_meta = _tensor_sync_metadata(name, data)
             broadcast_meta = {
                 **tensor_meta,
+                "load_name": item.load_name,
+                "payload_kind": item.payload_kind,
                 "param_device": str(param.device),
                 "current_cuda_device": (
                     torch.cuda.current_device() if torch.cuda.is_available() else None
@@ -402,6 +409,28 @@ class WeightSyncSender:
             return handles
         return None
 
+    def broadcast_weights(
+        self,
+        state_dict: dict[str, Tensor],
+        async_op: bool = False,
+    ) -> list[Any] | None:
+        """Backward-compatible wrapper for raw tensor dictionaries."""
+        payload = WeightUpdatePayload(
+            tensors=tuple(
+                WeightWireTensor(
+                    wire_name=name,
+                    load_name=name,
+                    shape=tuple(tensor.shape),
+                    dtype=str(tensor.dtype).replace("torch.", ""),
+                    tensor=tensor,
+                    payload_kind="inference_load_tensor",
+                )
+                for name, tensor in state_dict.items()
+            ),
+            payload_kind="inference_load_tensor",
+        )
+        return self.broadcast_payload(payload, async_op=async_op)
+
     def cleanup(self) -> None:
         """Cleanup process group."""
         if self._process_group is not None:
@@ -419,7 +448,8 @@ class WeightSyncSender:
 class ParamInfo:
     """Metadata for a parameter to receive."""
 
-    name: str
+    wire_name: str
+    load_name: str
     shape: tuple[int, ...]
     dtype: torch.dtype
 
@@ -544,7 +574,8 @@ class WeightSyncReceiver:
             total_tensors,
             [
                 {
-                    "name": info.name,
+                    "wire_name": info.wire_name,
+                    "load_name": info.load_name,
                     "shape": list(info.shape),
                     "dtype": str(info.dtype).replace("torch.", ""),
                 }
@@ -556,9 +587,10 @@ class WeightSyncReceiver:
             buffer = torch.empty(info.shape, dtype=info.dtype, device=self.device)
 
             # Receive broadcast from rank 0
-            tensor_meta = _tensor_sync_metadata(info.name, buffer)
+            tensor_meta = _tensor_sync_metadata(info.wire_name, buffer)
             receive_meta = {
                 **tensor_meta,
+                "load_name": info.load_name,
                 "current_cuda_device": (
                     torch.cuda.current_device() if torch.cuda.is_available() else None
                 ),
@@ -586,7 +618,7 @@ class WeightSyncReceiver:
                     f"index={index} total_tensors={total_tensors} tensor={receive_meta}"
                 ) from exc
 
-            state_dict[info.name] = buffer
+            state_dict[info.load_name] = buffer
 
         self._weight_version += 1
         logger.info(f"Received weights v{self._weight_version}")

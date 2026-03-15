@@ -102,6 +102,7 @@ class WorkerExtension:
         names: list[str],
         shapes: list[list[int]],
         dtypes: list[str],
+        load_names: list[str] | None = None,
     ) -> dict[str, Any]:
         receiver = _weight_sync_receiver(self)
         model = _model(self)
@@ -110,20 +111,30 @@ class WorkerExtension:
             "bfloat16": torch.bfloat16,
             "float32": torch.float32,
         }
+        resolved_load_names = load_names or names
         param_info = [
             ParamInfo(
-                name=name,
+                wire_name=name,
+                load_name=load_name,
                 shape=tuple(shape),
                 dtype=dtype_map.get(dtype_str, torch.bfloat16),
             )
-            for name, shape, dtype_str in zip(names, shapes, dtypes, strict=True)
+            for name, load_name, shape, dtype_str in zip(
+                names,
+                resolved_load_names,
+                shapes,
+                dtypes,
+                strict=True,
+            )
         ]
         torch.cuda.synchronize(self.device)
         for info in param_info:
-            buffer = receiver.receive_weights([info])[info.name]
-            loaded = model.load_weights(weights=[(info.name, buffer)])
+            buffer = receiver.receive_weights([info])[info.load_name]
+            loaded = model.load_weights(weights=[(info.load_name, buffer)])
             if len(loaded) != 1:
-                raise RuntimeError(f"Failed to load weight {info.name!r} into vLLM worker model")
+                raise RuntimeError(
+                    f"Failed to load weight {info.load_name!r} into vLLM worker model"
+                )
         torch.cuda.synchronize(self.device)
         logger.info("Applied vLLM NCCL weight update for %d tensors", len(param_info))
         return {"status": "ok", "num_tensors": len(param_info)}

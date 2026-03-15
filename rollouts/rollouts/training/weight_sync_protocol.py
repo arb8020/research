@@ -73,6 +73,36 @@ class WeightTensorSpec:
     dtype: str
 
 
+WeightPayloadKind = Literal["trainer_parameter", "inference_load_tensor"]
+
+
+@dataclass(frozen=True)
+class WeightWireTensor:
+    """One concrete tensor carried across the train->infer wire.
+
+    `wire_name` identifies the tensor on the transport. `load_name` identifies
+    the parameter name the inference worker should load into.
+    """
+
+    wire_name: str
+    load_name: str
+    shape: tuple[int, ...]
+    dtype: str
+    tensor: Any
+    payload_kind: WeightPayloadKind
+    metadata: Mapping[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class WeightUpdatePayload:
+    """Concrete payload published by a training backend over the update channel."""
+
+    tensors: tuple[WeightWireTensor, ...]
+    payload_kind: WeightPayloadKind
+    version: int | None = None
+    metadata: Mapping[str, Any] = field(default_factory=dict)
+
+
 @dataclass(frozen=True)
 class WeightUpdatePlan:
     """Lowered trainer<->inference plan for one concrete sync realization."""
