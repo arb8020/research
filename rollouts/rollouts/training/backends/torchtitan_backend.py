@@ -12,7 +12,6 @@ Semantic note:
     FSDP, and model-specific parallelization hooks.
 
 Limitations:
-    - NCCL weight sync not supported. Use weight_sync_mode="disk" in config.
     - Currently only FSDP parallelism is implemented. TP/CP/PP are stubbed.
 
 Usage:
@@ -125,6 +124,9 @@ class TorchTitanBackend:
     _active_trainable_policy: TrainableParameterPolicy | None = field(
         default=None, init=False, repr=False
     )
+    _hf_assets_path: str | None = field(default=None, init=False, repr=False)
+    _nccl_weight_sender: Any = field(default=None, init=False, repr=False)
+    _nccl_inference_endpoints: list[str] = field(default_factory=list, init=False, repr=False)
 
     def __post_init__(self) -> None:
         """Initialize TorchTitan backend."""
@@ -216,6 +218,7 @@ class TorchTitanBackend:
             local_path = snapshot_download(checkpoint_path)
         else:
             local_path = checkpoint_path
+        self._hf_assets_path = local_path
 
         # Load state dict from safetensors
         hf_state_dict: dict[str, Any] = {}
@@ -613,16 +616,16 @@ class TorchTitanBackend:
         state into weight_sync.py.
         """
         import torch.distributed as dist
+        import trio
         from huggingface_hub import snapshot_download
         from safetensors.torch import save_file
-        import trio
 
         assert self._model is not None, "Model not initialized"
         assert self._train_spec is not None, "Train spec not initialized"
         assert self.hf_checkpoint, "TorchTitan sampler export requires hf_checkpoint"
-        assert (
-            self._train_spec.state_dict_adapter is not None
-        ), "TorchTitan sampler export requires a state_dict_adapter"
+        assert self._train_spec.state_dict_adapter is not None, (
+            "TorchTitan sampler export requires a state_dict_adapter"
+        )
 
         output_path = Path(path)
         temp_path = output_path.parent / f"{output_path.name}_tmp_{self.weight_version}"
@@ -676,6 +679,176 @@ class TorchTitanBackend:
 
         self.weight_version += 1
         return output_path
+
+    def _build_hf_state_dict_for_inference_sync(self) -> dict[str, torch.Tensor]:
+        import torch
+
+        assert self._model is not None, "Model not initialized"
+        assert self._train_spec is not None, "Train spec not initialized"
+        assert self._train_spec.state_dict_adapter is not None, (
+            "TorchTitan NCCL sync requires a state_dict_adapter"
+        )
+
+        source_assets_path = self._hf_assets_path or self.hf_checkpoint
+        assert source_assets_path, "TorchTitan NCCL sync requires hf_checkpoint assets"
+
+        adapter = self._train_spec.state_dict_adapter(self._model_args, source_assets_path)
+        native_state_dict = self._model.state_dict()
+        hf_state_dict = adapter.to_hf(native_state_dict)
+
+        prepared: dict[str, torch.Tensor] = {}
+        for key, value in hf_state_dict.items():
+            if hasattr(value, "full_tensor"):
+                value = value.full_tensor()
+            if isinstance(value, torch.Tensor):
+                prepared[key] = value.detach().to(self._device).contiguous()
+
+        assert prepared, "TorchTitan NCCL sync produced no HF tensors"
+        return prepared
+
+    async def init_nccl_weight_sync(
+        self,
+        inference_endpoints: list[str],
+        master_addr: str | None = None,
+        master_port: int = 29500,
+    ) -> None:
+        import os
+        import socket
+
+        import httpx
+        import trio
+
+        from ...inference.weight_sync import WeightSyncSender
+
+        if self._nccl_weight_sender is not None:
+            return
+        if not inference_endpoints:
+            logger.info("TorchTitan NCCL sync skipped (no inference endpoints)")
+            return
+
+        if master_addr is None:
+            master_addr = "127.0.0.1"
+
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.bind(("", master_port))
+            master_port = int(sock.getsockname()[1])
+
+        world_size = 1 + len(inference_endpoints)
+        group_name = "weight_sync"
+        sender = WeightSyncSender(
+            master_addr=master_addr,
+            master_port=master_port,
+            inference_world_size=len(inference_endpoints),
+            group_name=group_name,
+            device=self._device,
+        )
+        errors: list[tuple[str, str]] = []
+
+        async def register_inference_endpoint(endpoint: str, rank: int) -> None:
+            async with httpx.AsyncClient(timeout=300.0) as client:
+                try:
+                    response = await client.post(
+                        f"{endpoint}/init_weights_update_group",
+                        json={
+                            "master_address": master_addr,
+                            "master_port": master_port,
+                            "rank_offset": rank,
+                            "world_size": world_size,
+                            "group_name": group_name,
+                            "backend": "nccl",
+                        },
+                    )
+                    response.raise_for_status()
+                except Exception as exc:
+                    errors.append((endpoint, str(exc)))
+
+        def trainer_join() -> None:
+            os.environ.setdefault("NCCL_SHM_DISABLE", "1")
+            os.environ.setdefault("NCCL_CUMEM_ENABLE", "0")
+            sender.init_group()
+
+        async with trio.open_nursery() as nursery:
+            for i, endpoint in enumerate(inference_endpoints):
+                nursery.start_soon(register_inference_endpoint, endpoint, i + 1)
+            await trio.sleep(0.2)
+            nursery.start_soon(trio.to_thread.run_sync, trainer_join)
+
+        if errors:
+            raise RuntimeError(f"Failed to initialize TorchTitan NCCL sync: {errors}")
+
+        self._nccl_weight_sender = sender
+        self._nccl_inference_endpoints = list(inference_endpoints)
+        logger.info(
+            "[Rank %s] TorchTitan NCCL weight sync initialized for %d endpoint(s)",
+            self.rank,
+            len(inference_endpoints),
+        )
+
+    async def sync_weights_nccl(self) -> None:
+        import httpx
+        import torch
+        import trio
+
+        sender = self._nccl_weight_sender
+        assert sender is not None, "Call init_nccl_weight_sync() first"
+        if not self._nccl_inference_endpoints:
+            return
+
+        hf_state_dict = self._build_hf_state_dict_for_inference_sync()
+        param_info = [
+            {"name": name, "shape": list(t.shape), "dtype": str(t.dtype).replace("torch.", "")}
+            for name, t in hf_state_dict.items()
+        ]
+        responses: list[dict[str, Any]] = []
+
+        async with httpx.AsyncClient(timeout=300.0) as client:
+            async with trio.open_nursery() as nursery:
+
+                async def request_receive(endpoint: str) -> None:
+                    response = await client.post(
+                        f"{endpoint}/receive_weight_update",
+                        json={
+                            "names": [item["name"] for item in param_info],
+                            "shapes": [item["shape"] for item in param_info],
+                            "dtypes": [item["dtype"] for item in param_info],
+                        },
+                    )
+                    response.raise_for_status()
+                    responses.append(response.json())
+
+                for endpoint in self._nccl_inference_endpoints:
+                    nursery.start_soon(request_receive, endpoint)
+
+                await trio.sleep(0.2)
+                await trio.to_thread.run_sync(sender.broadcast_weights, hf_state_dict)
+
+        self.weight_version += 1
+        torch.cuda.empty_cache()
+        logger.info(
+            "[Rank %s] TorchTitan NCCL synced %d tensors to %d endpoint(s)",
+            self.rank,
+            len(param_info),
+            len(self._nccl_inference_endpoints),
+        )
+
+    async def cleanup_nccl_weight_sync(self) -> None:
+        import httpx
+
+        sender = self._nccl_weight_sender
+        if sender is None:
+            return
+
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            for endpoint in self._nccl_inference_endpoints:
+                try:
+                    response = await client.post(f"{endpoint}/destroy_weights_update_group")
+                    response.raise_for_status()
+                except Exception:
+                    pass
+
+        sender.cleanup()
+        self._nccl_weight_sender = None
+        self._nccl_inference_endpoints = []
 
     async def save_checkpoint(self, step: int, metrics: dict[str, float]) -> Path:
         """Save checkpoint."""
