@@ -580,12 +580,11 @@ class MegatronTrainingBackend:
         return ImmediateTrainFuture(metrics)
 
     def get_weights(self) -> TrainFuture[dict[str, Any]]:
-        """Get model weights for syncing to inference.
+        """Get a checkpoint-like Megatron local state_dict view.
 
-        For Megatron models, this gathers weights from all TP/PP ranks.
-
-        Returns:
-            Future resolving to state_dict
+        This is not the honest inference-export boundary. It only returns
+        chunk-local state from rank 0 / TP-rank 0 and is suitable for simple
+        checkpoint-style save/load, not Megatron->inference hot weight sync.
         """
         try:
             from megatron.core import mpu

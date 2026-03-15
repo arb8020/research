@@ -8,11 +8,13 @@ import torch
 def convert_qwen2_to_hf(
     args: object, name: str, param: torch.Tensor
 ) -> list[tuple[str, torch.Tensor]]:
-    if name == "module.module.embedding.word_embeddings.weight":
+    name = _normalize_megatron_name(name)
+
+    if name == "embedding.word_embeddings.weight":
         return [("model.embed_tokens.weight", param)]
-    if name == "module.module.output_layer.weight":
+    if name == "output_layer.weight":
         return [("lm_head.weight", param)]
-    if name == "module.module.decoder.final_layernorm.weight":
+    if name == "decoder.final_layernorm.weight":
         return [("model.norm.weight", param)]
 
     head_dim = (
@@ -22,7 +24,7 @@ def convert_qwen2_to_hf(
     )
     value_num_per_group = args.num_attention_heads // args.num_query_groups
 
-    decoder_layers_pattern = r"module\.module\.decoder\.layers\.(\d+)\.(.+)"
+    decoder_layers_pattern = r"decoder\.layers\.(\d+)\.(.+)"
     match = re.match(decoder_layers_pattern, name)
     if match:
         layer_idx, rest = match.groups()
@@ -76,3 +78,9 @@ def convert_qwen2_to_hf(
             return [(f"model.layers.{layer_idx}.self_attn.k_norm.weight", param)]
 
     raise ValueError(f"Unknown parameter name: {name}")
+
+
+def _normalize_megatron_name(name: str) -> str:
+    while name.startswith("module."):
+        name = name[len("module.") :]
+    return name

@@ -104,7 +104,12 @@ def remove_padding(name: str, param: torch.Tensor, vocab_size: int) -> torch.Ten
     Returns:
         Tensor with padding removed (if applicable)
     """
-    if "word_embeddings" in name or "output_layer" in name:
+    if (
+        "word_embeddings" in name
+        or "output_layer" in name
+        or name == "model.embed_tokens.weight"
+        or name == "lm_head.weight"
+    ):
         if param.shape[0] > vocab_size:
             return param[:vocab_size]
     return param

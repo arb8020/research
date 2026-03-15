@@ -8,6 +8,7 @@ from typing import Any
 from torch import Tensor
 from transformers import AutoConfig
 
+from .export_runtime import build_megatron_hf_tensors_from_runtime
 from .weight_conversion import convert_megatron_to_hf, remove_padding
 
 logger = logging.getLogger(__name__)
@@ -123,6 +124,53 @@ def build_megatron_inference_export(
     return MegatronInferenceExport(
         tensors=tensors,
         dropped_none_keys=tuple(dropped_none_keys),
+        dropped_unconverted_keys=tuple(dropped_unconverted_keys),
+    )
+
+
+def build_megatron_inference_export_from_runtime(
+    model_name: str,
+    model_chunks: list[Any] | tuple[Any, ...],
+) -> MegatronInferenceExport:
+    """Collectively lower live Megatron runtime state into inference tensors.
+
+    This is the honest export boundary for Megatron hot weight sync. It is
+    backend-local and may use TP collectives internally before rank 0 publishes
+    the resulting HF-compatible tensor product type.
+    """
+    conversion_context = _load_conversion_context(model_name)
+    if conversion_context is None:
+        raise RuntimeError(
+            f"Unable to load HF conversion context for Megatron runtime export: {model_name!r}"
+        )
+
+    tensors, dropped_unconverted_keys = build_megatron_hf_tensors_from_runtime(
+        model_name=model_name,
+        model_chunks=model_chunks,
+        vocab_size=int(conversion_context["vocab_size"]),
+        num_layers=int(conversion_context["num_layers"]),
+        num_attention_heads=int(conversion_context["num_attention_heads"]),
+        hidden_size=int(conversion_context["hidden_size"]),
+        num_query_groups=conversion_context["num_query_groups"],
+        kv_channels=conversion_context["kv_channels"],
+        q_lora_rank=conversion_context["q_lora_rank"],
+    )
+
+    if not tensors:
+        raise RuntimeError(
+            "Megatron runtime inference export produced zero tensors. "
+            "The Megatron->HF runtime export boundary is incomplete."
+        )
+
+    if dropped_unconverted_keys:
+        sample = ", ".join(dropped_unconverted_keys[:8])
+        raise RuntimeError(
+            "Megatron runtime inference export left unconverted tensors for "
+            f"{model_name!r}: {sample}. The runtime export contract is incomplete."
+        )
+
+    return MegatronInferenceExport(
+        tensors=tensors,
         dropped_unconverted_keys=tuple(dropped_unconverted_keys),
     )
 

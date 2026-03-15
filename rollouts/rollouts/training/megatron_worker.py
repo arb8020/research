@@ -769,32 +769,28 @@ def _do_sync_weights_nccl(
     inference_endpoints: list[str],
 ) -> None:
     """NCCL sync path for inference updates."""
-    if not inference_endpoints:
-        return
-
-    sender = getattr(backend, "_nccl_weight_sender", None)
-    if sender is None:
-        raise RuntimeError("NCCL sender not initialized. Call init_nccl_weight_sync first.")
-
     import concurrent.futures
 
     import requests
     import torch
 
     from rollouts.training.backends.megatron.inference_export import (
-        build_megatron_inference_export,
+        build_megatron_inference_export_from_runtime,
     )
 
-    # Gather weights (rank 0 only has full state).
-    weights_future = backend.get_weights()
-    weights = _resolve_train_future(weights_future)
-    if not weights:
-        return
-
-    export = build_megatron_inference_export(model_name, weights)
+    # All trainer ranks must participate in runtime export collectives. Only
+    # rank 0 publishes the resulting tensor product type to inference.
+    export = build_megatron_inference_export_from_runtime(model_name, backend.model)
     state_dict = export.tensors
     if not state_dict:
         raise RuntimeError("No weights produced for NCCL sync")
+
+    if not inference_endpoints:
+        return
+
+    sender = getattr(backend, "_nccl_weight_sender", None)
+    if sender is None:
+        raise RuntimeError("NCCL sender not initialized. Call init_nccl_weight_sync first.")
 
     # Inform inference engines and broadcast in the same order.
     param_info = [
