@@ -777,13 +777,18 @@ def _do_sync_weights_nccl(
     import requests
     import torch
 
+    from rollouts.training.backends.megatron.inference_export import (
+        build_megatron_inference_export,
+    )
+
     # Gather weights (rank 0 only has full state).
     weights_future = backend.get_weights()
     weights = _resolve_train_future(weights_future)
     if not weights:
         return
 
-    state_dict = _convert_megatron_state_dict(model_name, weights)
+    export = build_megatron_inference_export(model_name, weights)
+    state_dict = export.tensors
     if not state_dict:
         raise RuntimeError("No weights produced for NCCL sync")
 
@@ -866,72 +871,3 @@ def _cleanup_nccl_weight_sync(
         executor.shutdown(wait=False)
 
     backend._nccl_weight_sender = None
-
-
-def _convert_megatron_state_dict(model_name: str, state_dict: dict[str, Any]) -> dict[str, Any]:
-    """Convert Megatron shard names to HuggingFace names (best effort)."""
-    import logging
-
-    from transformers import AutoConfig
-
-    from rollouts.training.backends.megatron.weight_conversion import (
-        convert_megatron_to_hf,
-        remove_padding,
-    )
-
-    logger = logging.getLogger(__name__)
-
-    if not model_name:
-        return state_dict
-
-    try:
-        hf_config = AutoConfig.from_pretrained(model_name)
-        num_layers = getattr(hf_config, "num_hidden_layers", 0) or getattr(hf_config, "n_layers", 0)
-        if not num_layers:
-            raise ValueError("Unable to infer num_layers")
-        vocab_size = int(getattr(hf_config, "vocab_size", 0))
-        num_attention_heads = int(getattr(hf_config, "num_attention_heads", 0))
-        hidden_size = int(getattr(hf_config, "hidden_size", 0))
-        num_query_groups = getattr(hf_config, "num_query_groups", num_attention_heads)
-        kv_channels = getattr(hf_config, "kv_channels", None)
-        q_lora_rank = getattr(hf_config, "q_lora_rank", None)
-    except Exception as exc:
-        logger.warning("Failed to load HF config for Megatron->HF conversion: %s", exc)
-        return {_strip_chunk_prefix(name): value for name, value in state_dict.items()}
-
-    output: dict[str, Any] = {}
-    conversion_attempted = False
-
-    for name, param in state_dict.items():
-        clean_name = _strip_chunk_prefix(name)
-        try:
-            for hf_name, hf_param in convert_megatron_to_hf(
-                model_name=model_name,
-                name=clean_name,
-                param=param,
-                vocab_size=vocab_size,
-                num_layers=num_layers,
-                num_attention_heads=num_attention_heads,
-                hidden_size=hidden_size,
-                num_query_groups=num_query_groups,
-                kv_channels=kv_channels,
-                q_lora_rank=q_lora_rank,
-            ):
-                output[_strip_chunk_prefix(hf_name)] = remove_padding(hf_name, hf_param, vocab_size)
-            conversion_attempted = True
-        except Exception:
-            # Keep raw names if conversion fails for this param.
-            output[clean_name] = param
-
-    if not conversion_attempted:
-        logger.warning("Megatron->HF conversion not applied for any tensors; using raw keys.")
-
-    return output
-
-
-def _strip_chunk_prefix(name: str) -> str:
-    """Drop `chunk_<N>.` prefix from chunked Megatron parameter names."""
-    prefix, separator, remainder = name.partition(".")
-    if prefix.startswith("chunk_") and separator and prefix[6:].isdigit():
-        return remainder
-    return name
