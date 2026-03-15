@@ -799,7 +799,29 @@ class TorchTitanBackend:
             {"name": name, "shape": list(t.shape), "dtype": str(t.dtype).replace("torch.", "")}
             for name, t in hf_state_dict.items()
         ]
+        total_bytes = sum(int(t.numel() * t.element_size()) for t in hf_state_dict.values())
+        first_tensors = [
+            {
+                "name": name,
+                "shape": list(t.shape),
+                "dtype": str(t.dtype).replace("torch.", ""),
+                "device": str(t.device),
+                "numel": int(t.numel()),
+                "is_contiguous": bool(t.is_contiguous()),
+                "stride": list(t.stride()),
+            }
+            for name, t in list(hf_state_dict.items())[:3]
+        ]
         responses: list[dict[str, Any]] = []
+
+        logger.info(
+            "[Rank %s] torchtitan_nccl_sync_start tensors=%s total_bytes=%s endpoints=%s first_tensors=%s",
+            self.rank,
+            len(param_info),
+            total_bytes,
+            self._nccl_inference_endpoints,
+            first_tensors,
+        )
 
         async with httpx.AsyncClient(timeout=300.0) as client:
             async with trio.open_nursery() as nursery:
@@ -821,6 +843,12 @@ class TorchTitanBackend:
 
                 await trio.sleep(0.2)
                 await trio.to_thread.run_sync(sender.broadcast_weights, hf_state_dict)
+
+        logger.info(
+            "[Rank %s] torchtitan_nccl_sync_receive_acks responses=%s",
+            self.rank,
+            responses,
+        )
 
         self.weight_version += 1
         torch.cuda.empty_cache()

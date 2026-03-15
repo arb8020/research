@@ -49,6 +49,18 @@ from torch import Tensor
 logger = logging.getLogger(__name__)
 
 
+def _tensor_sync_metadata(name: str, tensor: Tensor) -> dict[str, object]:
+    return {
+        "name": name,
+        "shape": list(tensor.shape),
+        "dtype": str(tensor.dtype).replace("torch.", ""),
+        "device": str(tensor.device),
+        "numel": int(tensor.numel()),
+        "is_contiguous": bool(tensor.is_contiguous()),
+        "stride": list(tensor.stride()),
+    }
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # STATELESS PROCESS GROUP (following vLLM pattern)
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -197,13 +209,39 @@ class WeightSyncSender:
         assert self._process_group is not None, "Call init_group() first"
 
         handles = []
-        for _name, param in state_dict.items():
+        total_tensors = len(state_dict)
+        total_bytes = sum(
+            int(param.numel() * param.element_size()) for param in state_dict.values()
+        )
+        first_items = list(state_dict.items())[:3]
+        logger.info(
+            "weight_sync_sender_broadcast_start world_size=%s total_tensors=%s total_bytes=%s first_tensors=%s",
+            self.world_size,
+            total_tensors,
+            total_bytes,
+            [_tensor_sync_metadata(name, tensor) for name, tensor in first_items],
+        )
+
+        for index, (name, param) in enumerate(state_dict.items()):
             # Ensure contiguous and on GPU
             data = param.data.contiguous()
             if data.device != self.device:
                 data = data.to(self.device)
-
-            handle = dist.broadcast(data, src=0, group=self._process_group, async_op=async_op)
+            tensor_meta = _tensor_sync_metadata(name, data)
+            logger.info(
+                "weight_sync_sender_broadcast_tensor index=%s total_tensors=%s async_op=%s tensor=%s",
+                index,
+                total_tensors,
+                async_op,
+                tensor_meta,
+            )
+            try:
+                handle = dist.broadcast(data, src=0, group=self._process_group, async_op=async_op)
+            except Exception as exc:
+                raise RuntimeError(
+                    "Weight sync sender broadcast failed "
+                    f"index={index} total_tensors={total_tensors} tensor={tensor_meta}"
+                ) from exc
             if async_op:
                 handles.append(handle)
 
@@ -289,12 +327,40 @@ class WeightSyncReceiver:
         assert self._process_group is not None, "Call init_group() first"
 
         state_dict = {}
-        for info in param_info:
+        total_tensors = len(param_info)
+        logger.info(
+            "weight_sync_receiver_receive_start rank=%s world_size=%s total_tensors=%s first_tensors=%s",
+            self.rank,
+            self.world_size,
+            total_tensors,
+            [
+                {
+                    "name": info.name,
+                    "shape": list(info.shape),
+                    "dtype": str(info.dtype).replace("torch.", ""),
+                }
+                for info in param_info[:3]
+            ],
+        )
+        for index, info in enumerate(param_info):
             # Allocate buffer
             buffer = torch.empty(info.shape, dtype=info.dtype, device=self.device)
 
             # Receive broadcast from rank 0
-            dist.broadcast(buffer, src=0, group=self._process_group)
+            tensor_meta = _tensor_sync_metadata(info.name, buffer)
+            logger.info(
+                "weight_sync_receiver_receive_tensor index=%s total_tensors=%s tensor=%s",
+                index,
+                total_tensors,
+                tensor_meta,
+            )
+            try:
+                dist.broadcast(buffer, src=0, group=self._process_group)
+            except Exception as exc:
+                raise RuntimeError(
+                    "Weight sync receiver broadcast failed "
+                    f"index={index} total_tensors={total_tensors} tensor={tensor_meta}"
+                ) from exc
 
             state_dict[info.name] = buffer
 
