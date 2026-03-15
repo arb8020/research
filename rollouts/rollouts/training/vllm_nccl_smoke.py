@@ -32,7 +32,41 @@ def _dtype_from_name(name: str) -> torch.dtype:
     return torch.bfloat16
 
 
-async def run_vllm_nccl_smoke(config: Any, **kwargs: Any) -> None:
+async def _exercise_generation_traffic(
+    client: httpx.AsyncClient,
+    *,
+    base_url: str,
+    model_name: str,
+    num_requests: int = 8,
+) -> None:
+    async def _one_request(index: int) -> None:
+        response = await client.post(
+            f"{base_url}/v1/chat/completions",
+            json={
+                "model": model_name,
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": f"Reverse this text exactly: smoke-{index}",
+                    }
+                ],
+                "temperature": 0.0,
+                "max_tokens": 16,
+            },
+        )
+        response.raise_for_status()
+
+    async with trio.open_nursery() as nursery:
+        for index in range(num_requests):
+            nursery.start_soon(_one_request, index)
+
+
+async def run_vllm_nccl_smoke(
+    config: Any,
+    *,
+    exercise_generation_before_sync: bool = False,
+    **kwargs: Any,
+) -> None:
     output_root = Path(getattr(getattr(config, "output", None), "output_dir", "results"))
     experiment_name = getattr(getattr(config, "output", None), "experiment_name", "vllm_nccl")
     output_dir = output_root / f"{experiment_name}_vllm_nccl_smoke"
@@ -89,29 +123,41 @@ async def run_vllm_nccl_smoke(config: Any, **kwargs: Any) -> None:
                 device=trainer_device,
             )
 
-            async with trio.open_nursery() as nursery:
-                init_result: dict[str, Any] = {}
+            init_result: dict[str, Any] = {}
 
-                async def init_receiver() -> None:
-                    resp = await client.post(
-                        f"{engine.base_url}/init_weights_update_group",
-                        json={
-                            "master_address": "127.0.0.1",
-                            "master_port": master_port,
-                            "rank_offset": 1,
-                            "world_size": 2,
-                            "group_name": "weight_sync",
-                            "timeout_seconds": 300.0,
-                        },
-                    )
-                    resp.raise_for_status()
-                    init_result.update(resp.json())
+            async def _init_group() -> None:
+                async with trio.open_nursery() as nursery:
 
-                nursery.start_soon(init_receiver)
-                await trio.sleep(0.2)
-                await trio.to_thread.run_sync(sender.init_group)
+                    async def init_receiver() -> None:
+                        resp = await client.post(
+                            f"{engine.base_url}/init_weights_update_group",
+                            json={
+                                "master_address": "127.0.0.1",
+                                "master_port": master_port,
+                                "rank_offset": 1,
+                                "world_size": 2,
+                                "group_name": "weight_sync",
+                                "timeout_seconds": 300.0,
+                            },
+                        )
+                        resp.raise_for_status()
+                        init_result.update(resp.json())
+
+                    nursery.start_soon(init_receiver)
+                    await trio.sleep(0.2)
+                    await trio.to_thread.run_sync(sender.init_group)
+
+            await _init_group()
 
             logger.info("Initialized NCCL group: %s", init_result)
+
+            if exercise_generation_before_sync:
+                logger.info("Exercising vLLM generation traffic before NCCL sync")
+                await _exercise_generation_traffic(
+                    client,
+                    base_url=engine.base_url,
+                    model_name=config.model.name,
+                )
 
             receive_result: dict[str, Any] = {}
 
