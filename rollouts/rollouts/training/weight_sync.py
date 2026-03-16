@@ -1318,11 +1318,50 @@ class VLLMEngine:
         """Wait until vLLM health check passes."""
         last_health_status: int | str | None = None
         last_schema_status: int | str | None = None
+        last_wait_log_attempt = -1
+
+        def _emit_waiting_state(attempt: int) -> None:
+            nonlocal last_wait_log_attempt
+            if attempt == last_wait_log_attempt:
+                return
+            last_wait_log_attempt = attempt
+            log_exists = self._log_file.exists()
+            log_size_bytes = self._log_file.stat().st_size if log_exists else None
+            logger.warning(
+                "VLLMEngine.wait_until_ready still waiting attempt=%s/%s base_url=%s realization=%s last_health_status=%r last_schema_status=%r session_alive=%s log_exists=%s log_size_bytes=%s log_tail=%r",
+                attempt,
+                int(max_wait),
+                self.base_url,
+                self.default_sync_realization,
+                last_health_status,
+                last_schema_status,
+                self._is_session_alive(),
+                log_exists,
+                log_size_bytes,
+                _read_log_tail(self._log_file, max_lines=20),
+            )
+
+        logger.info(
+            "VLLMEngine.wait_until_ready start max_wait=%s base_url=%s realization=%s session_name=%s log_file=%s",
+            max_wait,
+            self.base_url,
+            self.default_sync_realization,
+            self._session_name,
+            self._log_file,
+        )
         async with httpx.AsyncClient(timeout=5.0) as client:
             for attempt in range(int(max_wait)):
                 # Check if tmux session crashed
                 if not self._is_session_alive():
                     log_tail = _read_log_tail(self._log_file)
+                    logger.error(
+                        "VLLMEngine.wait_until_ready session died attempt=%s base_url=%s last_health_status=%r last_schema_status=%r log_tail=%r",
+                        attempt,
+                        self.base_url,
+                        last_health_status,
+                        last_schema_status,
+                        log_tail,
+                    )
                     msg = (
                         f"vLLM server crashed during startup! Log tail from {self._log_file}:\n"
                         f"{log_tail}"
@@ -1341,19 +1380,23 @@ class VLLMEngine:
                         last_health_status = resp.status_code
                     if resp.status_code == 200:
                         if self.default_sync_realization == VLLM_CUSTOM_NCCL_BROADCAST.name:
-                            schema_resp = await client.get(
-                                f"{self.base_url}/weight_update_schema",
-                                params={"limit": 1},
-                            )
-                            if schema_resp.status_code != last_schema_status:
+                            try:
+                                schema_resp = await client.get(
+                                    f"{self.base_url}/weight_update_schema",
+                                    params={"limit": 1},
+                                )
+                                schema_status: int | str = schema_resp.status_code
+                            except Exception as exc:
+                                schema_status = f"{type(exc).__name__}: {exc!r}"
+                            if schema_status != last_schema_status:
                                 logger.info(
                                     "VLLMEngine.wait_until_ready schema probe attempt=%s status=%s url=%s",
                                     attempt,
-                                    schema_resp.status_code,
+                                    schema_status,
                                     f"{self.base_url}/weight_update_schema",
                                 )
-                                last_schema_status = schema_resp.status_code
-                            if schema_resp.status_code == 200:
+                                last_schema_status = schema_status
+                            if schema_status == 200:
                                 logger.info(
                                     "VLLMEngine.wait_until_ready ready attempt=%s base_url=%s realization=%s",
                                     attempt,
@@ -1379,15 +1422,20 @@ class VLLMEngine:
                             error_repr,
                         )
                         last_health_status = error_repr
+                if attempt > 0 and attempt % 15 == 0:
+                    _emit_waiting_state(attempt)
                 await trio.sleep(1.0)
 
         logger.error(
-            "VLLMEngine.wait_until_ready timed out max_wait=%s base_url=%s last_health_status=%r last_schema_status=%r log_file=%s",
+            "VLLMEngine.wait_until_ready timed out max_wait=%s base_url=%s realization=%s last_health_status=%r last_schema_status=%r session_alive=%s log_file=%s log_tail=%r",
             max_wait,
             self.base_url,
+            self.default_sync_realization,
             last_health_status,
             last_schema_status,
+            self._is_session_alive(),
             self._log_file,
+            _read_log_tail(self._log_file, max_lines=40),
         )
         msg = f"vLLM failed to start after {max_wait}s. Check {self._log_file}"
         raise RuntimeError(msg)
