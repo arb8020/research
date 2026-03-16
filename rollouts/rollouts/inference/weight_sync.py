@@ -588,9 +588,7 @@ class WeightSyncSender:
             total_tensors,
         )
         try:
-            handles = _broadcast_all(use_async=True)
-            for handle in handles:
-                handle.wait()
+            _broadcast_all(use_async=False)
         finally:
             _WEIGHT_SYNC_PUBLICATION_LOCK.release()
             logger.info(
