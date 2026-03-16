@@ -103,13 +103,33 @@ def _resolve_train_future(future: Any) -> Any:
     return future._result
 
 
-def _resolve_local_host_ip() -> str:
+def _resolve_local_host_ip() -> tuple[str, str]:
     """Resolve a non-loopback IPv4 address for intra-sandbox rendezvous."""
     import socket
+    import subprocess
 
     env_master_addr = os.environ.get("MASTER_ADDR")
     if env_master_addr:
-        return env_master_addr.strip()
+        return env_master_addr.strip(), "env:MASTER_ADDR"
+
+    try:
+        result = subprocess.run(
+            ["hostname", "-I"],
+            capture_output=True,
+            check=False,
+            text=True,
+            timeout=5.0,
+        )
+        for candidate in result.stdout.split():
+            if "." not in candidate:
+                continue
+            if not candidate.startswith("127."):
+                return candidate, "hostname -I"
+        for candidate in result.stdout.split():
+            if "." in candidate:
+                return candidate, "hostname -I"
+    except Exception:
+        pass
 
     try:
         # UDP connect selects the outward-facing interface without requiring a handshake.
@@ -117,9 +137,9 @@ def _resolve_local_host_ip() -> str:
             sock.connect(("192.0.2.1", 1))
             candidate = sock.getsockname()[0]
             if candidate and not candidate.startswith("127."):
-                return candidate
+                return candidate, "udp_connect"
             if candidate:
-                return candidate
+                return candidate, "udp_connect"
     except OSError:
         pass
 
@@ -134,13 +154,13 @@ def _resolve_local_host_ip() -> str:
             del family, socktype, proto, canonname
             candidate = sockaddr[0]
             if candidate and not candidate.startswith("127."):
-                return candidate
+                return candidate, "getaddrinfo"
             if candidate:
-                return candidate
+                return candidate, "getaddrinfo"
     except OSError:
         pass
 
-    return "127.0.0.1"
+    return "127.0.0.1", "fallback:loopback"
 
 
 def _select_native_loss_fn(config: dict[str, Any]) -> Any:
@@ -801,7 +821,7 @@ def _init_nccl_weight_sync(
 
     import socket
 
-    resolved_host_ip = _resolve_local_host_ip()
+    resolved_host_ip, resolved_host_ip_source = _resolve_local_host_ip()
     explicit_master_addr = master_addr
     if master_addr is None:
         master_addr = resolved_host_ip
@@ -819,13 +839,14 @@ def _init_nccl_weight_sync(
     sender_holder: dict[str, Any] = {}
     errors: list[tuple[str, str]] = []
     logger.info(
-        "weight_sync_megatron_init_start master=%s:%s world_size=%s endpoints=%s group=%s resolved_host_ip=%s loopback=%s explicit_master_addr=%s hostname=%s",
+        "weight_sync_megatron_init_start master=%s:%s world_size=%s endpoints=%s group=%s resolved_host_ip=%s resolved_host_ip_source=%s loopback=%s explicit_master_addr=%s hostname=%s",
         master_addr,
         master_port,
         world_size,
         inference_endpoints,
         group_name,
         resolved_host_ip,
+        resolved_host_ip_source,
         "127.0.0.1",
         explicit_master_addr,
         socket.gethostname(),
@@ -834,6 +855,7 @@ def _init_nccl_weight_sync(
         "weight_sync_megatron_init_start",
         master_addr=master_addr,
         resolved_host_ip=resolved_host_ip,
+        resolved_host_ip_source=resolved_host_ip_source,
         loopback_addr="127.0.0.1",
         explicit_master_addr=explicit_master_addr,
         hostname=socket.gethostname(),
