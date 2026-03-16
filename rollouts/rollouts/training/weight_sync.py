@@ -716,6 +716,9 @@ class SGLangEngine:
     _emitted_startup_phases: set[str] = field(init=False, repr=False, default_factory=set)
     _last_startup_phase: str | None = field(init=False, repr=False, default=None)
     _last_health_state: str | None = field(init=False, repr=False, default=None)
+    _last_health_status_code: int | None = field(init=False, repr=False, default=None)
+    _last_health_detail: str | None = field(init=False, repr=False, default=None)
+    _last_stall_diag_attempt: int = field(init=False, repr=False, default=-1)
 
     def __post_init__(self) -> None:
         # Include port for multi-engine runs (each engine gets its own tmux session + log).
@@ -816,8 +819,11 @@ class SGLangEngine:
         attempt: int,
         status_code: int | None = None,
         error: str | None = None,
+        detail: str | None = None,
     ) -> None:
         with self._startup_event_lock:
+            self._last_health_status_code = status_code
+            self._last_health_detail = detail
             if self._last_health_state == state:
                 return
             self._last_health_state = state
@@ -829,7 +835,25 @@ class SGLangEngine:
                 "health_attempt": attempt,
                 "health_status_code": status_code,
                 "health_error": error,
+                "health_detail": detail,
                 "last_startup_phase": self._last_startup_phase,
+                **self._startup_log_context(),
+            },
+        )
+
+    def _emit_health_stall_diagnostic(self, *, attempt: int) -> None:
+        if attempt < 0 or attempt % 15 != 0 or attempt == self._last_stall_diag_attempt:
+            return
+        self._last_stall_diag_attempt = attempt
+        _startup_logger.warning(
+            "inference startup still stalled",
+            extra={
+                "event": "inference_health_stall",
+                "health_attempt": attempt,
+                "health_status_code": self._last_health_status_code,
+                "health_detail": self._last_health_detail,
+                "last_startup_phase": self._last_startup_phase,
+                "log_tail": _read_log_tail(self._log_file, max_lines=20),
                 **self._startup_log_context(),
             },
         )
@@ -956,23 +980,33 @@ class SGLangEngine:
                             source="healthcheck",
                         )
                         return
+                    detail = None
+                    try:
+                        detail = resp.text[:400]
+                    except Exception:
+                        detail = "<failed to read response body>"
                     self._emit_health_state(
                         "service_unavailable",
                         attempt=attempt,
                         status_code=resp.status_code,
+                        detail=detail,
                     )
+                    self._emit_health_stall_diagnostic(attempt=attempt)
                 except Exception:
                     self._emit_health_state(
                         "transport_pending",
                         attempt=attempt,
                         error="request_failed",
                     )
+                    self._emit_health_stall_diagnostic(attempt=attempt)
                 await trio.sleep(1.0)
 
         msg = (
             f"SGLang failed to start after {max_wait}s. "
             f"last_phase={self._last_startup_phase!r} "
             f"last_health_state={self._last_health_state!r} "
+            f"last_health_status_code={self._last_health_status_code!r} "
+            f"last_health_detail={self._last_health_detail!r} "
             f"log_path={self._log_file}"
         )
         raise RuntimeError(msg)
