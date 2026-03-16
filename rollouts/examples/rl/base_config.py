@@ -7,7 +7,7 @@ from pathlib import Path
 from rollouts.image_spec import ImageSpec
 from rollouts.training.configs import DepsConfig
 
-MILES_SGLANG_IMAGE_TAG = "nightly-dev-20260103-24c91001"
+MILES_SGLANG_IMAGE_TAG = "v0.5.7"
 MILES_PATCH_VERSION = "v0.5.7"
 MILES_MEGATRON_COMMIT = "3714d81d418c9f1bca4594fc35f9e8289f652862"
 # Closest recoverable main-branch commit before the published nightly image creation time.
