@@ -12,7 +12,11 @@ import trio
 
 from rollouts.training.grpo import _run_training_preflight
 from rollouts.training.weight_sync import VLLMEngine
-from rollouts.training.weight_sync_protocol import VLLM_CUSTOM_NCCL_BROADCAST
+from rollouts.training.weight_sync_protocol import (
+    VLLM_CUSTOM_NCCL_BROADCAST,
+    WeightUpdatePayload,
+    WeightWireTensor,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -90,15 +94,19 @@ async def run_torchtitan_vllm_real_tensor_smoke(
         )
         emit("torchtitan_real_tensor_sender_ready", endpoint=engine.base_url)
 
-        state_dict_fn = getattr(backend, "_build_hf_state_dict_for_inference_sync", None)
-        assert state_dict_fn is not None, (
-            "TorchTitan backend does not expose HF sync state dict builder"
+        payload_fn = getattr(backend, "_build_inference_weight_update_payload", None)
+        assert payload_fn is not None, (
+            "TorchTitan backend does not expose inference weight update payload builder"
         )
-        hf_state_dict = state_dict_fn()
-        first_name, first_tensor = next(iter(hf_state_dict.items()))
+        payload = payload_fn()
+        first_item = payload.tensors[0]
+        first_name = first_item.wire_name
+        first_load_name = first_item.load_name
+        first_tensor = first_item.tensor
         emit(
             "torchtitan_real_tensor_selected",
             parameter_name=first_name,
+            load_name=first_load_name,
             parameter_shape=list(first_tensor.shape),
             parameter_dtype=str(first_tensor.dtype).replace("torch.", ""),
             parameter_device=str(first_tensor.device),
@@ -122,6 +130,22 @@ async def run_torchtitan_vllm_real_tensor_smoke(
         async with httpx.AsyncClient(timeout=300.0) as client:
 
             async def _attempt_broadcast(label: str, tensor: Any) -> None:
+                variant_payload = WeightUpdatePayload(
+                    tensors=(
+                        WeightWireTensor(
+                            wire_name=first_name,
+                            load_name=first_load_name,
+                            shape=tuple(tensor.shape),
+                            dtype=str(tensor.dtype).replace("torch.", ""),
+                            tensor=tensor,
+                            payload_kind=first_item.payload_kind,
+                            metadata=dict(first_item.metadata),
+                        ),
+                    ),
+                    payload_kind=payload.payload_kind,
+                    version=payload.version,
+                    metadata=dict(payload.metadata),
+                )
                 async with trio.open_nursery() as nursery:
 
                     async def request_receive() -> None:
@@ -134,6 +158,7 @@ async def run_torchtitan_vllm_real_tensor_smoke(
                             f"{engine.base_url}/receive_weight_update",
                             json={
                                 "names": [first_name],
+                                "load_names": [first_load_name],
                                 "shapes": [list(tensor.shape)],
                                 "dtypes": [str(tensor.dtype).replace("torch.", "")],
                             },
@@ -151,13 +176,15 @@ async def run_torchtitan_vllm_real_tensor_smoke(
                     emit(
                         "torchtitan_real_tensor_broadcast_start",
                         parameter_name=first_name,
+                        load_name=first_load_name,
                         tensor_variant=label,
                         data_ptr=int(tensor.data_ptr()),
                     )
-                    await trio.to_thread.run_sync(sender.broadcast_weights, {first_name: tensor})
+                    await trio.to_thread.run_sync(sender.broadcast_payload, variant_payload)
                     emit(
                         "torchtitan_real_tensor_broadcast_finished",
                         parameter_name=first_name,
+                        load_name=first_load_name,
                         tensor_variant=label,
                     )
 
@@ -169,8 +196,15 @@ async def run_torchtitan_vllm_real_tensor_smoke(
                     parameter_name=first_name,
                     error=repr(exc),
                 )
-                await _attempt_broadcast("clone", cloned_tensor)
-                await _attempt_broadcast("materialized_copy", materialized_tensor)
+                try:
+                    await _attempt_broadcast("clone", cloned_tensor)
+                except Exception as clone_exc:
+                    emit(
+                        "torchtitan_real_tensor_clone_failed",
+                        parameter_name=first_name,
+                        error=repr(clone_exc),
+                    )
+                    await _attempt_broadcast("materialized_copy", materialized_tensor)
 
         emit("torchtitan_real_tensor_smoke_finished", status="ok")
     finally:
