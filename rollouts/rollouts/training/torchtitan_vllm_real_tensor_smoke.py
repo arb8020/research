@@ -216,23 +216,23 @@ async def run_torchtitan_vllm_real_tensor_smoke(
                 response=receive_result["response"],
             )
 
+        try:
+            await _attempt_broadcast("original", first_tensor)
+        except Exception as exc:
+            emit(
+                "torchtitan_real_tensor_original_failed",
+                parameter_name=first_name,
+                error=repr(exc),
+            )
             try:
-                await _attempt_broadcast("original", first_tensor)
-            except Exception as exc:
+                await _attempt_broadcast("clone", cloned_tensor)
+            except Exception as clone_exc:
                 emit(
-                    "torchtitan_real_tensor_original_failed",
+                    "torchtitan_real_tensor_clone_failed",
                     parameter_name=first_name,
-                    error=repr(exc),
+                    error=repr(clone_exc),
                 )
-                try:
-                    await _attempt_broadcast("clone", cloned_tensor)
-                except Exception as clone_exc:
-                    emit(
-                        "torchtitan_real_tensor_clone_failed",
-                        parameter_name=first_name,
-                        error=repr(clone_exc),
-                    )
-                    await _attempt_broadcast("materialized_copy", materialized_tensor)
+                await _attempt_broadcast("materialized_copy", materialized_tensor)
 
         emit("torchtitan_real_tensor_smoke_finished", status="ok")
     finally:
