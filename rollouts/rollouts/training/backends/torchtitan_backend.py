@@ -802,21 +802,39 @@ class TorchTitanBackend:
 
         async def register_inference_endpoint(endpoint: str, rank: int) -> None:
             async with httpx.AsyncClient(timeout=300.0) as client:
-                try:
-                    response = await client.post(
-                        f"{endpoint}/init_weights_update_group",
-                        json={
-                            "master_address": master_addr,
-                            "master_port": master_port,
-                            "rank_offset": rank,
-                            "world_size": world_size,
-                            "group_name": group_name,
-                            "backend": "nccl",
-                        },
-                    )
-                    response.raise_for_status()
-                except Exception as exc:
-                    errors.append((endpoint, str(exc)))
+                last_error = ""
+                for attempt in range(30):
+                    try:
+                        response = await client.post(
+                            f"{endpoint}/init_weights_update_group",
+                            json={
+                                "master_address": master_addr,
+                                "master_port": master_port,
+                                "rank_offset": rank,
+                                "world_size": world_size,
+                                "group_name": group_name,
+                                "backend": "nccl",
+                            },
+                        )
+                        if response.status_code == 200:
+                            return
+                        body = response.text
+                        last_error = f"http_status={response.status_code} body={body[:500]!r} attempt={attempt}"
+                    except Exception as exc:
+                        response = getattr(exc, "response", None)
+                        if response is not None:
+                            try:
+                                body = response.text
+                            except Exception:
+                                body = "<unavailable>"
+                            last_error = (
+                                f"{type(exc).__name__}: {exc!r} "
+                                f"status={response.status_code} body={body[:500]!r} attempt={attempt}"
+                            )
+                        else:
+                            last_error = f"{type(exc).__name__}: {exc!r} attempt={attempt}"
+                    await trio.sleep(1.0)
+                errors.append((endpoint, last_error or "unknown error"))
 
         def trainer_join() -> None:
             os.environ.setdefault("NCCL_SHM_DISABLE", "1")

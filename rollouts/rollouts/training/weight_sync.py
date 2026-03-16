@@ -1211,7 +1211,15 @@ class VLLMEngine:
                 try:
                     resp = await client.get(self.health_url)
                     if resp.status_code == 200:
-                        return
+                        if self.default_sync_realization == VLLM_CUSTOM_NCCL_BROADCAST.name:
+                            schema_resp = await client.get(
+                                f"{self.base_url}/weight_update_schema",
+                                params={"limit": 1},
+                            )
+                            if schema_resp.status_code == 200:
+                                return
+                        else:
+                            return
                 except Exception:
                     pass
                 await trio.sleep(1.0)
