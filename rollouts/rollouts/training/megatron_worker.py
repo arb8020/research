@@ -103,6 +103,46 @@ def _resolve_train_future(future: Any) -> Any:
     return future._result
 
 
+def _resolve_local_host_ip() -> str:
+    """Resolve a non-loopback IPv4 address for intra-sandbox rendezvous."""
+    import socket
+
+    env_master_addr = os.environ.get("MASTER_ADDR")
+    if env_master_addr:
+        return env_master_addr.strip()
+
+    try:
+        # UDP connect selects the outward-facing interface without requiring a handshake.
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            sock.connect(("192.0.2.1", 1))
+            candidate = sock.getsockname()[0]
+            if candidate and not candidate.startswith("127."):
+                return candidate
+            if candidate:
+                return candidate
+    except OSError:
+        pass
+
+    try:
+        infos = socket.getaddrinfo(
+            socket.gethostname(),
+            None,
+            family=socket.AF_INET,
+            type=socket.SOCK_STREAM,
+        )
+        for family, socktype, proto, canonname, sockaddr in infos:
+            del family, socktype, proto, canonname
+            candidate = sockaddr[0]
+            if candidate and not candidate.startswith("127."):
+                return candidate
+            if candidate:
+                return candidate
+    except OSError:
+        pass
+
+    return "127.0.0.1"
+
+
 def _select_native_loss_fn(config: dict[str, Any]) -> Any:
     """Select the backend-native loss function fixed for this worker."""
     from rollouts.training.backends.megatron_backend import (
@@ -761,8 +801,10 @@ def _init_nccl_weight_sync(
 
     import socket
 
+    resolved_host_ip = _resolve_local_host_ip()
+    explicit_master_addr = master_addr
     if master_addr is None:
-        master_addr = "127.0.0.1"
+        master_addr = resolved_host_ip
 
     # Find an available port.
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
@@ -777,16 +819,24 @@ def _init_nccl_weight_sync(
     sender_holder: dict[str, Any] = {}
     errors: list[tuple[str, str]] = []
     logger.info(
-        "weight_sync_megatron_init_start master=%s:%s world_size=%s endpoints=%s group=%s",
+        "weight_sync_megatron_init_start master=%s:%s world_size=%s endpoints=%s group=%s resolved_host_ip=%s loopback=%s explicit_master_addr=%s hostname=%s",
         master_addr,
         master_port,
         world_size,
         inference_endpoints,
         group_name,
+        resolved_host_ip,
+        "127.0.0.1",
+        explicit_master_addr,
+        socket.gethostname(),
     )
     _emit_argus_diag(
         "weight_sync_megatron_init_start",
         master_addr=master_addr,
+        resolved_host_ip=resolved_host_ip,
+        loopback_addr="127.0.0.1",
+        explicit_master_addr=explicit_master_addr,
+        hostname=socket.gethostname(),
         master_port=master_port,
         world_size=world_size,
         endpoints=inference_endpoints,
