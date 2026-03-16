@@ -801,10 +801,18 @@ class TorchTitanBackend:
         errors: list[tuple[str, str]] = []
 
         async def register_inference_endpoint(endpoint: str, rank: int) -> None:
-            async with httpx.AsyncClient(timeout=300.0) as client:
+            timeout = httpx.Timeout(connect=5.0, read=30.0, write=30.0, pool=5.0)
+            async with httpx.AsyncClient(timeout=timeout) as client:
                 last_error = ""
                 for attempt in range(30):
                     try:
+                        logger.info(
+                            "[Rank %s] init_weights_update_group request start endpoint=%s rank=%s attempt=%s",
+                            self.rank,
+                            endpoint,
+                            rank,
+                            attempt,
+                        )
                         response = await client.post(
                             f"{endpoint}/init_weights_update_group",
                             json={
@@ -816,11 +824,28 @@ class TorchTitanBackend:
                                 "backend": "nccl",
                             },
                         )
+                        logger.info(
+                            "[Rank %s] init_weights_update_group response endpoint=%s rank=%s attempt=%s status=%s",
+                            self.rank,
+                            endpoint,
+                            rank,
+                            attempt,
+                            response.status_code,
+                        )
                         if response.status_code == 200:
                             return
                         body = response.text
                         last_error = f"http_status={response.status_code} body={body[:500]!r} attempt={attempt}"
                     except Exception as exc:
+                        logger.exception(
+                            "[Rank %s] init_weights_update_group request failed endpoint=%s rank=%s attempt=%s error_type=%s error=%r",
+                            self.rank,
+                            endpoint,
+                            rank,
+                            attempt,
+                            type(exc).__name__,
+                            exc,
+                        )
                         response = getattr(exc, "response", None)
                         if response is not None:
                             try:

@@ -7,6 +7,7 @@ training backend.
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 import logging
 from collections.abc import Awaitable
@@ -176,6 +177,10 @@ async def run_server(args: Any, **uvicorn_kwargs: Any) -> None:
         @app.post("/init_weights_update_group")
         async def init_weights_update_group(request: dict[str, Any]) -> dict[str, Any]:
             try:
+                logger.info(
+                    "init_weights_update_group request start request=%s",
+                    request,
+                )
                 result = engine_client.collective_rpc(
                     "init_weight_update_group",
                     args=(
@@ -187,8 +192,28 @@ async def run_server(args: Any, **uvicorn_kwargs: Any) -> None:
                         float(request.get("timeout_seconds", 300.0)),
                     ),
                 )
+                logger.info(
+                    "init_weights_update_group collective_rpc returned request=%s awaitable=%s",
+                    request,
+                    inspect.isawaitable(result),
+                )
                 maybe = _maybe_await(result)
-                payload = await maybe if maybe is not None else result
+                if maybe is not None:
+                    logger.info(
+                        "init_weights_update_group collective_rpc await start request=%s",
+                        request,
+                    )
+                    payload = await asyncio.wait_for(maybe, timeout=30.0)
+                    logger.info(
+                        "init_weights_update_group collective_rpc await finished request=%s",
+                        request,
+                    )
+                else:
+                    payload = result
+                    logger.info(
+                        "init_weights_update_group collective_rpc immediate result request=%s",
+                        request,
+                    )
                 return {"status": "ok", "results": payload}
             except Exception as exc:
                 logger.exception(
