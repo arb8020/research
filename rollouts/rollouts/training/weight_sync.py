@@ -800,10 +800,13 @@ class SGLangEngine:
             f"HF_HUB_DOWNLOAD_TIMEOUT=300 "  # 5 min timeout for model downloads
             # NCCL environment for cross-process weight sync:
             # - NCCL_CUMEM_ENABLE=0: Consistent with SGLang defaults (see miles/ray/actor_group.py)
+            # - AMEM_ENABLE=1: Enable the newer SGLang communicator pause/resume path
+            #   used in later miles/slime patches for live distributed weight updates.
             # - NCCL_DEBUG/NCCL_DEBUG_SUBSYS: surface receiver-side transport/init failures
             # Do not force NCCL_SHM_DISABLE here. Miles/Slime do not blanket-disable
             # SHM for this path, and our current failure is in NCCL transport setup.
             f"{socket_ifname_env}"
+            f"AMEM_ENABLE=1 "
             f"NCCL_CUMEM_ENABLE=0 "
             f"NCCL_DEBUG=INFO "
             f"NCCL_DEBUG_SUBSYS=INIT,COLL "
