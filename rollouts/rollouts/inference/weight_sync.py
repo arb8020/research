@@ -43,6 +43,8 @@ import logging
 import os
 import subprocess
 import sys
+import threading
+import time
 from dataclasses import dataclass, field
 from datetime import timedelta
 from typing import Any
@@ -56,6 +58,7 @@ from ..training.weight_sync_protocol import WeightUpdatePayload, WeightWireTenso
 
 logger = logging.getLogger(__name__)
 _ARGUS_DIAG_EVENT_SENTINEL = "__ARGUS_DIAG__"
+_WEIGHT_SYNC_PUBLICATION_LOCK = threading.Lock()
 
 
 def _emit_argus_diag(event: str, **data: object) -> None:
@@ -505,7 +508,6 @@ class WeightSyncSender:
                 f"current={current_device} expected={self.device.index}"
             )
 
-        handles = []
         total_tensors = len(payload.tensors)
         total_bytes = sum(
             int(item.tensor.numel() * item.tensor.element_size()) for item in payload.tensors
@@ -520,51 +522,85 @@ class WeightSyncSender:
             [_tensor_sync_metadata(item.wire_name, item.tensor) for item in first_items],
         )
 
-        for index, item in enumerate(payload.tensors):
-            name = item.wire_name
-            param = item.tensor
-            # Ensure contiguous and on GPU
-            data = param.data.contiguous()
-            if data.device != self.device:
-                data = data.to(self.device)
-            tensor_meta = _tensor_sync_metadata(name, data)
-            broadcast_meta = {
-                **tensor_meta,
-                "load_name": item.load_name,
-                "payload_kind": item.payload_kind,
-                "param_device": str(param.device),
-                "current_cuda_device": (
-                    torch.cuda.current_device() if torch.cuda.is_available() else None
-                ),
-                "data_ptr": int(data.data_ptr()),
-                "storage_offset": int(data.storage_offset()),
-                "element_size": int(data.element_size()),
-                "nbytes": int(data.numel() * data.element_size()),
-                "group_rank": dist.get_rank(self._process_group),
-                "group_world_size": dist.get_world_size(self._process_group),
-            }
+        def _broadcast_all(use_async: bool) -> list[Any]:
+            handles = []
+            for index, item in enumerate(payload.tensors):
+                name = item.wire_name
+                param = item.tensor
+                data = param.data
+                if data.device != self.device:
+                    raise RuntimeError(
+                        "Weight sync sender expected payload tensor on sender device; "
+                        f"name={name} param_device={data.device} sender_device={self.device}"
+                    )
+                if not data.is_contiguous():
+                    raise RuntimeError(
+                        "Weight sync sender expected contiguous payload tensor; "
+                        f"name={name} stride={list(data.stride())}"
+                    )
+                tensor_meta = _tensor_sync_metadata(name, data)
+                broadcast_meta = {
+                    **tensor_meta,
+                    "load_name": item.load_name,
+                    "payload_kind": item.payload_kind,
+                    "param_device": str(param.device),
+                    "current_cuda_device": (
+                        torch.cuda.current_device() if torch.cuda.is_available() else None
+                    ),
+                    "data_ptr": int(data.data_ptr()),
+                    "storage_offset": int(data.storage_offset()),
+                    "element_size": int(data.element_size()),
+                    "nbytes": int(data.numel() * data.element_size()),
+                    "group_rank": dist.get_rank(self._process_group),
+                    "group_world_size": dist.get_world_size(self._process_group),
+                }
+                logger.info(
+                    "weight_sync_sender_broadcast_tensor index=%s total_tensors=%s async_op=%s tensor=%s",
+                    index,
+                    total_tensors,
+                    use_async,
+                    broadcast_meta,
+                )
+                try:
+                    handle = dist.broadcast(
+                        data, src=0, group=self._process_group, async_op=use_async
+                    )
+                except Exception as exc:
+                    raise RuntimeError(
+                        "Weight sync sender broadcast failed "
+                        f"index={index} total_tensors={total_tensors} tensor={broadcast_meta}"
+                    ) from exc
+                if use_async:
+                    handles.append(handle)
+            return handles
+
+        if async_op:
+            handles = _broadcast_all(use_async=True)
+            if advance_version:
+                self._weight_version += 1
+            return handles
+
+        lock_wait_start = time.monotonic()
+        _WEIGHT_SYNC_PUBLICATION_LOCK.acquire()
+        lock_wait_sec = time.monotonic() - lock_wait_start
+        logger.info(
+            "weight_sync_sender_publication_lock_acquired waited_sec=%.6f total_tensors=%s",
+            lock_wait_sec,
+            total_tensors,
+        )
+        try:
+            handles = _broadcast_all(use_async=True)
+            for handle in handles:
+                handle.wait()
+        finally:
+            _WEIGHT_SYNC_PUBLICATION_LOCK.release()
             logger.info(
-                "weight_sync_sender_broadcast_tensor index=%s total_tensors=%s async_op=%s tensor=%s",
-                index,
+                "weight_sync_sender_publication_lock_released total_tensors=%s",
                 total_tensors,
-                async_op,
-                broadcast_meta,
             )
-            try:
-                handle = dist.broadcast(data, src=0, group=self._process_group, async_op=async_op)
-            except Exception as exc:
-                raise RuntimeError(
-                    "Weight sync sender broadcast failed "
-                    f"index={index} total_tensors={total_tensors} tensor={broadcast_meta}"
-                ) from exc
-            if async_op:
-                handles.append(handle)
 
         if advance_version:
             self._weight_version += 1
-
-        if async_op:
-            return handles
         return None
 
     def broadcast_weights(
