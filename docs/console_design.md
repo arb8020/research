@@ -137,7 +137,7 @@ Commits:
 
 ## Related
 
-- `handoff.md` — print→logging migration context
+- `docs/handoff.md` — print→logging migration context
 - `docs/code_style/mcoding_logging_dense.md` — logging best practices
 - `docs/code_style/casey_granularity.md` — API granularity principles
 

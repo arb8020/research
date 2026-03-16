@@ -598,7 +598,7 @@ results = [
 
 ## See Also
 
-- `session-branching-design.md` — Tree structure for sessions
+- `docs/design/session-branching-design.md` — Tree structure for sessions
 - `SESSION_DESIGN.md` — Current session format
 - `repl.py` — Current in-process agent() implementation
 

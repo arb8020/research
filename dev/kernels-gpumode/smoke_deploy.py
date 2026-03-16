@@ -182,7 +182,7 @@ def deploy_and_test(
     if enable_profiling and success:
         logger.info("\n📥 Downloading torch profile traces...")
         profiles_remote = f"{project_dir}/profiles"
-        profiles_local = Path("profiles_remote")
+        profiles_local = Path("dev/kernels-gpumode/profiles_remote")
 
         # Check if profiles directory exists
         check_result = client.exec(f"test -d {profiles_remote} && echo OK || echo MISSING")
