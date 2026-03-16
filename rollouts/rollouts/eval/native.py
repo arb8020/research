@@ -6,6 +6,7 @@ Tiger Style: Pure functions, explicit configuration, no hidden state.
 
 import json
 import logging
+import sys
 import time
 from collections.abc import Callable, Iterator
 from dataclasses import asdict, dataclass, field, replace
@@ -255,6 +256,35 @@ async def _resolve_environment(
     if isawaitable(environment):
         return await environment
     return environment
+
+
+async def _run_attempt_executor(
+    attempt_executor: Callable[[dict[str, Any], str, Any | None, RunConfig], Any],
+    *,
+    sample_data: dict[str, Any],
+    sample_id: str,
+    environment: Environment | None,
+    run_config: RunConfig,
+) -> AttemptRow:
+    """Run a custom per-sample executor and normalize the result shape."""
+    sample = attempt_executor(sample_data, sample_id, environment, run_config)
+    if isawaitable(sample):
+        sample = await sample
+    if not isinstance(sample, AttemptRow):
+        raise TypeError(f"attempt_executor must return AttemptRow (got {type(sample).__name__})")
+    if sample.trajectory is None:
+        raise ValueError("attempt_executor must populate AttemptRow.trajectory")
+    return sample
+
+
+async def _serialize_environment_state(environment: Environment | None) -> dict[str, Any] | None:
+    if environment is None:
+        return None
+    try:
+        return await environment.serialize()
+    except Exception as e:
+        logger.warning(f"Failed to serialize environment state: {e}")
+        return None
 
 
 async def _compute_score(
@@ -778,22 +808,7 @@ async def evaluate_sample(
     config = runtime.config
     progress = runtime.progress
 
-    # Prepare initial messages from sample
-    initial_messages = config.prepare_messages(sample_data)
-
-    # Inject sample_data into trajectory metadata for score function access
-    initial_trajectory = Trajectory(
-        messages=initial_messages,
-        metadata={"sample_data": sample_data},  # Ground truth available to score_fn
-    )
-
-    actor = Actor(
-        trajectory=initial_trajectory,
-        endpoint=config.endpoint,
-        tools=environment.get_tools() if environment else [],
-    )
-
-    initial_state = AgentState(actor=actor, environment=environment)
+    initial_messages = config.prepare_messages(sample_data) if config.prepare_messages else []
 
     # Build base run config with concurrency limiters
     base_run_config = _build_base_run_config(config, runtime.api_limiter, runtime.tool_limiter)
@@ -875,6 +890,30 @@ async def evaluate_sample(
                         "tool_call_id": event.data.get("tool_call_id"),
                     },
                 )
+            elif event.type == "raw_driver_line":
+                raw_line = event.data.get("raw_line")
+                driver = event.data.get("driver")
+                _event_logger.debug(
+                    "raw_driver_line",
+                    extra={
+                        "sample_id": sample_id,
+                        "driver": driver,
+                        "raw_line": raw_line,
+                    },
+                )
+                if config.verbose and isinstance(raw_line, str):
+                    if config.max_concurrent == 1:
+                        sys.stderr.write(raw_line + "\n")
+                    else:
+                        sys.stderr.write(
+                            json.dumps({
+                                "sample_id": sample_id,
+                                "driver": driver,
+                                "raw_line": raw_line,
+                            })
+                            + "\n"
+                        )
+                    sys.stderr.flush()
 
         # Emit status changes (dedup to avoid flooding)
         if status is not None and status != last_status.get(sample_id):
@@ -964,15 +1003,6 @@ async def evaluate_sample(
 
     run_config = replace(base_run_config, on_chunk=on_chunk_with_sample_id)
 
-    # Run agent
-    # Tiger Style: Catch operational errors (rate limits, network issues) at boundary
-    # These are expected errors that should be reported, not crash the eval
-    if config.verbose:
-        logger.debug(f"Evaluating {sample_id}")
-
-    # Track timing for structured logging
-    start_time = time.time()
-
     # Emit sample_start event for frontend live streaming
     # Include initial_messages so streaming handlers can display them
     await run_config.on_chunk(
@@ -1000,69 +1030,124 @@ async def evaluate_sample(
     sample_name = sample_data.get("name", sample_id)
     _event_logger.info("sample_start", extra={"sample_id": sample_id, "sample_name": sample_name})
 
-    # Run agent with error handling
-    result = await _run_agent_with_error_handling(initial_state, run_config, sample_id)
-    states = result.states
-    final_trajectory = result.final_trajectory
-    error_message = result.error_message
-    is_provider_error = result.is_provider_error
+    # Tiger Style: Catch operational errors (rate limits, network issues) at boundary
+    # These are expected errors that should be reported, not crash the eval
+    if config.verbose:
+        logger.debug(f"Evaluating {sample_id}")
 
-    # Serialize environment state for score function (agentic evals)
-    env_state = None
-    final_env = states[-1].environment
-    if final_env is not None:
-        try:
-            env_state = await final_env.serialize()
-        except Exception as e:
-            logger.warning(f"Failed to serialize environment state: {e}")
+    start_time = time.time()
 
-    problem = ProblemRow(
-        problem_id=sample_id,
-        payload=sample_data,
-        ground_truth=sample_data.get("ground_truth") or sample_data.get("answer"),
-        metadata=sample_data.get("metadata", {}),
-    )
-
-    # Build AttemptRow with trajectory for score function.
-    # Trajectory metadata can lag behind the live environment state when tool
-    # execution serializes/deserializes the environment between turns, so merge
-    # in final runtime metadata from the last environment instance as well.
-    combined_metadata = {
-        **sample_data.get("metadata", {}),
-        **final_trajectory.metadata,
-    }
-    if final_env is not None:
-        runtime_metadata = getattr(final_env, "get_runtime_metadata", None)
-        if callable(runtime_metadata):
-            extra_metadata = runtime_metadata()
-            if isinstance(extra_metadata, dict):
-                combined_metadata.update(extra_metadata)
-    sample = AttemptRow(
-        attempt_id=sample_id,
-        problem=problem,
-        trajectory=final_trajectory,
-        environment_state=env_state,
-        metadata=combined_metadata,
-    )
-
-    # Add execution metadata
-    exec_metadata = {
-        "turns_used": states[-1].turn_idx,
-        "stop_reason": str(states[-1].stop) if states[-1].stop else None,
-        "total_tokens": sum(len(m.content or "") for m in final_trajectory.messages),
-    }
-
-    final_state = states[-1]
-
-    # Include error if agent execution failed
-    if error_message:
-        exec_metadata["error"] = error_message
-        exec_metadata["status"] = "provider_error" if is_provider_error else "failed"
-    elif final_state.error:
-        exec_metadata["error"] = final_state.error
-        exec_metadata["status"] = "failed"
+    if config.attempt_executor is not None:
+        sample = await _run_attempt_executor(
+            config.attempt_executor,
+            sample_data=sample_data,
+            sample_id=sample_id,
+            environment=environment,
+            run_config=run_config,
+        )
+        final_trajectory = sample.trajectory
+        final_env = environment
+        env_state = (
+            sample.environment_state
+            if sample.environment_state is not None
+            else await _serialize_environment_state(final_env)
+        )
+        if not sample.attempt_id:
+            sample.attempt_id = sample_id
+        if sample.problem is None:
+            sample.problem = ProblemRow(
+                problem_id=sample_id,
+                payload=sample_data,
+                ground_truth=sample_data.get("ground_truth") or sample_data.get("answer"),
+                metadata=sample_data.get("metadata", {}),
+            )
+        combined_metadata = {
+            **sample_data.get("metadata", {}),
+            **final_trajectory.metadata,
+            **sample.metadata,
+        }
+        if final_env is not None:
+            runtime_metadata = getattr(final_env, "get_runtime_metadata", None)
+            if callable(runtime_metadata):
+                extra_metadata = runtime_metadata()
+                if isinstance(extra_metadata, dict):
+                    combined_metadata.update(extra_metadata)
+        sample.environment_state = env_state
+        sample.metadata = combined_metadata
+        exec_metadata = {
+            "turns_used": sample.metadata.get("turns_used", 0),
+            "stop_reason": sample.metadata.get("stop_reason"),
+            "total_tokens": sum(len(m.content or "") for m in final_trajectory.messages),
+            "status": sample.metadata.get("status", "success"),
+        }
+        if sample.metadata.get("error") is not None:
+            exec_metadata["error"] = sample.metadata["error"]
     else:
-        exec_metadata["status"] = "success"
+        # Inject sample_data into trajectory metadata for score function access
+        initial_trajectory = Trajectory(
+            messages=initial_messages,
+            metadata={"sample_data": sample_data},  # Ground truth available to score_fn
+        )
+
+        actor = Actor(
+            trajectory=initial_trajectory,
+            endpoint=config.endpoint,
+            tools=environment.get_tools() if environment else [],
+        )
+
+        initial_state = AgentState(actor=actor, environment=environment)
+
+        # Run agent with error handling
+        result = await _run_agent_with_error_handling(initial_state, run_config, sample_id)
+        states = result.states
+        final_trajectory = result.final_trajectory
+        error_message = result.error_message
+        is_provider_error = result.is_provider_error
+
+        final_env = states[-1].environment
+        env_state = await _serialize_environment_state(final_env)
+
+        problem = ProblemRow(
+            problem_id=sample_id,
+            payload=sample_data,
+            ground_truth=sample_data.get("ground_truth") or sample_data.get("answer"),
+            metadata=sample_data.get("metadata", {}),
+        )
+
+        combined_metadata = {
+            **sample_data.get("metadata", {}),
+            **final_trajectory.metadata,
+        }
+        if final_env is not None:
+            runtime_metadata = getattr(final_env, "get_runtime_metadata", None)
+            if callable(runtime_metadata):
+                extra_metadata = runtime_metadata()
+                if isinstance(extra_metadata, dict):
+                    combined_metadata.update(extra_metadata)
+        sample = AttemptRow(
+            attempt_id=sample_id,
+            problem=problem,
+            trajectory=final_trajectory,
+            environment_state=env_state,
+            metadata=combined_metadata,
+        )
+
+        exec_metadata = {
+            "turns_used": states[-1].turn_idx,
+            "stop_reason": str(states[-1].stop) if states[-1].stop else None,
+            "total_tokens": sum(len(m.content or "") for m in final_trajectory.messages),
+        }
+
+        final_state = states[-1]
+
+        if error_message:
+            exec_metadata["error"] = error_message
+            exec_metadata["status"] = "provider_error" if is_provider_error else "failed"
+        elif final_state.error:
+            exec_metadata["error"] = final_state.error
+            exec_metadata["status"] = "failed"
+        else:
+            exec_metadata["status"] = "success"
 
     sample.metadata = {**sample.metadata, **exec_metadata}
 
@@ -1256,7 +1341,7 @@ async def evaluate(
                 logger.info(retry_result_msg)
 
         summary_metrics = compute_summary_metrics(results)
-        endpoint_config = sanitize_api_keys(asdict(config.endpoint))
+        endpoint_config = sanitize_api_keys(asdict(config.endpoint)) if config.endpoint else None
 
         report = EvalReport(
             eval_name=config.eval_name,

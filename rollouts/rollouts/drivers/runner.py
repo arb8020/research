@@ -20,6 +20,8 @@ Usage:
 from __future__ import annotations
 
 import logging
+from collections.abc import Awaitable, Callable
+from dataclasses import asdict, is_dataclass
 from typing import TYPE_CHECKING
 
 from ..dtypes import (
@@ -48,6 +50,12 @@ if TYPE_CHECKING:
 # Event logger for eval infrastructure — writes to events.jsonl and per-sample files
 # when setup_eval_logging() has been called
 _event_logger = logging.getLogger("rollouts.eval.events")
+
+
+def _event_to_log_dict(event: StreamEvent) -> dict[str, object]:
+    if is_dataclass(event):
+        return asdict(event)
+    raise TypeError(f"Unsupported stream event for eval logging: {type(event)!r}")
 
 
 class _EventAccumulator:
@@ -147,6 +155,7 @@ async def run_driver_to_trajectory(
     driver: ExternalAgentDriver,
     prompt: str,
     sample_id: str | None = None,
+    on_event: Callable[[StreamEvent], Awaitable[None]] | None = None,
 ) -> Trajectory:
     """Run an external agent driver and capture the result as a Trajectory.
 
@@ -157,7 +166,9 @@ async def run_driver_to_trajectory(
         driver: The external agent driver (ClaudeDriver, CodexDriver, etc.)
         prompt: The task/prompt to send to the agent
         sample_id: Optional sample ID for logging. If provided, events are
-                   logged to rollouts.eval.events logger with sample_id in extra.
+            logged to rollouts.eval.events logger with sample_id in extra.
+        on_event: Optional live event sink. When provided, each StreamEvent is
+            forwarded before being accumulated into the trajectory.
 
     Returns:
         Trajectory containing the accumulated messages
@@ -174,8 +185,11 @@ async def run_driver_to_trajectory(
         if sample_id is not None:
             _event_logger.debug(
                 event.type,
-                extra={"sample_id": sample_id, **event.to_dict()},
+                extra={"sample_id": sample_id, **_event_to_log_dict(event)},
             )
+
+        if on_event is not None:
+            await on_event(event)
 
         accumulator.handle(event)
 

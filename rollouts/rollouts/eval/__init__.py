@@ -10,11 +10,23 @@ Usage:
 
 from .configs import (
     AgentRunSpec,
+    AttemptExecutor,
+    CostBudgetStop,
     EndpointConfig,
     EvalOutputConfig,
     EvalRunConfig,
     HardwareConfig,
     InferenceServerConfig,
+    MaxTurnsStop,
+    TokenBudgetStop,
+    WallClockStop,
+)
+from .external_attempts import (
+    ExternalAttemptArtifact,
+    execute_external_attempt,
+    trajectory_from_claude_code,
+    trajectory_from_codex,
+    trajectory_from_openhands,
 )
 from .lm_eval import run_lm_eval
 from .native import (
@@ -30,16 +42,26 @@ from .native import (
 __all__ = [
     "EndpointConfig",
     "AgentRunSpec",
+    "AttemptExecutor",
+    "CostBudgetStop",
+    "ExternalAttemptArtifact",
     "EvalReport",
     "EvalOutputConfig",
     "EvalRuntime",
     "EvalRunConfig",
     "HardwareConfig",
     "InferenceServerConfig",
+    "MaxTurnsStop",
+    "TokenBudgetStop",
+    "WallClockStop",
     "evaluate",
     "evaluate_sample",
+    "execute_external_attempt",
     "group_by",
     "run_lm_eval",
     "simple_evaluate",
     "summarize",
+    "trajectory_from_claude_code",
+    "trajectory_from_codex",
+    "trajectory_from_openhands",
 ]

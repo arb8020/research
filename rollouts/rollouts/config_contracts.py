@@ -22,9 +22,7 @@ def _require_prime_ci_status(config_module: Any, config_path: Path) -> None:
         return
     status = getattr(config_module, "config_status", None)
     if not isinstance(status, ConfigStatus):
-        raise ValueError(
-            f"Prime-CI config {config_path} must export config_status: ConfigStatus"
-        )
+        raise ValueError(f"Prime-CI config {config_path} must export config_status: ConfigStatus")
 
 
 def validate_train_config_module(config_module: Any, config_path: Path) -> None:
@@ -50,9 +48,10 @@ def validate_eval_config_module(config_module: Any, config_path: Path) -> None:
         raise ValueError(f"Eval config {config_path} must export run_spec: AgentRunSpec")
 
     prepare_messages = getattr(config_module, "prepare_messages", None)
-    if run_spec is None and not callable(prepare_messages):
+    attempt_executor = getattr(config_module, "attempt_executor", None)
+    if run_spec is None and not callable(prepare_messages) and not callable(attempt_executor):
         raise ValueError(
-            f"Eval config {config_path} must export callable prepare_messages or run_spec"
+            f"Eval config {config_path} must export callable prepare_messages or attempt_executor or run_spec"
         )
 
     score_fn = getattr(config_module, "score_fn", None)

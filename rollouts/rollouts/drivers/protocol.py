@@ -27,7 +27,7 @@ class ExternalAgentDriver(Protocol):
             await frontend.handle_event(event)
     """
 
-    async def run(self, prompt: str) -> AsyncIterator[StreamEvent]:
+    def run(self, prompt: str) -> AsyncIterator[StreamEvent]:
         """Run the agent with a prompt, yielding events as they arrive.
 
         Args:

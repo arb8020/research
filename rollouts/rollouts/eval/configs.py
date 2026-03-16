@@ -35,12 +35,14 @@ from typing import TYPE_CHECKING, Any, Literal
 if TYPE_CHECKING:
     from rollouts.agents.types import AgentState
     from rollouts.agents.types import RunConfig as AgentRunConfig
+    from rollouts.training.types import AttemptRow
 
 # Reuse HardwareConfig from training
 from rollouts.training.configs import HardwareConfig
 
 __all__ = [
     "AgentRunSpec",
+    "AttemptExecutor",
     "EndpointConfig",
     "EvalRunConfig",
     "EvalOutputConfig",
@@ -92,6 +94,10 @@ class WallClockStop:
 
 SupportedStopHandler = MaxTurnsStop | TokenBudgetStop | CostBudgetStop | WallClockStop
 EvalStopHandler = SupportedStopHandler | Callable[["AgentState"], "AgentState"]
+AttemptExecutor = Callable[
+    [dict[str, Any], str, Any | None, "AgentRunConfig"],
+    "AttemptRow | Awaitable[AttemptRow]",
+]
 
 
 @dataclass(frozen=True)
@@ -99,23 +105,25 @@ class AgentRunSpec:
     """Per-sample agent execution spec.
 
     This is the eval-side product type closest to what one `run_agent(...)`
-    execution needs: endpoint, request materialization, optional environment,
-    and stop/no-tool behavior. Dataset iteration, concurrency, retries, and
-    output policy still belong to EvalRunConfig/EvalOutputConfig.
+    execution needs: either an endpoint-driven agent loop or a custom
+    attempt executor, plus optional environment ownership and stop/no-tool
+    behavior. Dataset iteration, concurrency, retries, and output policy
+    still belong to EvalRunConfig/EvalOutputConfig.
     """
 
-    endpoint: "EndpointConfig"
-    prepare_messages: Callable[[dict[str, Any]], list[Any]]
+    endpoint: EndpointConfig | None = None
+    prepare_messages: Callable[[dict[str, Any]], list[Any]] | None = None
     environment: Any | None = None
     environment_factory: Callable[[dict[str, Any]], Any] | None = None
+    attempt_executor: AttemptExecutor | None = None
     stop_handler: EvalStopHandler | None = None
-    handle_no_tool: Callable[["AgentState", "AgentRunConfig"], Awaitable["AgentState"]] | None = None
+    handle_no_tool: Callable[[AgentState, AgentRunConfig], Awaitable[AgentState]] | None = None
 
     def __post_init__(self) -> None:
         if self.environment is not None and self.environment_factory is not None:
-            raise ValueError(
-                "AgentRunSpec cannot define both environment and environment_factory"
-            )
+            raise ValueError("AgentRunSpec cannot define both environment and environment_factory")
+        if self.prepare_messages is None and self.attempt_executor is None:
+            raise ValueError("AgentRunSpec requires either prepare_messages or attempt_executor")
 
 
 @dataclass(frozen=True)
