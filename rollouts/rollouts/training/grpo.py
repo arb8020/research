@@ -1487,6 +1487,19 @@ async def _grpo_train_async(
                 master_port=config.checkpoint.nccl_master_port + 50,
             )
             logger.info("NCCL weight sync initialized")
+            witness_fn = getattr(backend, "sync_weights_nccl_witness", None)
+            if callable(witness_fn):
+                await witness_fn(tensor_limit=1)
+                logger.info(
+                    "training_preflight_weight_sync_witness_ok",
+                    extra={
+                        "event": "training_preflight_weight_sync_witness_ok",
+                        **run_context,
+                        "node_id": run_context.get("node_id"),
+                        "backend": config.trainer.backend,
+                        "tensor_limit": 1,
+                    },
+                )
 
         # Setup data and rollout generation
         logger.info(f"Dataset: {len(prompts)} prompts")

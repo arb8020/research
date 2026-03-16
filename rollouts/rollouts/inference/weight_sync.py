@@ -44,6 +44,7 @@ import os
 import subprocess
 import sys
 from dataclasses import dataclass, field
+from datetime import timedelta
 from typing import Any
 
 import torch
@@ -169,18 +170,12 @@ def create_stateless_process_group(
     Returns:
         Process group for weight sync operations
     """
-    from datetime import timedelta
-
     from torch.distributed.distributed_c10d import (
-        Backend,
-        PrefixStore,
-        _new_process_group_helper,
-        _world,
-        rendezvous,
+        default_pg_timeout,
     )
 
-    timeout = timedelta(seconds=timeout_seconds)
     init_method = f"tcp://{master_addr}:{master_port}"
+    timeout = timedelta(seconds=timeout_seconds)
     logger.info(
         "weight_sync_pg_create_start group=%s backend=%s rank=%s world_size=%s init_method=%s timeout_s=%.1f",
         group_name,
@@ -199,49 +194,94 @@ def create_stateless_process_group(
         init_method=init_method,
         timeout_s=timeout_seconds,
     )
-
-    # Rendezvous to get store
-    logger.info(
-        "weight_sync_pg_rendezvous_start group=%s rank=%s world_size=%s",
-        group_name,
-        rank,
-        world_size,
-    )
-    _emit_argus_diag(
-        "weight_sync_pg_rendezvous_start",
-        group=group_name,
-        rank=rank,
+    return _init_process_group_like_miles(
+        backend=backend,
+        init_method=init_method,
+        timeout=timeout if timeout_seconds > 0.0 else default_pg_timeout,
         world_size=world_size,
-    )
-    rendezvous_iterator = rendezvous(init_method, rank, world_size, timeout=timeout)
-    store, rank, world_size = next(rendezvous_iterator)
-    store.set_timeout(timeout)
-    logger.info(
-        "weight_sync_pg_rendezvous_ok group=%s rank=%s world_size=%s",
-        group_name,
-        rank,
-        world_size,
-    )
-    _emit_argus_diag(
-        "weight_sync_pg_rendezvous_ok",
-        group=group_name,
         rank=rank,
-        world_size=world_size,
+        group_name=group_name,
     )
 
-    # Use PrefixStore to namespace this group
-    store = PrefixStore(group_name, store)
 
-    # Create process group without touching the *default* global process group.
-    # NOTE: PyTorch has renamed the kwarg from `pg_options` → `backend_options`
-    # in some versions; detect by signature instead of version-string compares.
+def _init_process_group_like_miles(
+    backend: Any = None,
+    init_method: str | None = None,
+    timeout: timedelta | None = None,
+    world_size: int = -1,
+    rank: int = -1,
+    store: Any | None = None,
+    group_name: str | None = None,
+    pg_options: Any | None = None,
+) -> dist.ProcessGroup:
+    """Create a non-default process group following Miles' helper shape.
+
+    This keeps our weight-sync PG semantics close to
+    `miles.utils.distributed_utils.init_process_group` while preserving the
+    local logging/diagnostic surface around the rendezvous effect.
+    """
     import inspect
+
+    from torch.distributed.distributed_c10d import (
+        Backend,
+        PrefixStore,
+        _new_process_group_helper,
+        _world,
+        default_pg_timeout,
+        rendezvous,
+    )
+
+    assert (store is None) or (init_method is None), "Cannot specify both init_method and store."
+
+    if store is not None:
+        assert world_size > 0, "world_size must be positive if using store"
+        assert rank >= 0, "rank must be non-negative if using store"
+    elif init_method is None:
+        init_method = "env://"
+
+    if backend:
+        backend = Backend(backend)
+    else:
+        backend = Backend("undefined")
+
+    if timeout is None:
+        timeout = default_pg_timeout
+
+    if store is None:
+        logger.info(
+            "weight_sync_pg_rendezvous_start group=%s rank=%s world_size=%s",
+            group_name,
+            rank,
+            world_size,
+        )
+        _emit_argus_diag(
+            "weight_sync_pg_rendezvous_start",
+            group=group_name,
+            rank=rank,
+            world_size=world_size,
+        )
+        rendezvous_iterator = rendezvous(init_method, rank, world_size, timeout=timeout)
+        store, rank, world_size = next(rendezvous_iterator)
+        store.set_timeout(timeout)
+        logger.info(
+            "weight_sync_pg_rendezvous_ok group=%s rank=%s world_size=%s",
+            group_name,
+            rank,
+            world_size,
+        )
+        _emit_argus_diag(
+            "weight_sync_pg_rendezvous_ok",
+            group=group_name,
+            rank=rank,
+            world_size=world_size,
+        )
+        store = PrefixStore(group_name, store)
 
     pg_helper_sig = inspect.signature(_new_process_group_helper)
     if "backend_options" in pg_helper_sig.parameters:
-        pg_kwargs = {"backend_options": None}
+        pg_kwargs = {"backend_options": pg_options}
     elif "pg_options" in pg_helper_sig.parameters:
-        pg_kwargs = {"pg_options": None}
+        pg_kwargs = {"pg_options": pg_options}
     else:
         raise RuntimeError(
             "Unsupported torch.distributed version: _new_process_group_helper has neither "
@@ -266,7 +306,7 @@ def create_stateless_process_group(
         world_size,
         rank,
         [],
-        Backend(backend),
+        backend,
         store,
         group_name=group_name,
         timeout=timeout,
@@ -409,6 +449,8 @@ class WeightSyncSender:
         self,
         payload: WeightUpdatePayload,
         async_op: bool = False,
+        *,
+        advance_version: bool = True,
     ) -> list[Any] | None:
         """Broadcast explicit wire payload to all inference GPUs.
 
@@ -484,7 +526,8 @@ class WeightSyncSender:
             if async_op:
                 handles.append(handle)
 
-        self._weight_version += 1
+        if advance_version:
+            self._weight_version += 1
 
         if async_op:
             return handles
@@ -494,6 +537,8 @@ class WeightSyncSender:
         self,
         state_dict: dict[str, Tensor],
         async_op: bool = False,
+        *,
+        advance_version: bool = True,
     ) -> list[Any] | None:
         """Backward-compatible wrapper for raw tensor dictionaries."""
         payload = WeightUpdatePayload(
@@ -510,7 +555,7 @@ class WeightSyncSender:
             ),
             payload_kind="inference_load_tensor",
         )
-        return self.broadcast_payload(payload, async_op=async_op)
+        return self.broadcast_payload(payload, async_op=async_op, advance_version=advance_version)
 
     def cleanup(self) -> None:
         """Cleanup process group."""

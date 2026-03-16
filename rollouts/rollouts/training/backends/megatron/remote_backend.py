@@ -321,6 +321,23 @@ class MegatronRemoteBackend:
         assert response["status"] == "nccl_synced", f"NCCL weight sync failed: {response}"
         self.weight_version += 1
 
+    async def sync_weights_nccl_witness(self, tensor_limit: int = 1) -> None:
+        """Run a tiny NCCL witness update without advancing weight version."""
+        assert self._initialized, "Call initialize() first"
+        if tensor_limit <= 0:
+            raise ValueError(f"tensor_limit must be positive, got {tensor_limit}")
+        self.workers[0].send({
+            "cmd": "sync_weights_nccl",
+            "tensor_limit": tensor_limit,
+            "witness": True,
+        })
+        response = self._recv_response(
+            self.workers[0],
+            context="sync_weights_nccl_witness",
+            max_size=_CONTROL_MESSAGE_MAX_BYTES,
+        )
+        assert response["status"] == "nccl_synced", f"NCCL witness sync failed: {response}"
+
     async def cleanup_nccl_weight_sync(self) -> None:
         """Best effort cleanup for remote NCCL resources."""
         if not self._nccl_initialized:
