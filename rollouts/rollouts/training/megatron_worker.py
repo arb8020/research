@@ -1036,12 +1036,8 @@ def _do_sync_weights_nccl(
             len(futures),
         )
 
-        handles = sender.broadcast_payload(payload, async_op=True)
-        logger.info("weight_sync_megatron_broadcast_started tensors=%s", len(handles))
-
-        for handle in handles:
-            handle.wait()
-        logger.info("weight_sync_megatron_broadcast_wait_ok tensors=%s", len(handles))
+        sender.broadcast_payload(payload, async_op=False)
+        logger.info("weight_sync_megatron_broadcast_wait_ok tensors=%s", len(payload.tensors))
 
         for future in futures:
             response = future.result()
