@@ -33,6 +33,7 @@ Usage:
 
 from __future__ import annotations
 
+import json
 import logging
 import math
 import os
@@ -824,19 +825,56 @@ class TorchTitanBackend:
                     endpoint,
                     rank,
                 )
-                response = await client.post(
-                    f"{endpoint}/init_weights_update_group",
-                    json=init_request.to_dict(),
-                )
-                logger.info(
-                    "[Rank %s] init_weights_update_group response endpoint=%s rank=%s mode=blocking_once status=%s",
-                    self.rank,
-                    endpoint,
-                    rank,
-                    response.status_code,
-                )
-                response.raise_for_status()
-                InitWeightUpdateGroupResponse.from_dict(response.json())
+                try:
+                    response = await client.post(
+                        f"{endpoint}/init_weights_update_group",
+                        json=init_request.to_dict(),
+                    )
+                    logger.info(
+                        "[Rank %s] init_weights_update_group response endpoint=%s rank=%s mode=blocking_once status=%s",
+                        self.rank,
+                        endpoint,
+                        rank,
+                        response.status_code,
+                    )
+                    response.raise_for_status()
+                    InitWeightUpdateGroupResponse.from_dict(response.json())
+                except Exception as exc:
+                    trace_summary = "trace_unavailable"
+                    try:
+                        trace_response = await client.get(
+                            f"{endpoint}/weight_sync_trace", params={"limit": 20}
+                        )
+                        trace_response.raise_for_status()
+                        trace_entries = trace_response.json().get("entries", [])
+                        tail_events = [
+                            entry.get("event", "<missing>") for entry in trace_entries[-10:]
+                        ]
+                        trace_summary = json.dumps(
+                            {
+                                "entry_count": len(trace_entries),
+                                "tail_events": tail_events,
+                                "tail_entries": trace_entries[-5:],
+                            },
+                            sort_keys=True,
+                        )
+                    except Exception as trace_exc:
+                        trace_summary = (
+                            f"trace_fetch_failed={type(trace_exc).__name__}: {trace_exc!r}"
+                        )
+                    logger.exception(
+                        "[Rank %s] init_weights_update_group failed endpoint=%s rank=%s mode=blocking_once error_type=%s error=%r trace=%s",
+                        self.rank,
+                        endpoint,
+                        rank,
+                        type(exc).__name__,
+                        exc,
+                        trace_summary,
+                    )
+                    raise RuntimeError(
+                        "init_weights_update_group failed "
+                        f"endpoint={endpoint} rank={rank} error={type(exc).__name__}: {exc!r} trace={trace_summary}"
+                    ) from exc
 
         def trainer_join() -> None:
             os.environ.setdefault("NCCL_SHM_DISABLE", "1")

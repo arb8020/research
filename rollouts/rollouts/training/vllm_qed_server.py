@@ -12,7 +12,9 @@ import inspect
 import json
 import logging
 import sys
+import time
 from collections.abc import Awaitable, Mapping
+from pathlib import Path
 from typing import Any, Protocol, cast
 
 import torch
@@ -26,6 +28,7 @@ from rollouts.training.weight_sync_protocol import (
 
 logger = logging.getLogger(__name__)
 _ARGUS_DIAG_EVENT_SENTINEL = "__ARGUS_DIAG__"
+_WEIGHT_SYNC_TRACE_PATH = Path("/tmp/rollouts_vllm_weight_sync_trace.jsonl")
 
 
 def _emit_argus_diag(event: str, **data: object) -> None:
@@ -34,6 +37,16 @@ def _emit_argus_diag(event: str, **data: object) -> None:
             f"{_ARGUS_DIAG_EVENT_SENTINEL}{json.dumps({'event': event, **data}, sort_keys=True)}\n"
         )
         sys.stderr.flush()
+    except Exception:
+        return
+
+
+def _append_weight_sync_trace(event: str, **data: object) -> None:
+    try:
+        record = {"ts_unix": time.time(), "event": event, **data}
+        with _WEIGHT_SYNC_TRACE_PATH.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(record, sort_keys=True) + "\n")
+            f.flush()
     except Exception:
         return
 
@@ -87,6 +100,10 @@ async def _dispatch_init_weight_update_group(
     request_payload: Mapping[str, Any],
 ) -> dict[str, Any]:
     request = InitWeightUpdateGroupRequest.from_dict(request_payload)
+    _append_weight_sync_trace(
+        "vllm_route_init_weight_update_group_start",
+        request=request.to_dict(),
+    )
     _emit_argus_diag(
         "vllm_route_init_weight_update_group_start",
         request=request.to_dict(),
@@ -104,6 +121,11 @@ async def _dispatch_init_weight_update_group(
             request.timeout_seconds,
         ),
         timeout_seconds=request.timeout_seconds,
+    )
+    _append_weight_sync_trace(
+        "vllm_route_init_weight_update_group_collective_rpc_finished",
+        request=request.to_dict(),
+        result=payload,
     )
     response = InitWeightUpdateGroupResponse(results=payload)
     return {"status": "ok", "results": response.results}
@@ -153,6 +175,14 @@ class WorkerExtension:
                     group_name=group_name,
                     device=str(self.device),
                 )
+                _append_weight_sync_trace(
+                    "vllm_worker_init_weight_update_group_already_initialized",
+                    worker_rank=worker_rank,
+                    rank=rank,
+                    world_size=int(world_size),
+                    group_name=group_name,
+                    device=str(self.device),
+                )
                 logger.info(
                     "vllm worker init_weight_update_group already initialized worker_rank=%s rank=%s world_size=%s group=%s device=%s",
                     worker_rank,
@@ -172,6 +202,17 @@ class WorkerExtension:
                 f"{existing_group_name!r}, cannot reinitialize with {group_name!r}"
             )
         _emit_argus_diag(
+            "vllm_worker_init_weight_update_group_start",
+            worker_rank=worker_rank,
+            rank=rank,
+            world_size=int(world_size),
+            group_name=group_name,
+            device=str(self.device),
+            master_address=master_address,
+            master_port=int(master_port),
+            timeout_seconds=float(timeout_seconds),
+        )
+        _append_weight_sync_trace(
             "vllm_worker_init_weight_update_group_start",
             worker_rank=worker_rank,
             rank=rank,
@@ -208,6 +249,12 @@ class WorkerExtension:
             group_name=group_name,
             device=str(self.device),
         )
+        _append_weight_sync_trace(
+            "vllm_worker_init_weight_update_group_before_receiver_init",
+            rank=rank,
+            group_name=group_name,
+            device=str(self.device),
+        )
         logger.info(
             "vllm worker init_weight_update_group before receiver.init_group rank=%s group=%s",
             rank,
@@ -215,6 +262,12 @@ class WorkerExtension:
         )
         receiver.init_group()
         _emit_argus_diag(
+            "vllm_worker_init_weight_update_group_after_receiver_init",
+            rank=rank,
+            group_name=group_name,
+            device=str(self.device),
+        )
+        _append_weight_sync_trace(
             "vllm_worker_init_weight_update_group_after_receiver_init",
             rank=rank,
             group_name=group_name,
@@ -331,11 +384,24 @@ async def run_server(args: Any, **uvicorn_kwargs: Any) -> None:
         @app.get("/init_weights_update_group_probe")
         async def init_weights_update_group_probe() -> dict[str, Any]:
             _emit_argus_diag("vllm_route_init_weight_update_group_probe")
+            _append_weight_sync_trace("vllm_route_init_weight_update_group_probe")
             return {
                 "status": "ok",
                 "route": "init_weights_update_group_probe",
                 "worker_extension_cls": getattr(args, "worker_extension_cls", None),
             }
+
+        @app.get("/weight_sync_trace")
+        async def weight_sync_trace(limit: int = 50) -> dict[str, Any]:
+            entries: list[dict[str, Any]] = []
+            try:
+                if _WEIGHT_SYNC_TRACE_PATH.exists():
+                    lines = _WEIGHT_SYNC_TRACE_PATH.read_text(encoding="utf-8").splitlines()
+                    for line in lines[-max(1, int(limit)) :]:
+                        entries.append(json.loads(line))
+            except Exception as exc:
+                raise HTTPException(status_code=500, detail=repr(exc)) from exc
+            return {"status": "ok", "path": str(_WEIGHT_SYNC_TRACE_PATH), "entries": entries}
 
         @app.post("/init_weights_update_group")
         async def init_weights_update_group(request: dict[str, Any]) -> dict[str, Any]:
@@ -350,6 +416,12 @@ async def run_server(args: Any, **uvicorn_kwargs: Any) -> None:
                 )
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
             except Exception as exc:
+                _append_weight_sync_trace(
+                    "vllm_route_init_weight_update_group_failed",
+                    request=request,
+                    error_type=type(exc).__name__,
+                    error=repr(exc),
+                )
                 _emit_argus_diag(
                     "vllm_route_init_weight_update_group_failed",
                     request=request,
