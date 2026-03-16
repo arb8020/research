@@ -53,7 +53,13 @@ from ..contracts import (
 )
 from ..lowering import TorchTitanLowering
 from ..types import ImmediateTrainFuture, TrainFuture
-from ..weight_sync_protocol import WeightUpdatePayload, WeightWireTensor
+from ..weight_sync_protocol import (
+    InitWeightUpdateGroupRequest,
+    InitWeightUpdateGroupResponse,
+    ReceiveWeightUpdateRequest,
+    WeightUpdatePayload,
+    WeightWireTensor,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -806,6 +812,25 @@ class TorchTitanBackend:
                 last_error = ""
                 for attempt in range(30):
                     try:
+                        init_request = InitWeightUpdateGroupRequest(
+                            master_address=master_addr,
+                            master_port=master_port,
+                            rank_offset=rank,
+                            world_size=world_size,
+                            group_name=group_name,
+                        )
+                        probe_response = await client.get(
+                            f"{endpoint}/init_weights_update_group_probe"
+                        )
+                        logger.info(
+                            "[Rank %s] init_weights_update_group probe endpoint=%s rank=%s attempt=%s status=%s body=%s",
+                            self.rank,
+                            endpoint,
+                            rank,
+                            attempt,
+                            probe_response.status_code,
+                            probe_response.text[:200],
+                        )
                         logger.info(
                             "[Rank %s] init_weights_update_group request start endpoint=%s rank=%s attempt=%s",
                             self.rank,
@@ -815,14 +840,7 @@ class TorchTitanBackend:
                         )
                         response = await client.post(
                             f"{endpoint}/init_weights_update_group",
-                            json={
-                                "master_address": master_addr,
-                                "master_port": master_port,
-                                "rank_offset": rank,
-                                "world_size": world_size,
-                                "group_name": group_name,
-                                "backend": "nccl",
-                            },
+                            json=init_request.to_dict(),
                         )
                         logger.info(
                             "[Rank %s] init_weights_update_group response endpoint=%s rank=%s attempt=%s status=%s",
@@ -832,6 +850,8 @@ class TorchTitanBackend:
                             attempt,
                             response.status_code,
                         )
+                        response.raise_for_status()
+                        InitWeightUpdateGroupResponse.from_dict(response.json())
                         if response.status_code == 200:
                             return
                         body = response.text
@@ -936,14 +956,15 @@ class TorchTitanBackend:
             async with trio.open_nursery() as nursery:
 
                 async def request_receive(endpoint: str) -> None:
+                    receive_request = ReceiveWeightUpdateRequest(
+                        names=tuple(item["name"] for item in param_info),
+                        load_names=tuple(item["load_name"] for item in param_info),
+                        shapes=tuple(tuple(item["shape"]) for item in param_info),
+                        dtypes=tuple(item["dtype"] for item in param_info),
+                    )
                     response = await client.post(
                         f"{endpoint}/receive_weight_update",
-                        json={
-                            "names": [item["name"] for item in param_info],
-                            "load_names": [item["load_name"] for item in param_info],
-                            "shapes": [item["shape"] for item in param_info],
-                            "dtypes": [item["dtype"] for item in param_info],
-                        },
+                        json=receive_request.to_dict(),
                     )
                     response.raise_for_status()
                     responses.append(response.json())

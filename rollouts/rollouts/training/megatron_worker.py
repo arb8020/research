@@ -796,7 +796,19 @@ def _init_nccl_weight_sync(
     def register_inference_endpoint(endpoint: str, rank: int) -> None:
         import requests
 
+        from rollouts.training.weight_sync_protocol import (
+            InitWeightUpdateGroupRequest,
+            InitWeightUpdateGroupResponse,
+        )
+
         try:
+            init_request = InitWeightUpdateGroupRequest(
+                master_address=master_addr,
+                master_port=master_port,
+                rank_offset=rank,
+                world_size=world_size,
+                group_name=group_name,
+            )
             logger.info(
                 "weight_sync_megatron_register_endpoint_start endpoint=%s rank=%s master=%s:%s world_size=%s group=%s",
                 endpoint,
@@ -817,17 +829,11 @@ def _init_nccl_weight_sync(
             )
             response = requests.post(
                 f"{endpoint}/init_weights_update_group",
-                json={
-                    "master_address": master_addr,
-                    "master_port": master_port,
-                    "rank_offset": rank,
-                    "world_size": world_size,
-                    "group_name": group_name,
-                    "backend": "nccl",
-                },
+                json=init_request.to_dict(),
                 timeout=300.0,
             )
             response.raise_for_status()
+            InitWeightUpdateGroupResponse.from_dict(response.json())
             logger.info(
                 "weight_sync_megatron_register_endpoint_ok endpoint=%s rank=%s status=%s",
                 endpoint,

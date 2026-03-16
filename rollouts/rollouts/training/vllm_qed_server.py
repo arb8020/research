@@ -12,12 +12,17 @@ import inspect
 import json
 import logging
 import sys
-from collections.abc import Awaitable
+from collections.abc import Awaitable, Mapping
 from typing import Any, Protocol, cast
 
 import torch
 
 from rollouts.inference.weight_sync import ParamInfo, WeightSyncReceiver
+from rollouts.training.weight_sync_protocol import (
+    InitWeightUpdateGroupRequest,
+    InitWeightUpdateGroupResponse,
+    ReceiveWeightUpdateRequest,
+)
 
 logger = logging.getLogger(__name__)
 _ARGUS_DIAG_EVENT_SENTINEL = "__ARGUS_DIAG__"
@@ -59,6 +64,67 @@ def _weight_sync_receiver(worker: _LikeWorker) -> WeightSyncReceiver:
 
 def _model(worker: _LikeWorker) -> Any:
     return worker.model_runner.model
+
+
+async def _await_collective_rpc(
+    engine_client: Any,
+    *,
+    method: str,
+    args: tuple[Any, ...],
+    timeout_seconds: float | None = None,
+) -> Any:
+    result = engine_client.collective_rpc(method, args=args)
+    maybe = _maybe_await(result)
+    if maybe is None:
+        return result
+    if timeout_seconds is None:
+        return await maybe
+    return await asyncio.wait_for(maybe, timeout=timeout_seconds)
+
+
+async def _dispatch_init_weight_update_group(
+    engine_client: Any,
+    request_payload: Mapping[str, Any],
+) -> dict[str, Any]:
+    request = InitWeightUpdateGroupRequest.from_dict(request_payload)
+    _emit_argus_diag(
+        "vllm_route_init_weight_update_group_start",
+        request=request.to_dict(),
+    )
+    logger.info("init_weights_update_group request start request=%s", request)
+    payload = await _await_collective_rpc(
+        engine_client,
+        method="init_weight_update_group",
+        args=(
+            request.master_address,
+            request.master_port,
+            request.rank_offset,
+            request.world_size,
+            request.group_name,
+            request.timeout_seconds,
+        ),
+        timeout_seconds=30.0,
+    )
+    response = InitWeightUpdateGroupResponse(results=payload)
+    return {"status": "ok", "results": response.results}
+
+
+async def _dispatch_receive_weight_update(
+    engine_client: Any,
+    request_payload: Mapping[str, Any],
+) -> dict[str, Any]:
+    request = ReceiveWeightUpdateRequest.from_dict(request_payload)
+    payload = await _await_collective_rpc(
+        engine_client,
+        method="receive_weight_update",
+        args=(
+            list(request.names),
+            [list(shape) for shape in request.shapes],
+            list(request.dtypes),
+            list(request.load_names),
+        ),
+    )
+    return {"status": "ok", "results": payload}
 
 
 class WorkerExtension:
@@ -206,6 +272,7 @@ class WorkerExtension:
 
 
 async def run_server(args: Any, **uvicorn_kwargs: Any) -> None:
+    from fastapi import HTTPException
     from vllm.entrypoints.launcher import serve_http
     from vllm.entrypoints.openai.api_server import (
         build_app,
@@ -231,68 +298,27 @@ async def run_server(args: Any, **uvicorn_kwargs: Any) -> None:
                 payload = payload[0]
             return {"status": "ok", "parameters": payload}
 
+        @app.get("/init_weights_update_group_probe")
+        async def init_weights_update_group_probe() -> dict[str, Any]:
+            _emit_argus_diag("vllm_route_init_weight_update_group_probe")
+            return {
+                "status": "ok",
+                "route": "init_weights_update_group_probe",
+                "worker_extension_cls": getattr(args, "worker_extension_cls", None),
+            }
+
         @app.post("/init_weights_update_group")
         async def init_weights_update_group(request: dict[str, Any]) -> dict[str, Any]:
             try:
-                _emit_argus_diag(
-                    "vllm_route_init_weight_update_group_start",
-                    request=request,
-                )
-                logger.info(
-                    "init_weights_update_group request start request=%s",
+                return await _dispatch_init_weight_update_group(engine_client, request)
+            except (AssertionError, TypeError, ValueError) as exc:
+                logger.exception(
+                    "init_weights_update_group_invalid_request request=%s error_type=%s error=%r",
                     request,
+                    type(exc).__name__,
+                    exc,
                 )
-                result = engine_client.collective_rpc(
-                    "init_weight_update_group",
-                    args=(
-                        request.get("master_address", "127.0.0.1"),
-                        int(request.get("master_port", 29500)),
-                        int(request.get("rank_offset", 1)),
-                        int(request.get("world_size", 2)),
-                        request.get("group_name", "weight_sync"),
-                        float(request.get("timeout_seconds", 300.0)),
-                    ),
-                )
-                _emit_argus_diag(
-                    "vllm_route_init_weight_update_group_collective_rpc_returned",
-                    request=request,
-                    awaitable=inspect.isawaitable(result),
-                )
-                logger.info(
-                    "init_weights_update_group collective_rpc returned request=%s awaitable=%s",
-                    request,
-                    inspect.isawaitable(result),
-                )
-                maybe = _maybe_await(result)
-                if maybe is not None:
-                    _emit_argus_diag(
-                        "vllm_route_init_weight_update_group_collective_rpc_await_start",
-                        request=request,
-                    )
-                    logger.info(
-                        "init_weights_update_group collective_rpc await start request=%s",
-                        request,
-                    )
-                    payload = await asyncio.wait_for(maybe, timeout=30.0)
-                    _emit_argus_diag(
-                        "vllm_route_init_weight_update_group_collective_rpc_await_finished",
-                        request=request,
-                    )
-                    logger.info(
-                        "init_weights_update_group collective_rpc await finished request=%s",
-                        request,
-                    )
-                else:
-                    payload = result
-                    _emit_argus_diag(
-                        "vllm_route_init_weight_update_group_collective_rpc_immediate",
-                        request=request,
-                    )
-                    logger.info(
-                        "init_weights_update_group collective_rpc immediate result request=%s",
-                        request,
-                    )
-                return {"status": "ok", "results": payload}
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
             except Exception as exc:
                 _emit_argus_diag(
                     "vllm_route_init_weight_update_group_failed",
@@ -306,26 +332,28 @@ async def run_server(args: Any, **uvicorn_kwargs: Any) -> None:
                     type(exc).__name__,
                     exc,
                 )
-                return {
-                    "status": "error",
-                    "error_type": type(exc).__name__,
-                    "error": repr(exc),
-                    "request": request,
-                }
+                raise HTTPException(status_code=500, detail=repr(exc)) from exc
 
         @app.post("/receive_weight_update")
         async def receive_weight_update(request: dict[str, Any]) -> dict[str, Any]:
-            result = engine_client.collective_rpc(
-                "receive_weight_update",
-                args=(
-                    request.get("names", []),
-                    request.get("shapes", []),
-                    request.get("dtypes", []),
-                ),
-            )
-            maybe = _maybe_await(result)
-            payload = await maybe if maybe is not None else result
-            return {"status": "ok", "results": payload}
+            try:
+                return await _dispatch_receive_weight_update(engine_client, request)
+            except (AssertionError, TypeError, ValueError) as exc:
+                logger.exception(
+                    "receive_weight_update_invalid_request request=%s error_type=%s error=%r",
+                    request,
+                    type(exc).__name__,
+                    exc,
+                )
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            except Exception as exc:
+                logger.exception(
+                    "receive_weight_update_failed request=%s error_type=%s error=%r",
+                    request,
+                    type(exc).__name__,
+                    exc,
+                )
+                raise HTTPException(status_code=500, detail=repr(exc)) from exc
 
         @app.post("/destroy_weights_update_group")
         async def destroy_weights_update_group() -> dict[str, Any]:

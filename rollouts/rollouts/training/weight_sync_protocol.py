@@ -104,6 +104,107 @@ class WeightUpdatePayload:
 
 
 @dataclass(frozen=True)
+class InitWeightUpdateGroupRequest:
+    """Normalized NCCL group-init request at the HTTP boundary."""
+
+    master_address: str
+    master_port: int
+    rank_offset: int
+    world_size: int
+    group_name: str = "weight_sync"
+    timeout_seconds: float = 300.0
+
+    @classmethod
+    def from_dict(cls, payload: Mapping[str, Any]) -> InitWeightUpdateGroupRequest:
+        master_address = str(payload.get("master_address", "127.0.0.1"))
+        master_port = int(payload.get("master_port", 29500))
+        rank_offset = int(payload.get("rank_offset", 1))
+        world_size = int(payload.get("world_size", 2))
+        group_name = str(payload.get("group_name", "weight_sync"))
+        timeout_seconds = float(payload.get("timeout_seconds", 300.0))
+        assert master_address, "master_address cannot be empty"
+        assert master_port > 0, "master_port must be positive"
+        assert rank_offset >= 0, "rank_offset must be non-negative"
+        assert world_size >= 1, "world_size must be at least 1"
+        assert group_name, "group_name cannot be empty"
+        assert timeout_seconds > 0.0, "timeout_seconds must be positive"
+        return cls(
+            master_address=master_address,
+            master_port=master_port,
+            rank_offset=rank_offset,
+            world_size=world_size,
+            group_name=group_name,
+            timeout_seconds=timeout_seconds,
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "master_address": self.master_address,
+            "master_port": self.master_port,
+            "rank_offset": self.rank_offset,
+            "world_size": self.world_size,
+            "group_name": self.group_name,
+            "timeout_seconds": self.timeout_seconds,
+        }
+
+
+@dataclass(frozen=True)
+class InitWeightUpdateGroupResponse:
+    """Normalized success response for NCCL group initialization."""
+
+    results: Any
+
+    @classmethod
+    def from_dict(cls, payload: Mapping[str, Any]) -> InitWeightUpdateGroupResponse:
+        status = payload.get("status", "ok")
+        if status != "ok":
+            raise RuntimeError(
+                f"init_weights_update_group failed: "
+                f"{payload.get('error_type', 'RuntimeError')}: {payload.get('error', '<unknown>')}"
+            )
+        return cls(results=payload.get("results"))
+
+
+@dataclass(frozen=True)
+class ReceiveWeightUpdateRequest:
+    """Normalized NCCL receive request at the HTTP boundary."""
+
+    names: tuple[str, ...]
+    load_names: tuple[str, ...]
+    shapes: tuple[tuple[int, ...], ...]
+    dtypes: tuple[str, ...]
+
+    @classmethod
+    def from_dict(cls, payload: Mapping[str, Any]) -> ReceiveWeightUpdateRequest:
+        names = tuple(str(name) for name in payload.get("names", ()))
+        load_names_payload = payload.get("load_names")
+        if load_names_payload is None:
+            load_names = names
+        else:
+            load_names = tuple(str(name) for name in load_names_payload)
+        shapes = tuple(tuple(int(dim) for dim in shape) for shape in payload.get("shapes", ()))
+        dtypes = tuple(str(dtype) for dtype in payload.get("dtypes", ()))
+        assert len(names) > 0, "receive_weight_update requires at least one tensor name"
+        assert len(load_names) == len(names), "load_names must align with names"
+        assert len(shapes) == len(names), "shapes must align with names"
+        assert len(dtypes) == len(names), "dtypes must align with names"
+        return cls(
+            names=names,
+            load_names=load_names,
+            shapes=shapes,
+            dtypes=dtypes,
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "names": list(self.names),
+            "load_names": list(self.load_names),
+            "shapes": [list(shape) for shape in self.shapes],
+            "dtypes": list(self.dtypes),
+        }
+
+
+@dataclass(frozen=True)
 class WeightUpdatePlan:
     """Lowered trainer<->inference plan for one concrete sync realization."""
 

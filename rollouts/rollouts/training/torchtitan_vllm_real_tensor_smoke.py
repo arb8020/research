@@ -99,7 +99,13 @@ async def run_torchtitan_vllm_real_tensor_smoke(
             "TorchTitan backend does not expose inference weight update payload builder"
         )
         payload = payload_fn()
-        first_item = payload.tensors[0]
+        first_item = next(
+            (item for item in payload.tensors if item.wire_name != item.load_name),
+            None,
+        )
+        assert first_item is not None, (
+            "TorchTitan real-tensor smoke requires a non-identity wire_name -> load_name mapping"
+        )
         first_name = first_item.wire_name
         first_load_name = first_item.load_name
         first_tensor = first_item.tensor
