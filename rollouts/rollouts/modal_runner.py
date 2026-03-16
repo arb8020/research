@@ -495,12 +495,21 @@ def _build_modal_image(modal: Any, deps: DepsConfig, gpu_type: str) -> Any:
             image = modal.Image.from_registry(spec.source_ref, add_python=spec.python_version)
     elif spec.source_type == "dockerfile_path":
         dockerfile_path = Path(spec.source_ref)
-        image = modal.Image.from_dockerfile(
-            dockerfile_path,
-            context_dir=spec.context_dir or str(dockerfile_path.parent),
-            add_python=spec.python_version,
-            build_args=spec.build_args,
-        )
+        dockerfile_kwargs = {
+            "context_dir": spec.context_dir or str(dockerfile_path.parent),
+            "build_args": spec.build_args,
+        }
+        if spec.python_runtime == "image_owned":
+            image = modal.Image.from_dockerfile(
+                dockerfile_path,
+                **dockerfile_kwargs,
+            )
+        else:
+            image = modal.Image.from_dockerfile(
+                dockerfile_path,
+                add_python=spec.python_version,
+                **dockerfile_kwargs,
+            )
     else:
         raise ValueError(
             f"Modal runner does not know how to build image source_type={spec.source_type!r}"
