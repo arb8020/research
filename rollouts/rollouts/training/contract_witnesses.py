@@ -44,6 +44,45 @@ def training_sample_to_supervised_datum(sample: TrainingSample) -> TrainingDatum
     )
 
 
+def pretrain_batch_to_datum(input_ids: torch.Tensor, labels: torch.Tensor) -> TrainingDatum:
+    """Convert dense next-token tensors into a contract-native datum."""
+    return TrainingDatum(
+        model_input=ModelInput(tokens=input_ids),
+        objective_inputs={
+            "labels": labels,
+        },
+    )
+
+
+def pretrain_contract_loss(products: ForwardProducts, datum: TrainingDatum) -> StepResult:
+    """Dense next-token pretraining loss using the contract boundary."""
+    assert products.logits is not None, "pretrain loss requires logits"
+    assert "labels" in datum.objective_inputs, "pretrain loss requires labels"
+
+    logits = products.logits
+    labels = datum.objective_inputs["labels"]
+
+    loss = F.cross_entropy(
+        logits.view(-1, logits.size(-1)),
+        labels.view(-1),
+        ignore_index=-100,
+    )
+
+    with torch.no_grad():
+        perplexity = torch.exp(loss.detach()).item()
+
+    return StepResult(
+        backprop_loss=loss,
+        losses={
+            "total": loss.detach().item(),
+            "xent": loss.detach().item(),
+        },
+        other_metrics={
+            "perplexity": perplexity,
+        },
+    )
+
+
 def supervised_contract_loss(products: ForwardProducts, datum: TrainingDatum) -> StepResult:
     """Dense supervised loss using the new contract boundary."""
     assert products.logits is not None, "supervised loss requires logits"
