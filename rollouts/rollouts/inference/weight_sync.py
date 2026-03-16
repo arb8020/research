@@ -115,7 +115,10 @@ def _resolve_socket_ifname() -> tuple[str | None, str]:
     except Exception:
         pass
 
-    return None, "none"
+    # Modal sandboxes expose the routable container interface as eth0 in the
+    # NCCL logs we are debugging. Prefer an explicit interface pin here over
+    # falling back to ambient auto-selection.
+    return "eth0", "default:eth0"
 
 
 def _apply_socket_ifname_defaults() -> tuple[str | None, str]:

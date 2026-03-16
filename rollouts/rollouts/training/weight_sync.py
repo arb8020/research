@@ -78,7 +78,7 @@ def _resolve_socket_ifname_for_launch() -> tuple[str | None, str]:
                 return fields[index + 1], "ip-route"
     except Exception:
         pass
-    return None, "none"
+    return "eth0", "default:eth0"
 
 
 def _classify_sglang_startup_phase(line: str) -> tuple[str, dict[str, Any]] | None:
