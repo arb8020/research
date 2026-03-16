@@ -24,6 +24,19 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 _ARGUS_DIAG_EVENT_SENTINEL = "__ARGUS_DIAG__"
+_MEGATRON_BATCH_DTYPES: dict[str, str] = {
+    "input_ids": "long",
+    "labels": "long",
+    "position_ids": "long",
+    "attention_mask": "float32",
+    "loss_mask": "float32",
+    "advantages": "float32",
+    "old_logprobs": "float32",
+    "teacher_logprobs": "float32",
+    "group_ids": "long",
+    "returns": "float32",
+}
+_MEGATRON_BATCH_FIELD_ORDER = tuple(_MEGATRON_BATCH_DTYPES)
 
 
 def _emit_argus_diag(event: str, **data: object) -> None:
@@ -219,6 +232,91 @@ def _send_rank0_command_error(
         handle.send(payload)
     except Exception:
         pass
+
+
+def _torch_dtype_from_name(name: str) -> Any:
+    import torch
+
+    if name == "long":
+        return torch.long
+    if name == "float32":
+        return torch.float32
+    raise ValueError(f"Unsupported Megatron worker batch dtype {name!r}")
+
+
+def _tensorize_megatron_batch(batch: dict[str, Any]) -> dict[str, Any]:
+    """Normalize rank-0 IPC batch data into the backend-native tensor batch."""
+    import torch
+
+    unsupported_keys = set(batch) - set(_MEGATRON_BATCH_DTYPES)
+    if unsupported_keys:
+        raise ValueError(
+            f"Megatron worker received unsupported batch keys {sorted(unsupported_keys)!r}."
+        )
+
+    tensor_batch: dict[str, Any] = {}
+    for key in _MEGATRON_BATCH_FIELD_ORDER:
+        if key not in batch:
+            continue
+        value = batch[key]
+        if value is None:
+            tensor_batch[key] = None
+            continue
+        tensor_batch[key] = torch.tensor(
+            value,
+            dtype=_torch_dtype_from_name(_MEGATRON_BATCH_DTYPES[key]),
+            device="cuda",
+        )
+    return tensor_batch
+
+
+def _broadcast_megatron_batch(
+    batch: dict[str, Any] | None,
+    *,
+    rank: int,
+) -> dict[str, Any]:
+    """Broadcast the full backend-native Megatron batch contract to all ranks."""
+    import torch.distributed as dist
+
+    metadata_list: list[tuple[str, list[int]]] | None = None
+    if rank == 0:
+        assert batch is not None, "Rank 0 must have batch"
+        tensor_batch = _tensorize_megatron_batch(batch)
+        metadata_list = []
+        for key in _MEGATRON_BATCH_FIELD_ORDER:
+            if key not in tensor_batch:
+                continue
+            value = tensor_batch[key]
+            if value is None:
+                continue
+            metadata_list.append((key, list(value.shape)))
+    else:
+        import torch
+
+        tensor_batch = {}
+
+    metadata_box = [metadata_list]
+    dist.broadcast_object_list(metadata_box, src=0)
+    received_metadata = metadata_box[0]
+    assert received_metadata is not None, "Megatron worker batch metadata missing"
+
+    if rank != 0:
+        import torch
+
+        for key, shape in received_metadata:
+            tensor_batch[key] = torch.empty(
+                shape,
+                dtype=_torch_dtype_from_name(_MEGATRON_BATCH_DTYPES[key]),
+                device="cuda",
+            )
+
+    for key, _shape in received_metadata:
+        dist.broadcast(tensor_batch[key], src=0)
+
+    for key in _MEGATRON_BATCH_FIELD_ORDER:
+        tensor_batch.setdefault(key, None)
+
+    return tensor_batch
 
 
 def train(handle: Worker) -> None:
@@ -569,82 +667,7 @@ def _do_train_step(
     Returns:
         Training metrics (only meaningful on rank 0)
     """
-    import torch
-    import torch.distributed as dist
-
-    # Broadcast batch from rank 0 to all ranks
-    if rank == 0:
-        assert batch is not None, "Rank 0 must have batch"
-
-        # Convert lists (from JSON) back to tensors
-        input_ids = torch.tensor(batch["input_ids"], dtype=torch.long, device="cuda")
-        labels = torch.tensor(batch["labels"], dtype=torch.long, device="cuda")
-        loss_mask = (
-            torch.tensor(batch["loss_mask"], device="cuda")
-            if batch.get("loss_mask") is not None
-            else None
-        )
-        advantages = (
-            torch.tensor(batch["advantages"], device="cuda")
-            if batch.get("advantages") is not None
-            else None
-        )
-
-        # Broadcast shapes first
-        shapes = torch.tensor(
-            [
-                input_ids.shape[0],
-                input_ids.shape[1],
-                1 if loss_mask is not None else 0,
-                1 if advantages is not None else 0,
-            ],
-            dtype=torch.long,
-            device="cuda",
-        )
-        dist.broadcast(shapes, src=0)
-
-        # Broadcast tensors
-        dist.broadcast(input_ids.cuda(), src=0)
-        dist.broadcast(labels.cuda(), src=0)
-        if loss_mask is not None:
-            dist.broadcast(loss_mask.cuda(), src=0)
-        if advantages is not None:
-            dist.broadcast(advantages.cuda(), src=0)
-
-        batch = {
-            "input_ids": input_ids,
-            "labels": labels,
-            "loss_mask": loss_mask,
-            "advantages": advantages,
-        }
-    else:
-        # Receive shapes
-        shapes = torch.zeros(4, dtype=torch.long, device="cuda")
-        dist.broadcast(shapes, src=0)
-        batch_size, seq_len, has_loss_mask, has_advantages = shapes.tolist()
-
-        # Receive tensors
-        input_ids = torch.zeros(batch_size, seq_len, dtype=torch.long, device="cuda")
-        labels = torch.zeros(batch_size, seq_len, dtype=torch.long, device="cuda")
-        dist.broadcast(input_ids, src=0)
-        dist.broadcast(labels, src=0)
-
-        loss_mask = None
-        if has_loss_mask:
-            loss_mask = torch.zeros(batch_size, seq_len, device="cuda")
-            dist.broadcast(loss_mask, src=0)
-
-        advantages = None
-        if has_advantages:
-            advantages = torch.zeros(batch_size, device="cuda")
-            dist.broadcast(advantages, src=0)
-
-        batch = {
-            "input_ids": input_ids,
-            "labels": labels,
-            "loss_mask": loss_mask,
-            "advantages": advantages,
-        }
+    batch = _broadcast_megatron_batch(batch, rank=rank)
 
     # All ranks call forward_backward
     metrics_future = backend.forward_backward(batch)
