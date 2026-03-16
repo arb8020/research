@@ -36,16 +36,21 @@ class Score:
 ScoreFn = Callable[[AttemptRow], Score] | Callable[[AttemptRow], Awaitable[Score]]
 PrepareMessagesFn = Callable[[dict[str, Any]], list[Any]]
 EnvironmentFactory = Callable[[dict[str, Any]], Any]
+AttemptExecutor = Callable[
+    [dict[str, Any], str, "Environment | None", "RunConfig"],
+    AttemptRow | Awaitable[AttemptRow],
+]
 
 
 @dataclass(frozen=True)
 class EvalConfig:
-    endpoint: Endpoint
-    prepare_messages: PrepareMessagesFn
+    endpoint: Endpoint | None
+    prepare_messages: PrepareMessagesFn | None
     score_fn: ScoreFn | None = None
     sample_scorer: SampleScorer | None = None
     environment: Environment | None = None
     environment_factory: EnvironmentFactory | None = None
+    attempt_executor: AttemptExecutor | None = None
     run_config: RunConfig | None = None
     max_samples: int | None = None
     max_concurrent: int = 1
@@ -65,3 +70,5 @@ class EvalConfig:
     def __post_init__(self) -> None:
         if self.score_fn is None and self.sample_scorer is None:
             raise ValueError("EvalConfig requires either score_fn or sample_scorer")
+        if self.prepare_messages is None and self.attempt_executor is None:
+            raise ValueError("EvalConfig requires either prepare_messages or attempt_executor")

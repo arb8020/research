@@ -19,7 +19,7 @@ Usage:
     python -m rollouts.eval.run --config ... --endpoint sglang --model Qwen/Qwen2.5-7B-Instruct
 
 Config files should export:
-    - endpoint: EndpointConfig (required)
+    - endpoint: EndpointConfig (optional when attempt_executor supplies execution)
     - run: EvalRunConfig (optional, defaults provided)
     - output: EvalOutputConfig (optional, defaults provided)
     - hardware: HardwareConfig (optional, for SGLang provisioning)
@@ -27,6 +27,7 @@ Config files should export:
 
     - tasks: list[dict] OR tasks_path: Path (one required)
     - prepare_messages: Callable[[dict], list[Message]]
+    - attempt_executor: Callable[[dict, str, Environment | None, RunConfig], AttemptRow] (optional)
     - score_fn: Callable[[AttemptRow], Score] or sample_scorer
     - make_environment: Callable[[], Environment] (optional)
 """
@@ -155,27 +156,30 @@ async def run_with_api(
     from rollouts.core import Endpoint, EvalConfig
     from rollouts.eval import evaluate
 
-    # Build endpoint
-    api_key = endpoint_config.api_key or get_api_key(endpoint_config.provider)
-    if not api_key and endpoint_config.provider in ("anthropic", "openai", "google"):
-        raise ValueError(
-            f"No API key found for {endpoint_config.provider}. "
-            f"Set {endpoint_config.provider.upper()}_API_KEY in environment."
+    endpoint = None
+    if endpoint_config is not None:
+        api_key = endpoint_config.api_key or get_api_key(endpoint_config.provider)
+        if not api_key and endpoint_config.provider in ("anthropic", "openai", "google"):
+            raise ValueError(
+                f"No API key found for {endpoint_config.provider}. "
+                f"Set {endpoint_config.provider.upper()}_API_KEY in environment."
+            )
+
+        resolved_base_url, resolved_api_format = _resolve_endpoint_metadata(
+            endpoint_config.provider,
+            endpoint_config.model,
         )
 
-    resolved_base_url, resolved_api_format = _resolve_endpoint_metadata(
-        endpoint_config.provider,
-        endpoint_config.model,
-    )
-
-    endpoint = Endpoint(
-        model=f"{endpoint_config.provider}/{endpoint_config.model}",
-        base_url=endpoint_config.base_url or resolved_base_url or endpoint_config.get_base_url(),
-        api_format=resolved_api_format or endpoint_config.get_api_format(),
-        api_key=api_key,
-        temperature=endpoint_config.temperature,
-        max_tokens=endpoint_config.max_tokens,
-    )
+        endpoint = Endpoint(
+            model=f"{endpoint_config.provider}/{endpoint_config.model}",
+            base_url=endpoint_config.base_url
+            or resolved_base_url
+            or endpoint_config.get_base_url(),
+            api_format=resolved_api_format or endpoint_config.get_api_format(),
+            api_key=api_key,
+            temperature=endpoint_config.temperature,
+            max_tokens=endpoint_config.max_tokens,
+        )
 
     # Load tasks
     if hasattr(config_module, "tasks"):
@@ -198,7 +202,14 @@ async def run_with_api(
 
     # Get eval functions from config
     prepare_messages = (
-        run_spec.prepare_messages if run_spec is not None else config_module.prepare_messages
+        run_spec.prepare_messages
+        if run_spec is not None
+        else getattr(config_module, "prepare_messages", None)
+    )
+    attempt_executor = (
+        run_spec.attempt_executor
+        if run_spec is not None
+        else getattr(config_module, "attempt_executor", None)
     )
     score_fn = getattr(config_module, "score_fn", None)
     sample_scorer = getattr(config_module, "sample_scorer", None)
@@ -257,6 +268,7 @@ async def run_with_api(
         prepare_messages=prepare_messages,
         environment=environment,
         environment_factory=environment_factory,
+        attempt_executor=attempt_executor,
         run_config=agent_run_config,
         max_samples=len(tasks),
         max_concurrent=run_config.max_concurrent,
@@ -380,19 +392,33 @@ Examples:
 
     # Get configs with defaults
     run_spec = getattr(config_module, "run_spec", None)
-    endpoint_config = run_spec.endpoint if run_spec is not None else getattr(config_module, "endpoint", EndpointConfig())
+    top_level_attempt_executor = getattr(config_module, "attempt_executor", None)
+    if run_spec is not None:
+        endpoint_config = run_spec.endpoint
+    elif hasattr(config_module, "endpoint"):
+        endpoint_config = config_module.endpoint
+    elif top_level_attempt_executor is not None:
+        endpoint_config = None
+    else:
+        endpoint_config = EndpointConfig()
     run_config = getattr(config_module, "run", EvalRunConfig())
     output_config = getattr(config_module, "output", EvalOutputConfig())
     hardware_config = getattr(config_module, "hardware", None)
     server_config = getattr(config_module, "server", InferenceServerConfig())
 
     # Apply CLI overrides
-    if args.provider:
-        endpoint_config = replace(endpoint_config, provider=args.provider)
-    if args.model:
-        endpoint_config = replace(endpoint_config, model=args.model)
-    if args.base_url:
-        endpoint_config = replace(endpoint_config, base_url=args.base_url)
+    if endpoint_config is None:
+        if args.provider or args.model or args.base_url or args.provision or args.hardware_provider:
+            raise ValueError(
+                "Endpoint overrides and provisioning flags are invalid for attempt-executor-only evals."
+            )
+    else:
+        if args.provider:
+            endpoint_config = replace(endpoint_config, provider=args.provider)
+        if args.model:
+            endpoint_config = replace(endpoint_config, model=args.model)
+        if args.base_url:
+            endpoint_config = replace(endpoint_config, base_url=args.base_url)
 
     if args.limit:
         run_config = replace(run_config, max_samples=args.limit)
@@ -404,7 +430,7 @@ Examples:
     if args.output_dir:
         output_config = replace(output_config, output_dir=args.output_dir)
 
-    if args.provision or args.hardware_provider:
+    if endpoint_config is not None and (args.provision or args.hardware_provider):
         if hardware_config is None:
             hardware_config = HardwareConfig()
         if args.gpu_type:
@@ -414,14 +440,17 @@ Examples:
 
     # Print config
     print(f"Config: {config_path}")
-    print(f"Endpoint: {endpoint_config.provider}/{endpoint_config.model}")
-    if endpoint_config.base_url:
-        print(f"Base URL: {endpoint_config.base_url}")
+    if endpoint_config is None:
+        print("Endpoint: direct-attempt executor")
+    else:
+        print(f"Endpoint: {endpoint_config.provider}/{endpoint_config.model}")
+        if endpoint_config.base_url:
+            print(f"Base URL: {endpoint_config.base_url}")
     print(f"Max concurrent: {run_config.max_concurrent}")
 
     # Dispatch based on endpoint type
     async def _run() -> dict[str, Any]:
-        if endpoint_config.provider in ("sglang", "vllm"):
+        if endpoint_config is not None and endpoint_config.provider in ("sglang", "vllm"):
             if endpoint_config.base_url:
                 # Connect to existing server
                 return await run_with_sglang_local(

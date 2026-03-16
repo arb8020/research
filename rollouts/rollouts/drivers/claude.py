@@ -36,7 +36,7 @@ import logging
 import os
 import shutil
 import subprocess
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -90,6 +90,7 @@ class ClaudeDriver:
     timeout_seconds: float = 600.0
     interactive: bool = False
     resume_session_id: str | None = None
+    on_raw_line: Callable[[str], Awaitable[None]] | None = field(default=None, repr=False)
 
     # Runtime state (trio process)
     _proc: trio.Process | None = field(default=None, repr=False)
@@ -284,8 +285,14 @@ class ClaudeDriver:
             if line is None:
                 break
 
+            raw_line = line.decode("utf-8", errors="replace")
+            if raw_line.endswith("\r"):
+                raw_line = raw_line[:-1]
+            if self.on_raw_line is not None and raw_line:
+                await self.on_raw_line(raw_line)
+
             try:
-                msg = json.loads(line.decode().strip())
+                msg = json.loads(raw_line.strip())
             except json.JSONDecodeError:
                 continue
 
