@@ -48,7 +48,6 @@ import time
 from dataclasses import dataclass, field
 from datetime import timedelta
 from typing import Any
-from urllib.parse import urlparse
 
 import torch
 import torch.distributed as dist
@@ -708,98 +707,53 @@ class WeightSyncReceiver:
         )
         if self.device.type == "cuda":
             torch.cuda.set_device(self.device)
-        from vllm.distributed.device_communicators.pynccl import PyNcclCommunicator
-        from vllm.distributed.utils import StatelessProcessGroup
-
-        # Match PipelineRL literally here:
-        # - worker creates a StatelessProcessGroup from the TCP init method
-        # - worker then creates a PyNcclCommunicator from that stateless group
         init_method = f"tcp://{self.master_addr}:{self.master_port}"
-        parsed = urlparse(init_method)
-        host = parsed.hostname or "localhost"
-        port = parsed.port or self.master_port
         logger.info(
-            "weight_sync_receiver_stateless_pg_create_start rank=%s world_size=%s host=%s port=%s device=%s group=%s",
+            "weight_sync_receiver_pg_create_start rank=%s world_size=%s init_method=%s device=%s group=%s",
             self.rank,
             self.world_size,
-            host,
-            port,
+            init_method,
             self.device,
             self.group_name,
         )
         _emit_argus_diag(
-            "weight_sync_receiver_stateless_pg_create_start",
+            "weight_sync_receiver_pg_create_start",
             rank=self.rank,
             world_size=self.world_size,
-            host=host,
-            port=port,
+            init_method=init_method,
             device=str(self.device),
             group=self.group_name,
         )
-        stateless_pg = StatelessProcessGroup.create(
-            host=host,
-            port=port,
+        self._process_group = init_extra_process_group(
+            group_name=self.group_name,
+            backend="nccl",
+            init_method=init_method,
             rank=self.rank,
             world_size=self.world_size,
         )
-        self._stateless_group = stateless_pg
+        self._stateless_group = None
+        self._communicator = None
         logger.info(
-            "weight_sync_receiver_stateless_pg_create_ok rank=%s world_size=%s host=%s port=%s device=%s group=%s",
+            "weight_sync_receiver_pg_create_ok rank=%s world_size=%s init_method=%s device=%s group=%s pg_backend=%s pg_rank=%s pg_world_size=%s",
             self.rank,
             self.world_size,
-            host,
-            port,
+            init_method,
             self.device,
             self.group_name,
+            dist.get_backend(self._process_group),
+            dist.get_rank(self._process_group),
+            dist.get_world_size(self._process_group),
         )
         _emit_argus_diag(
-            "weight_sync_receiver_stateless_pg_create_ok",
+            "weight_sync_receiver_pg_create_ok",
             rank=self.rank,
             world_size=self.world_size,
-            host=host,
-            port=port,
+            init_method=init_method,
             device=str(self.device),
             group=self.group_name,
-        )
-        logger.info(
-            "weight_sync_receiver_pynccl_create_start rank=%s world_size=%s host=%s port=%s device=%s group=%s",
-            self.rank,
-            self.world_size,
-            host,
-            port,
-            self.device,
-            self.group_name,
-        )
-        _emit_argus_diag(
-            "weight_sync_receiver_pynccl_create_start",
-            rank=self.rank,
-            world_size=self.world_size,
-            host=host,
-            port=port,
-            device=str(self.device),
-            group=self.group_name,
-        )
-        self._communicator = PyNcclCommunicator(stateless_pg, device=self.device)
-        self._process_group = None
-        logger.info(
-            "weight_sync_receiver_communicator_init_ok rank=%s world_size=%s device=%s communicator=%s socket_ifname=%s socket_ifname_source=%s nccl_env=%s",
-            self.rank,
-            self.world_size,
-            self.device,
-            type(self._communicator).__name__,
-            socket_ifname,
-            socket_ifname_source,
-            _nccl_env_snapshot(),
-        )
-        _emit_argus_diag(
-            "weight_sync_receiver_communicator_init_ok",
-            rank=self.rank,
-            world_size=self.world_size,
-            device=str(self.device),
-            communicator=type(self._communicator).__name__,
-            socket_ifname=socket_ifname,
-            socket_ifname_source=socket_ifname_source,
-            nccl_env=_nccl_env_snapshot(),
+            pg_backend=dist.get_backend(self._process_group),
+            pg_rank=dist.get_rank(self._process_group),
+            pg_world_size=dist.get_world_size(self._process_group),
         )
         logger.info(
             "weight_sync_receiver_init_ok rank=%s world_size=%s master=%s:%s device=%s group=%s pg_backend=%s pg_rank=%s pg_world_size=%s communicator=%s socket_ifname=%s socket_ifname_source=%s nccl_env=%s",
@@ -809,16 +763,10 @@ class WeightSyncReceiver:
             self.master_port,
             self.device,
             self.group_name,
-            dist.get_backend(self._process_group)
-            if self._process_group is not None
-            else "stateless",
-            dist.get_rank(self._process_group) if self._process_group is not None else self.rank,
-            dist.get_world_size(self._process_group)
-            if self._process_group is not None
-            else self.world_size,
-            type(self._communicator).__name__
-            if self._communicator is not None
-            else "dist.broadcast",
+            dist.get_backend(self._process_group),
+            dist.get_rank(self._process_group),
+            dist.get_world_size(self._process_group),
+            "dist.broadcast",
             socket_ifname,
             socket_ifname_source,
             _nccl_env_snapshot(),
@@ -831,18 +779,10 @@ class WeightSyncReceiver:
             master_port=self.master_port,
             device=str(self.device),
             group=self.group_name,
-            pg_backend=dist.get_backend(self._process_group)
-            if self._process_group is not None
-            else "stateless",
-            pg_rank=dist.get_rank(self._process_group)
-            if self._process_group is not None
-            else self.rank,
-            pg_world_size=dist.get_world_size(self._process_group)
-            if self._process_group is not None
-            else self.world_size,
-            communicator=type(self._communicator).__name__
-            if self._communicator is not None
-            else "dist.broadcast",
+            pg_backend=dist.get_backend(self._process_group),
+            pg_rank=dist.get_rank(self._process_group),
+            pg_world_size=dist.get_world_size(self._process_group),
+            communicator="dist.broadcast",
             socket_ifname=socket_ifname,
             socket_ifname_source=socket_ifname_source,
             nccl_env=_nccl_env_snapshot(),
