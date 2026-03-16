@@ -248,7 +248,9 @@ def megatron_grpo_loss_masked(
     if keep_mask.sum() > 0:
         pg_loss = -(coeff.detach() * seq_logprobs)[keep_mask].sum() / keep_mask.sum()
     else:
-        pg_loss = torch.tensor(0.0, device=logits.device, requires_grad=True)
+        # Megatron mutates the returned loss tensor in-place during reduction,
+        # so return a graph-derived zero instead of a fresh leaf tensor.
+        pg_loss = seq_logprobs.sum() * 0.0
 
     with torch.no_grad():
         entropy = _masked_mean(_megatron_entropy(logits), loss_mask).item()
