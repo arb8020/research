@@ -807,92 +807,50 @@ class TorchTitanBackend:
             group_name=group_name,
             device=self._device,
         )
-        errors: list[tuple[str, str]] = []
 
-        async def register_inference_endpoint(
-            endpoint: str,
-            rank: int,
-            *,
-            task_status: trio.TaskStatus[None] = trio.TASK_STATUS_IGNORED,
-        ) -> None:
-            timeout = httpx.Timeout(connect=5.0, read=30.0, write=30.0, pool=5.0)
+        async def register_inference_endpoint(endpoint: str, rank: int) -> None:
+            timeout = httpx.Timeout(connect=5.0, read=300.0, write=300.0, pool=5.0)
             async with httpx.AsyncClient(timeout=timeout) as client:
-                last_error = ""
-                started = False
-                for attempt in range(30):
-                    try:
-                        init_request = InitWeightUpdateGroupRequest(
-                            master_address=master_addr,
-                            master_port=master_port,
-                            rank_offset=rank,
-                            world_size=world_size,
-                            group_name=group_name,
-                        )
-                        logger.info(
-                            "[Rank %s] init_weights_update_group request start endpoint=%s rank=%s attempt=%s",
-                            self.rank,
-                            endpoint,
-                            rank,
-                            attempt,
-                        )
-                        if not started:
-                            task_status.started()
-                            started = True
-                        response = await client.post(
-                            f"{endpoint}/init_weights_update_group",
-                            json=init_request.to_dict(),
-                        )
-                        logger.info(
-                            "[Rank %s] init_weights_update_group response endpoint=%s rank=%s attempt=%s status=%s",
-                            self.rank,
-                            endpoint,
-                            rank,
-                            attempt,
-                            response.status_code,
-                        )
-                        response.raise_for_status()
-                        InitWeightUpdateGroupResponse.from_dict(response.json())
-                        if response.status_code == 200:
-                            return
-                        body = response.text
-                        last_error = f"http_status={response.status_code} body={body[:500]!r} attempt={attempt}"
-                    except Exception as exc:
-                        logger.exception(
-                            "[Rank %s] init_weights_update_group request failed endpoint=%s rank=%s attempt=%s error_type=%s error=%r",
-                            self.rank,
-                            endpoint,
-                            rank,
-                            attempt,
-                            type(exc).__name__,
-                            exc,
-                        )
-                        response = getattr(exc, "response", None)
-                        if response is not None:
-                            try:
-                                body = response.text
-                            except Exception:
-                                body = "<unavailable>"
-                            last_error = (
-                                f"{type(exc).__name__}: {exc!r} "
-                                f"status={response.status_code} body={body[:500]!r} attempt={attempt}"
-                            )
-                        else:
-                            last_error = f"{type(exc).__name__}: {exc!r} attempt={attempt}"
-                    await trio.sleep(1.0)
-                errors.append((endpoint, last_error or "unknown error"))
+                init_request = InitWeightUpdateGroupRequest(
+                    master_address=master_addr,
+                    master_port=master_port,
+                    rank_offset=rank,
+                    world_size=world_size,
+                    group_name=group_name,
+                )
+                logger.info(
+                    "[Rank %s] init_weights_update_group request start endpoint=%s rank=%s mode=blocking_once",
+                    self.rank,
+                    endpoint,
+                    rank,
+                )
+                response = await client.post(
+                    f"{endpoint}/init_weights_update_group",
+                    json=init_request.to_dict(),
+                )
+                logger.info(
+                    "[Rank %s] init_weights_update_group response endpoint=%s rank=%s mode=blocking_once status=%s",
+                    self.rank,
+                    endpoint,
+                    rank,
+                    response.status_code,
+                )
+                response.raise_for_status()
+                InitWeightUpdateGroupResponse.from_dict(response.json())
 
         def trainer_join() -> None:
             os.environ.setdefault("NCCL_SHM_DISABLE", "1")
             os.environ.setdefault("NCCL_CUMEM_ENABLE", "0")
             sender.init_group()
 
-        async with trio.open_nursery() as nursery:
-            for i, endpoint in enumerate(inference_endpoints):
-                await nursery.start(register_inference_endpoint, endpoint, i + 1)
-            nursery.start_soon(trio.to_thread.run_sync, trainer_join)
+        async def trainer_join_task() -> None:
+            await trio.to_thread.run_sync(trainer_join, abandon_on_cancel=True)
 
-        if errors:
-            raise RuntimeError(f"Failed to initialize TorchTitan NCCL sync: {errors}")
+        with trio.fail_after(330):
+            async with trio.open_nursery() as nursery:
+                for i, endpoint in enumerate(inference_endpoints):
+                    nursery.start_soon(register_inference_endpoint, endpoint, i + 1)
+                nursery.start_soon(trainer_join_task)
 
         self._nccl_weight_sender = sender
         self._nccl_inference_endpoints = list(inference_endpoints)
