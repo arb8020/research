@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import json
 import logging
+import sys
 from collections.abc import Awaitable
 from typing import Any, Protocol, cast
 
@@ -18,6 +20,17 @@ import torch
 from rollouts.inference.weight_sync import ParamInfo, WeightSyncReceiver
 
 logger = logging.getLogger(__name__)
+_ARGUS_DIAG_EVENT_SENTINEL = "__ARGUS_DIAG__"
+
+
+def _emit_argus_diag(event: str, **data: object) -> None:
+    try:
+        sys.stderr.write(
+            f"{_ARGUS_DIAG_EVENT_SENTINEL}{json.dumps({'event': event, **data}, sort_keys=True)}\n"
+        )
+        sys.stderr.flush()
+    except Exception:
+        return
 
 
 class _LikeWorker(Protocol):
@@ -62,6 +75,17 @@ class WorkerExtension:
     ) -> dict[str, Any]:
         worker_rank = _worker_rank(self)
         rank = int(rank_offset) + worker_rank
+        _emit_argus_diag(
+            "vllm_worker_init_weight_update_group_start",
+            worker_rank=worker_rank,
+            rank=rank,
+            world_size=int(world_size),
+            group_name=group_name,
+            device=str(self.device),
+            master_address=master_address,
+            master_port=int(master_port),
+            timeout_seconds=float(timeout_seconds),
+        )
         logger.info(
             "vllm worker init_weight_update_group start worker_rank=%s rank=%s world_size=%s group=%s device=%s master=%s:%s timeout=%s",
             worker_rank,
@@ -82,12 +106,24 @@ class WorkerExtension:
             timeout_seconds=timeout_seconds,
             device=self.device,
         )
+        _emit_argus_diag(
+            "vllm_worker_init_weight_update_group_before_receiver_init",
+            rank=rank,
+            group_name=group_name,
+            device=str(self.device),
+        )
         logger.info(
             "vllm worker init_weight_update_group before receiver.init_group rank=%s group=%s",
             rank,
             group_name,
         )
         receiver.init_group()
+        _emit_argus_diag(
+            "vllm_worker_init_weight_update_group_after_receiver_init",
+            rank=rank,
+            group_name=group_name,
+            device=str(self.device),
+        )
         logger.info(
             "vllm worker init_weight_update_group after receiver.init_group rank=%s group=%s",
             rank,
@@ -198,6 +234,10 @@ async def run_server(args: Any, **uvicorn_kwargs: Any) -> None:
         @app.post("/init_weights_update_group")
         async def init_weights_update_group(request: dict[str, Any]) -> dict[str, Any]:
             try:
+                _emit_argus_diag(
+                    "vllm_route_init_weight_update_group_start",
+                    request=request,
+                )
                 logger.info(
                     "init_weights_update_group request start request=%s",
                     request,
@@ -213,6 +253,11 @@ async def run_server(args: Any, **uvicorn_kwargs: Any) -> None:
                         float(request.get("timeout_seconds", 300.0)),
                     ),
                 )
+                _emit_argus_diag(
+                    "vllm_route_init_weight_update_group_collective_rpc_returned",
+                    request=request,
+                    awaitable=inspect.isawaitable(result),
+                )
                 logger.info(
                     "init_weights_update_group collective_rpc returned request=%s awaitable=%s",
                     request,
@@ -220,23 +265,41 @@ async def run_server(args: Any, **uvicorn_kwargs: Any) -> None:
                 )
                 maybe = _maybe_await(result)
                 if maybe is not None:
+                    _emit_argus_diag(
+                        "vllm_route_init_weight_update_group_collective_rpc_await_start",
+                        request=request,
+                    )
                     logger.info(
                         "init_weights_update_group collective_rpc await start request=%s",
                         request,
                     )
                     payload = await asyncio.wait_for(maybe, timeout=30.0)
+                    _emit_argus_diag(
+                        "vllm_route_init_weight_update_group_collective_rpc_await_finished",
+                        request=request,
+                    )
                     logger.info(
                         "init_weights_update_group collective_rpc await finished request=%s",
                         request,
                     )
                 else:
                     payload = result
+                    _emit_argus_diag(
+                        "vllm_route_init_weight_update_group_collective_rpc_immediate",
+                        request=request,
+                    )
                     logger.info(
                         "init_weights_update_group collective_rpc immediate result request=%s",
                         request,
                     )
                 return {"status": "ok", "results": payload}
             except Exception as exc:
+                _emit_argus_diag(
+                    "vllm_route_init_weight_update_group_failed",
+                    request=request,
+                    error_type=type(exc).__name__,
+                    error=repr(exc),
+                )
                 logger.exception(
                     "init_weights_update_group_failed request=%s error_type=%s error=%r",
                     request,
