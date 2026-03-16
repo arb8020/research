@@ -371,6 +371,14 @@ class WeightSyncSender:
             List of async handles if async_op=True, else None
         """
         assert self._process_group is not None, "Call init_group() first"
+        self.device = _normalize_cuda_device(self.device)
+        if self.device.type == "cuda":
+            torch.cuda.set_device(self.device)
+            current_device = torch.cuda.current_device()
+            assert current_device == self.device.index, (
+                "Weight sync sender must broadcast from its configured CUDA device; "
+                f"current={current_device} expected={self.device.index}"
+            )
 
         handles = []
         total_tensors = len(payload.tensors)
