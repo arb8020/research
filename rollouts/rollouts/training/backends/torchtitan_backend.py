@@ -825,20 +825,64 @@ class TorchTitanBackend:
                     endpoint,
                     rank,
                 )
+                done = trio.Event()
+
+                async def poll_weight_sync_trace() -> None:
+                    last_signature: tuple[str, ...] = ()
+                    while not done.is_set():
+                        await trio.sleep(5)
+                        if done.is_set():
+                            break
+                        try:
+                            trace_response = await client.get(
+                                f"{endpoint}/weight_sync_trace", params={"limit": 20}
+                            )
+                            trace_response.raise_for_status()
+                            trace_entries = trace_response.json().get("entries", [])
+                            tail_events = tuple(
+                                str(entry.get("event", "<missing>"))
+                                for entry in trace_entries[-10:]
+                            )
+                            if tail_events and tail_events != last_signature:
+                                last_signature = tail_events
+                                logger.info(
+                                    "[Rank %s] init_weights_update_group trace_poll endpoint=%s rank=%s events=%s tail=%s",
+                                    self.rank,
+                                    endpoint,
+                                    rank,
+                                    list(tail_events),
+                                    trace_entries[-3:],
+                                )
+                        except Exception as trace_exc:
+                            logger.info(
+                                "[Rank %s] init_weights_update_group trace_poll_failed endpoint=%s rank=%s error_type=%s error=%r",
+                                self.rank,
+                                endpoint,
+                                rank,
+                                type(trace_exc).__name__,
+                                trace_exc,
+                            )
+
                 try:
-                    response = await client.post(
-                        f"{endpoint}/init_weights_update_group",
-                        json=init_request.to_dict(),
-                    )
-                    logger.info(
-                        "[Rank %s] init_weights_update_group response endpoint=%s rank=%s mode=blocking_once status=%s",
-                        self.rank,
-                        endpoint,
-                        rank,
-                        response.status_code,
-                    )
-                    response.raise_for_status()
-                    InitWeightUpdateGroupResponse.from_dict(response.json())
+                    async with trio.open_nursery() as nursery:
+                        nursery.start_soon(poll_weight_sync_trace)
+                        try:
+                            response = await client.post(
+                                f"{endpoint}/init_weights_update_group",
+                                json=init_request.to_dict(),
+                            )
+                            logger.info(
+                                "[Rank %s] init_weights_update_group response endpoint=%s rank=%s mode=blocking_once status=%s",
+                                self.rank,
+                                endpoint,
+                                rank,
+                                response.status_code,
+                            )
+                            response.raise_for_status()
+                            InitWeightUpdateGroupResponse.from_dict(response.json())
+                        finally:
+                            done.set()
+                            nursery.cancel_scope.cancel()
                 except Exception as exc:
                     trace_summary = "trace_unavailable"
                     try:
