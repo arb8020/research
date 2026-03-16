@@ -5,6 +5,7 @@ from typing import Any
 
 import pytest
 
+import rollouts.training.vllm_qed_server as vllm_qed_server
 from rollouts.training.vllm_qed_server import (
     _dispatch_init_weight_update_group,
     _dispatch_receive_weight_update,
@@ -20,6 +21,16 @@ class FakeEngineClient:
     def collective_rpc(self, method: str, args: tuple[Any, ...]) -> Any | Awaitable[Any]:
         self.calls.append((method, args))
         return self._result
+
+
+class AsyncFakeEngineClient(FakeEngineClient):
+    def collective_rpc(self, method: str, args: tuple[Any, ...]) -> Any | Awaitable[Any]:
+        self.calls.append((method, args))
+
+        async def _result() -> Any:
+            return self._result
+
+        return _result()
 
 
 @pytest.mark.trio
@@ -45,6 +56,34 @@ async def test_dispatch_init_weight_update_group_normalizes_request() -> None:
             ("127.0.0.1", 29517, 1, 2, "weight_sync", 300.0),
         )
     ]
+
+
+@pytest.mark.trio
+async def test_dispatch_init_weight_update_group_uses_request_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = AsyncFakeEngineClient({"rank": 1})
+    observed: list[float] = []
+
+    async def _fake_wait_for(awaitable: Awaitable[Any], timeout: float) -> Any:
+        observed.append(timeout)
+        return await awaitable
+
+    monkeypatch.setattr(vllm_qed_server.asyncio, "wait_for", _fake_wait_for)
+
+    await _dispatch_init_weight_update_group(
+        client,
+        {
+            "master_address": "127.0.0.1",
+            "master_port": 29517,
+            "rank_offset": 1,
+            "world_size": 2,
+            "group_name": "weight_sync",
+            "timeout_seconds": 123.0,
+        },
+    )
+
+    assert observed == [123.0]
 
 
 @pytest.mark.trio

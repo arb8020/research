@@ -806,10 +806,16 @@ class TorchTitanBackend:
         )
         errors: list[tuple[str, str]] = []
 
-        async def register_inference_endpoint(endpoint: str, rank: int) -> None:
+        async def register_inference_endpoint(
+            endpoint: str,
+            rank: int,
+            *,
+            task_status: trio.TaskStatus[None] = trio.TASK_STATUS_IGNORED,
+        ) -> None:
             timeout = httpx.Timeout(connect=5.0, read=30.0, write=30.0, pool=5.0)
             async with httpx.AsyncClient(timeout=timeout) as client:
                 last_error = ""
+                started = False
                 for attempt in range(30):
                     try:
                         init_request = InitWeightUpdateGroupRequest(
@@ -819,18 +825,6 @@ class TorchTitanBackend:
                             world_size=world_size,
                             group_name=group_name,
                         )
-                        probe_response = await client.get(
-                            f"{endpoint}/init_weights_update_group_probe"
-                        )
-                        logger.info(
-                            "[Rank %s] init_weights_update_group probe endpoint=%s rank=%s attempt=%s status=%s body=%s",
-                            self.rank,
-                            endpoint,
-                            rank,
-                            attempt,
-                            probe_response.status_code,
-                            probe_response.text[:200],
-                        )
                         logger.info(
                             "[Rank %s] init_weights_update_group request start endpoint=%s rank=%s attempt=%s",
                             self.rank,
@@ -838,6 +832,9 @@ class TorchTitanBackend:
                             rank,
                             attempt,
                         )
+                        if not started:
+                            task_status.started()
+                            started = True
                         response = await client.post(
                             f"{endpoint}/init_weights_update_group",
                             json=init_request.to_dict(),
@@ -888,8 +885,7 @@ class TorchTitanBackend:
 
         async with trio.open_nursery() as nursery:
             for i, endpoint in enumerate(inference_endpoints):
-                nursery.start_soon(register_inference_endpoint, endpoint, i + 1)
-            await trio.sleep(0.2)
+                await nursery.start(register_inference_endpoint, endpoint, i + 1)
             nursery.start_soon(trio.to_thread.run_sync, trainer_join)
 
         if errors:
@@ -955,13 +951,18 @@ class TorchTitanBackend:
         async with httpx.AsyncClient(timeout=300.0) as client:
             async with trio.open_nursery() as nursery:
 
-                async def request_receive(endpoint: str) -> None:
+                async def request_receive(
+                    endpoint: str,
+                    *,
+                    task_status: trio.TaskStatus[None] = trio.TASK_STATUS_IGNORED,
+                ) -> None:
                     receive_request = ReceiveWeightUpdateRequest(
                         names=tuple(item["name"] for item in param_info),
                         load_names=tuple(item["load_name"] for item in param_info),
                         shapes=tuple(tuple(item["shape"]) for item in param_info),
                         dtypes=tuple(item["dtype"] for item in param_info),
                     )
+                    task_status.started()
                     response = await client.post(
                         f"{endpoint}/receive_weight_update",
                         json=receive_request.to_dict(),
@@ -970,9 +971,8 @@ class TorchTitanBackend:
                     responses.append(response.json())
 
                 for endpoint in self._nccl_inference_endpoints:
-                    nursery.start_soon(request_receive, endpoint)
+                    await nursery.start(request_receive, endpoint)
 
-                await trio.sleep(0.2)
                 await trio.to_thread.run_sync(sender.broadcast_payload, payload)
 
         logger.info(

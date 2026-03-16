@@ -952,34 +952,53 @@ def _init_nccl_weight_sync(
             group=group_name,
         )
 
-    with concurrent.futures.ThreadPoolExecutor(
+    executor = concurrent.futures.ThreadPoolExecutor(
         max_workers=max(1, len(inference_endpoints) + 1)
-    ) as executor:
-        futures = [executor.submit(trainer_join)]
+    )
+    try:
+        trainer_future = executor.submit(trainer_join)
+        registration_futures = []
         for i, endpoint in enumerate(inference_endpoints):
             inference_rank = i + 1
-            futures.append(executor.submit(register_inference_endpoint, endpoint, inference_rank))
-        for index, future in enumerate(futures):
+            registration_futures.append(
+                executor.submit(register_inference_endpoint, endpoint, inference_rank)
+            )
+        for index, future in enumerate(
+            concurrent.futures.as_completed(registration_futures),
+            start=1,
+        ):
             logger.info(
-                "weight_sync_megatron_future_wait_start index=%s total=%s", index, len(futures)
+                "weight_sync_megatron_registration_wait_start index=%s total=%s",
+                index,
+                len(registration_futures),
             )
             _emit_argus_diag(
-                "weight_sync_megatron_future_wait_start",
+                "weight_sync_megatron_registration_wait_start",
                 index=index,
-                total=len(futures),
+                total=len(registration_futures),
             )
             future.result()
             logger.info(
-                "weight_sync_megatron_future_wait_ok index=%s total=%s", index, len(futures)
+                "weight_sync_megatron_registration_wait_ok index=%s total=%s",
+                index,
+                len(registration_futures),
             )
             _emit_argus_diag(
-                "weight_sync_megatron_future_wait_ok",
+                "weight_sync_megatron_registration_wait_ok",
                 index=index,
-                total=len(futures),
+                total=len(registration_futures),
             )
 
-    if errors:
-        raise RuntimeError(f"Failed to register inference endpoints for NCCL: {errors}")
+        if errors:
+            raise RuntimeError(f"Failed to register inference endpoints for NCCL: {errors}")
+
+        logger.info("weight_sync_megatron_trainer_future_wait_start")
+        _emit_argus_diag("weight_sync_megatron_trainer_future_wait_start")
+        trainer_future.result()
+        logger.info("weight_sync_megatron_trainer_future_wait_ok")
+        _emit_argus_diag("weight_sync_megatron_trainer_future_wait_ok")
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
 
     sender = sender_holder.get("sender")
     if sender is None:

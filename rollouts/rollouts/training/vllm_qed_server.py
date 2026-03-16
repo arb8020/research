@@ -103,7 +103,7 @@ async def _dispatch_init_weight_update_group(
             request.group_name,
             request.timeout_seconds,
         ),
-        timeout_seconds=30.0,
+        timeout_seconds=request.timeout_seconds,
     )
     response = InitWeightUpdateGroupResponse(results=payload)
     return {"status": "ok", "results": response.results}
