@@ -46,6 +46,7 @@ import sys
 from dataclasses import dataclass, field
 from datetime import timedelta
 from typing import Any
+from urllib.parse import urlparse
 
 import torch
 import torch.distributed as dist
@@ -671,74 +672,99 @@ class WeightSyncReceiver:
         )
         if self.device.type == "cuda":
             torch.cuda.set_device(self.device)
-        try:
-            from vllm.distributed.device_communicators.pynccl import PyNcclCommunicator
-            from vllm.distributed.utils import StatelessProcessGroup
+        from vllm.distributed.device_communicators.pynccl import PyNcclCommunicator
+        from vllm.distributed.utils import StatelessProcessGroup
 
-            stateless_pg = StatelessProcessGroup.create(
-                host=self.master_addr,
-                port=self.master_port,
-                rank=self.rank,
-                world_size=self.world_size,
-                store_timeout=int(self.timeout_seconds),
-            )
-            self._stateless_group = stateless_pg
-            self._communicator = PyNcclCommunicator(stateless_pg, device=self.device)
-            logger.info(
-                "weight_sync_receiver_communicator_init_ok rank=%s world_size=%s device=%s communicator=%s socket_ifname=%s socket_ifname_source=%s nccl_env=%s",
-                self.rank,
-                self.world_size,
-                self.device,
-                type(self._communicator).__name__,
-                socket_ifname,
-                socket_ifname_source,
-                _nccl_env_snapshot(),
-            )
-            _emit_argus_diag(
-                "weight_sync_receiver_communicator_init_ok",
-                rank=self.rank,
-                world_size=self.world_size,
-                device=str(self.device),
-                communicator=type(self._communicator).__name__,
-                socket_ifname=socket_ifname,
-                socket_ifname_source=socket_ifname_source,
-                nccl_env=_nccl_env_snapshot(),
-            )
-        except Exception as exc:
-            logger.warning(
-                "weight_sync_receiver_communicator_init_failed rank=%s world_size=%s device=%s error=%r socket_ifname=%s socket_ifname_source=%s nccl_env=%s; "
-                "falling back to torch.distributed broadcast",
-                self.rank,
-                self.world_size,
-                self.device,
-                exc,
-                socket_ifname,
-                socket_ifname_source,
-                _nccl_env_snapshot(),
-            )
-            _emit_argus_diag(
-                "weight_sync_receiver_communicator_init_failed",
-                rank=self.rank,
-                world_size=self.world_size,
-                device=str(self.device),
-                error=repr(exc),
-                socket_ifname=socket_ifname,
-                socket_ifname_source=socket_ifname_source,
-                nccl_env=_nccl_env_snapshot(),
-            )
-            self._communicator = None
-            self._stateless_group = None
-        if self._communicator is None:
-            self._process_group = create_stateless_process_group(
-                master_addr=self.master_addr,
-                master_port=self.master_port,
-                rank=self.rank,
-                world_size=self.world_size,
-                group_name=self.group_name,
-                timeout_seconds=self.timeout_seconds,
-            )
-        else:
-            self._process_group = None
+        # Match PipelineRL literally here:
+        # - worker creates a StatelessProcessGroup from the TCP init method
+        # - worker then creates a PyNcclCommunicator from that stateless group
+        init_method = f"tcp://{self.master_addr}:{self.master_port}"
+        parsed = urlparse(init_method)
+        host = parsed.hostname or "localhost"
+        port = parsed.port or self.master_port
+        logger.info(
+            "weight_sync_receiver_stateless_pg_create_start rank=%s world_size=%s host=%s port=%s device=%s group=%s",
+            self.rank,
+            self.world_size,
+            host,
+            port,
+            self.device,
+            self.group_name,
+        )
+        _emit_argus_diag(
+            "weight_sync_receiver_stateless_pg_create_start",
+            rank=self.rank,
+            world_size=self.world_size,
+            host=host,
+            port=port,
+            device=str(self.device),
+            group=self.group_name,
+        )
+        stateless_pg = StatelessProcessGroup.create(
+            host=host,
+            port=port,
+            rank=self.rank,
+            world_size=self.world_size,
+        )
+        self._stateless_group = stateless_pg
+        logger.info(
+            "weight_sync_receiver_stateless_pg_create_ok rank=%s world_size=%s host=%s port=%s device=%s group=%s",
+            self.rank,
+            self.world_size,
+            host,
+            port,
+            self.device,
+            self.group_name,
+        )
+        _emit_argus_diag(
+            "weight_sync_receiver_stateless_pg_create_ok",
+            rank=self.rank,
+            world_size=self.world_size,
+            host=host,
+            port=port,
+            device=str(self.device),
+            group=self.group_name,
+        )
+        logger.info(
+            "weight_sync_receiver_pynccl_create_start rank=%s world_size=%s host=%s port=%s device=%s group=%s",
+            self.rank,
+            self.world_size,
+            host,
+            port,
+            self.device,
+            self.group_name,
+        )
+        _emit_argus_diag(
+            "weight_sync_receiver_pynccl_create_start",
+            rank=self.rank,
+            world_size=self.world_size,
+            host=host,
+            port=port,
+            device=str(self.device),
+            group=self.group_name,
+        )
+        self._communicator = PyNcclCommunicator(stateless_pg, device=self.device)
+        self._process_group = None
+        logger.info(
+            "weight_sync_receiver_communicator_init_ok rank=%s world_size=%s device=%s communicator=%s socket_ifname=%s socket_ifname_source=%s nccl_env=%s",
+            self.rank,
+            self.world_size,
+            self.device,
+            type(self._communicator).__name__,
+            socket_ifname,
+            socket_ifname_source,
+            _nccl_env_snapshot(),
+        )
+        _emit_argus_diag(
+            "weight_sync_receiver_communicator_init_ok",
+            rank=self.rank,
+            world_size=self.world_size,
+            device=str(self.device),
+            communicator=type(self._communicator).__name__,
+            socket_ifname=socket_ifname,
+            socket_ifname_source=socket_ifname_source,
+            nccl_env=_nccl_env_snapshot(),
+        )
         logger.info(
             "weight_sync_receiver_init_ok rank=%s world_size=%s master=%s:%s device=%s group=%s pg_backend=%s pg_rank=%s pg_world_size=%s communicator=%s socket_ifname=%s socket_ifname_source=%s nccl_env=%s",
             self.rank,
