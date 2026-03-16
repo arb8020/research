@@ -799,11 +799,11 @@ class SGLangEngine:
             f"CUDA_VISIBLE_DEVICES={gpu_str} "
             f"HF_HUB_DOWNLOAD_TIMEOUT=300 "  # 5 min timeout for model downloads
             # NCCL environment for cross-process weight sync:
-            # - NCCL_SHM_DISABLE=1: Use sockets instead of shared memory (avoids IPC issues)
             # - NCCL_CUMEM_ENABLE=0: Consistent with SGLang defaults (see miles/ray/actor_group.py)
             # - NCCL_DEBUG/NCCL_DEBUG_SUBSYS: surface receiver-side transport/init failures
+            # Do not force NCCL_SHM_DISABLE here. Miles/Slime do not blanket-disable
+            # SHM for this path, and our current failure is in NCCL transport setup.
             f"{socket_ifname_env}"
-            f"NCCL_SHM_DISABLE=1 "
             f"NCCL_CUMEM_ENABLE=0 "
             f"NCCL_DEBUG=INFO "
             f"NCCL_DEBUG_SUBSYS=INIT,COLL "
@@ -1511,7 +1511,6 @@ class EngineV2Engine:
             f"CUDA_VISIBLE_DEVICES={gpu_str} "
             f"HF_HUB_DOWNLOAD_TIMEOUT=300 "
             # NCCL environment for cross-process weight sync
-            f"NCCL_SHM_DISABLE=1 "
             f"NCCL_CUMEM_ENABLE=0 "
             f"python -m rollouts.inference.server "
             f"--model {self.model_name} "
@@ -1785,7 +1784,7 @@ class NCCLWeightSyncer:
         async def trainer_join() -> None:
             def _join() -> None:
                 # Set NCCL env vars
-                os.environ.setdefault("NCCL_SHM_DISABLE", "1")
+                os.environ.pop("NCCL_SHM_DISABLE", None)
                 os.environ.setdefault("NCCL_CUMEM_ENABLE", "0")
 
                 self._process_group = create_stateless_process_group(

@@ -949,7 +949,7 @@ def _init_nccl_weight_sync(
     def trainer_join() -> None:
         import os
 
-        os.environ.setdefault("NCCL_SHM_DISABLE", "1")
+        os.environ.pop("NCCL_SHM_DISABLE", None)
         os.environ.setdefault("NCCL_CUMEM_ENABLE", "0")
         logger.info(
             "weight_sync_megatron_trainer_join_start master=%s:%s world_size=%s group=%s",
