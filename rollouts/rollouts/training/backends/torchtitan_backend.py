@@ -925,14 +925,28 @@ class TorchTitanBackend:
             os.environ.setdefault("NCCL_CUMEM_ENABLE", "0")
             sender.init_group()
 
-        async def trainer_join_task() -> None:
-            await trio.to_thread.run_sync(trainer_join, abandon_on_cancel=True)
+        logger.info(
+            "[Rank %s] init_weights_update_group sender_init_start group=%s master=%s:%s world_size=%s",
+            self.rank,
+            group_name,
+            master_addr,
+            master_port,
+            world_size,
+        )
+        await trio.to_thread.run_sync(trainer_join, abandon_on_cancel=True)
+        logger.info(
+            "[Rank %s] init_weights_update_group sender_init_ok group=%s master=%s:%s world_size=%s",
+            self.rank,
+            group_name,
+            master_addr,
+            master_port,
+            world_size,
+        )
 
         with trio.fail_after(330):
             async with trio.open_nursery() as nursery:
                 for i, endpoint in enumerate(inference_endpoints):
                     nursery.start_soon(register_inference_endpoint, endpoint, i + 1)
-                nursery.start_soon(trainer_join_task)
 
         self._nccl_weight_sender = sender
         self._nccl_inference_endpoints = list(inference_endpoints)
