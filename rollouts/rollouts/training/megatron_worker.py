@@ -966,12 +966,19 @@ def _do_sync_weights_nccl(
     )
 
     # All trainer ranks must participate in runtime export collectives. Only
-    # rank 0 publishes the resulting tensor product type to inference.
+    # rank 0 owns the sender / inference publication side effects.
+    export = build_megatron_inference_export_from_runtime(model_name, backend.model)
+    if not inference_endpoints:
+        logger.info(
+            "weight_sync_megatron_export_participant_only tensors=%s",
+            len(export.tensors),
+        )
+        return
+
     sender = getattr(backend, "_nccl_weight_sender", None)
     if sender is None:
         raise RuntimeError("NCCL sender not initialized. Call init_nccl_weight_sync first.")
 
-    export = build_megatron_inference_export_from_runtime(model_name, backend.model)
     payload = export.to_weight_update_payload(version=sender.weight_version + 1)
     if not payload.tensors:
         raise RuntimeError("No weights produced for NCCL sync")
@@ -981,9 +988,6 @@ def _do_sync_weights_nccl(
         len(payload.tensors),
         len(export.dropped_unconverted_keys),
     )
-
-    if not inference_endpoints:
-        return
 
     _pause_and_flush_inference_endpoints(inference_endpoints)
     logger.info(
