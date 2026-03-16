@@ -574,7 +574,7 @@ class WeightSyncSender:
             return handles
 
         if async_op:
-            handles = _broadcast_all(use_async=True)
+            handles = _broadcast_all(use_async=False)
             if advance_version:
                 self._weight_version += 1
             return handles
