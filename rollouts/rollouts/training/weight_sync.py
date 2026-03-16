@@ -16,6 +16,7 @@ Architecture:
 from __future__ import annotations
 
 import logging
+import os
 import subprocess
 import threading
 import time
@@ -55,6 +56,29 @@ def _read_log_tail(path: Path, max_lines: int = 40) -> str:
         return "\n".join(tail) if tail else "<log file empty>"
     except Exception as exc:  # pragma: no cover - diagnostic path
         return f"<failed to read log tail: {exc}>"
+
+
+def _resolve_socket_ifname_for_launch() -> tuple[str | None, str]:
+    explicit = os.environ.get("NCCL_SOCKET_IFNAME") or os.environ.get("GLOO_SOCKET_IFNAME")
+    if explicit:
+        return explicit, "env"
+    if Path("/sys/class/net/eth0").exists():
+        return "eth0", "sysfs:eth0"
+    try:
+        result = subprocess.run(
+            ["ip", "route", "get", "1.1.1.1"],
+            capture_output=True,
+            check=False,
+            text=True,
+            timeout=5.0,
+        )
+        fields = result.stdout.split()
+        for index, field in enumerate(fields):
+            if field == "dev" and index + 1 < len(fields):
+                return fields[index + 1], "ip-route"
+    except Exception:
+        pass
+    return None, "none"
 
 
 def _classify_sglang_startup_phase(line: str) -> tuple[str, dict[str, Any]] | None:
@@ -765,6 +789,12 @@ class SGLangEngine:
     def build_launch_cmd(self) -> str:
         """Build SGLang launch command (without redirection - tmux handles that)."""
         gpu_str = ",".join(str(g) for g in self.cuda_device_ids)
+        socket_ifname, _socket_ifname_source = _resolve_socket_ifname_for_launch()
+        socket_ifname_env = ""
+        if socket_ifname:
+            socket_ifname_env = (
+                f"NCCL_SOCKET_IFNAME={socket_ifname} GLOO_SOCKET_IFNAME={socket_ifname} "
+            )
         cmd = (
             f"CUDA_VISIBLE_DEVICES={gpu_str} "
             f"HF_HUB_DOWNLOAD_TIMEOUT=300 "  # 5 min timeout for model downloads
@@ -772,6 +802,7 @@ class SGLangEngine:
             # - NCCL_SHM_DISABLE=1: Use sockets instead of shared memory (avoids IPC issues)
             # - NCCL_CUMEM_ENABLE=0: Consistent with SGLang defaults (see miles/ray/actor_group.py)
             # - NCCL_DEBUG/NCCL_DEBUG_SUBSYS: surface receiver-side transport/init failures
+            f"{socket_ifname_env}"
             f"NCCL_SHM_DISABLE=1 "
             f"NCCL_CUMEM_ENABLE=0 "
             f"NCCL_DEBUG=INFO "

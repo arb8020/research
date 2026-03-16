@@ -41,6 +41,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import subprocess
 import sys
 from dataclasses import dataclass, field
 from typing import Any
@@ -85,8 +86,44 @@ def _nccl_env_snapshot() -> dict[str, object]:
         "NCCL_DEBUG_SUBSYS",
         "NCCL_SHM_DISABLE",
         "NCCL_CUMEM_ENABLE",
+        "NCCL_SOCKET_IFNAME",
+        "GLOO_SOCKET_IFNAME",
     )
     return {key: os.environ.get(key) for key in keys}
+
+
+def _resolve_socket_ifname() -> tuple[str | None, str]:
+    explicit = os.environ.get("NCCL_SOCKET_IFNAME") or os.environ.get("GLOO_SOCKET_IFNAME")
+    if explicit:
+        return explicit, "env"
+
+    if os.path.exists("/sys/class/net/eth0"):
+        return "eth0", "sysfs:eth0"
+
+    try:
+        result = subprocess.run(
+            ["ip", "route", "get", "1.1.1.1"],
+            capture_output=True,
+            check=False,
+            text=True,
+            timeout=5.0,
+        )
+        fields = result.stdout.split()
+        for index, field in enumerate(fields):
+            if field == "dev" and index + 1 < len(fields):
+                return fields[index + 1], "ip-route"
+    except Exception:
+        pass
+
+    return None, "none"
+
+
+def _apply_socket_ifname_defaults() -> tuple[str | None, str]:
+    ifname, source = _resolve_socket_ifname()
+    if ifname:
+        os.environ.setdefault("NCCL_SOCKET_IFNAME", ifname)
+        os.environ.setdefault("GLOO_SOCKET_IFNAME", ifname)
+    return ifname, source
 
 
 def _normalize_cuda_device(device: torch.device) -> torch.device:
@@ -303,13 +340,16 @@ class WeightSyncSender:
         self.device = _normalize_cuda_device(self.device)
         os.environ.setdefault("NCCL_DEBUG", "INFO")
         os.environ.setdefault("NCCL_DEBUG_SUBSYS", "INIT,COLL")
+        socket_ifname, socket_ifname_source = _apply_socket_ifname_defaults()
         logger.info(
-            "weight_sync_sender_init_start world_size=%s master=%s:%s device=%s group=%s nccl_env=%s",
+            "weight_sync_sender_init_start world_size=%s master=%s:%s device=%s group=%s socket_ifname=%s socket_ifname_source=%s nccl_env=%s",
             self.world_size,
             self.master_addr,
             self.master_port,
             self.device,
             self.group_name,
+            socket_ifname,
+            socket_ifname_source,
             _nccl_env_snapshot(),
         )
         _emit_argus_diag(
@@ -319,6 +359,8 @@ class WeightSyncSender:
             master_port=self.master_port,
             device=str(self.device),
             group=self.group_name,
+            socket_ifname=socket_ifname,
+            socket_ifname_source=socket_ifname_source,
             nccl_env=_nccl_env_snapshot(),
         )
         if self.device.type == "cuda":
@@ -332,7 +374,7 @@ class WeightSyncSender:
             timeout_seconds=self.timeout_seconds,
         )
         logger.info(
-            "weight_sync_sender_init_ok world_size=%s master=%s:%s device=%s group=%s pg_backend=%s pg_rank=%s pg_world_size=%s nccl_env=%s",
+            "weight_sync_sender_init_ok world_size=%s master=%s:%s device=%s group=%s pg_backend=%s pg_rank=%s pg_world_size=%s socket_ifname=%s socket_ifname_source=%s nccl_env=%s",
             self.world_size,
             self.master_addr,
             self.master_port,
@@ -341,6 +383,8 @@ class WeightSyncSender:
             dist.get_backend(self._process_group),
             dist.get_rank(self._process_group),
             dist.get_world_size(self._process_group),
+            socket_ifname,
+            socket_ifname_source,
             _nccl_env_snapshot(),
         )
         _emit_argus_diag(
@@ -353,6 +397,8 @@ class WeightSyncSender:
             pg_backend=dist.get_backend(self._process_group),
             pg_rank=dist.get_rank(self._process_group),
             pg_world_size=dist.get_world_size(self._process_group),
+            socket_ifname=socket_ifname,
+            socket_ifname_source=socket_ifname_source,
             nccl_env=_nccl_env_snapshot(),
         )
 
@@ -516,14 +562,17 @@ class WeightSyncReceiver:
         self.device = _normalize_cuda_device(self.device)
         os.environ.setdefault("NCCL_DEBUG", "INFO")
         os.environ.setdefault("NCCL_DEBUG_SUBSYS", "INIT,COLL")
+        socket_ifname, socket_ifname_source = _apply_socket_ifname_defaults()
         logger.info(
-            "weight_sync_receiver_init_start rank=%s world_size=%s master=%s:%s device=%s group=%s nccl_env=%s",
+            "weight_sync_receiver_init_start rank=%s world_size=%s master=%s:%s device=%s group=%s socket_ifname=%s socket_ifname_source=%s nccl_env=%s",
             self.rank,
             self.world_size,
             self.master_addr,
             self.master_port,
             self.device,
             self.group_name,
+            socket_ifname,
+            socket_ifname_source,
             _nccl_env_snapshot(),
         )
         _emit_argus_diag(
@@ -534,6 +583,8 @@ class WeightSyncReceiver:
             master_port=self.master_port,
             device=str(self.device),
             group=self.group_name,
+            socket_ifname=socket_ifname,
+            socket_ifname_source=socket_ifname_source,
             nccl_env=_nccl_env_snapshot(),
         )
         if self.device.type == "cuda":
@@ -559,11 +610,13 @@ class WeightSyncReceiver:
             )
             self._communicator = PyNcclCommunicator(stateless_pg, device=self.device)
             logger.info(
-                "weight_sync_receiver_communicator_init_ok rank=%s world_size=%s device=%s communicator=%s nccl_env=%s",
+                "weight_sync_receiver_communicator_init_ok rank=%s world_size=%s device=%s communicator=%s socket_ifname=%s socket_ifname_source=%s nccl_env=%s",
                 self.rank,
                 self.world_size,
                 self.device,
                 type(self._communicator).__name__,
+                socket_ifname,
+                socket_ifname_source,
                 _nccl_env_snapshot(),
             )
             _emit_argus_diag(
@@ -572,16 +625,20 @@ class WeightSyncReceiver:
                 world_size=self.world_size,
                 device=str(self.device),
                 communicator=type(self._communicator).__name__,
+                socket_ifname=socket_ifname,
+                socket_ifname_source=socket_ifname_source,
                 nccl_env=_nccl_env_snapshot(),
             )
         except Exception as exc:
             logger.warning(
-                "weight_sync_receiver_communicator_init_failed rank=%s world_size=%s device=%s error=%r nccl_env=%s; "
+                "weight_sync_receiver_communicator_init_failed rank=%s world_size=%s device=%s error=%r socket_ifname=%s socket_ifname_source=%s nccl_env=%s; "
                 "falling back to torch.distributed broadcast",
                 self.rank,
                 self.world_size,
                 self.device,
                 exc,
+                socket_ifname,
+                socket_ifname_source,
                 _nccl_env_snapshot(),
             )
             _emit_argus_diag(
@@ -590,11 +647,13 @@ class WeightSyncReceiver:
                 world_size=self.world_size,
                 device=str(self.device),
                 error=repr(exc),
+                socket_ifname=socket_ifname,
+                socket_ifname_source=socket_ifname_source,
                 nccl_env=_nccl_env_snapshot(),
             )
             self._communicator = None
         logger.info(
-            "weight_sync_receiver_init_ok rank=%s world_size=%s master=%s:%s device=%s group=%s pg_backend=%s pg_rank=%s pg_world_size=%s communicator=%s nccl_env=%s",
+            "weight_sync_receiver_init_ok rank=%s world_size=%s master=%s:%s device=%s group=%s pg_backend=%s pg_rank=%s pg_world_size=%s communicator=%s socket_ifname=%s socket_ifname_source=%s nccl_env=%s",
             self.rank,
             self.world_size,
             self.master_addr,
@@ -607,6 +666,8 @@ class WeightSyncReceiver:
             type(self._communicator).__name__
             if self._communicator is not None
             else "dist.broadcast",
+            socket_ifname,
+            socket_ifname_source,
             _nccl_env_snapshot(),
         )
         _emit_argus_diag(
@@ -623,6 +684,8 @@ class WeightSyncReceiver:
             communicator=type(self._communicator).__name__
             if self._communicator is not None
             else "dist.broadcast",
+            socket_ifname=socket_ifname,
+            socket_ifname_source=socket_ifname_source,
             nccl_env=_nccl_env_snapshot(),
         )
 

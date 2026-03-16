@@ -103,13 +103,25 @@ def _resolve_train_future(future: Any) -> Any:
     return future._result
 
 
+def _is_loopback_host(host: str | None) -> bool:
+    if host is None:
+        return False
+    normalized = host.strip().lower()
+    return normalized == "localhost" or normalized.startswith("127.") or normalized == "::1"
+
+
 def _resolve_local_host_ip() -> tuple[str, str]:
-    """Resolve a non-loopback IPv4 address for intra-sandbox rendezvous."""
+    """Resolve a non-loopback IPv4 address for intra-sandbox rendezvous.
+
+    Weight sync is a separate state machine from the training PG. Reusing an
+    ambient loopback MASTER_ADDR here is dishonest because it smuggles the
+    training rendezvous denotation into the trainer<->inference update channel.
+    """
     import socket
     import subprocess
 
     env_master_addr = os.environ.get("MASTER_ADDR")
-    if env_master_addr:
+    if env_master_addr and not _is_loopback_host(env_master_addr):
         return env_master_addr.strip(), "env:MASTER_ADDR"
 
     try:
@@ -821,6 +833,7 @@ def _init_nccl_weight_sync(
 
     import socket
 
+    ambient_master_addr = os.environ.get("MASTER_ADDR")
     resolved_host_ip, resolved_host_ip_source = _resolve_local_host_ip()
     explicit_master_addr = master_addr
     if master_addr is None:
@@ -857,6 +870,7 @@ def _init_nccl_weight_sync(
         resolved_host_ip=resolved_host_ip,
         resolved_host_ip_source=resolved_host_ip_source,
         loopback_addr="127.0.0.1",
+        ambient_master_addr=ambient_master_addr,
         explicit_master_addr=explicit_master_addr,
         hostname=socket.gethostname(),
         master_port=master_port,
