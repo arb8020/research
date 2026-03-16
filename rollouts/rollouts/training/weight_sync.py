@@ -771,8 +771,11 @@ class SGLangEngine:
             # NCCL environment for cross-process weight sync:
             # - NCCL_SHM_DISABLE=1: Use sockets instead of shared memory (avoids IPC issues)
             # - NCCL_CUMEM_ENABLE=0: Consistent with SGLang defaults (see miles/ray/actor_group.py)
+            # - NCCL_DEBUG/NCCL_DEBUG_SUBSYS: surface receiver-side transport/init failures
             f"NCCL_SHM_DISABLE=1 "
             f"NCCL_CUMEM_ENABLE=0 "
+            f"NCCL_DEBUG=INFO "
+            f"NCCL_DEBUG_SUBSYS=INIT,COLL "
             f"python -m rollouts.training.sglang_launcher "
             f"--model-path {self.model_name} "
             f"--host 0.0.0.0 "

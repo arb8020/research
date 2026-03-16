@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import sys
 from dataclasses import dataclass, field
 from typing import Any
@@ -75,6 +76,17 @@ def _tensor_sync_metadata(name: str, tensor: Tensor) -> dict[str, object]:
         "is_contiguous": bool(tensor.is_contiguous()),
         "stride": list(tensor.stride()),
     }
+
+
+def _nccl_env_snapshot() -> dict[str, object]:
+    keys = (
+        "CUDA_VISIBLE_DEVICES",
+        "NCCL_DEBUG",
+        "NCCL_DEBUG_SUBSYS",
+        "NCCL_SHM_DISABLE",
+        "NCCL_CUMEM_ENABLE",
+    )
+    return {key: os.environ.get(key) for key in keys}
 
 
 def _normalize_cuda_device(device: torch.device) -> torch.device:
@@ -289,13 +301,16 @@ class WeightSyncSender:
     def init_group(self) -> None:
         """Initialize NCCL process group. Call once at startup."""
         self.device = _normalize_cuda_device(self.device)
+        os.environ.setdefault("NCCL_DEBUG", "INFO")
+        os.environ.setdefault("NCCL_DEBUG_SUBSYS", "INIT,COLL")
         logger.info(
-            "weight_sync_sender_init_start world_size=%s master=%s:%s device=%s group=%s",
+            "weight_sync_sender_init_start world_size=%s master=%s:%s device=%s group=%s nccl_env=%s",
             self.world_size,
             self.master_addr,
             self.master_port,
             self.device,
             self.group_name,
+            _nccl_env_snapshot(),
         )
         _emit_argus_diag(
             "weight_sync_sender_init_start",
@@ -304,6 +319,7 @@ class WeightSyncSender:
             master_port=self.master_port,
             device=str(self.device),
             group=self.group_name,
+            nccl_env=_nccl_env_snapshot(),
         )
         if self.device.type == "cuda":
             torch.cuda.set_device(self.device)
@@ -316,12 +332,16 @@ class WeightSyncSender:
             timeout_seconds=self.timeout_seconds,
         )
         logger.info(
-            "weight_sync_sender_init_ok world_size=%s master=%s:%s device=%s group=%s",
+            "weight_sync_sender_init_ok world_size=%s master=%s:%s device=%s group=%s pg_backend=%s pg_rank=%s pg_world_size=%s nccl_env=%s",
             self.world_size,
             self.master_addr,
             self.master_port,
             self.device,
             self.group_name,
+            dist.get_backend(self._process_group),
+            dist.get_rank(self._process_group),
+            dist.get_world_size(self._process_group),
+            _nccl_env_snapshot(),
         )
         _emit_argus_diag(
             "weight_sync_sender_init_ok",
@@ -330,6 +350,10 @@ class WeightSyncSender:
             master_port=self.master_port,
             device=str(self.device),
             group=self.group_name,
+            pg_backend=dist.get_backend(self._process_group),
+            pg_rank=dist.get_rank(self._process_group),
+            pg_world_size=dist.get_world_size(self._process_group),
+            nccl_env=_nccl_env_snapshot(),
         )
 
     def broadcast_payload(
@@ -482,14 +506,17 @@ class WeightSyncReceiver:
         """Initialize NCCL process group. Call once at startup."""
         assert self.rank > 0, "Rank 0 is reserved for trainer (sender)"
         self.device = _normalize_cuda_device(self.device)
+        os.environ.setdefault("NCCL_DEBUG", "INFO")
+        os.environ.setdefault("NCCL_DEBUG_SUBSYS", "INIT,COLL")
         logger.info(
-            "weight_sync_receiver_init_start rank=%s world_size=%s master=%s:%s device=%s group=%s",
+            "weight_sync_receiver_init_start rank=%s world_size=%s master=%s:%s device=%s group=%s nccl_env=%s",
             self.rank,
             self.world_size,
             self.master_addr,
             self.master_port,
             self.device,
             self.group_name,
+            _nccl_env_snapshot(),
         )
         _emit_argus_diag(
             "weight_sync_receiver_init_start",
@@ -499,6 +526,7 @@ class WeightSyncReceiver:
             master_port=self.master_port,
             device=str(self.device),
             group=self.group_name,
+            nccl_env=_nccl_env_snapshot(),
         )
         if self.device.type == "cuda":
             torch.cuda.set_device(self.device)
@@ -522,24 +550,56 @@ class WeightSyncReceiver:
                 store_timeout=int(self.timeout_seconds),
             )
             self._communicator = PyNcclCommunicator(stateless_pg, device=self.device)
+            logger.info(
+                "weight_sync_receiver_communicator_init_ok rank=%s world_size=%s device=%s communicator=%s nccl_env=%s",
+                self.rank,
+                self.world_size,
+                self.device,
+                type(self._communicator).__name__,
+                _nccl_env_snapshot(),
+            )
+            _emit_argus_diag(
+                "weight_sync_receiver_communicator_init_ok",
+                rank=self.rank,
+                world_size=self.world_size,
+                device=str(self.device),
+                communicator=type(self._communicator).__name__,
+                nccl_env=_nccl_env_snapshot(),
+            )
         except Exception as exc:
             logger.warning(
-                "weight_sync_receiver_communicator_init_failed rank=%s world_size=%s device=%s error=%r; "
+                "weight_sync_receiver_communicator_init_failed rank=%s world_size=%s device=%s error=%r nccl_env=%s; "
                 "falling back to torch.distributed broadcast",
                 self.rank,
                 self.world_size,
                 self.device,
                 exc,
+                _nccl_env_snapshot(),
+            )
+            _emit_argus_diag(
+                "weight_sync_receiver_communicator_init_failed",
+                rank=self.rank,
+                world_size=self.world_size,
+                device=str(self.device),
+                error=repr(exc),
+                nccl_env=_nccl_env_snapshot(),
             )
             self._communicator = None
         logger.info(
-            "weight_sync_receiver_init_ok rank=%s world_size=%s master=%s:%s device=%s group=%s",
+            "weight_sync_receiver_init_ok rank=%s world_size=%s master=%s:%s device=%s group=%s pg_backend=%s pg_rank=%s pg_world_size=%s communicator=%s nccl_env=%s",
             self.rank,
             self.world_size,
             self.master_addr,
             self.master_port,
             self.device,
             self.group_name,
+            dist.get_backend(self._process_group),
+            dist.get_rank(self._process_group),
+            dist.get_world_size(self._process_group),
+            type(self._communicator).__name__
+            if self._communicator is not None
+            else "dist.broadcast",
+            _nccl_env_snapshot(),
         )
         _emit_argus_diag(
             "weight_sync_receiver_init_ok",
@@ -549,6 +609,13 @@ class WeightSyncReceiver:
             master_port=self.master_port,
             device=str(self.device),
             group=self.group_name,
+            pg_backend=dist.get_backend(self._process_group),
+            pg_rank=dist.get_rank(self._process_group),
+            pg_world_size=dist.get_world_size(self._process_group),
+            communicator=type(self._communicator).__name__
+            if self._communicator is not None
+            else "dist.broadcast",
+            nccl_env=_nccl_env_snapshot(),
         )
 
     def receive_weights(
@@ -568,10 +635,13 @@ class WeightSyncReceiver:
         state_dict = {}
         total_tensors = len(param_info)
         logger.info(
-            "weight_sync_receiver_receive_start rank=%s world_size=%s total_tensors=%s first_tensors=%s",
+            "weight_sync_receiver_receive_start rank=%s world_size=%s total_tensors=%s communicator=%s first_tensors=%s nccl_env=%s",
             self.rank,
             self.world_size,
             total_tensors,
+            type(self._communicator).__name__
+            if self._communicator is not None
+            else "dist.broadcast",
             [
                 {
                     "wire_name": info.wire_name,
@@ -581,6 +651,7 @@ class WeightSyncReceiver:
                 }
                 for info in param_info[:3]
             ],
+            _nccl_env_snapshot(),
         )
         for index, info in enumerate(param_info):
             # Allocate buffer
