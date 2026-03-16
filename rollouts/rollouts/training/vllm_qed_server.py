@@ -175,20 +175,34 @@ async def run_server(args: Any, **uvicorn_kwargs: Any) -> None:
 
         @app.post("/init_weights_update_group")
         async def init_weights_update_group(request: dict[str, Any]) -> dict[str, Any]:
-            result = engine_client.collective_rpc(
-                "init_weight_update_group",
-                args=(
-                    request.get("master_address", "127.0.0.1"),
-                    int(request.get("master_port", 29500)),
-                    int(request.get("rank_offset", 1)),
-                    int(request.get("world_size", 2)),
-                    request.get("group_name", "weight_sync"),
-                    float(request.get("timeout_seconds", 300.0)),
-                ),
-            )
-            maybe = _maybe_await(result)
-            payload = await maybe if maybe is not None else result
-            return {"status": "ok", "results": payload}
+            try:
+                result = engine_client.collective_rpc(
+                    "init_weight_update_group",
+                    args=(
+                        request.get("master_address", "127.0.0.1"),
+                        int(request.get("master_port", 29500)),
+                        int(request.get("rank_offset", 1)),
+                        int(request.get("world_size", 2)),
+                        request.get("group_name", "weight_sync"),
+                        float(request.get("timeout_seconds", 300.0)),
+                    ),
+                )
+                maybe = _maybe_await(result)
+                payload = await maybe if maybe is not None else result
+                return {"status": "ok", "results": payload}
+            except Exception as exc:
+                logger.exception(
+                    "init_weights_update_group_failed request=%s error_type=%s error=%r",
+                    request,
+                    type(exc).__name__,
+                    exc,
+                )
+                return {
+                    "status": "error",
+                    "error_type": type(exc).__name__,
+                    "error": repr(exc),
+                    "request": request,
+                }
 
         @app.post("/receive_weight_update")
         async def receive_weight_update(request: dict[str, Any]) -> dict[str, Any]:
