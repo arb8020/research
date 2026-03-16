@@ -62,6 +62,17 @@ class WorkerExtension:
     ) -> dict[str, Any]:
         worker_rank = _worker_rank(self)
         rank = int(rank_offset) + worker_rank
+        logger.info(
+            "vllm worker init_weight_update_group start worker_rank=%s rank=%s world_size=%s group=%s device=%s master=%s:%s timeout=%s",
+            worker_rank,
+            rank,
+            world_size,
+            group_name,
+            self.device,
+            master_address,
+            master_port,
+            timeout_seconds,
+        )
         receiver = WeightSyncReceiver(
             master_addr=master_address,
             master_port=int(master_port),
@@ -71,7 +82,17 @@ class WorkerExtension:
             timeout_seconds=timeout_seconds,
             device=self.device,
         )
+        logger.info(
+            "vllm worker init_weight_update_group before receiver.init_group rank=%s group=%s",
+            rank,
+            group_name,
+        )
         receiver.init_group()
+        logger.info(
+            "vllm worker init_weight_update_group after receiver.init_group rank=%s group=%s",
+            rank,
+            group_name,
+        )
         self._rollouts_weight_sync_receiver = receiver
         logger.info(
             "Initialized vLLM NCCL receiver: rank=%s world_size=%s group=%s device=%s",
