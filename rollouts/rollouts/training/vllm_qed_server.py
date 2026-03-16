@@ -141,6 +141,36 @@ class WorkerExtension:
     ) -> dict[str, Any]:
         worker_rank = _worker_rank(self)
         rank = int(rank_offset) + worker_rank
+        existing_receiver = getattr(self, "_rollouts_weight_sync_receiver", None)
+        if existing_receiver is not None:
+            existing_group_name = getattr(existing_receiver, "group_name", None)
+            if existing_group_name == group_name:
+                _emit_argus_diag(
+                    "vllm_worker_init_weight_update_group_already_initialized",
+                    worker_rank=worker_rank,
+                    rank=rank,
+                    world_size=int(world_size),
+                    group_name=group_name,
+                    device=str(self.device),
+                )
+                logger.info(
+                    "vllm worker init_weight_update_group already initialized worker_rank=%s rank=%s world_size=%s group=%s device=%s",
+                    worker_rank,
+                    rank,
+                    world_size,
+                    group_name,
+                    self.device,
+                )
+                return {
+                    "rank": rank,
+                    "world_size": int(world_size),
+                    "group_name": group_name,
+                    "already_initialized": True,
+                }
+            raise RuntimeError(
+                "Weight sync receiver already initialized with different group "
+                f"{existing_group_name!r}, cannot reinitialize with {group_name!r}"
+            )
         _emit_argus_diag(
             "vllm_worker_init_weight_update_group_start",
             worker_rank=worker_rank,

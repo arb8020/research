@@ -796,7 +796,10 @@ class TorchTitanBackend:
             master_port = int(sock.getsockname()[1])
 
         world_size = 1 + len(inference_endpoints)
-        group_name = "weight_sync"
+        # TODO: Move this one-time NCCL group initialization under the managed
+        # WeightUpdateChannel.initialize() lifecycle so GRPO/channel semantics own
+        # it once per run, QED-style, instead of treating init like a retryable RPC.
+        group_name = f"weight_sync_{master_port}"
         sender = WeightSyncSender(
             master_addr=master_addr,
             master_port=master_port,
