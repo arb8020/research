@@ -960,19 +960,38 @@ def _do_sync_weights_nccl(
 
     import requests
     import torch
+    import torch.distributed as dist
 
     from rollouts.training.backends.megatron.inference_export import (
         build_megatron_inference_export_from_runtime,
     )
 
+    owns_publication = bool(inference_endpoints)
+    sync_error: Exception | None = None
+
+    # Mirror the broader Miles/Slime update state machine:
+    # rank 0 quiesces inference, then all training ranks participate in export
+    # collectives, then rank 0 performs publication, then all ranks rejoin.
+    dist.barrier()
+    if owns_publication:
+        _pause_and_flush_inference_endpoints(inference_endpoints)
+        logger.info(
+            "weight_sync_megatron_publish_prepare endpoints=%s next_weight_version=%s",
+            inference_endpoints,
+            getattr(getattr(backend, "_nccl_weight_sender", None), "weight_version", 0) + 1,
+        )
+    dist.barrier()
+
     # All trainer ranks must participate in runtime export collectives. Only
     # rank 0 owns the sender / inference publication side effects.
     export = build_megatron_inference_export_from_runtime(model_name, backend.model)
-    if not inference_endpoints:
+    dist.barrier()
+    if not owns_publication:
         logger.info(
             "weight_sync_megatron_export_participant_only tensors=%s",
             len(export.tensors),
         )
+        dist.barrier()
         return
 
     sender = getattr(backend, "_nccl_weight_sender", None)
@@ -987,13 +1006,6 @@ def _do_sync_weights_nccl(
         payload.payload_kind,
         len(payload.tensors),
         len(export.dropped_unconverted_keys),
-    )
-
-    _pause_and_flush_inference_endpoints(inference_endpoints)
-    logger.info(
-        "weight_sync_megatron_publish_prepare endpoints=%s next_weight_version=%s",
-        inference_endpoints,
-        sender.weight_version + 1,
     )
 
     # Inform inference engines and broadcast in the same order.
@@ -1036,16 +1048,19 @@ def _do_sync_weights_nccl(
             len(futures),
         )
 
-        sender.broadcast_payload(payload, async_op=False)
-        logger.info("weight_sync_megatron_broadcast_wait_ok tensors=%s", len(payload.tensors))
+        try:
+            sender.broadcast_payload(payload, async_op=False)
+            logger.info("weight_sync_megatron_broadcast_wait_ok tensors=%s", len(payload.tensors))
 
-        for future in futures:
-            response = future.result()
-            response.raise_for_status()
-        logger.info(
-            "weight_sync_megatron_metadata_responses_ok endpoints=%s",
-            inference_endpoints,
-        )
+            for future in futures:
+                response = future.result()
+                response.raise_for_status()
+            logger.info(
+                "weight_sync_megatron_metadata_responses_ok endpoints=%s",
+                inference_endpoints,
+            )
+        except Exception as exc:
+            sync_error = exc
     finally:
         executor.shutdown(wait=False)
         try:
@@ -1055,6 +1070,13 @@ def _do_sync_weights_nccl(
                 "weight_sync_megatron_resume_failed endpoints=%s",
                 inference_endpoints,
             )
+        try:
+            dist.barrier()
+        except Exception:
+            logger.exception("weight_sync_megatron_final_barrier_failed")
+
+    if sync_error is not None:
+        raise sync_error
 
     torch.cuda.empty_cache()
 
