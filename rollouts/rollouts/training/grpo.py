@@ -1489,7 +1489,58 @@ async def _grpo_train_async(
             logger.info("NCCL weight sync initialized")
             witness_fn = getattr(backend, "sync_weights_nccl_witness", None)
             if callable(witness_fn):
-                await witness_fn(tensor_limit=1)
+                inference_log_paths = [
+                    str(getattr(engine, "log_path", ""))
+                    for engine in inference_engines
+                    if hasattr(engine, "log_path")
+                ]
+                inference_log_tails = {}
+                logger.info(
+                    "training_preflight_weight_sync_witness_start",
+                    extra={
+                        "event": "training_preflight_weight_sync_witness_start",
+                        **run_context,
+                        "node_id": run_context.get("node_id"),
+                        "backend": config.trainer.backend,
+                        "tensor_limit": 1,
+                        "inference_log_paths": inference_log_paths,
+                    },
+                )
+                try:
+                    await witness_fn(tensor_limit=1)
+                except Exception as exc:
+                    for engine in inference_engines:
+                        log_path = getattr(engine, "log_path", None)
+                        if log_path is None:
+                            continue
+                        try:
+                            path = Path(log_path)
+                            if path.exists():
+                                tail = path.read_text(errors="replace").splitlines()[-20:]
+                                inference_log_tails[str(path)] = (
+                                    "\n".join(tail) if tail else "<log file empty>"
+                                )
+                            else:
+                                inference_log_tails[str(path)] = "<log file not found>"
+                        except Exception as tail_exc:
+                            inference_log_tails[str(log_path)] = (
+                                f"<failed to read log tail: {type(tail_exc).__name__}: {tail_exc}>"
+                            )
+                    logger.exception(
+                        "training_preflight_weight_sync_witness_failed",
+                        extra={
+                            "event": "training_preflight_weight_sync_witness_failed",
+                            **run_context,
+                            "node_id": run_context.get("node_id"),
+                            "backend": config.trainer.backend,
+                            "tensor_limit": 1,
+                            "error_type": type(exc).__name__,
+                            "error": str(exc),
+                            "inference_log_paths": inference_log_paths,
+                            "inference_log_tails": inference_log_tails,
+                        },
+                    )
+                    raise
                 logger.info(
                     "training_preflight_weight_sync_witness_ok",
                     extra={
@@ -1498,6 +1549,7 @@ async def _grpo_train_async(
                         "node_id": run_context.get("node_id"),
                         "backend": config.trainer.backend,
                         "tensor_limit": 1,
+                        "inference_log_paths": inference_log_paths,
                     },
                 )
 

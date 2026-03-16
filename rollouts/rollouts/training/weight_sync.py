@@ -902,6 +902,17 @@ class SGLangEngine:
             The tmux session name
         """
         self.output_dir.mkdir(parents=True, exist_ok=True)
+        self._log_file.parent.mkdir(parents=True, exist_ok=True)
+        self._log_file.touch(exist_ok=True)
+        _startup_logger.info(
+            "inference log path ready",
+            extra={
+                "event": "inference_log_path_ready",
+                "log_phase": "launch",
+                "log_tail": _read_log_tail(self._log_file, max_lines=5),
+                **self._startup_log_context(),
+            },
+        )
 
         # Kill existing session if present
         subprocess.run(
@@ -994,6 +1005,19 @@ class SGLangEngine:
                         "session_dead",
                         attempt=attempt,
                     )
+                    _startup_logger.error(
+                        "inference startup failed",
+                        extra={
+                            "event": "inference_startup_failed",
+                            "failure_kind": "session_dead",
+                            "health_attempt": attempt,
+                            "last_startup_phase": self._last_startup_phase,
+                            "health_status_code": self._last_health_status_code,
+                            "health_detail": self._last_health_detail,
+                            "log_tail": _read_log_tail(self._log_file, max_lines=40),
+                            **self._startup_log_context(),
+                        },
+                    )
                     msg = (
                         "SGLang server crashed during startup! "
                         f"last_phase={self._last_startup_phase!r} "
@@ -1043,6 +1067,20 @@ class SGLangEngine:
             f"last_health_detail={self._last_health_detail!r} "
             f"log_path={self._log_file}"
         )
+        _startup_logger.error(
+            "inference startup failed",
+            extra={
+                "event": "inference_startup_failed",
+                "failure_kind": "timeout",
+                "health_attempt": int(max_wait),
+                "last_startup_phase": self._last_startup_phase,
+                "health_state": self._last_health_state,
+                "health_status_code": self._last_health_status_code,
+                "health_detail": self._last_health_detail,
+                "log_tail": _read_log_tail(self._log_file, max_lines=40),
+                **self._startup_log_context(),
+            },
+        )
         raise RuntimeError(msg)
 
     async def apply_weight_update(self, update: InferenceWeightUpdate) -> dict[str, Any]:
@@ -1064,6 +1102,15 @@ class SGLangEngine:
 
     def shutdown(self) -> None:
         """Kill the tmux session running SGLang."""
+        _startup_logger.info(
+            "inference log path final",
+            extra={
+                "event": "inference_log_path_final",
+                "log_phase": "shutdown",
+                "log_tail": _read_log_tail(self._log_file, max_lines=40),
+                **self._startup_log_context(),
+            },
+        )
         subprocess.run(
             ["tmux", "kill-session", "-t", self._session_name],
             capture_output=True,
