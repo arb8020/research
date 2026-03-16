@@ -597,6 +597,7 @@ class WeightSyncReceiver:
     device: torch.device = field(default_factory=lambda: torch.device("cuda"))
 
     _process_group: Any = field(default=None, init=False, repr=False)
+    _stateless_group: Any = field(default=None, init=False, repr=False)
     _communicator: Any = field(default=None, init=False, repr=False)
     _weight_version: int = field(default=0, init=False)
 
@@ -637,14 +638,6 @@ class WeightSyncReceiver:
         )
         if self.device.type == "cuda":
             torch.cuda.set_device(self.device)
-        self._process_group = create_stateless_process_group(
-            master_addr=self.master_addr,
-            master_port=self.master_port,
-            rank=self.rank,
-            world_size=self.world_size,
-            group_name=self.group_name,
-            timeout_seconds=self.timeout_seconds,
-        )
         try:
             from vllm.distributed.device_communicators.pynccl import PyNcclCommunicator
             from vllm.distributed.utils import StatelessProcessGroup
@@ -656,6 +649,7 @@ class WeightSyncReceiver:
                 world_size=self.world_size,
                 store_timeout=int(self.timeout_seconds),
             )
+            self._stateless_group = stateless_pg
             self._communicator = PyNcclCommunicator(stateless_pg, device=self.device)
             logger.info(
                 "weight_sync_receiver_communicator_init_ok rank=%s world_size=%s device=%s communicator=%s socket_ifname=%s socket_ifname_source=%s nccl_env=%s",
@@ -700,6 +694,18 @@ class WeightSyncReceiver:
                 nccl_env=_nccl_env_snapshot(),
             )
             self._communicator = None
+            self._stateless_group = None
+        if self._communicator is None:
+            self._process_group = create_stateless_process_group(
+                master_addr=self.master_addr,
+                master_port=self.master_port,
+                rank=self.rank,
+                world_size=self.world_size,
+                group_name=self.group_name,
+                timeout_seconds=self.timeout_seconds,
+            )
+        else:
+            self._process_group = None
         logger.info(
             "weight_sync_receiver_init_ok rank=%s world_size=%s master=%s:%s device=%s group=%s pg_backend=%s pg_rank=%s pg_world_size=%s communicator=%s socket_ifname=%s socket_ifname_source=%s nccl_env=%s",
             self.rank,
@@ -708,9 +714,13 @@ class WeightSyncReceiver:
             self.master_port,
             self.device,
             self.group_name,
-            dist.get_backend(self._process_group),
-            dist.get_rank(self._process_group),
-            dist.get_world_size(self._process_group),
+            dist.get_backend(self._process_group)
+            if self._process_group is not None
+            else "stateless",
+            dist.get_rank(self._process_group) if self._process_group is not None else self.rank,
+            dist.get_world_size(self._process_group)
+            if self._process_group is not None
+            else self.world_size,
             type(self._communicator).__name__
             if self._communicator is not None
             else "dist.broadcast",
@@ -726,9 +736,15 @@ class WeightSyncReceiver:
             master_port=self.master_port,
             device=str(self.device),
             group=self.group_name,
-            pg_backend=dist.get_backend(self._process_group),
-            pg_rank=dist.get_rank(self._process_group),
-            pg_world_size=dist.get_world_size(self._process_group),
+            pg_backend=dist.get_backend(self._process_group)
+            if self._process_group is not None
+            else "stateless",
+            pg_rank=dist.get_rank(self._process_group)
+            if self._process_group is not None
+            else self.rank,
+            pg_world_size=dist.get_world_size(self._process_group)
+            if self._process_group is not None
+            else self.world_size,
             communicator=type(self._communicator).__name__
             if self._communicator is not None
             else "dist.broadcast",
@@ -749,7 +765,9 @@ class WeightSyncReceiver:
         Returns:
             State dict with received weights
         """
-        assert self._process_group is not None, "Call init_group() first"
+        assert self._communicator is not None or self._process_group is not None, (
+            "Call init_group() first"
+        )
 
         state_dict = {}
         total_tensors = len(param_info)
@@ -788,8 +806,12 @@ class WeightSyncReceiver:
                 "storage_offset": int(buffer.storage_offset()),
                 "element_size": int(buffer.element_size()),
                 "nbytes": int(buffer.numel() * buffer.element_size()),
-                "group_rank": dist.get_rank(self._process_group),
-                "group_world_size": dist.get_world_size(self._process_group),
+                "group_rank": dist.get_rank(self._process_group)
+                if self._process_group is not None
+                else self.rank,
+                "group_world_size": dist.get_world_size(self._process_group)
+                if self._process_group is not None
+                else self.world_size,
             }
             logger.info(
                 "weight_sync_receiver_receive_tensor index=%s total_tensors=%s tensor=%s",
@@ -825,7 +847,9 @@ class WeightSyncReceiver:
         Args:
             state_dict: Existing state dict to receive into
         """
-        assert self._process_group is not None, "Call init_group() first"
+        assert self._communicator is not None or self._process_group is not None, (
+            "Call init_group() first"
+        )
 
         for _name, param in state_dict.items():
             # Receive broadcast from rank 0 directly into existing tensor
@@ -842,6 +866,7 @@ class WeightSyncReceiver:
         if self._communicator is not None:
             del self._communicator
             self._communicator = None
+        self._stateless_group = None
         if self._process_group is not None:
             dist.destroy_process_group(self._process_group)
             self._process_group = None
