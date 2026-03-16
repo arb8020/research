@@ -8,6 +8,7 @@ from typing import Any
 from torch import Tensor
 from transformers import AutoConfig
 
+from ...weight_sync_protocol import WeightUpdatePayload, WeightWireTensor
 from .export_runtime import build_megatron_hf_tensors_from_runtime
 from .weight_conversion import convert_megatron_to_hf, remove_padding
 
@@ -36,6 +37,33 @@ class MegatronInferenceExport:
     tensors: OrderedDict[str, Tensor]
     dropped_none_keys: tuple[str, ...] = ()
     dropped_unconverted_keys: tuple[str, ...] = ()
+
+    def to_weight_update_payload(self, *, version: int | None = None) -> WeightUpdatePayload:
+        """Lower the export into an explicit train->infer wire payload.
+
+        Megatron's current runtime export already produces inference-loadable HF
+        tensor names, so the wire name and load name are the same today. Keep
+        this explicit anyway so the sender/receiver contract is a real product
+        type instead of an ambient `dict[str, Tensor]`.
+        """
+        tensors = tuple(
+            WeightWireTensor(
+                wire_name=name,
+                load_name=name,
+                shape=tuple(tensor.shape),
+                dtype=str(tensor.dtype).replace("torch.", ""),
+                tensor=tensor,
+                payload_kind="inference_load_tensor",
+                metadata={"source": "megatron_runtime_export"},
+            )
+            for name, tensor in self.tensors.items()
+        )
+        return WeightUpdatePayload(
+            tensors=tensors,
+            payload_kind="inference_load_tensor",
+            version=version,
+            metadata={"source_contract": "megatron_inference_export"},
+        )
 
 
 def build_megatron_inference_export(

@@ -944,22 +944,23 @@ def _do_sync_weights_nccl(
 
     # All trainer ranks must participate in runtime export collectives. Only
     # rank 0 publishes the resulting tensor product type to inference.
+    sender = getattr(backend, "_nccl_weight_sender", None)
+    if sender is None:
+        raise RuntimeError("NCCL sender not initialized. Call init_nccl_weight_sync first.")
+
     export = build_megatron_inference_export_from_runtime(model_name, backend.model)
-    state_dict = export.tensors
-    if not state_dict:
+    payload = export.to_weight_update_payload(version=sender.weight_version + 1)
+    if not payload.tensors:
         raise RuntimeError("No weights produced for NCCL sync")
     logger.info(
-        "weight_sync_megatron_export_ready tensors=%s dropped_unconverted=%s",
-        len(export.tensors),
+        "weight_sync_megatron_export_ready payload_kind=%s tensors=%s dropped_unconverted=%s",
+        payload.payload_kind,
+        len(payload.tensors),
         len(export.dropped_unconverted_keys),
     )
 
     if not inference_endpoints:
         return
-
-    sender = getattr(backend, "_nccl_weight_sender", None)
-    if sender is None:
-        raise RuntimeError("NCCL sender not initialized. Call init_nccl_weight_sync first.")
 
     _pause_and_flush_inference_endpoints(inference_endpoints)
     logger.info(
@@ -971,14 +972,16 @@ def _do_sync_weights_nccl(
     # Inform inference engines and broadcast in the same order.
     param_info = [
         {
-            "name": name,
-            "shape": list(p.shape),
-            "dtype": str(p.dtype).replace("torch.", ""),
+            "name": item.wire_name,
+            "load_name": item.load_name,
+            "shape": list(item.shape),
+            "dtype": item.dtype,
         }
-        for name, p in state_dict.items()
+        for item in payload.tensors
     ]
     logger.info(
-        "weight_sync_megatron_param_info_ready tensors=%s first_tensors=%s",
+        "weight_sync_megatron_param_info_ready payload_kind=%s tensors=%s first_tensors=%s",
+        payload.payload_kind,
         len(param_info),
         param_info[:3],
     )
@@ -995,7 +998,7 @@ def _do_sync_weights_nccl(
                         "shapes": [item["shape"] for item in param_info],
                         "dtypes": [item["dtype"] for item in param_info],
                         "group_name": "weight_sync",
-                        "weight_version": str(sender.weight_version + 1),
+                        "weight_version": str(payload.version),
                     },
                     timeout=300.0,
                 )
@@ -1006,7 +1009,7 @@ def _do_sync_weights_nccl(
             len(futures),
         )
 
-        handles = sender.broadcast_weights(state_dict, async_op=True)
+        handles = sender.broadcast_payload(payload, async_op=True)
         logger.info("weight_sync_megatron_broadcast_started tensors=%s", len(handles))
 
         for handle in handles:
