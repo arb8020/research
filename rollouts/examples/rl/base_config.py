@@ -2,17 +2,12 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 from rollouts.image_spec import ImageSpec
 from rollouts.training.configs import DepsConfig
 
-MILES_SGLANG_IMAGE_TAG = "v0.5.7"
-MILES_PATCH_VERSION = "v0.5.7"
-MILES_MEGATRON_COMMIT = "3714d81d418c9f1bca4594fc35f9e8289f652862"
-# Closest recoverable main-branch commit before the published nightly image creation time.
-MILES_PINNED_COMMIT = "bfa264385cf9864014b07a985909a20ccc594c13"
-MILES_DOCKERFILE = Path(__file__).with_name("miles_v057_pinned.Dockerfile")
+SLIME_STABLE_TAG = "v0.2.3"
+SLIME_STABLE_COMMIT = "6195417d45f272b72d04f619ea334613135d1c1f"
+SLIME_STABLE_IMAGE = f"slimerl/slime:{SLIME_STABLE_TAG}"
 
 
 def _rollouts_runtime_packages() -> tuple[str, ...]:
@@ -61,31 +56,21 @@ def default_remote_training_deps() -> DepsConfig:
 
 
 def default_remote_megatron_training_deps() -> DepsConfig:
-    """Pinned Megatron/SGLang runtime derived from a stable `miles` patch set.
+    """Pinned Megatron/SGLang runtime owned by a tagged `slime` image.
 
-    Current shared-env launchers realize one runtime contract in `hardware.deps`.
-    For Megatron that contract should be image-owned, not reconstructed per run.
-    We build that image from a pinned `miles` commit plus the stable `v0.5.7`
-    patch set so the receiver/runtime provenance is explicit instead of hidden
-    behind an opaque floating registry artifact.
+    `slimerl/slime:v0.2.3` lines up with the upstream `slime` source tag
+    `v0.2.3` at commit `6195417d45f272b72d04f619ea334613135d1c1f`, which is a
+    much cleaner source↔image contract than the floating `miles` nightlies.
     """
     return DepsConfig(
         python_version="3.12",
         system_packages=(),
-        image=ImageSpec.from_dockerfile_path(
-            str(MILES_DOCKERFILE),
-            context_dir=str(MILES_DOCKERFILE.parent),
+        image=ImageSpec.from_registry(
+            SLIME_STABLE_IMAGE,
             python_version="3.12",
-            build_args={
-                "SGLANG_IMAGE_TAG": MILES_SGLANG_IMAGE_TAG,
-                "PATCH_VERSION": MILES_PATCH_VERSION,
-                "MEGATRON_COMMIT": MILES_MEGATRON_COMMIT,
-                "MILES_COMMIT": MILES_PINNED_COMMIT,
-                "ENABLE_SGLANG_PATCH": "1",
-            },
             python_runtime="image_owned",
             python_executable="python3",
-            installed_groups=("miles-megatron-runtime",),
+            installed_groups=("slime-megatron-runtime",),
         ),
         pip_packages=_rollouts_runtime_packages(),
         pip_extra_index_url="https://pypi.org/simple",
