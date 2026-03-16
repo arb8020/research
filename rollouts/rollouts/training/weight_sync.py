@@ -42,6 +42,7 @@ from .weight_sync_protocol import (
 )
 
 _startup_logger = logging.getLogger("rollouts.training.inference_startup")
+logger = logging.getLogger(__name__)
 
 
 def _read_log_tail(path: Path, max_lines: int = 40) -> str:
@@ -1197,8 +1198,10 @@ class VLLMEngine:
 
     async def wait_until_ready(self, max_wait: float = 120.0) -> None:
         """Wait until vLLM health check passes."""
+        last_health_status: int | str | None = None
+        last_schema_status: int | str | None = None
         async with httpx.AsyncClient(timeout=5.0) as client:
-            for _attempt in range(int(max_wait)):
+            for attempt in range(int(max_wait)):
                 # Check if tmux session crashed
                 if not self._is_session_alive():
                     log_tail = _read_log_tail(self._log_file)
@@ -1210,20 +1213,64 @@ class VLLMEngine:
 
                 try:
                     resp = await client.get(self.health_url)
+                    if resp.status_code != last_health_status:
+                        logger.info(
+                            "VLLMEngine.wait_until_ready health probe attempt=%s status=%s url=%s",
+                            attempt,
+                            resp.status_code,
+                            self.health_url,
+                        )
+                        last_health_status = resp.status_code
                     if resp.status_code == 200:
                         if self.default_sync_realization == VLLM_CUSTOM_NCCL_BROADCAST.name:
                             schema_resp = await client.get(
                                 f"{self.base_url}/weight_update_schema",
                                 params={"limit": 1},
                             )
+                            if schema_resp.status_code != last_schema_status:
+                                logger.info(
+                                    "VLLMEngine.wait_until_ready schema probe attempt=%s status=%s url=%s",
+                                    attempt,
+                                    schema_resp.status_code,
+                                    f"{self.base_url}/weight_update_schema",
+                                )
+                                last_schema_status = schema_resp.status_code
                             if schema_resp.status_code == 200:
+                                logger.info(
+                                    "VLLMEngine.wait_until_ready ready attempt=%s base_url=%s realization=%s",
+                                    attempt,
+                                    self.base_url,
+                                    self.default_sync_realization,
+                                )
                                 return
                         else:
+                            logger.info(
+                                "VLLMEngine.wait_until_ready ready attempt=%s base_url=%s realization=%s",
+                                attempt,
+                                self.base_url,
+                                self.default_sync_realization,
+                            )
                             return
-                except Exception:
-                    pass
+                except Exception as exc:
+                    error_repr = f"{type(exc).__name__}: {exc!r}"
+                    if error_repr != last_health_status:
+                        logger.info(
+                            "VLLMEngine.wait_until_ready probe exception attempt=%s url=%s error=%s",
+                            attempt,
+                            self.health_url,
+                            error_repr,
+                        )
+                        last_health_status = error_repr
                 await trio.sleep(1.0)
 
+        logger.error(
+            "VLLMEngine.wait_until_ready timed out max_wait=%s base_url=%s last_health_status=%r last_schema_status=%r log_file=%s",
+            max_wait,
+            self.base_url,
+            last_health_status,
+            last_schema_status,
+            self._log_file,
+        )
         msg = f"vLLM failed to start after {max_wait}s. Check {self._log_file}"
         raise RuntimeError(msg)
 
