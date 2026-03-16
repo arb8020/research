@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import socket
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -133,34 +134,31 @@ async def run_torchtitan_vllm_real_tensor_smoke(
         sender = getattr(backend, "_nccl_weight_sender", None)
         assert sender is not None, "TorchTitan backend did not initialize NCCL sender"
 
-        async with httpx.AsyncClient(timeout=300.0) as client:
-
-            async def _attempt_broadcast(label: str, tensor: Any) -> None:
-                variant_payload = WeightUpdatePayload(
-                    tensors=(
-                        WeightWireTensor(
-                            wire_name=first_name,
-                            load_name=first_load_name,
-                            shape=tuple(tensor.shape),
-                            dtype=str(tensor.dtype).replace("torch.", ""),
-                            tensor=tensor,
-                            payload_kind=first_item.payload_kind,
-                            metadata=dict(first_item.metadata),
-                        ),
+        async def _attempt_broadcast(label: str, tensor: Any) -> None:
+            variant_payload = WeightUpdatePayload(
+                tensors=(
+                    WeightWireTensor(
+                        wire_name=first_name,
+                        load_name=first_load_name,
+                        shape=tuple(tensor.shape),
+                        dtype=str(tensor.dtype).replace("torch.", ""),
+                        tensor=tensor,
+                        payload_kind=first_item.payload_kind,
+                        metadata=dict(first_item.metadata),
                     ),
-                    payload_kind=payload.payload_kind,
-                    version=payload.version,
-                    metadata=dict(payload.metadata),
-                )
-                async with trio.open_nursery() as nursery:
+                ),
+                payload_kind=payload.payload_kind,
+                version=payload.version,
+                metadata=dict(payload.metadata),
+            )
+            receive_result: dict[str, Any] = {}
+            receive_error: dict[str, BaseException] = {}
+            receive_done = threading.Event()
 
-                    async def request_receive() -> None:
-                        emit(
-                            "torchtitan_real_tensor_receive_request_start",
-                            parameter_name=first_name,
-                            tensor_variant=label,
-                        )
-                        response = await client.post(
+            def request_receive_sync() -> None:
+                try:
+                    with httpx.Client(timeout=httpx.Timeout(300.0, connect=5.0)) as client:
+                        response = client.post(
                             f"{engine.base_url}/receive_weight_update",
                             json={
                                 "names": [first_name],
@@ -170,29 +168,53 @@ async def run_torchtitan_vllm_real_tensor_smoke(
                             },
                         )
                         response.raise_for_status()
-                        emit(
-                            "torchtitan_real_tensor_receive_request_finished",
-                            parameter_name=first_name,
-                            tensor_variant=label,
-                            response=response.json(),
-                        )
+                        receive_result["response"] = response.json()
+                except BaseException as exc:
+                    receive_error["error"] = exc
+                finally:
+                    receive_done.set()
 
-                    nursery.start_soon(request_receive)
-                    await trio.sleep(0.2)
-                    emit(
-                        "torchtitan_real_tensor_broadcast_start",
-                        parameter_name=first_name,
-                        load_name=first_load_name,
-                        tensor_variant=label,
-                        data_ptr=int(tensor.data_ptr()),
-                    )
-                    await trio.to_thread.run_sync(sender.broadcast_payload, variant_payload)
-                    emit(
-                        "torchtitan_real_tensor_broadcast_finished",
-                        parameter_name=first_name,
-                        load_name=first_load_name,
-                        tensor_variant=label,
-                    )
+            emit(
+                "torchtitan_real_tensor_receive_request_start",
+                parameter_name=first_name,
+                tensor_variant=label,
+            )
+            receive_thread = threading.Thread(
+                target=request_receive_sync,
+                name=f"torchtitan-real-tensor-receive-{label}",
+                daemon=True,
+            )
+            receive_thread.start()
+            await trio.sleep(0.2)
+            emit(
+                "torchtitan_real_tensor_broadcast_start",
+                parameter_name=first_name,
+                load_name=first_load_name,
+                tensor_variant=label,
+                data_ptr=int(tensor.data_ptr()),
+            )
+            sender.broadcast_payload(variant_payload)
+            emit(
+                "torchtitan_real_tensor_broadcast_finished",
+                parameter_name=first_name,
+                load_name=first_load_name,
+                tensor_variant=label,
+            )
+            with trio.move_on_after(300):
+                while not receive_done.is_set():
+                    await trio.sleep(0.1)
+            if not receive_done.is_set():
+                raise TimeoutError(
+                    f"receive_weight_update did not finish after broadcast for {label}"
+                )
+            if "error" in receive_error:
+                raise receive_error["error"]
+            emit(
+                "torchtitan_real_tensor_receive_request_finished",
+                parameter_name=first_name,
+                tensor_variant=label,
+                response=receive_result["response"],
+            )
 
             try:
                 await _attempt_broadcast("original", first_tensor)
