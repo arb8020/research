@@ -19,7 +19,12 @@ from typing import Any, Protocol, cast
 
 import torch
 
-from rollouts.inference.weight_sync import ParamInfo, WeightSyncReceiver
+from rollouts.inference.weight_sync import (
+    ParamInfo,
+    WeightSyncReceiver,
+    _apply_socket_ifname_defaults,
+    _normalize_cuda_device,
+)
 from rollouts.training.weight_sync_protocol import (
     InitWeightUpdateGroupRequest,
     InitWeightUpdateGroupResponse,
@@ -260,7 +265,111 @@ class WorkerExtension:
             rank,
             group_name,
         )
-        receiver.init_group()
+        from vllm.distributed.device_communicators.pynccl import PyNcclCommunicator
+        from vllm.distributed.utils import StatelessProcessGroup
+
+        receiver.device = _normalize_cuda_device(receiver.device)
+        torch.cuda.set_device(receiver.device)
+        socket_ifname, socket_ifname_source = _apply_socket_ifname_defaults()
+        _append_weight_sync_trace(
+            "vllm_worker_inline_receiver_configured",
+            rank=rank,
+            group_name=group_name,
+            device=str(receiver.device),
+            socket_ifname=socket_ifname,
+            socket_ifname_source=socket_ifname_source,
+        )
+        _emit_argus_diag(
+            "vllm_worker_inline_receiver_configured",
+            rank=rank,
+            group_name=group_name,
+            device=str(receiver.device),
+            socket_ifname=socket_ifname,
+            socket_ifname_source=socket_ifname_source,
+        )
+        _append_weight_sync_trace(
+            "vllm_worker_inline_stateless_pg_create_start",
+            rank=rank,
+            world_size=int(world_size),
+            group_name=group_name,
+            host=master_address,
+            port=int(master_port),
+            device=str(receiver.device),
+        )
+        _emit_argus_diag(
+            "vllm_worker_inline_stateless_pg_create_start",
+            rank=rank,
+            world_size=int(world_size),
+            group_name=group_name,
+            host=master_address,
+            port=int(master_port),
+            device=str(receiver.device),
+        )
+        stateless_pg = StatelessProcessGroup.create(
+            host=master_address,
+            port=int(master_port),
+            rank=rank,
+            world_size=int(world_size),
+        )
+        receiver._stateless_group = stateless_pg
+        receiver._process_group = None
+        _append_weight_sync_trace(
+            "vllm_worker_inline_stateless_pg_create_ok",
+            rank=rank,
+            world_size=int(world_size),
+            group_name=group_name,
+            host=master_address,
+            port=int(master_port),
+            device=str(receiver.device),
+        )
+        _emit_argus_diag(
+            "vllm_worker_inline_stateless_pg_create_ok",
+            rank=rank,
+            world_size=int(world_size),
+            group_name=group_name,
+            host=master_address,
+            port=int(master_port),
+            device=str(receiver.device),
+        )
+        _append_weight_sync_trace(
+            "vllm_worker_inline_pynccl_create_start",
+            rank=rank,
+            world_size=int(world_size),
+            group_name=group_name,
+            host=master_address,
+            port=int(master_port),
+            device=str(receiver.device),
+        )
+        _emit_argus_diag(
+            "vllm_worker_inline_pynccl_create_start",
+            rank=rank,
+            world_size=int(world_size),
+            group_name=group_name,
+            host=master_address,
+            port=int(master_port),
+            device=str(receiver.device),
+        )
+        receiver._communicator = PyNcclCommunicator(stateless_pg, device=receiver.device)
+        _append_weight_sync_trace(
+            "vllm_worker_inline_pynccl_create_ok",
+            rank=rank,
+            world_size=int(world_size),
+            group_name=group_name,
+            host=master_address,
+            port=int(master_port),
+            device=str(receiver.device),
+            communicator=type(receiver._communicator).__name__,
+        )
+        _emit_argus_diag(
+            "vllm_worker_inline_pynccl_create_ok",
+            rank=rank,
+            world_size=int(world_size),
+            group_name=group_name,
+            host=master_address,
+            port=int(master_port),
+            device=str(receiver.device),
+            communicator=type(receiver._communicator).__name__,
+        )
         _emit_argus_diag(
             "vllm_worker_init_weight_update_group_after_receiver_init",
             rank=rank,
