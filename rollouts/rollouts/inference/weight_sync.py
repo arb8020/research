@@ -204,6 +204,39 @@ def create_stateless_process_group(
     )
 
 
+def init_extra_process_group(
+    *,
+    backend: str = "nccl",
+    init_method: str | None = None,
+    timeout: timedelta | None = None,
+    world_size: int = -1,
+    rank: int = -1,
+    store: Any | None = None,
+    group_name: str | None = None,
+) -> dist.ProcessGroup:
+    """PipelineRL/QED-style extra process-group creation for trainer-side rank 0."""
+    from torch.distributed.distributed_c10d import ProcessGroupNCCL, default_pg_timeout
+
+    if timeout is None:
+        timeout = default_pg_timeout
+
+    pg_options = None
+    if str(backend) == "nccl":
+        pg_options = ProcessGroupNCCL.Options()
+        pg_options.is_high_priority_stream = False
+
+    return _init_process_group_like_miles(
+        backend=backend,
+        init_method=init_method,
+        timeout=timeout,
+        world_size=world_size,
+        rank=rank,
+        store=store,
+        group_name=group_name,
+        pg_options=pg_options,
+    )
+
+
 def _init_process_group_like_miles(
     backend: Any = None,
     init_method: str | None = None,
@@ -408,13 +441,13 @@ class WeightSyncSender:
         )
         if self.device.type == "cuda":
             torch.cuda.set_device(self.device)
-        self._process_group = create_stateless_process_group(
-            master_addr=self.master_addr,
-            master_port=self.master_port,
+        self._process_group = init_extra_process_group(
+            backend="nccl",
+            init_method=f"tcp://{self.master_addr}:{self.master_port}",
             rank=0,  # Trainer is always rank 0
             world_size=self.world_size,
             group_name=self.group_name,
-            timeout_seconds=self.timeout_seconds,
+            timeout=timedelta(seconds=self.timeout_seconds),
         )
         logger.info(
             "weight_sync_sender_init_ok world_size=%s master=%s:%s device=%s group=%s pg_backend=%s pg_rank=%s pg_world_size=%s socket_ifname=%s socket_ifname_source=%s nccl_env=%s",
