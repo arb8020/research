@@ -111,19 +111,40 @@ def _delegate_to_rollouts_monitor(args: argparse.Namespace) -> int:
     return rollouts_monitor_main(_build_rollouts_monitor_argv(args))
 
 
+def _find_latest_run_dir(base_dir: str) -> Path | None:
+    """Resolve the most recent run directory under a candidate base dir."""
+    from rollouts.tui.monitor_cli import find_latest_run
+
+    resolved = find_latest_run(base_dir)
+    if resolved is None:
+        return None
+    return Path(resolved)
+
+
 def _resolve_wait_run_dir(args: argparse.Namespace) -> Path:
     """Resolve a local run directory for wait-mode polling."""
     if args.attach is not None:
         raise ValueError("--wait-for-event does not support --attach yet")
 
     if args.latest:
-        from rollouts.tui.monitor_cli import find_latest_run
+        if args.output_dir is not None:
+            resolved = _find_latest_run_dir(args.output_dir)
+            if resolved is None:
+                raise ValueError(f"No run directories found under {args.output_dir!r}")
+            return resolved
 
-        base_dir = args.output_dir or "results"
-        resolved = find_latest_run(base_dir)
-        if resolved is None:
-            raise ValueError(f"No run directories found under {base_dir!r}")
-        return resolved
+        candidate_runs = [
+            resolved
+            for resolved in (
+                _find_latest_run_dir("results"),
+                _find_latest_run_dir("rollouts/results"),
+            )
+            if resolved is not None
+        ]
+        if not candidate_runs:
+            raise ValueError("No run directories found under 'results' or 'rollouts/results'")
+        candidate_runs.sort(key=lambda path: path.stat().st_mtime, reverse=True)
+        return candidate_runs[0]
 
     if args.output_dir is None:
         raise ValueError("--wait-for-event requires a run directory or --latest")

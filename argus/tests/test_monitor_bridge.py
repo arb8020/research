@@ -141,3 +141,36 @@ def test_monitor_main_wait_for_event_fails_on_nonzero_remote_exit(
 
     assert result == 1
     assert delegated["called"] is False
+
+
+def test_resolve_wait_run_dir_latest_prefers_newest_rollouts_results(
+    monkeypatch: object, tmp_path: Path
+) -> None:
+    import os
+
+    results_run = tmp_path / "results" / "run_old"
+    rollouts_run = tmp_path / "rollouts" / "results" / "rl" / "run_new"
+    results_run.mkdir(parents=True)
+    rollouts_run.mkdir(parents=True)
+    (results_run / "run.jsonl").write_text("")
+    (rollouts_run / "run.jsonl").write_text("")
+    os.utime(results_run, (1, 1))
+    os.utime(rollouts_run, (10, 10))
+
+    def fake_find_latest_run_dir(base_dir: str) -> Path | None:
+        if base_dir == "results":
+            return results_run
+        if base_dir == "rollouts/results":
+            return rollouts_run
+        return None
+
+    monkeypatch.setattr(monitor, "_find_latest_run_dir", fake_find_latest_run_dir)
+
+    class Args:
+        attach = None
+        latest = True
+        output_dir = None
+
+    resolved = monitor._resolve_wait_run_dir(Args())
+
+    assert resolved == rollouts_run
