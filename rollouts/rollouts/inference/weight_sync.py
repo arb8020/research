@@ -88,10 +88,12 @@ def _nccl_env_snapshot() -> dict[str, object]:
         "CUDA_VISIBLE_DEVICES",
         "NCCL_DEBUG",
         "NCCL_DEBUG_SUBSYS",
+        "NCCL_ASYNC_ERROR_HANDLING",
         "NCCL_SHM_DISABLE",
         "NCCL_CUMEM_ENABLE",
         "NCCL_SOCKET_IFNAME",
         "GLOO_SOCKET_IFNAME",
+        "TORCH_DISABLE_SHARE_RDZV_TCP_STORE",
     )
     return {key: os.environ.get(key) for key in keys}
 
@@ -589,6 +591,7 @@ class WeightSyncSender:
         )
         try:
             _broadcast_all(use_async=False)
+            dist.barrier(self._process_group)
         finally:
             _WEIGHT_SYNC_PUBLICATION_LOCK.release()
             logger.info(

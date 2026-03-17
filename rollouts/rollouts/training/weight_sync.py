@@ -1220,6 +1220,9 @@ class VLLMEngine:
             f"CUDA_VISIBLE_DEVICES={gpu_str} "
             f"VLLM_SERVER_DEV_MODE=1 "
             f"HF_HUB_DOWNLOAD_TIMEOUT=300 "  # 5 min timeout for model downloads
+            f"NCCL_CUMEM_ENABLE=0 "
+            f"NCCL_ASYNC_ERROR_HANDLING=1 "
+            f"TORCH_DISABLE_SHARE_RDZV_TCP_STORE=1 "
             f"python -m {entrypoint} "
             f"--model {self.model_name} "
             f"--host 0.0.0.0 "
