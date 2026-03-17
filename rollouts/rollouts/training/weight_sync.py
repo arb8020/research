@@ -818,14 +818,16 @@ class SGLangEngine:
             # - AMEM_ENABLE=1: Enable the newer SGLang communicator pause/resume path
             #   used in later miles/slime patches for live distributed weight updates.
             # - NCCL_DEBUG/NCCL_DEBUG_SUBSYS: surface receiver-side transport/init failures
-            # Do not force NCCL_SHM_DISABLE here. Miles/Slime do not blanket-disable
-            # SHM for this path, and our current failure is in NCCL transport setup.
+            # - NCCL_SHM_DISABLE=1: the SGLang worker update path is currently falling onto
+            #   SHM transport in Modal and failing to attach /dev/shm segments on the
+            #   first witness tensor.
             f"{socket_ifname_env}"
             f"ROLLOUTS_SGLANG_SITE_TRACE=1 "
             f"AMEM_ENABLE=1 "
             f"NCCL_CUMEM_ENABLE=0 "
             f"NCCL_ASYNC_ERROR_HANDLING=1 "
             f"NCCL_P2P_DISABLE=1 "
+            f"NCCL_SHM_DISABLE=1 "
             f"NCCL_DEBUG=INFO "
             f"NCCL_DEBUG_SUBSYS=INIT,COLL "
             f"TORCH_DISABLE_SHARE_RDZV_TCP_STORE=1 "

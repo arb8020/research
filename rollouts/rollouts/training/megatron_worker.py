@@ -951,7 +951,7 @@ def _init_nccl_weight_sync(
     def trainer_join() -> None:
         import os
 
-        os.environ.pop("NCCL_SHM_DISABLE", None)
+        os.environ["NCCL_SHM_DISABLE"] = "1"
         os.environ.setdefault("NCCL_CUMEM_ENABLE", "0")
         os.environ.setdefault("NCCL_ASYNC_ERROR_HANDLING", "1")
         os.environ.setdefault("NCCL_P2P_DISABLE", "1")
