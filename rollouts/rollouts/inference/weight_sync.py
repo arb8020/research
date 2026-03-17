@@ -328,6 +328,34 @@ def init_extra_process_group(
     )
 
 
+def init_process_group_without_pg_options(
+    *,
+    backend: str = "nccl",
+    init_method: str | None = None,
+    timeout: timedelta | None = None,
+    world_size: int = -1,
+    rank: int = -1,
+    store: Any | None = None,
+    group_name: str | None = None,
+) -> dist.ProcessGroup:
+    """Create a process group with the plain Miles/Slime helper surface."""
+    from torch.distributed.distributed_c10d import default_pg_timeout
+
+    if timeout is None:
+        timeout = default_pg_timeout
+
+    return _init_process_group_like_miles(
+        backend=backend,
+        init_method=init_method,
+        timeout=timeout,
+        world_size=world_size,
+        rank=rank,
+        store=store,
+        group_name=group_name,
+        pg_options=None,
+    )
+
+
 def _init_process_group_like_miles(
     backend: Any = None,
     init_method: str | None = None,
@@ -537,9 +565,26 @@ class WeightSyncSender:
         )
         if self.device.type == "cuda":
             torch.cuda.set_device(self.device)
-        self._process_group = init_extra_process_group(
+        init_method = f"tcp://{self.master_addr}:{self.master_port}"
+        logger.info(
+            "weight_sync_sender_pg_create_contract init_method=%s group=%s rank=%s world_size=%s pg_options=%s",
+            init_method,
+            self.group_name,
+            0,
+            self.world_size,
+            "none",
+        )
+        _emit_argus_diag(
+            "weight_sync_sender_pg_create_contract",
+            init_method=init_method,
+            group=self.group_name,
+            rank=0,
+            world_size=self.world_size,
+            pg_options="none",
+        )
+        self._process_group = init_process_group_without_pg_options(
             backend="nccl",
-            init_method=f"tcp://{self.master_addr}:{self.master_port}",
+            init_method=init_method,
             rank=0,  # Trainer is always rank 0
             world_size=self.world_size,
             group_name=self.group_name,
@@ -585,17 +630,14 @@ class WeightSyncSender:
 
         Args:
             payload: Concrete payload to broadcast
-            async_op: Reserved for a future honest async sender path.
+            async_op: If true, issue async NCCL broadcasts and then wait on all
+                returned handles before returning. This matches Slime's
+                collective shape without exposing dishonest caller-visible async.
 
         Returns:
             None for the blocking publication path.
         """
         assert self._process_group is not None, "Call init_group() first"
-        if async_op:
-            raise NotImplementedError(
-                "Weight sync sender async_op=True is not implemented honestly yet. "
-                "Current trainer->inference publication is blocking."
-            )
         self.device = _normalize_cuda_device(self.device)
         if self.device.type == "cuda":
             torch.cuda.set_device(self.device)
@@ -728,7 +770,63 @@ class WeightSyncSender:
             total_tensors,
         )
         try:
-            _broadcast_all(use_async=False)
+            issue_started_at = time.monotonic()
+            handles = _broadcast_all(use_async=async_op)
+            issue_elapsed = time.monotonic() - issue_started_at
+            logger.info(
+                "weight_sync_sender_collective_issue_done total_tensors=%s async_op=%s elapsed_sec=%.6f handles=%s",
+                total_tensors,
+                async_op,
+                issue_elapsed,
+                len(handles),
+            )
+            _emit_argus_diag(
+                "weight_sync_sender_collective_issue_done",
+                total_tensors=total_tensors,
+                async_op=async_op,
+                elapsed_sec=issue_elapsed,
+                handles=len(handles),
+            )
+            if handles:
+                wait_started_at = time.monotonic()
+                _emit_argus_diag(
+                    "weight_sync_sender_collective_wait_start",
+                    total_tensors=total_tensors,
+                    async_op=async_op,
+                    handles=len(handles),
+                    socket_state=_proc_socket_snapshot(),
+                )
+                try:
+                    for handle in handles:
+                        handle.wait()
+                except Exception as exc:
+                    wait_elapsed = time.monotonic() - wait_started_at
+                    _emit_argus_diag(
+                        "weight_sync_sender_collective_wait_failed",
+                        total_tensors=total_tensors,
+                        async_op=async_op,
+                        handles=len(handles),
+                        elapsed_sec=wait_elapsed,
+                        error=f"{type(exc).__name__}: {exc}",
+                        socket_state=_proc_socket_snapshot(),
+                    )
+                    raise
+                wait_elapsed = time.monotonic() - wait_started_at
+                logger.info(
+                    "weight_sync_sender_collective_wait_ok total_tensors=%s async_op=%s elapsed_sec=%.6f handles=%s",
+                    total_tensors,
+                    async_op,
+                    wait_elapsed,
+                    len(handles),
+                )
+                _emit_argus_diag(
+                    "weight_sync_sender_collective_wait_ok",
+                    total_tensors=total_tensors,
+                    async_op=async_op,
+                    elapsed_sec=wait_elapsed,
+                    handles=len(handles),
+                    socket_state=_proc_socket_snapshot(),
+                )
         finally:
             _WEIGHT_SYNC_PUBLICATION_LOCK.release()
             logger.info(

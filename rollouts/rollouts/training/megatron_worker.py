@@ -16,6 +16,7 @@ import json
 import logging
 import os
 import sys
+import time
 from enum import IntEnum
 from typing import TYPE_CHECKING, Any
 
@@ -993,21 +994,50 @@ def _init_nccl_weight_sync(
             group=group_name,
         )
 
-    executor = concurrent.futures.ThreadPoolExecutor(
-        max_workers=max(1, len(inference_endpoints) + 1)
+    registration_executor = concurrent.futures.ThreadPoolExecutor(
+        max_workers=max(1, len(inference_endpoints))
     )
     try:
-        trainer_future = executor.submit(trainer_join)
         registration_futures = []
         for i, endpoint in enumerate(inference_endpoints):
             inference_rank = i + 1
-            registration_futures.append(
-                executor.submit(register_inference_endpoint, endpoint, inference_rank)
+            logger.info(
+                "weight_sync_megatron_register_endpoint_submit endpoint=%s rank=%s",
+                endpoint,
+                inference_rank,
             )
-        for index, future in enumerate(
-            concurrent.futures.as_completed(registration_futures),
-            start=1,
-        ):
+            _emit_argus_diag(
+                "weight_sync_megatron_register_endpoint_submit",
+                endpoint=endpoint,
+                rank=inference_rank,
+            )
+            registration_futures.append(
+                registration_executor.submit(register_inference_endpoint, endpoint, inference_rank)
+            )
+        logger.info(
+            "weight_sync_megatron_registration_submitted total=%s",
+            len(registration_futures),
+        )
+        _emit_argus_diag(
+            "weight_sync_megatron_registration_submitted",
+            total=len(registration_futures),
+        )
+
+        trainer_join_started_at = time.monotonic()
+        logger.info("weight_sync_megatron_trainer_join_stage_start")
+        _emit_argus_diag("weight_sync_megatron_trainer_join_stage_start")
+        trainer_join()
+        trainer_join_elapsed = time.monotonic() - trainer_join_started_at
+        logger.info(
+            "weight_sync_megatron_trainer_join_stage_ok elapsed_sec=%.6f",
+            trainer_join_elapsed,
+        )
+        _emit_argus_diag(
+            "weight_sync_megatron_trainer_join_stage_ok",
+            elapsed_sec=trainer_join_elapsed,
+        )
+
+        for index, future in enumerate(registration_futures, start=1):
             logger.info(
                 "weight_sync_megatron_registration_wait_start index=%s total=%s",
                 index,
@@ -1032,14 +1062,8 @@ def _init_nccl_weight_sync(
 
         if errors:
             raise RuntimeError(f"Failed to register inference endpoints for NCCL: {errors}")
-
-        logger.info("weight_sync_megatron_trainer_future_wait_start")
-        _emit_argus_diag("weight_sync_megatron_trainer_future_wait_start")
-        trainer_future.result()
-        logger.info("weight_sync_megatron_trainer_future_wait_ok")
-        _emit_argus_diag("weight_sync_megatron_trainer_future_wait_ok")
     finally:
-        executor.shutdown(wait=False, cancel_futures=True)
+        registration_executor.shutdown(wait=False, cancel_futures=True)
 
     sender = sender_holder.get("sender")
     if sender is None:
@@ -1196,7 +1220,7 @@ def _do_sync_weights_nccl(
         try:
             sender.broadcast_payload(
                 payload,
-                async_op=False,
+                async_op=True,
                 advance_version=not witness,
             )
             logger.info("weight_sync_megatron_broadcast_wait_ok tensors=%s", len(payload.tensors))
