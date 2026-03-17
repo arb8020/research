@@ -1258,8 +1258,8 @@ Examples:
     parser.add_argument(
         "--modal-cleanup-scope",
         choices=["app", "tag", "run", "none"],
-        default="run",
-        help="Modal pre-create sandbox cleanup scope (default: run)",
+        default="tag",
+        help="Modal pre-create sandbox cleanup scope (default: tag)",
     )
     parser.add_argument(
         "--force-deploy-committed",
