@@ -481,6 +481,11 @@ class InferenceConfig:
     port: int = 30000  # Base port (engines use port, port+1, ...)
     cuda_device_ids: tuple[int, ...] = (0,)
     mem_fraction: float = 0.7
+    disable_cuda_graph: bool = False
+    max_total_tokens: int | None = None
+    max_prefill_tokens: int | None = None
+    max_running_requests: int | None = None
+    chunked_prefill_size: int | None = None
     tensor_parallel_size: int = 1  # GPUs per engine (1 = each GPU is its own engine)
     expert_parallel_size: int = 1  # For MoE models (SGLang --ep-size)
     startup_timeout: float = (

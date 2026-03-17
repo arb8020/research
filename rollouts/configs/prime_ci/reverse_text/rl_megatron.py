@@ -77,7 +77,12 @@ config = GRPOConfig(
     ),
     inference=InferenceConfig(
         cuda_device_ids=(0,),
-        mem_fraction=0.45,
+        mem_fraction=0.2,
+        disable_cuda_graph=True,
+        max_total_tokens=4096,
+        max_prefill_tokens=2048,
+        max_running_requests=16,
+        chunked_prefill_size=512,
     ),
 )
 

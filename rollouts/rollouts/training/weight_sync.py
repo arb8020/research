@@ -727,6 +727,11 @@ class SGLangEngine:
     output_dir: Path
     dtype: str = "bfloat16"
     mem_fraction: float = 0.7
+    disable_cuda_graph: bool = False
+    max_total_tokens: int | None = None
+    max_prefill_tokens: int | None = None
+    max_running_requests: int | None = None
+    chunked_prefill_size: int | None = None
     timeout: float = 300.0
     available_sync_realizations: tuple[str, ...] = (SGLANG_HTTP_PATH_RELOAD.name,)
     default_sync_realization: str | None = SGLANG_HTTP_PATH_RELOAD.name
@@ -804,6 +809,20 @@ class SGLangEngine:
             socket_ifname_env = (
                 f"NCCL_SOCKET_IFNAME={socket_ifname} GLOO_SOCKET_IFNAME={socket_ifname} "
             )
+        extra_args: list[str] = []
+        if self.disable_cuda_graph:
+            extra_args.append("--disable-cuda-graph")
+        if self.max_total_tokens is not None:
+            extra_args.append(f"--max-total-tokens {self.max_total_tokens}")
+        if self.max_prefill_tokens is not None:
+            extra_args.append(f"--max-prefill-tokens {self.max_prefill_tokens}")
+        if self.max_running_requests is not None:
+            extra_args.append(f"--max-running-requests {self.max_running_requests}")
+        if self.chunked_prefill_size is not None:
+            extra_args.append(f"--chunked-prefill-size {self.chunked_prefill_size}")
+        extra_args_str = ""
+        if extra_args:
+            extra_args_str = " " + " ".join(extra_args)
         cmd = (
             "PYTHONPATH=.${PYTHONPATH:+:$PYTHONPATH} "
             f"CUDA_VISIBLE_DEVICES={gpu_str} "
@@ -840,6 +859,7 @@ class SGLangEngine:
             f"--dtype {self.dtype} "
             f"--mem-fraction-static {self.mem_fraction} "
             f"--trust-remote-code"
+            f"{extra_args_str}"
         )
         # NOTE: NCCL weight sync uses HTTP API (/init_weights_update_group),
         # not SGLang CLI flags. The --rl-on-policy-target flag only supports 'fsdp'.

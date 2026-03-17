@@ -299,6 +299,11 @@ def _create_inference_engines(
                 output_dir=output_dir,
                 dtype=config.model.dtype,
                 mem_fraction=config.inference.mem_fraction,
+                disable_cuda_graph=config.inference.disable_cuda_graph,
+                max_total_tokens=config.inference.max_total_tokens,
+                max_prefill_tokens=config.inference.max_prefill_tokens,
+                max_running_requests=config.inference.max_running_requests,
+                chunked_prefill_size=config.inference.chunked_prefill_size,
             )
         elif config.inference.backend == "vllm":
             requested_sync_realization = config.checkpoint.inference_sync_realization
@@ -381,6 +386,11 @@ def _create_teacher_engine(
         output_dir=output_dir,
         dtype=config.model.dtype,
         mem_fraction=0.9,  # Teacher doesn't share GPU, can use more VRAM
+        disable_cuda_graph=config.inference.disable_cuda_graph,
+        max_total_tokens=config.inference.max_total_tokens,
+        max_prefill_tokens=config.inference.max_prefill_tokens,
+        max_running_requests=config.inference.max_running_requests,
+        chunked_prefill_size=config.inference.chunked_prefill_size,
     )
 
     return teacher_engine
