@@ -810,6 +810,11 @@ class SGLangEngine:
             f"HF_HUB_DOWNLOAD_TIMEOUT=300 "  # 5 min timeout for model downloads
             # NCCL environment for cross-process weight sync:
             # - NCCL_CUMEM_ENABLE=0: Consistent with SGLang defaults (see miles/ray/actor_group.py)
+            # - NCCL_ASYNC_ERROR_HANDLING=1: Match the working torchtitan/vllm witness.
+            # - NCCL_P2P_DISABLE=1: Match the working torchtitan/vllm witness and avoid
+            #   extra proxy connections in this 2-party update group.
+            # - TORCH_DISABLE_SHARE_RDZV_TCP_STORE=1: Match the working witness and keep
+            #   the rendezvous store contract narrow.
             # - AMEM_ENABLE=1: Enable the newer SGLang communicator pause/resume path
             #   used in later miles/slime patches for live distributed weight updates.
             # - NCCL_DEBUG/NCCL_DEBUG_SUBSYS: surface receiver-side transport/init failures
@@ -819,8 +824,11 @@ class SGLangEngine:
             f"ROLLOUTS_SGLANG_SITE_TRACE=1 "
             f"AMEM_ENABLE=1 "
             f"NCCL_CUMEM_ENABLE=0 "
+            f"NCCL_ASYNC_ERROR_HANDLING=1 "
+            f"NCCL_P2P_DISABLE=1 "
             f"NCCL_DEBUG=INFO "
             f"NCCL_DEBUG_SUBSYS=INIT,COLL "
+            f"TORCH_DISABLE_SHARE_RDZV_TCP_STORE=1 "
             f"ROLLOUTS_SGLANG_TRACE_PATH={shlex.quote(str(self._trace_file))} "
             f"python -m rollouts.training.sglang_launcher "
             f"--model-path {self.model_name} "
@@ -1259,6 +1267,12 @@ class VLLMEngine:
             notes.append(
                 "Current upstream vLLM launch has no truthful default live weight-sync adapter. "
                 "Use an explicit patched adapter or launch vLLM against a mutable local model root."
+            )
+        if VLLM_CUSTOM_NCCL_BROADCAST.name in self.available_sync_realizations:
+            notes.append(
+                "vllm_custom_nccl_broadcast uses direct NCCL transport, but the current "
+                "patched vLLM route still receives and loads tensors synchronously in the "
+                "worker. Treat it as blocking at the serving boundary."
             )
         if (
             self.default_sync_realization == VLLM_DEV_CURRENT_MODEL_ROOT_RELOAD.name
@@ -1853,16 +1867,17 @@ class EngineV2Engine:
 
 
 # ══════════════════════════════════════════════════════════════
-# True PipelineRL: Non-blocking weight sync (inference never stops)
+# Experimental trainer-side overlap for NCCL weight sync
 # ══════════════════════════════════════════════════════════════
 
 
 @dataclass
 class NCCLWeightSyncer:
-    """True PipelineRL-style weight sync: inference never stops.
+    """Experimental trainer-side overlap for versioned NCCL weight sync.
 
-    Unlike stop-and-sync (Miles/verl), this broadcasts weights while
-    inference continues. Samples are tagged with weight_version.
+    This overlaps trainer progress with the sync task and tags samples with a
+    weight_version. It does not, by itself, prove that the inference runtime
+    applies updates without a blocking serving boundary.
 
     Architecture:
         Training loop:
@@ -1873,15 +1888,16 @@ class NCCLWeightSyncer:
                 # Training continues immediately, doesn't wait for sync
 
         Inference side:
-            - Receives NCCL broadcast in background
-            - Updates weights parameter-by-parameter
-            - New requests use new weights, in-flight requests use old weights
-            - Returns weight_version with each response
+            - Receives NCCL broadcast via a direct worker-side receive path
+            - Applies weights parameter-by-parameter
+            - Current rollouts integrations should pause new admissions while
+              sync_in_progress is true unless the concrete runtime proves a
+              truthful inflight serving semantic
 
     Warning:
-        This is "slightly sketchy" (PipelineRL's words) - during a sync,
-        some layers may have new weights while others have old weights.
-        PipelineRL accepts this for the throughput benefit.
+        The current transport is only one layer of the problem. Even if training
+        continues while this object publishes weights, the inference runtime may
+        still block request admission during receive/load.
 
     Example:
         >>> manager = NCCLWeightSyncer(
@@ -1912,7 +1928,7 @@ class NCCLWeightSyncer:
 
     @property
     def sync_in_progress(self) -> bool:
-        """True if a weight sync is currently in progress (SGLang is blocked)."""
+        """True while the current direct receive/load boundary is in progress."""
         return self._sync_in_progress
 
     @property
@@ -2007,10 +2023,11 @@ class NCCLWeightSyncer:
         model: Any,  # nn.Module
         nursery: trio.Nursery,
     ) -> None:
-        """Broadcast weights to inference engines in background (non-blocking).
+        """Spawn trainer-side publication in the background.
 
-        This is the key PipelineRL primitive: training continues immediately
-        while weight sync happens in background.
+        Training can continue immediately while weight sync happens in a
+        background task. Whether inference continues admitting new work during
+        that window depends on the concrete receive/load realization.
 
         Args:
             model: PyTorch model to sync

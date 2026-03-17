@@ -953,6 +953,9 @@ def _init_nccl_weight_sync(
 
         os.environ.pop("NCCL_SHM_DISABLE", None)
         os.environ.setdefault("NCCL_CUMEM_ENABLE", "0")
+        os.environ.setdefault("NCCL_ASYNC_ERROR_HANDLING", "1")
+        os.environ.setdefault("NCCL_P2P_DISABLE", "1")
+        os.environ.setdefault("TORCH_DISABLE_SHARE_RDZV_TCP_STORE", "1")
         logger.info(
             "weight_sync_megatron_trainer_join_start master=%s:%s world_size=%s group=%s",
             master_addr,
