@@ -176,6 +176,24 @@ def _process_context() -> dict[str, object]:
     return payload
 
 
+def _distributed_env_summary() -> dict[str, object]:
+    keys = (
+        "MASTER_ADDR",
+        "MASTER_PORT",
+        "RANK",
+        "WORLD_SIZE",
+        "LOCAL_RANK",
+        "LOCAL_WORLD_SIZE",
+        "CUDA_VISIBLE_DEVICES",
+        "NCCL_SOCKET_IFNAME",
+        "GLOO_SOCKET_IFNAME",
+        "NCCL_P2P_DISABLE",
+        "NCCL_SHM_DISABLE",
+        "TORCH_DISABLE_SHARE_RDZV_TCP_STORE",
+    )
+    return {key: os.environ.get(key) for key in keys}
+
+
 def _method_owner_state(owner: object) -> dict[str, object]:
     payload: dict[str, object] = {
         "class": type(owner).__name__,
@@ -593,6 +611,30 @@ def _emit_process_group_snapshot(
     )
 
 
+def _emit_distributed_state_snapshot(
+    *,
+    owner_cls: type[object],
+    method_name: str,
+    phase: str,
+) -> None:
+    if owner_cls.__name__ not in {
+        "TokenizerManager",
+        "SchedulerUpdateWeightsMixin",
+        "BaseTpWorker",
+        "ModelRunner",
+    }:
+        return
+    _emit_argus_diag(
+        "sglang_runtime_distributed_state",
+        owner_class=owner_cls.__name__,
+        method=method_name,
+        phase=phase,
+        process=_process_context(),
+        env=_distributed_env_summary(),
+        default_group=_group_state_summary(None),
+    )
+
+
 def _instrument_async_context_type(lock_type: type[object], *, label: str) -> None:
     if getattr(lock_type, "__rollouts_argus_wrapped__", False):
         return
@@ -919,6 +961,11 @@ def _wrap_runtime_method(owner_cls: type[object], method_name: str) -> None:
                 phase="enter",
                 self=self,
             )
+            _emit_distributed_state_snapshot(
+                owner_cls=owner_cls,
+                method_name=method_name,
+                phase="enter",
+            )
             _emit_process_group_snapshot(
                 owner_cls=owner_cls,
                 method_name=method_name,
@@ -943,6 +990,11 @@ def _wrap_runtime_method(owner_cls: type[object], method_name: str) -> None:
                     phase="failed",
                     self=self,
                 )
+                _emit_distributed_state_snapshot(
+                    owner_cls=owner_cls,
+                    method_name=method_name,
+                    phase="failed",
+                )
                 _emit_process_group_snapshot(
                     owner_cls=owner_cls,
                     method_name=method_name,
@@ -966,6 +1018,11 @@ def _wrap_runtime_method(owner_cls: type[object], method_name: str) -> None:
                 method_name=method_name,
                 phase="ok",
                 self=self,
+            )
+            _emit_distributed_state_snapshot(
+                owner_cls=owner_cls,
+                method_name=method_name,
+                phase="ok",
             )
             _emit_process_group_snapshot(
                 owner_cls=owner_cls,
@@ -998,6 +1055,11 @@ def _wrap_runtime_method(owner_cls: type[object], method_name: str) -> None:
                 phase="enter",
                 self=self,
             )
+            _emit_distributed_state_snapshot(
+                owner_cls=owner_cls,
+                method_name=method_name,
+                phase="enter",
+            )
             _emit_process_group_snapshot(
                 owner_cls=owner_cls,
                 method_name=method_name,
@@ -1022,6 +1084,11 @@ def _wrap_runtime_method(owner_cls: type[object], method_name: str) -> None:
                     phase="failed",
                     self=self,
                 )
+                _emit_distributed_state_snapshot(
+                    owner_cls=owner_cls,
+                    method_name=method_name,
+                    phase="failed",
+                )
                 _emit_process_group_snapshot(
                     owner_cls=owner_cls,
                     method_name=method_name,
@@ -1045,6 +1112,11 @@ def _wrap_runtime_method(owner_cls: type[object], method_name: str) -> None:
                 method_name=method_name,
                 phase="ok",
                 self=self,
+            )
+            _emit_distributed_state_snapshot(
+                owner_cls=owner_cls,
+                method_name=method_name,
+                phase="ok",
             )
             _emit_process_group_snapshot(
                 owner_cls=owner_cls,
