@@ -282,21 +282,30 @@ def _instrument_bound_method_instance(
     if not callable(method) or getattr(method, "__rollouts_argus_wrapped__", False):
         return
 
+    def _normalize_call_args(args: tuple[object, ...]) -> tuple[object, ...]:
+        # `getattr(instance, method_name)` returns a bound method. After rebinding the
+        # wrapper onto the instance with `MethodType`, Python passes `instance` again.
+        # Drop that extra leading self so instrumentation does not mutate call semantics.
+        if args and args[0] is instance:
+            return args[1:]
+        return args
+
     if inspect.iscoroutinefunction(method):
 
         @functools.wraps(method)
         async def wrapped(*args: object, **kwargs: object) -> object:  # type: ignore[no-untyped-def]
+            call_args = _normalize_call_args(args)
             _emit_argus_diag(
                 f"{event_prefix}_enter",
                 label=label,
                 method=method_name,
                 process=_process_context(),
                 owner_type=type(instance).__name__,
-                args=_jsonable_summary(args),
+                args=_jsonable_summary(call_args),
                 kwargs=_jsonable_summary(kwargs),
             )
             try:
-                result = await method(*args, **kwargs)
+                result = await method(*call_args, **kwargs)
             except Exception as exc:
                 _emit_argus_diag(
                     f"{event_prefix}_failed",
@@ -322,17 +331,18 @@ def _instrument_bound_method_instance(
 
         @functools.wraps(method)
         def wrapped(*args: object, **kwargs: object) -> object:  # type: ignore[no-untyped-def]
+            call_args = _normalize_call_args(args)
             _emit_argus_diag(
                 f"{event_prefix}_enter",
                 label=label,
                 method=method_name,
                 process=_process_context(),
                 owner_type=type(instance).__name__,
-                args=_jsonable_summary(args),
+                args=_jsonable_summary(call_args),
                 kwargs=_jsonable_summary(kwargs),
             )
             try:
-                result = method(*args, **kwargs)
+                result = method(*call_args, **kwargs)
             except Exception as exc:
                 _emit_argus_diag(
                     f"{event_prefix}_failed",
