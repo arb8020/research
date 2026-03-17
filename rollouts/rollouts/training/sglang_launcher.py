@@ -278,6 +278,34 @@ def _group_state_summary(group: object) -> dict[str, object]:
     return payload
 
 
+def _owner_process_group_summary(owner: object) -> list[dict[str, object]]:
+    summaries: list[dict[str, object]] = []
+    seen_ids: set[int] = set()
+    for attr_name in dir(owner):
+        if "group" not in attr_name.lower():
+            continue
+        try:
+            value = getattr(owner, attr_name)
+        except Exception as exc:
+            summaries.append({
+                "attr": attr_name,
+                "error": f"{type(exc).__name__}: {exc}",
+            })
+            continue
+        if value is None:
+            continue
+        object_id = id(value)
+        if object_id in seen_ids:
+            continue
+        seen_ids.add(object_id)
+        summary = _group_state_summary(value)
+        if "backend" not in summary and "error" in summary:
+            continue
+        summary["attr"] = attr_name
+        summaries.append(summary)
+    return summaries
+
+
 def _tensor_summary(tensor: object) -> dict[str, object]:
     payload: dict[str, object] = {"type": type(tensor).__name__}
     try:
@@ -523,6 +551,28 @@ def _emit_modelrunner_socket_snapshot(
         process=_process_context(),
         owner_state=_method_owner_state(self),
         socket_state=_capture_ss_snapshot(pid=os.getpid()),
+    )
+
+
+def _emit_process_group_snapshot(
+    *,
+    owner_cls: type[object],
+    method_name: str,
+    phase: str,
+    self: object,
+) -> None:
+    if owner_cls.__name__ not in {"ModelRunner", "BaseTpWorker", "SchedulerUpdateWeightsMixin"}:
+        return
+    summaries = _owner_process_group_summary(self)
+    if not summaries:
+        return
+    _emit_argus_diag(
+        "sglang_runtime_process_group_snapshot",
+        owner_class=owner_cls.__name__,
+        method=method_name,
+        phase=phase,
+        process=_process_context(),
+        groups=summaries,
     )
 
 
@@ -852,6 +902,12 @@ def _wrap_runtime_method(owner_cls: type[object], method_name: str) -> None:
                 phase="enter",
                 self=self,
             )
+            _emit_process_group_snapshot(
+                owner_cls=owner_cls,
+                method_name=method_name,
+                phase="enter",
+                self=self,
+            )
             try:
                 result = await method(self, *args, **kwargs)
             except Exception as exc:
@@ -870,6 +926,12 @@ def _wrap_runtime_method(owner_cls: type[object], method_name: str) -> None:
                     phase="failed",
                     self=self,
                 )
+                _emit_process_group_snapshot(
+                    owner_cls=owner_cls,
+                    method_name=method_name,
+                    phase="failed",
+                    self=self,
+                )
                 raise
             finally:
                 if trace_collectives:
@@ -883,6 +945,12 @@ def _wrap_runtime_method(owner_cls: type[object], method_name: str) -> None:
                 result=_jsonable_summary(result),
             )
             _emit_modelrunner_socket_snapshot(
+                owner_cls=owner_cls,
+                method_name=method_name,
+                phase="ok",
+                self=self,
+            )
+            _emit_process_group_snapshot(
                 owner_cls=owner_cls,
                 method_name=method_name,
                 phase="ok",
@@ -913,6 +981,12 @@ def _wrap_runtime_method(owner_cls: type[object], method_name: str) -> None:
                 phase="enter",
                 self=self,
             )
+            _emit_process_group_snapshot(
+                owner_cls=owner_cls,
+                method_name=method_name,
+                phase="enter",
+                self=self,
+            )
             try:
                 result = method(self, *args, **kwargs)
             except Exception as exc:
@@ -931,6 +1005,12 @@ def _wrap_runtime_method(owner_cls: type[object], method_name: str) -> None:
                     phase="failed",
                     self=self,
                 )
+                _emit_process_group_snapshot(
+                    owner_cls=owner_cls,
+                    method_name=method_name,
+                    phase="failed",
+                    self=self,
+                )
                 raise
             finally:
                 if trace_collectives:
@@ -944,6 +1024,12 @@ def _wrap_runtime_method(owner_cls: type[object], method_name: str) -> None:
                 result=_jsonable_summary(result),
             )
             _emit_modelrunner_socket_snapshot(
+                owner_cls=owner_cls,
+                method_name=method_name,
+                phase="ok",
+                self=self,
+            )
+            _emit_process_group_snapshot(
                 owner_cls=owner_cls,
                 method_name=method_name,
                 phase="ok",
