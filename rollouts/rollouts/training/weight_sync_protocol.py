@@ -310,11 +310,15 @@ VLLM_CUSTOM_PATH_RELOAD = InferenceSyncRealization(
 VLLM_CUSTOM_NCCL_BROADCAST = InferenceSyncRealization(
     name="vllm_custom_nccl_broadcast",
     transport="nccl",
-    mode="inflight",
+    mode="blocking",
     mechanism="tensor_broadcast",
     requires_custom_server_patch=True,
     requires_worker_extension=True,
-    notes="QED-Nano-style direct tensor broadcast into vLLM workers.",
+    notes=(
+        "QED-Nano-style direct tensor broadcast into vLLM workers. "
+        "Current patched vLLM applies received tensors synchronously inside the worker, "
+        "so the serving boundary remains blocking even though the transport is NCCL."
+    ),
 )
 
 

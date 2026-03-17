@@ -585,12 +585,17 @@ class WeightSyncSender:
 
         Args:
             payload: Concrete payload to broadcast
-            async_op: If True, return handles for async wait
+            async_op: Reserved for a future honest async sender path.
 
         Returns:
-            List of async handles if async_op=True, else None
+            None for the blocking publication path.
         """
         assert self._process_group is not None, "Call init_group() first"
+        if async_op:
+            raise NotImplementedError(
+                "Weight sync sender async_op=True is not implemented honestly yet. "
+                "Current trainer->inference publication is blocking."
+            )
         self.device = _normalize_cuda_device(self.device)
         if self.device.type == "cuda":
             torch.cuda.set_device(self.device)
@@ -712,12 +717,6 @@ class WeightSyncSender:
                     )
                 if use_async:
                     handles.append(handle)
-            return handles
-
-        if async_op:
-            handles = _broadcast_all(use_async=False)
-            if advance_version:
-                self._weight_version += 1
             return handles
 
         lock_wait_start = time.monotonic()

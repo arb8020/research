@@ -1,10 +1,11 @@
-"""Pipelined Rollout Manager (PipelineRL-style in-flight updates).
+"""Pipelined Rollout Manager for versioned background sampling.
 
 Runs sampling in background while training proceeds. Key features:
 - Background sampling task that continuously generates rollouts
 - Weight version tracking (samples know which model version generated them)
 - max_lag parameter to discard stale samples
 - Non-blocking batch retrieval
+- Optional admission pause around a blocking weight-application boundary
 
 Architecture:
     ┌─────────────────────────────────────────────────────────────┐

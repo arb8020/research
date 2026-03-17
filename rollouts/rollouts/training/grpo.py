@@ -1465,7 +1465,7 @@ async def _grpo_train_async(
             )
             logger.info(f"VRAM preflight check skipped ({reason})")
 
-        # Initialize NCCL weight sync if enabled (PipelineRL-style in-flight updates).
+        # Initialize direct NCCL weight sync if enabled.
         # Skip for true_pipeline mode - NCCLWeightSyncer handles NCCL init separately.
         if (
             config.checkpoint.weight_sync_mode == "nccl"
@@ -1978,7 +1978,7 @@ async def _grpo_train_async(
 
             async def _true_pipeline_batches() -> AsyncIterator[Any]:
                 try:
-                    # Initialize NCCL for non-blocking weight sync
+                    # Initialize NCCL for experimental trainer-side overlap.
                     await weight_sync_manager.init_nccl_group()
 
                     async with pipelined_manager:
@@ -2009,7 +2009,9 @@ async def _grpo_train_async(
                                     weight_version=weight_sync_manager.current_version,
                                 )
 
-                                # Non-blocking weight sync - spawns background task.
+                                # Trainer-side non-blocking publication. Current
+                                # direct receive/load realizations may still pause
+                                # new admissions while sync is in progress.
                                 should_sync = (step + 1) % config.checkpoint.sync_weights_every == 0
                                 if should_sync:
                                     logger.debug(
