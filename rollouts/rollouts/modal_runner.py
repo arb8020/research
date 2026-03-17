@@ -2049,19 +2049,41 @@ async def _run_training_in_sandbox(
 
     def _on_stderr_line(line: str) -> None:
         stripped = line.rstrip()
-        if stripped.startswith(ARGUS_DIAG_EVENT_SENTINEL):
+        if ARGUS_DIAG_EVENT_SENTINEL in stripped:
             try:
                 import json
 
-                payloads = stripped.split(ARGUS_DIAG_EVENT_SENTINEL)
-                for payload in payloads:
-                    payload = payload.strip()
-                    if not payload:
-                        continue
-                    event_data = json.loads(payload)
+                decoder = json.JSONDecoder()
+                remaining = stripped
+                while ARGUS_DIAG_EVENT_SENTINEL in remaining:
+                    prefix, payload = remaining.split(ARGUS_DIAG_EVENT_SENTINEL, 1)
+                    prefix = prefix.rstrip()
+                    if prefix:
+                        process_state["stderr_line_count"] += 1
+                        process_state["last_stderr_line"] = prefix
+                        process_state["last_stderr_elapsed_sec"] = round(_elapsed(), 3)
+                        stderr_tail.append(prefix)
+                        _emit_stream_line(
+                            "remote_stderr_line",
+                            process_state["stderr_line_count"],
+                            prefix,
+                        )
+                    payload = payload.lstrip()
+                    event_data, end_idx = decoder.raw_decode(payload)
                     event_name = event_data.pop("event", None)
                     if event_name:
                         emit(event_name, **event_data)
+                    remaining = payload[end_idx:].lstrip()
+                if remaining:
+                    process_state["stderr_line_count"] += 1
+                    process_state["last_stderr_line"] = remaining
+                    process_state["last_stderr_elapsed_sec"] = round(_elapsed(), 3)
+                    stderr_tail.append(remaining)
+                    _emit_stream_line(
+                        "remote_stderr_line",
+                        process_state["stderr_line_count"],
+                        remaining,
+                    )
             except Exception as exc:
                 emit("remote_diag_stream_parse_failed", error=f"{type(exc).__name__}: {exc}")
             return
