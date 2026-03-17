@@ -1291,6 +1291,7 @@ class VLLMEngine:
             f"HF_HUB_DOWNLOAD_TIMEOUT=300 "  # 5 min timeout for model downloads
             f"NCCL_CUMEM_ENABLE=0 "
             f"NCCL_ASYNC_ERROR_HANDLING=1 "
+            f"NCCL_P2P_DISABLE=1 "
             f"TORCH_DISABLE_SHARE_RDZV_TCP_STORE=1 "
             f"python -m {entrypoint} "
             f"--model {self.model_name} "

@@ -923,6 +923,7 @@ class TorchTitanBackend:
         def trainer_join() -> None:
             os.environ.setdefault("NCCL_CUMEM_ENABLE", "0")
             os.environ.setdefault("NCCL_ASYNC_ERROR_HANDLING", "1")
+            os.environ.setdefault("NCCL_P2P_DISABLE", "1")
             os.environ.setdefault("TORCH_DISABLE_SHARE_RDZV_TCP_STORE", "1")
             sender.init_group()
 

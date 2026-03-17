@@ -89,6 +89,7 @@ def _nccl_env_snapshot() -> dict[str, object]:
         "NCCL_DEBUG",
         "NCCL_DEBUG_SUBSYS",
         "NCCL_ASYNC_ERROR_HANDLING",
+        "NCCL_P2P_DISABLE",
         "NCCL_SHM_DISABLE",
         "NCCL_CUMEM_ENABLE",
         "NCCL_SOCKET_IFNAME",
@@ -421,6 +422,7 @@ class WeightSyncSender:
         self.device = _normalize_cuda_device(self.device)
         os.environ.setdefault("NCCL_DEBUG", "INFO")
         os.environ.setdefault("NCCL_DEBUG_SUBSYS", "INIT,COLL")
+        os.environ.setdefault("NCCL_P2P_DISABLE", "1")
         socket_ifname, socket_ifname_source = _apply_socket_ifname_defaults()
         logger.info(
             "weight_sync_sender_init_start world_size=%s master=%s:%s device=%s group=%s socket_ifname=%s socket_ifname_source=%s nccl_env=%s",
