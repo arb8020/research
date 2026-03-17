@@ -24,6 +24,7 @@ from pathlib import Path
 from types import MethodType
 
 _SIDECAR_LOCK = threading.Lock()
+_WEIGHT_UPDATE_CONTEXT = threading.local()
 
 
 def _sidecar_trace_path() -> Path | None:
@@ -202,6 +203,168 @@ def _method_owner_state(owner: object) -> dict[str, object]:
 
 def _traceback_tail(limit: int = 8) -> list[str]:
     return traceback.format_exc().strip().splitlines()[-limit:]
+
+
+def _weight_update_stack() -> list[dict[str, object]]:
+    stack = getattr(_WEIGHT_UPDATE_CONTEXT, "stack", None)
+    if stack is None:
+        stack = []
+        _WEIGHT_UPDATE_CONTEXT.stack = stack
+    return stack
+
+
+def _push_weight_update_context(*, owner_class: str, method: str) -> None:
+    _weight_update_stack().append({
+        "owner_class": owner_class,
+        "method": method,
+    })
+
+
+def _pop_weight_update_context() -> None:
+    stack = _weight_update_stack()
+    if stack:
+        stack.pop()
+
+
+def _current_weight_update_context() -> dict[str, object] | None:
+    stack = _weight_update_stack()
+    if not stack:
+        return None
+    return {
+        "stack": list(stack),
+        "depth": len(stack),
+        "current": stack[-1],
+    }
+
+
+def _should_trace_weight_update_collectives(owner_cls: type[object], method_name: str) -> bool:
+    if method_name not in {
+        "init_weights_update_group",
+        "update_weights_from_distributed",
+        "update_weights_from_ipc",
+    }:
+        return False
+    return owner_cls.__name__ in {
+        "TokenizerManager",
+        "SchedulerUpdateWeightsMixin",
+        "BaseTpWorker",
+        "ModelRunner",
+    }
+
+
+def _group_state_summary(group: object) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "type": type(group).__name__ if group is not None else None,
+        "is_none": group is None,
+    }
+    try:
+        import torch.distributed as dist
+
+        if group is None:
+            if dist.is_initialized():
+                payload["backend"] = dist.get_backend()
+                payload["rank"] = dist.get_rank()
+                payload["world_size"] = dist.get_world_size()
+            else:
+                payload["backend"] = None
+                payload["rank"] = None
+                payload["world_size"] = None
+        else:
+            payload["backend"] = dist.get_backend(group)
+            payload["rank"] = dist.get_rank(group)
+            payload["world_size"] = dist.get_world_size(group)
+    except Exception as exc:
+        payload["error"] = f"{type(exc).__name__}: {exc}"
+    return payload
+
+
+def _tensor_summary(tensor: object) -> dict[str, object]:
+    payload: dict[str, object] = {"type": type(tensor).__name__}
+    try:
+        import torch
+
+        if isinstance(tensor, torch.Tensor):
+            payload.update({
+                "shape": list(tensor.shape),
+                "dtype": str(tensor.dtype).replace("torch.", ""),
+                "device": str(tensor.device),
+                "numel": int(tensor.numel()),
+                "is_contiguous": bool(tensor.is_contiguous()),
+                "stride": list(tensor.stride()),
+            })
+            if tensor.device.type == "cuda":
+                payload["current_cuda_device"] = torch.cuda.current_device()
+                payload["data_ptr"] = int(tensor.data_ptr())
+    except Exception as exc:
+        payload["error"] = f"{type(exc).__name__}: {exc}"
+    return payload
+
+
+def _instrument_torch_distributed_collectives() -> None:
+    try:
+        import torch.distributed as dist
+    except Exception as exc:
+        _emit_argus_diag(
+            "sglang_runtime_collective_instrumentation_failed",
+            error=f"{type(exc).__name__}: {exc}",
+        )
+        return
+
+    def _wrap_collective(name: str) -> None:
+        original = getattr(dist, name, None)
+        if not callable(original) or getattr(original, "__rollouts_argus_wrapped__", False):
+            return
+
+        @functools.wraps(original)
+        def wrapped(*args: object, **kwargs: object) -> object:  # type: ignore[no-untyped-def]
+            context = _current_weight_update_context()
+            if context is None:
+                return original(*args, **kwargs)
+
+            payload: dict[str, object] = {
+                "collective": name,
+                "context": context,
+                "process": _process_context(),
+            }
+            group = kwargs.get("group")
+            if group is None and name == "barrier" and args:
+                group = args[0]
+            payload["group"] = _group_state_summary(group)
+            if name == "broadcast":
+                tensor = args[0] if args else kwargs.get("tensor")
+                payload["tensor"] = _tensor_summary(tensor)
+                payload["src"] = kwargs.get("src", args[1] if len(args) > 1 else None)
+                payload["async_op"] = kwargs.get("async_op", False)
+
+            _emit_argus_diag("sglang_runtime_collective_enter", **payload)
+            try:
+                result = original(*args, **kwargs)
+            except Exception as exc:
+                _emit_argus_diag(
+                    "sglang_runtime_collective_failed",
+                    **payload,
+                    error=f"{type(exc).__name__}: {exc}",
+                    traceback_tail=_traceback_tail(),
+                )
+                raise
+
+            _emit_argus_diag(
+                "sglang_runtime_collective_ok",
+                **payload,
+                result_type=type(result).__name__,
+                result=_jsonable_summary(result),
+            )
+            return result
+
+        wrapped.__rollouts_argus_wrapped__ = True  # type: ignore[attr-defined]
+        setattr(dist, name, wrapped)
+
+    for collective_name in ("broadcast", "barrier", "all_reduce"):
+        _wrap_collective(collective_name)
+    _emit_argus_diag(
+        "sglang_runtime_collective_instrumentation_ready",
+        wrapped=["broadcast", "barrier", "all_reduce"],
+    )
 
 
 def _should_snapshot_modelrunner_sockets(owner_cls: type[object], method_name: str) -> bool:
@@ -671,6 +834,9 @@ def _wrap_runtime_method(owner_cls: type[object], method_name: str) -> None:
         @functools.wraps(method)
         async def wrapped(self: object, *args: object, **kwargs: object) -> object:  # type: ignore[no-untyped-def]
             _ensure_owner_instrumented(self)
+            trace_collectives = _should_trace_weight_update_collectives(owner_cls, method_name)
+            if trace_collectives:
+                _push_weight_update_context(owner_class=owner_cls.__name__, method=method_name)
             _emit_argus_diag(
                 "sglang_runtime_method_enter",
                 owner_class=owner_cls.__name__,
@@ -705,6 +871,9 @@ def _wrap_runtime_method(owner_cls: type[object], method_name: str) -> None:
                     self=self,
                 )
                 raise
+            finally:
+                if trace_collectives:
+                    _pop_weight_update_context()
             _emit_argus_diag(
                 "sglang_runtime_method_ok",
                 owner_class=owner_cls.__name__,
@@ -726,6 +895,9 @@ def _wrap_runtime_method(owner_cls: type[object], method_name: str) -> None:
         @functools.wraps(method)
         def wrapped(self: object, *args: object, **kwargs: object) -> object:  # type: ignore[no-untyped-def]
             _ensure_owner_instrumented(self)
+            trace_collectives = _should_trace_weight_update_collectives(owner_cls, method_name)
+            if trace_collectives:
+                _push_weight_update_context(owner_class=owner_cls.__name__, method=method_name)
             _emit_argus_diag(
                 "sglang_runtime_method_enter",
                 owner_class=owner_cls.__name__,
@@ -760,6 +932,9 @@ def _wrap_runtime_method(owner_cls: type[object], method_name: str) -> None:
                     self=self,
                 )
                 raise
+            finally:
+                if trace_collectives:
+                    _pop_weight_update_context()
             _emit_argus_diag(
                 "sglang_runtime_method_ok",
                 owner_class=owner_cls.__name__,
@@ -781,6 +956,7 @@ def _wrap_runtime_method(owner_cls: type[object], method_name: str) -> None:
 
 
 def _instrument_sglang_runtime_methods() -> None:
+    _instrument_torch_distributed_collectives()
     try:
         from sglang.srt.managers import tokenizer_manager
         from sglang.srt.managers.scheduler_update_weights_mixin import (
