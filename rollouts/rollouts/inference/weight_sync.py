@@ -38,6 +38,7 @@ Usage (receiver - inference engine):
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import logging
 import os
@@ -47,6 +48,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from datetime import timedelta
+from pathlib import Path
 from typing import Any
 
 import torch
@@ -98,6 +100,88 @@ def _nccl_env_snapshot() -> dict[str, object]:
         "TORCH_DISABLE_SHARE_RDZV_TCP_STORE",
     )
     return {key: os.environ.get(key) for key in keys}
+
+
+def _tcp_state_name(state_hex: str) -> str:
+    return {
+        "01": "ESTABLISHED",
+        "02": "SYN_SENT",
+        "03": "SYN_RECV",
+        "04": "FIN_WAIT1",
+        "05": "FIN_WAIT2",
+        "06": "TIME_WAIT",
+        "07": "CLOSE",
+        "08": "CLOSE_WAIT",
+        "09": "LAST_ACK",
+        "0A": "LISTEN",
+        "0B": "CLOSING",
+    }.get(state_hex.upper(), state_hex.upper())
+
+
+def _decode_proc_ip(hex_ip: str, *, ipv6: bool) -> str:
+    try:
+        raw = bytes.fromhex(hex_ip)
+        if not ipv6:
+            return str(ipaddress.IPv4Address(raw[::-1]))
+        words = [raw[index : index + 4][::-1] for index in range(0, 16, 4)]
+        return str(ipaddress.IPv6Address(b"".join(words)))
+    except Exception:
+        return hex_ip
+
+
+def _decode_proc_endpoint(encoded: str, *, ipv6: bool) -> str:
+    host_hex, port_hex = encoded.split(":")
+    return f"{_decode_proc_ip(host_hex, ipv6=ipv6)}:{int(port_hex, 16)}"
+
+
+def _collect_socket_inodes(pid: int) -> set[str]:
+    inodes: set[str] = set()
+    fd_dir = Path(f"/proc/{pid}/fd")
+    try:
+        for entry in fd_dir.iterdir():
+            try:
+                target = os.readlink(entry)
+            except OSError:
+                continue
+            if target.startswith("socket:[") and target.endswith("]"):
+                inodes.add(target[len("socket:[") : -1])
+    except Exception:
+        return set()
+    return inodes
+
+
+def _parse_proc_net_tcp(path: Path, *, inodes: set[str], ipv6: bool) -> list[dict[str, object]]:
+    rows: list[dict[str, object]] = []
+    try:
+        lines = path.read_text().splitlines()
+    except Exception as exc:
+        return [{"path": str(path), "error": f"{type(exc).__name__}: {exc}"}]
+    for line in lines[1:]:
+        fields = line.split()
+        if len(fields) < 10:
+            continue
+        inode = fields[9]
+        if inode not in inodes:
+            continue
+        rows.append({
+            "inode": inode,
+            "local": _decode_proc_endpoint(fields[1], ipv6=ipv6),
+            "remote": _decode_proc_endpoint(fields[2], ipv6=ipv6),
+            "state": _tcp_state_name(fields[3]),
+            "uid": fields[7],
+        })
+    return rows
+
+
+def _proc_socket_snapshot(pid: int | None = None) -> dict[str, object]:
+    actual_pid = os.getpid() if pid is None else pid
+    inodes = _collect_socket_inodes(actual_pid)
+    return {
+        "pid": actual_pid,
+        "socket_inode_count": len(inodes),
+        "tcp": _parse_proc_net_tcp(Path("/proc/net/tcp"), inodes=inodes, ipv6=False)[:64],
+        "tcp6": _parse_proc_net_tcp(Path("/proc/net/tcp6"), inodes=inodes, ipv6=True)[:64],
+    }
 
 
 def _resolve_socket_ifname() -> tuple[str | None, str]:
@@ -575,12 +659,38 @@ class WeightSyncSender:
                         total_tensors=total_tensors,
                         async_op=use_async,
                         tensor=broadcast_meta,
+                        process={
+                            "pid": os.getpid(),
+                            "cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES"),
+                            "torch_current_device": (
+                                torch.cuda.current_device() if torch.cuda.is_available() else None
+                            ),
+                        },
+                        socket_state=_proc_socket_snapshot(),
                     )
                 try:
                     handle = dist.broadcast(
                         data, src=0, group=self._process_group, async_op=use_async
                     )
                 except Exception as exc:
+                    if index == 0:
+                        _emit_argus_diag(
+                            "weight_sync_sender_first_collective_failed",
+                            total_tensors=total_tensors,
+                            async_op=use_async,
+                            tensor=broadcast_meta,
+                            error=f"{type(exc).__name__}: {exc}",
+                            process={
+                                "pid": os.getpid(),
+                                "cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES"),
+                                "torch_current_device": (
+                                    torch.cuda.current_device()
+                                    if torch.cuda.is_available()
+                                    else None
+                                ),
+                            },
+                            socket_state=_proc_socket_snapshot(),
+                        )
                     raise RuntimeError(
                         "Weight sync sender broadcast failed "
                         f"index={index} total_tensors={total_tensors} tensor={broadcast_meta}"
@@ -591,6 +701,14 @@ class WeightSyncSender:
                         total_tensors=total_tensors,
                         async_op=use_async,
                         tensor=broadcast_meta,
+                        process={
+                            "pid": os.getpid(),
+                            "cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES"),
+                            "torch_current_device": (
+                                torch.cuda.current_device() if torch.cuda.is_available() else None
+                            ),
+                        },
+                        socket_state=_proc_socket_snapshot(),
                     )
                 if use_async:
                     handles.append(handle)
