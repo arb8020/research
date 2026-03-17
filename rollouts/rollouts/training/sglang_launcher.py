@@ -19,6 +19,7 @@ import threading
 import traceback
 from datetime import UTC, datetime
 from pathlib import Path
+from types import MethodType
 
 _SIDECAR_LOCK = threading.Lock()
 
@@ -270,10 +271,223 @@ def _instrument_async_context_type(lock_type: type[object], *, label: str) -> No
     lock_type.__rollouts_argus_wrapped__ = True  # type: ignore[attr-defined]
 
 
+def _instrument_bound_method_instance(
+    instance: object,
+    method_name: str,
+    *,
+    event_prefix: str,
+    label: str,
+) -> None:
+    method = getattr(instance, method_name, None)
+    if not callable(method) or getattr(method, "__rollouts_argus_wrapped__", False):
+        return
+
+    if inspect.iscoroutinefunction(method):
+
+        @functools.wraps(method)
+        async def wrapped(*args: object, **kwargs: object) -> object:  # type: ignore[no-untyped-def]
+            _emit_argus_diag(
+                f"{event_prefix}_enter",
+                label=label,
+                method=method_name,
+                process=_process_context(),
+                owner_type=type(instance).__name__,
+                args=_jsonable_summary(args),
+                kwargs=_jsonable_summary(kwargs),
+            )
+            try:
+                result = await method(*args, **kwargs)
+            except Exception as exc:
+                _emit_argus_diag(
+                    f"{event_prefix}_failed",
+                    label=label,
+                    method=method_name,
+                    process=_process_context(),
+                    owner_type=type(instance).__name__,
+                    error=f"{type(exc).__name__}: {exc}",
+                    traceback_tail=_traceback_tail(),
+                )
+                raise
+            _emit_argus_diag(
+                f"{event_prefix}_ok",
+                label=label,
+                method=method_name,
+                process=_process_context(),
+                owner_type=type(instance).__name__,
+                result=_jsonable_summary(result),
+            )
+            return result
+
+    else:
+
+        @functools.wraps(method)
+        def wrapped(*args: object, **kwargs: object) -> object:  # type: ignore[no-untyped-def]
+            _emit_argus_diag(
+                f"{event_prefix}_enter",
+                label=label,
+                method=method_name,
+                process=_process_context(),
+                owner_type=type(instance).__name__,
+                args=_jsonable_summary(args),
+                kwargs=_jsonable_summary(kwargs),
+            )
+            try:
+                result = method(*args, **kwargs)
+            except Exception as exc:
+                _emit_argus_diag(
+                    f"{event_prefix}_failed",
+                    label=label,
+                    method=method_name,
+                    process=_process_context(),
+                    owner_type=type(instance).__name__,
+                    error=f"{type(exc).__name__}: {exc}",
+                    traceback_tail=_traceback_tail(),
+                )
+                raise
+            _emit_argus_diag(
+                f"{event_prefix}_ok",
+                label=label,
+                method=method_name,
+                process=_process_context(),
+                owner_type=type(instance).__name__,
+                result=_jsonable_summary(result),
+            )
+            return result
+
+    wrapped.__rollouts_argus_wrapped__ = True  # type: ignore[attr-defined]
+    setattr(instance, method_name, MethodType(wrapped, instance))
+
+
+def _instrument_communicator_instance(label: str, communicator: object) -> None:
+    try:
+        communicator._rollouts_argus_label = label  # type: ignore[attr-defined]
+    except Exception:
+        pass
+    communicator_type = type(communicator)
+    if not getattr(communicator_type, "__rollouts_argus_call_wrapped__", False):
+        call = communicator_type.__call__ if callable(communicator) else None
+        if call is not None:
+            if inspect.iscoroutinefunction(call):
+
+                @functools.wraps(call)
+                async def wrapped_call(self: object, *args: object, **kwargs: object) -> object:  # type: ignore[no-untyped-def]
+                    call_label = getattr(self, "_rollouts_argus_label", communicator_type.__name__)
+                    _emit_argus_diag(
+                        "sglang_runtime_communicator_call_enter",
+                        label=call_label,
+                        process=_process_context(),
+                        owner_type=communicator_type.__name__,
+                        args=_jsonable_summary(args),
+                        kwargs=_jsonable_summary(kwargs),
+                    )
+                    try:
+                        result = await call(self, *args, **kwargs)
+                    except Exception as exc:
+                        _emit_argus_diag(
+                            "sglang_runtime_communicator_call_failed",
+                            label=call_label,
+                            process=_process_context(),
+                            owner_type=communicator_type.__name__,
+                            error=f"{type(exc).__name__}: {exc}",
+                            traceback_tail=_traceback_tail(),
+                        )
+                        raise
+                    _emit_argus_diag(
+                        "sglang_runtime_communicator_call_ok",
+                        label=call_label,
+                        process=_process_context(),
+                        owner_type=communicator_type.__name__,
+                        result=_jsonable_summary(result),
+                    )
+                    return result
+
+            else:
+
+                @functools.wraps(call)
+                def wrapped_call(self: object, *args: object, **kwargs: object) -> object:  # type: ignore[no-untyped-def]
+                    call_label = getattr(self, "_rollouts_argus_label", communicator_type.__name__)
+                    _emit_argus_diag(
+                        "sglang_runtime_communicator_call_enter",
+                        label=call_label,
+                        process=_process_context(),
+                        owner_type=communicator_type.__name__,
+                        args=_jsonable_summary(args),
+                        kwargs=_jsonable_summary(kwargs),
+                    )
+                    try:
+                        result = call(self, *args, **kwargs)
+                    except Exception as exc:
+                        _emit_argus_diag(
+                            "sglang_runtime_communicator_call_failed",
+                            label=call_label,
+                            process=_process_context(),
+                            owner_type=communicator_type.__name__,
+                            error=f"{type(exc).__name__}: {exc}",
+                            traceback_tail=_traceback_tail(),
+                        )
+                        raise
+                    _emit_argus_diag(
+                        "sglang_runtime_communicator_call_ok",
+                        label=call_label,
+                        process=_process_context(),
+                        owner_type=communicator_type.__name__,
+                        result=_jsonable_summary(result),
+                    )
+                    return result
+
+            communicator_type.__call__ = wrapped_call  # type: ignore[assignment]
+            communicator_type.__rollouts_argus_call_wrapped__ = True  # type: ignore[attr-defined]
+    if getattr(communicator, "__rollouts_argus_wrapped__", False):
+        return
+    for method_name in ("handle_recv", "merge_results"):
+        _instrument_bound_method_instance(
+            communicator,
+            method_name,
+            event_prefix="sglang_runtime_communicator",
+            label=label,
+        )
+    communicator.__rollouts_argus_wrapped__ = True  # type: ignore[attr-defined]
+
+
+def _instrument_socket_instance(label: str, sock: object) -> None:
+    if getattr(sock, "__rollouts_argus_wrapped__", False):
+        return
+    for method_name in ("send_pyobj", "recv_pyobj", "recv", "send"):
+        try:
+            _instrument_bound_method_instance(
+                sock,
+                method_name,
+                event_prefix="sglang_runtime_scheduler_socket",
+                label=label,
+            )
+        except Exception:
+            continue
+    sock.__rollouts_argus_wrapped__ = True  # type: ignore[attr-defined]
+
+
 def _ensure_owner_instrumented(owner: object) -> None:
     writer_lock = getattr(getattr(owner, "model_update_lock", None), "writer_lock", None)
     if writer_lock is not None:
         _instrument_async_context_type(type(writer_lock), label="model_update_writer_lock")
+    send_to_scheduler = getattr(owner, "send_to_scheduler", None)
+    if send_to_scheduler is not None:
+        try:
+            _instrument_socket_instance("send_to_scheduler", send_to_scheduler)
+        except Exception:
+            pass
+    for attr_name in dir(owner):
+        if not attr_name.endswith("_communicator"):
+            continue
+        try:
+            communicator = getattr(owner, attr_name)
+        except Exception:
+            continue
+        if communicator is None:
+            continue
+        try:
+            _instrument_communicator_instance(attr_name, communicator)
+        except Exception:
+            continue
 
 
 def _wrap_runtime_method(owner_cls: type[object], method_name: str) -> None:
