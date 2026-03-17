@@ -139,6 +139,39 @@ async def _dispatch_receive_weight_update(
     request_payload: Mapping[str, Any],
 ) -> dict[str, Any]:
     request = ReceiveWeightUpdateRequest.from_dict(request_payload)
+    request_dict = request.to_dict()
+    first_tensors = [
+        {
+            "wire_name": name,
+            "load_name": load_name,
+            "shape": list(shape),
+            "dtype": dtype,
+        }
+        for name, load_name, shape, dtype in zip(
+            request.names,
+            request.load_names,
+            request.shapes,
+            request.dtypes,
+            strict=True,
+        )
+    ][:3]
+    _append_weight_sync_trace(
+        "vllm_route_receive_weight_update_start",
+        request=request_dict,
+        total_tensors=len(request.names),
+        first_tensors=first_tensors,
+    )
+    _emit_argus_diag(
+        "vllm_route_receive_weight_update_start",
+        request=request_dict,
+        total_tensors=len(request.names),
+        first_tensors=first_tensors,
+    )
+    logger.info(
+        "receive_weight_update request start total_tensors=%s first_tensors=%s",
+        len(request.names),
+        first_tensors,
+    )
     payload = await _await_collective_rpc(
         engine_client,
         method="receive_weight_update",
@@ -148,6 +181,17 @@ async def _dispatch_receive_weight_update(
             list(request.dtypes),
             list(request.load_names),
         ),
+    )
+    _append_weight_sync_trace(
+        "vllm_route_receive_weight_update_collective_rpc_finished",
+        request=request_dict,
+        total_tensors=len(request.names),
+        results=payload,
+    )
+    _emit_argus_diag(
+        "vllm_route_receive_weight_update_collective_rpc_finished",
+        request=request_dict,
+        total_tensors=len(request.names),
     )
     return {"status": "ok", "results": payload}
 
@@ -314,6 +358,7 @@ class WorkerExtension:
         dtypes: list[str],
         load_names: list[str] | None = None,
     ) -> dict[str, Any]:
+        worker_rank = _worker_rank(self)
         receiver = _weight_sync_receiver(self)
         model = _model(self)
         dtype_map = {
@@ -337,15 +382,96 @@ class WorkerExtension:
                 strict=True,
             )
         ]
+        first_tensors = [
+            {
+                "wire_name": info.wire_name,
+                "load_name": info.load_name,
+                "shape": list(info.shape),
+                "dtype": str(info.dtype).replace("torch.", ""),
+            }
+            for info in param_info[:3]
+        ]
+        _append_weight_sync_trace(
+            "vllm_worker_receive_weight_update_start",
+            worker_rank=worker_rank,
+            total_tensors=len(param_info),
+            first_tensors=first_tensors,
+            device=str(self.device),
+        )
+        _emit_argus_diag(
+            "vllm_worker_receive_weight_update_start",
+            worker_rank=worker_rank,
+            total_tensors=len(param_info),
+            first_tensors=first_tensors,
+            device=str(self.device),
+        )
+        logger.info(
+            "vllm worker receive_weight_update start worker_rank=%s total_tensors=%s first_tensors=%s device=%s",
+            worker_rank,
+            len(param_info),
+            first_tensors,
+            self.device,
+        )
         torch.cuda.synchronize(self.device)
-        for info in param_info:
+        for index, info in enumerate(param_info):
+            if index == 0:
+                _append_weight_sync_trace(
+                    "vllm_worker_receive_weight_update_first_tensor_receive_start",
+                    worker_rank=worker_rank,
+                    tensor=first_tensors[0],
+                    device=str(self.device),
+                )
+                _emit_argus_diag(
+                    "vllm_worker_receive_weight_update_first_tensor_receive_start",
+                    worker_rank=worker_rank,
+                    tensor=first_tensors[0],
+                    device=str(self.device),
+                )
             buffer = receiver.receive_weights([info])[info.load_name]
+            if index == 0:
+                _append_weight_sync_trace(
+                    "vllm_worker_receive_weight_update_first_tensor_receive_ok",
+                    worker_rank=worker_rank,
+                    tensor=first_tensors[0],
+                    device=str(self.device),
+                )
+                _emit_argus_diag(
+                    "vllm_worker_receive_weight_update_first_tensor_receive_ok",
+                    worker_rank=worker_rank,
+                    tensor=first_tensors[0],
+                    device=str(self.device),
+                )
             loaded = model.load_weights(weights=[(info.load_name, buffer)])
             if len(loaded) != 1:
                 raise RuntimeError(
                     f"Failed to load weight {info.load_name!r} into vLLM worker model"
                 )
+            if index == 0:
+                _append_weight_sync_trace(
+                    "vllm_worker_receive_weight_update_first_tensor_load_ok",
+                    worker_rank=worker_rank,
+                    tensor=first_tensors[0],
+                    device=str(self.device),
+                )
+                _emit_argus_diag(
+                    "vllm_worker_receive_weight_update_first_tensor_load_ok",
+                    worker_rank=worker_rank,
+                    tensor=first_tensors[0],
+                    device=str(self.device),
+                )
         torch.cuda.synchronize(self.device)
+        _append_weight_sync_trace(
+            "vllm_worker_receive_weight_update_finished",
+            worker_rank=worker_rank,
+            total_tensors=len(param_info),
+            device=str(self.device),
+        )
+        _emit_argus_diag(
+            "vllm_worker_receive_weight_update_finished",
+            worker_rank=worker_rank,
+            total_tensors=len(param_info),
+            device=str(self.device),
+        )
         logger.info("Applied vLLM NCCL weight update for %d tensors", len(param_info))
         return {"status": "ok", "num_tensors": len(param_info)}
 
@@ -484,6 +610,18 @@ async def run_server(args: Any, **uvicorn_kwargs: Any) -> None:
             try:
                 return await _dispatch_receive_weight_update(engine_client, request)
             except (AssertionError, TypeError, ValueError) as exc:
+                _append_weight_sync_trace(
+                    "vllm_route_receive_weight_update_invalid_request",
+                    request=request,
+                    error_type=type(exc).__name__,
+                    error=repr(exc),
+                )
+                _emit_argus_diag(
+                    "vllm_route_receive_weight_update_invalid_request",
+                    request=request,
+                    error_type=type(exc).__name__,
+                    error=repr(exc),
+                )
                 logger.exception(
                     "receive_weight_update_invalid_request request=%s error_type=%s error=%r",
                     request,
@@ -492,6 +630,18 @@ async def run_server(args: Any, **uvicorn_kwargs: Any) -> None:
                 )
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
             except Exception as exc:
+                _append_weight_sync_trace(
+                    "vllm_route_receive_weight_update_failed",
+                    request=request,
+                    error_type=type(exc).__name__,
+                    error=repr(exc),
+                )
+                _emit_argus_diag(
+                    "vllm_route_receive_weight_update_failed",
+                    request=request,
+                    error_type=type(exc).__name__,
+                    error=repr(exc),
+                )
                 logger.exception(
                     "receive_weight_update_failed request=%s error_type=%s error=%r",
                     request,

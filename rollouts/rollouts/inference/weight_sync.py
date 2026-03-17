@@ -90,6 +90,7 @@ def _nccl_env_snapshot() -> dict[str, object]:
         "NCCL_DEBUG_SUBSYS",
         "NCCL_ASYNC_ERROR_HANDLING",
         "NCCL_P2P_DISABLE",
+        "NCCL_IB_DISABLE",
         "NCCL_SHM_DISABLE",
         "NCCL_CUMEM_ENABLE",
         "NCCL_SOCKET_IFNAME",
@@ -422,6 +423,7 @@ class WeightSyncSender:
         self.device = _normalize_cuda_device(self.device)
         os.environ.setdefault("NCCL_DEBUG", "INFO")
         os.environ.setdefault("NCCL_DEBUG_SUBSYS", "INIT,COLL")
+        os.environ.setdefault("NCCL_IB_DISABLE", "1")
         # Do not force-disable P2P here. The SGLang receiver side initializes
         # normal NCCL P2P/IPC transport for the custom update group, and
         # asymmetrically disabling it on the trainer creates a dishonest
@@ -567,6 +569,13 @@ class WeightSyncSender:
                     use_async,
                     broadcast_meta,
                 )
+                if index == 0:
+                    _emit_argus_diag(
+                        "weight_sync_sender_first_collective_start",
+                        total_tensors=total_tensors,
+                        async_op=use_async,
+                        tensor=broadcast_meta,
+                    )
                 try:
                     handle = dist.broadcast(
                         data, src=0, group=self._process_group, async_op=use_async
@@ -576,6 +585,13 @@ class WeightSyncSender:
                         "Weight sync sender broadcast failed "
                         f"index={index} total_tensors={total_tensors} tensor={broadcast_meta}"
                     ) from exc
+                if index == 0:
+                    _emit_argus_diag(
+                        "weight_sync_sender_first_collective_ok",
+                        total_tensors=total_tensors,
+                        async_op=use_async,
+                        tensor=broadcast_meta,
+                    )
                 if use_async:
                     handles.append(handle)
             return handles
@@ -685,6 +701,7 @@ class WeightSyncReceiver:
         self.device = _normalize_cuda_device(self.device)
         os.environ.setdefault("NCCL_DEBUG", "INFO")
         os.environ.setdefault("NCCL_DEBUG_SUBSYS", "INIT,COLL")
+        os.environ.setdefault("NCCL_IB_DISABLE", "1")
         socket_ifname, socket_ifname_source = _apply_socket_ifname_defaults()
         logger.info(
             "weight_sync_receiver_init_start rank=%s world_size=%s master=%s:%s device=%s group=%s socket_ifname=%s socket_ifname_source=%s nccl_env=%s",
@@ -830,6 +847,27 @@ class WeightSyncReceiver:
             ],
             _nccl_env_snapshot(),
         )
+        _emit_argus_diag(
+            "weight_sync_receiver_receive_start",
+            rank=self.rank,
+            world_size=self.world_size,
+            total_tensors=total_tensors,
+            communicator=(
+                type(self._communicator).__name__
+                if self._communicator is not None
+                else "dist.broadcast"
+            ),
+            first_tensors=[
+                {
+                    "wire_name": info.wire_name,
+                    "load_name": info.load_name,
+                    "shape": list(info.shape),
+                    "dtype": str(info.dtype).replace("torch.", ""),
+                }
+                for info in param_info[:3]
+            ],
+            nccl_env=_nccl_env_snapshot(),
+        )
         for index, info in enumerate(param_info):
             # Allocate buffer
             buffer = torch.empty(info.shape, dtype=info.dtype, device=self.device)
@@ -859,6 +897,14 @@ class WeightSyncReceiver:
                 total_tensors,
                 receive_meta,
             )
+            if index == 0:
+                _emit_argus_diag(
+                    "weight_sync_receiver_first_collective_start",
+                    rank=self.rank,
+                    world_size=self.world_size,
+                    total_tensors=total_tensors,
+                    tensor=receive_meta,
+                )
             try:
                 if self._communicator is not None:
                     self._communicator.broadcast(buffer, src=0, stream=torch.cuda.current_stream())
@@ -869,6 +915,14 @@ class WeightSyncReceiver:
                     "Weight sync receiver broadcast failed "
                     f"index={index} total_tensors={total_tensors} tensor={receive_meta}"
                 ) from exc
+            if index == 0:
+                _emit_argus_diag(
+                    "weight_sync_receiver_first_collective_ok",
+                    rank=self.rank,
+                    world_size=self.world_size,
+                    total_tensors=total_tensors,
+                    tensor=receive_meta,
+                )
 
             state_dict[info.load_name] = buffer
 

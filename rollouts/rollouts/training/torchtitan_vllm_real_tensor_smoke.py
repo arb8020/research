@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import socket
 import threading
 from pathlib import Path
@@ -104,6 +105,10 @@ async def run_torchtitan_vllm_real_tensor_smoke(
 
         def init_sender_sync() -> None:
             try:
+                os.environ.setdefault("NCCL_CUMEM_ENABLE", "0")
+                os.environ.setdefault("NCCL_ASYNC_ERROR_HANDLING", "1")
+                os.environ.setdefault("NCCL_P2P_DISABLE", "1")
+                os.environ.setdefault("TORCH_DISABLE_SHARE_RDZV_TCP_STORE", "1")
                 sender.init_group()
             except BaseException as exc:
                 sender_init_error["error"] = exc
