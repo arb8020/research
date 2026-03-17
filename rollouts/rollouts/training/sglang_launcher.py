@@ -194,6 +194,11 @@ def _distributed_env_summary() -> dict[str, object]:
     return {key: os.environ.get(key) for key in keys}
 
 
+def _env_flag(name: str) -> bool:
+    value = os.environ.get(name)
+    return value is not None and value.lower() not in {"", "0", "false", "no"}
+
+
 def _method_owner_state(owner: object) -> dict[str, object]:
     payload: dict[str, object] = {
         "class": type(owner).__name__,
@@ -393,11 +398,35 @@ def _instrument_torch_distributed_collectives() -> None:
             if group is None and name == "barrier" and args:
                 group = args[0]
             payload["group"] = _group_state_summary(group)
+            payload["default_group"] = _group_state_summary(None)
             if name == "broadcast":
                 tensor = args[0] if args else kwargs.get("tensor")
                 payload["tensor"] = _tensor_summary(tensor)
                 payload["src"] = kwargs.get("src", args[1] if len(args) > 1 else None)
                 payload["async_op"] = kwargs.get("async_op", False)
+                payload["socket_state"] = _capture_ss_snapshot(pid=os.getpid())
+                try:
+                    import torch
+
+                    if torch.cuda.is_available():
+                        stream = torch.cuda.current_stream()
+                        payload["cuda_stream"] = {
+                            "device": str(stream.device),
+                            "cuda_stream": int(stream.cuda_stream),
+                        }
+                except Exception as exc:
+                    payload["cuda_stream_error"] = f"{type(exc).__name__}: {exc}"
+                if _env_flag("ROLLOUTS_SGLANG_FORCE_SYNC_BROADCAST") and kwargs.get(
+                    "async_op", False
+                ):
+                    kwargs = dict(kwargs)
+                    kwargs["async_op"] = False
+                    payload["async_override"] = {
+                        "env": "ROLLOUTS_SGLANG_FORCE_SYNC_BROADCAST",
+                        "forced_async_op": False,
+                    }
+                    _emit_argus_diag("sglang_runtime_collective_async_override", **payload)
+                    payload["async_op"] = False
 
             _emit_argus_diag("sglang_runtime_collective_enter", **payload)
             try:

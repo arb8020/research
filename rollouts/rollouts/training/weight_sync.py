@@ -831,6 +831,7 @@ class SGLangEngine:
             f"NCCL_DEBUG=INFO "
             f"NCCL_DEBUG_SUBSYS=INIT,COLL "
             f"TORCH_DISABLE_SHARE_RDZV_TCP_STORE=1 "
+            f"ROLLOUTS_SGLANG_FORCE_SYNC_BROADCAST=1 "
             f"ROLLOUTS_SGLANG_TRACE_PATH={shlex.quote(str(self._trace_file))} "
             f"python -m rollouts.training.sglang_launcher "
             f"--model-path {self.model_name} "
