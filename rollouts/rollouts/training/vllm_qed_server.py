@@ -372,6 +372,46 @@ async def run_server(args: Any, **uvicorn_kwargs: Any) -> None:
     _listen_address, sock = setup_server(args)
 
     async with build_async_engine_client(args) as engine_client:
+        startup_master_address = getattr(args, "rollouts_weight_sync_master_address", None)
+        if startup_master_address:
+            startup_request = InitWeightUpdateGroupRequest(
+                master_address=str(startup_master_address),
+                master_port=int(args.rollouts_weight_sync_master_port),
+                rank_offset=int(args.rollouts_weight_sync_rank_offset),
+                world_size=int(args.rollouts_weight_sync_world_size),
+                group_name=str(args.rollouts_weight_sync_group_name),
+                timeout_seconds=float(args.rollouts_weight_sync_timeout_seconds),
+            )
+            _append_weight_sync_trace(
+                "vllm_startup_init_weight_update_group_start",
+                request=startup_request.to_dict(),
+            )
+            _emit_argus_diag(
+                "vllm_startup_init_weight_update_group_start",
+                request=startup_request.to_dict(),
+            )
+            payload = await _await_collective_rpc(
+                engine_client,
+                method="init_weight_update_group",
+                args=(
+                    startup_request.master_address,
+                    startup_request.master_port,
+                    startup_request.rank_offset,
+                    startup_request.world_size,
+                    startup_request.group_name,
+                    startup_request.timeout_seconds,
+                ),
+                timeout_seconds=startup_request.timeout_seconds,
+            )
+            _append_weight_sync_trace(
+                "vllm_startup_init_weight_update_group_finished",
+                request=startup_request.to_dict(),
+                result=payload,
+            )
+            _emit_argus_diag(
+                "vllm_startup_init_weight_update_group_finished",
+                request=startup_request.to_dict(),
+            )
         supported_tasks = await engine_client.get_supported_tasks()
         app = build_app(args)
 
@@ -503,6 +543,12 @@ def main() -> None:
 
     parser = argparse.ArgumentParser(description="rollouts patched vLLM OpenAI server")
     parser = make_arg_parser(parser)
+    parser.add_argument("--rollouts-weight-sync-master-address", type=str, default=None)
+    parser.add_argument("--rollouts-weight-sync-master-port", type=int, default=None)
+    parser.add_argument("--rollouts-weight-sync-rank-offset", type=int, default=None)
+    parser.add_argument("--rollouts-weight-sync-world-size", type=int, default=None)
+    parser.add_argument("--rollouts-weight-sync-group-name", type=str, default=None)
+    parser.add_argument("--rollouts-weight-sync-timeout-seconds", type=float, default=300.0)
     args = parser.parse_args()
     validate_parsed_serve_args(args)
     uvloop.run(run_server(args))

@@ -1211,6 +1211,12 @@ class VLLMEngine:
     timeout: float = 300.0
     available_sync_realizations: tuple[str, ...] = ()
     default_sync_realization: str | None = None
+    weight_sync_startup_master_address: str | None = None
+    weight_sync_startup_master_port: int | None = None
+    weight_sync_startup_rank_offset: int | None = None
+    weight_sync_startup_world_size: int | None = None
+    weight_sync_startup_group_name: str | None = None
+    weight_sync_startup_timeout_seconds: float = 300.0
     _log_file: Path = field(init=False)
     _session_name: str = field(init=False)
 
@@ -1276,7 +1282,7 @@ class VLLMEngine:
         entrypoint = "vllm.entrypoints.openai.api_server"
         if self.default_sync_realization == VLLM_CUSTOM_NCCL_BROADCAST.name:
             entrypoint = "rollouts.training.vllm_qed_server"
-        return (
+        cmd = (
             f"CUDA_VISIBLE_DEVICES={gpu_str} "
             f"VLLM_SERVER_DEV_MODE=1 "
             f"HF_HUB_DOWNLOAD_TIMEOUT=300 "  # 5 min timeout for model downloads
@@ -1292,6 +1298,28 @@ class VLLMEngine:
             f"--enable-sleep-mode "
             f"--trust-remote-code"
         )
+        if self.weight_sync_startup_master_address is not None:
+            assert self.weight_sync_startup_master_port is not None, (
+                "weight_sync_startup_master_port required with startup master address"
+            )
+            assert self.weight_sync_startup_rank_offset is not None, (
+                "weight_sync_startup_rank_offset required with startup master address"
+            )
+            assert self.weight_sync_startup_world_size is not None, (
+                "weight_sync_startup_world_size required with startup master address"
+            )
+            assert self.weight_sync_startup_group_name is not None, (
+                "weight_sync_startup_group_name required with startup master address"
+            )
+            cmd += (
+                f" --rollouts-weight-sync-master-address {self.weight_sync_startup_master_address}"
+                f" --rollouts-weight-sync-master-port {self.weight_sync_startup_master_port}"
+                f" --rollouts-weight-sync-rank-offset {self.weight_sync_startup_rank_offset}"
+                f" --rollouts-weight-sync-world-size {self.weight_sync_startup_world_size}"
+                f" --rollouts-weight-sync-group-name {self.weight_sync_startup_group_name}"
+                f" --rollouts-weight-sync-timeout-seconds {self.weight_sync_startup_timeout_seconds}"
+            )
+        return cmd
 
     def launch(self) -> str:
         """Launch vLLM server in tmux session.

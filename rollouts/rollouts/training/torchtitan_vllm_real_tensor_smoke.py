@@ -11,6 +11,7 @@ from typing import Any
 import httpx
 import trio
 
+from rollouts.inference.weight_sync import WeightSyncSender
 from rollouts.training.grpo import _run_training_preflight
 from rollouts.training.weight_sync import VLLMEngine
 from rollouts.training.weight_sync_protocol import (
@@ -54,6 +55,9 @@ async def run_torchtitan_vllm_real_tensor_smoke(
     backend = None
     backend_cleanup = None
     engine = None
+    sender = None
+    sender_init_done = threading.Event()
+    sender_init_error: dict[str, BaseException] = {}
     try:
         emit("torchtitan_real_tensor_preflight_start")
         backend, backend_cleanup = await _run_training_preflight(
@@ -66,6 +70,9 @@ async def run_torchtitan_vllm_real_tensor_smoke(
         emit("torchtitan_real_tensor_backend_ready")
 
         emit("torchtitan_real_tensor_engine_construct_start")
+        master_addr = "127.0.0.1"
+        master_port = int(config.checkpoint.nccl_master_port)
+        group_name = f"weight_sync_{master_port}"
         engine = VLLMEngine(
             model_name=config.model.name,
             port=config.inference.ports[0],
@@ -75,24 +82,49 @@ async def run_torchtitan_vllm_real_tensor_smoke(
             gpu_memory_utilization=config.inference.mem_fraction,
             available_sync_realizations=(VLLM_CUSTOM_NCCL_BROADCAST.name,),
             default_sync_realization=VLLM_CUSTOM_NCCL_BROADCAST.name,
+            weight_sync_startup_master_address=master_addr,
+            weight_sync_startup_master_port=master_port,
+            weight_sync_startup_rank_offset=1,
+            weight_sync_startup_world_size=2,
+            weight_sync_startup_group_name=group_name,
         )
         emit("torchtitan_real_tensor_engine_constructed", port=engine.port)
         emit("torchtitan_real_tensor_engine_launch_start", port=engine.port)
         engine.launch()
         engine.start_log_tailer()
         emit("torchtitan_real_tensor_engine_launched", port=engine.port)
+        sender = WeightSyncSender(
+            master_addr=master_addr,
+            master_port=master_port,
+            inference_world_size=1,
+            group_name=group_name,
+            device=backend._device,
+        )
+        emit("torchtitan_real_tensor_sender_init_start", endpoint=engine.base_url)
+
+        def init_sender_sync() -> None:
+            try:
+                sender.init_group()
+            except BaseException as exc:
+                sender_init_error["error"] = exc
+            finally:
+                sender_init_done.set()
+
+        threading.Thread(
+            target=init_sender_sync,
+            name="torchtitan-real-tensor-sender-init",
+            daemon=True,
+        ).start()
         emit("torchtitan_real_tensor_engine_wait_ready_start", port=engine.port)
         await engine.wait_until_ready(max_wait=600.0)
         emit("torchtitan_real_tensor_engine_ready", base_url=engine.base_url)
-
-        init_fn = getattr(backend, "init_nccl_weight_sync", None)
-        assert init_fn is not None, "TorchTitan backend does not implement init_nccl_weight_sync()"
-        emit("torchtitan_real_tensor_sender_init_start", endpoint=engine.base_url)
-        await init_fn(
-            [engine.base_url],
-            master_addr="127.0.0.1",
-            master_port=config.checkpoint.nccl_master_port,
-        )
+        with trio.fail_after(60):
+            while not sender_init_done.is_set():
+                await trio.sleep(0.1)
+        if "error" in sender_init_error:
+            raise sender_init_error["error"]
+        backend._nccl_weight_sender = sender
+        backend._nccl_inference_endpoints = [engine.base_url]
         emit("torchtitan_real_tensor_sender_ready", endpoint=engine.base_url)
 
         payload_fn = getattr(backend, "_build_inference_weight_update_payload", None)
@@ -131,7 +163,6 @@ async def run_torchtitan_vllm_real_tensor_smoke(
             materialized_data_ptr=int(materialized_tensor.data_ptr()),
         )
 
-        sender = getattr(backend, "_nccl_weight_sender", None)
         assert sender is not None, "TorchTitan backend did not initialize NCCL sender"
 
         async def _attempt_broadcast(label: str, tensor: Any) -> None:

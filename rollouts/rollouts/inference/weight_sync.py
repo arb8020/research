@@ -591,7 +591,6 @@ class WeightSyncSender:
         )
         try:
             _broadcast_all(use_async=False)
-            dist.barrier(self._process_group)
         finally:
             _WEIGHT_SYNC_PUBLICATION_LOCK.release()
             logger.info(
