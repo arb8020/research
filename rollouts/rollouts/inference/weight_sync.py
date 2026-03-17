@@ -102,6 +102,47 @@ def _nccl_env_snapshot() -> dict[str, object]:
     return {key: os.environ.get(key) for key in keys}
 
 
+def _default_group_summary() -> dict[str, object]:
+    payload: dict[str, object] = {"is_initialized": bool(dist.is_initialized())}
+    if not dist.is_initialized():
+        payload.update({
+            "backend": None,
+            "rank": None,
+            "world_size": None,
+        })
+        return payload
+    try:
+        payload.update({
+            "backend": dist.get_backend(),
+            "rank": dist.get_rank(),
+            "world_size": dist.get_world_size(),
+        })
+    except Exception as exc:
+        payload["error"] = f"{type(exc).__name__}: {exc}"
+    return payload
+
+
+def _receiver_distributed_state_snapshot() -> dict[str, object]:
+    keys = (
+        "MASTER_ADDR",
+        "MASTER_PORT",
+        "RANK",
+        "WORLD_SIZE",
+        "LOCAL_RANK",
+        "LOCAL_WORLD_SIZE",
+        "CUDA_VISIBLE_DEVICES",
+        "NCCL_SOCKET_IFNAME",
+        "GLOO_SOCKET_IFNAME",
+        "NCCL_P2P_DISABLE",
+        "NCCL_SHM_DISABLE",
+        "TORCH_DISABLE_SHARE_RDZV_TCP_STORE",
+    )
+    return {
+        "env": {key: os.environ.get(key) for key in keys},
+        "default_group": _default_group_summary(),
+    }
+
+
 def _tcp_state_name(state_hex: str) -> str:
     return {
         "01": "ESTABLISHED",
@@ -942,6 +983,13 @@ class WeightSyncReceiver:
             socket_ifname_source=socket_ifname_source,
             nccl_env=_nccl_env_snapshot(),
         )
+        _emit_argus_diag(
+            "weight_sync_receiver_distributed_state",
+            phase="init_start",
+            rank=self.rank,
+            world_size=self.world_size,
+            **_receiver_distributed_state_snapshot(),
+        )
         if self.device.type == "cuda":
             torch.cuda.set_device(self.device)
         init_method = f"tcp://{self.master_addr}:{self.master_port}"
@@ -1024,6 +1072,13 @@ class WeightSyncReceiver:
             socket_ifname_source=socket_ifname_source,
             nccl_env=_nccl_env_snapshot(),
         )
+        _emit_argus_diag(
+            "weight_sync_receiver_distributed_state",
+            phase="init_ok",
+            rank=self.rank,
+            world_size=self.world_size,
+            **_receiver_distributed_state_snapshot(),
+        )
 
     def receive_weights(
         self,
@@ -1082,6 +1137,13 @@ class WeightSyncReceiver:
                 for info in param_info[:3]
             ],
             nccl_env=_nccl_env_snapshot(),
+        )
+        _emit_argus_diag(
+            "weight_sync_receiver_distributed_state",
+            phase="receive_start",
+            rank=self.rank,
+            world_size=self.world_size,
+            **_receiver_distributed_state_snapshot(),
         )
         for index, info in enumerate(param_info):
             # Allocate buffer
