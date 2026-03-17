@@ -76,6 +76,17 @@ def _parse_torch_dtype(name: str) -> torch.dtype:
     raise ValueError(f"Unsupported torch dtype name for TorchTitan sync: {name!r}")
 
 
+def _tensor_alias_signature(tensor: torch.Tensor) -> tuple[object, ...]:
+    return (
+        str(tensor.device),
+        str(tensor.dtype),
+        tuple(tensor.shape),
+        tuple(tensor.stride()),
+        int(tensor.storage_offset()),
+        int(tensor.data_ptr()),
+    )
+
+
 @dataclass
 class TorchTitanConfig:
     """Configuration for TorchTitan backend."""
@@ -716,6 +727,7 @@ class TorchTitanBackend:
         target_dtype = _parse_torch_dtype(self.config.mixed_precision_param)
 
         tensors: list[WeightWireTensor] = []
+        embed_alias_signature: tuple[object, ...] | None = None
         for key, value in native_state_dict.items():
             if hasattr(value, "full_tensor"):
                 value = value.full_tensor()
@@ -742,6 +754,21 @@ class TorchTitanBackend:
                         f"native key {key!r} shape {tuple(value.shape)!r} mapped to "
                         f"{load_name!r} shape {tuple(mapped_value.shape)!r}"
                     )
+                alias_signature = _tensor_alias_signature(mapped_value)
+                if load_name == "model.embed_tokens.weight":
+                    embed_alias_signature = alias_signature
+                elif (
+                    load_name == "lm_head.weight"
+                    and embed_alias_signature is not None
+                    and alias_signature == embed_alias_signature
+                ):
+                    logger.info(
+                        "[Rank %s] torchtitan_nccl_sync_skip_tied_lm_head native_key=%s load_name=%s",
+                        self.rank,
+                        key,
+                        load_name,
+                    )
+                    continue
                 prepared = value.detach().to(device=self._device, dtype=target_dtype).contiguous()
                 tensors.append(
                     WeightWireTensor(
