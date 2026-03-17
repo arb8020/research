@@ -14,6 +14,7 @@ import importlib.util
 import inspect
 import json
 import os
+import subprocess
 import sys
 import threading
 import traceback
@@ -200,6 +201,79 @@ def _method_owner_state(owner: object) -> dict[str, object]:
 
 def _traceback_tail(limit: int = 8) -> list[str]:
     return traceback.format_exc().strip().splitlines()[-limit:]
+
+
+def _should_snapshot_modelrunner_sockets(owner_cls: type[object], method_name: str) -> bool:
+    return owner_cls.__name__ == "ModelRunner" and method_name in {
+        "init_weights_update_group",
+        "update_weights_from_distributed",
+    }
+
+
+def _truncate_text(value: str, *, max_len: int = 320) -> str:
+    if len(value) <= max_len:
+        return value
+    return value[: max_len - 3] + "..."
+
+
+def _capture_ss_snapshot(*, pid: int) -> dict[str, object]:
+    snapshots: list[dict[str, object]] = []
+    for command in (
+        ["ss", "-H", "-tnlp"],
+        ["ss", "-H", "-tnp", "state", "all"],
+    ):
+        command_name = " ".join(command)
+        try:
+            completed = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=3,
+            )
+        except Exception as exc:
+            snapshots.append({
+                "command": command_name,
+                "error": f"{type(exc).__name__}: {exc}",
+            })
+            continue
+        matched_lines = [
+            _truncate_text(line.strip())
+            for line in completed.stdout.splitlines()
+            if f"pid={pid}," in line
+        ]
+        snapshots.append({
+            "command": command_name,
+            "returncode": completed.returncode,
+            "matched_lines": matched_lines[:64],
+            "matched_count": len(matched_lines),
+            "stderr_tail": [
+                _truncate_text(line.strip())
+                for line in completed.stderr.splitlines()[-8:]
+                if line.strip()
+            ],
+        })
+    return {"pid": pid, "snapshots": snapshots}
+
+
+def _emit_modelrunner_socket_snapshot(
+    *,
+    owner_cls: type[object],
+    method_name: str,
+    phase: str,
+    self: object,
+) -> None:
+    if not _should_snapshot_modelrunner_sockets(owner_cls, method_name):
+        return
+    _emit_argus_diag(
+        "sglang_runtime_socket_snapshot",
+        owner_class=owner_cls.__name__,
+        method=method_name,
+        phase=phase,
+        process=_process_context(),
+        owner_state=_method_owner_state(self),
+        socket_state=_capture_ss_snapshot(pid=os.getpid()),
+    )
 
 
 def _instrument_async_context_type(lock_type: type[object], *, label: str) -> None:
@@ -519,6 +593,12 @@ def _wrap_runtime_method(owner_cls: type[object], method_name: str) -> None:
                 args=_jsonable_summary(args),
                 kwargs=_jsonable_summary(kwargs),
             )
+            _emit_modelrunner_socket_snapshot(
+                owner_cls=owner_cls,
+                method_name=method_name,
+                phase="enter",
+                self=self,
+            )
             try:
                 result = await method(self, *args, **kwargs)
             except Exception as exc:
@@ -531,6 +611,12 @@ def _wrap_runtime_method(owner_cls: type[object], method_name: str) -> None:
                     error=f"{type(exc).__name__}: {exc}",
                     traceback_tail=_traceback_tail(),
                 )
+                _emit_modelrunner_socket_snapshot(
+                    owner_cls=owner_cls,
+                    method_name=method_name,
+                    phase="failed",
+                    self=self,
+                )
                 raise
             _emit_argus_diag(
                 "sglang_runtime_method_ok",
@@ -539,6 +625,12 @@ def _wrap_runtime_method(owner_cls: type[object], method_name: str) -> None:
                 process=_process_context(),
                 owner_state=_method_owner_state(self),
                 result=_jsonable_summary(result),
+            )
+            _emit_modelrunner_socket_snapshot(
+                owner_cls=owner_cls,
+                method_name=method_name,
+                phase="ok",
+                self=self,
             )
             return result
 
@@ -556,6 +648,12 @@ def _wrap_runtime_method(owner_cls: type[object], method_name: str) -> None:
                 args=_jsonable_summary(args),
                 kwargs=_jsonable_summary(kwargs),
             )
+            _emit_modelrunner_socket_snapshot(
+                owner_cls=owner_cls,
+                method_name=method_name,
+                phase="enter",
+                self=self,
+            )
             try:
                 result = method(self, *args, **kwargs)
             except Exception as exc:
@@ -568,6 +666,12 @@ def _wrap_runtime_method(owner_cls: type[object], method_name: str) -> None:
                     error=f"{type(exc).__name__}: {exc}",
                     traceback_tail=_traceback_tail(),
                 )
+                _emit_modelrunner_socket_snapshot(
+                    owner_cls=owner_cls,
+                    method_name=method_name,
+                    phase="failed",
+                    self=self,
+                )
                 raise
             _emit_argus_diag(
                 "sglang_runtime_method_ok",
@@ -576,6 +680,12 @@ def _wrap_runtime_method(owner_cls: type[object], method_name: str) -> None:
                 process=_process_context(),
                 owner_state=_method_owner_state(self),
                 result=_jsonable_summary(result),
+            )
+            _emit_modelrunner_socket_snapshot(
+                owner_cls=owner_cls,
+                method_name=method_name,
+                phase="ok",
+                self=self,
             )
             return result
 
