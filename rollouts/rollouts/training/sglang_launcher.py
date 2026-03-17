@@ -597,6 +597,22 @@ def _instrument_sglang_runtime_methods() -> None:
         )
         return
 
+    optional_targets: list[tuple[type[object], tuple[str, ...]]] = []
+    try:
+        from sglang.srt.model_executor.model_runner import ModelRunner
+    except Exception:
+        ModelRunner = None  # type: ignore[assignment]
+    if ModelRunner is not None:
+        optional_targets.append((
+            ModelRunner,
+            (
+                "update_weights_from_distributed",
+                "update_weights_from_ipc",
+                "init_weights_update_group",
+                "post_process_weights",
+            ),
+        ))
+
     wrapped: list[dict[str, str]] = []
     targets: list[tuple[type[object], tuple[str, ...]]] = [
         (
@@ -617,6 +633,7 @@ def _instrument_sglang_runtime_methods() -> None:
             (
                 "init_weights_update_group",
                 "update_weights_from_distributed",
+                "update_weights_from_ipc",
                 "post_process_weights",
             ),
         ),
@@ -625,10 +642,11 @@ def _instrument_sglang_runtime_methods() -> None:
             (
                 "init_weights_update_group",
                 "update_weights_from_distributed",
+                "update_weights_from_ipc",
                 "post_process_weights",
             ),
         ),
-    ]
+    ] + optional_targets
     for owner_cls, method_names in targets:
         for method_name in method_names:
             method = getattr(owner_cls, method_name, None)

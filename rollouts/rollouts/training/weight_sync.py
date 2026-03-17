@@ -805,6 +805,7 @@ class SGLangEngine:
                 f"NCCL_SOCKET_IFNAME={socket_ifname} GLOO_SOCKET_IFNAME={socket_ifname} "
             )
         cmd = (
+            "PYTHONPATH=.${PYTHONPATH:+:$PYTHONPATH} "
             f"CUDA_VISIBLE_DEVICES={gpu_str} "
             f"HF_HUB_DOWNLOAD_TIMEOUT=300 "  # 5 min timeout for model downloads
             # NCCL environment for cross-process weight sync:
@@ -815,6 +816,7 @@ class SGLangEngine:
             # Do not force NCCL_SHM_DISABLE here. Miles/Slime do not blanket-disable
             # SHM for this path, and our current failure is in NCCL transport setup.
             f"{socket_ifname_env}"
+            f"ROLLOUTS_SGLANG_SITE_TRACE=1 "
             f"AMEM_ENABLE=1 "
             f"NCCL_CUMEM_ENABLE=0 "
             f"NCCL_DEBUG=INFO "
