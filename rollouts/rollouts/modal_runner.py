@@ -2050,14 +2050,18 @@ async def _run_training_in_sandbox(
     def _on_stderr_line(line: str) -> None:
         stripped = line.rstrip()
         if stripped.startswith(ARGUS_DIAG_EVENT_SENTINEL):
-            payload = stripped[len(ARGUS_DIAG_EVENT_SENTINEL) :]
             try:
                 import json
 
-                event_data = json.loads(payload)
-                event_name = event_data.pop("event", None)
-                if event_name:
-                    emit(event_name, **event_data)
+                payloads = stripped.split(ARGUS_DIAG_EVENT_SENTINEL)
+                for payload in payloads:
+                    payload = payload.strip()
+                    if not payload:
+                        continue
+                    event_data = json.loads(payload)
+                    event_name = event_data.pop("event", None)
+                    if event_name:
+                        emit(event_name, **event_data)
             except Exception as exc:
                 emit("remote_diag_stream_parse_failed", error=f"{type(exc).__name__}: {exc}")
             return
