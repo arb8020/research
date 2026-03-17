@@ -20,6 +20,7 @@ import logging
 import os
 import shlex
 import subprocess
+import sys
 import threading
 import time
 from collections.abc import Awaitable, Callable
@@ -970,7 +971,6 @@ class SGLangEngine:
         formatting as training logs (JSONL when TUI is active).
         """
         sglang_logger = logging.getLogger("sglang")
-        trace_logger = logging.getLogger("sglang.runtime_trace")
 
         def tail_log() -> None:
             try:
@@ -1019,27 +1019,30 @@ class SGLangEngine:
                         try:
                             payload = json.loads(raw)
                         except Exception:
-                            trace_logger.warning(
-                                "sglang runtime trace parse failed",
-                                extra={
-                                    "event": "sglang_runtime_trace_parse_failed",
-                                    "trace_line": raw,
-                                    **self._startup_log_context(),
-                                },
+                            diag_payload = {
+                                "event": "sglang_runtime_trace_parse_failed",
+                                "trace_line": raw,
+                                "trace_source": "sidecar",
+                                **self._startup_log_context(),
+                            }
+                            sys.stderr.write(
+                                f"__ARGUS_DIAG__{json.dumps(diag_payload, sort_keys=True)}\n"
                             )
+                            sys.stderr.flush()
                             continue
                         event = payload.get("event")
                         if not isinstance(event, str) or not event:
                             event = "sglang_runtime_trace_event"
-                        trace_logger.info(
-                            "sglang runtime trace",
-                            extra={
-                                **payload,
-                                "event": event,
-                                "trace_source": "sidecar",
-                                **self._startup_log_context(),
-                            },
+                        diag_payload = {
+                            **payload,
+                            "event": event,
+                            "trace_source": "sidecar",
+                            **self._startup_log_context(),
+                        }
+                        sys.stderr.write(
+                            f"__ARGUS_DIAG__{json.dumps(diag_payload, sort_keys=True)}\n"
                         )
+                        sys.stderr.flush()
             except Exception:
                 pass
 
