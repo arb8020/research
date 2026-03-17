@@ -253,6 +253,23 @@ def _should_trace_weight_update_collectives(owner_cls: type[object], method_name
 
 
 def _group_state_summary(group: object) -> dict[str, object]:
+    if isinstance(group, dict):
+        items: dict[str, object] = {}
+        for key, value in group.items():
+            key_name = str(key)
+            try:
+                items[key_name] = _group_state_summary(value)
+            except Exception as exc:
+                items[key_name] = {
+                    "type": type(value).__name__,
+                    "error": f"{type(exc).__name__}: {exc}",
+                }
+        return {
+            "type": type(group).__name__,
+            "is_none": False,
+            "size": len(group),
+            "items": items,
+        }
     payload: dict[str, object] = {
         "type": type(group).__name__ if group is not None else None,
         "is_none": group is None,
