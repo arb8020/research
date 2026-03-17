@@ -15,8 +15,10 @@ Architecture:
 
 from __future__ import annotations
 
+import json
 import logging
 import os
+import shlex
 import subprocess
 import threading
 import time
@@ -731,6 +733,7 @@ class SGLangEngine:
     # not via CLI flags. This field is kept for compatibility but not used.
     rl_on_policy_target: str | None = None
     _log_file: Path = field(init=False)
+    _trace_file: Path = field(init=False)
     _session_name: str = field(init=False)
     _startup_event_lock: threading.Lock = field(
         init=False,
@@ -747,6 +750,7 @@ class SGLangEngine:
     def __post_init__(self) -> None:
         # Include port for multi-engine runs (each engine gets its own tmux session + log).
         self._log_file = self.output_dir / f"sglang_{self.port}.log"
+        self._trace_file = self.output_dir / f"sglang_{self.port}_trace.jsonl"
         # Use output_dir name (run_id) for session isolation across runs.
         run_id = self.output_dir.name
         self._session_name = f"sglang-{run_id}-{self.port}"
@@ -762,6 +766,10 @@ class SGLangEngine:
     @property
     def log_path(self) -> Path:
         return self._log_file
+
+    @property
+    def trace_path(self) -> Path:
+        return self._trace_file
 
     @property
     def health_url(self) -> str:
@@ -810,6 +818,7 @@ class SGLangEngine:
             f"NCCL_CUMEM_ENABLE=0 "
             f"NCCL_DEBUG=INFO "
             f"NCCL_DEBUG_SUBSYS=INIT,COLL "
+            f"ROLLOUTS_SGLANG_TRACE_PATH={shlex.quote(str(self._trace_file))} "
             f"python -m rollouts.training.sglang_launcher "
             f"--model-path {self.model_name} "
             f"--host 0.0.0.0 "
@@ -829,6 +838,7 @@ class SGLangEngine:
             "engine_cuda_device_ids": list(self.cuda_device_ids),
             "engine_session_name": self._session_name,
             "engine_log_path": str(self._log_file),
+            "engine_trace_path": str(self._trace_file),
             "model_name": self.model_name,
         }
 
@@ -907,12 +917,15 @@ class SGLangEngine:
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self._log_file.parent.mkdir(parents=True, exist_ok=True)
         self._log_file.touch(exist_ok=True)
+        self._trace_file.parent.mkdir(parents=True, exist_ok=True)
+        self._trace_file.touch(exist_ok=True)
         _startup_logger.info(
             "inference log path ready",
             extra={
                 "event": "inference_log_path_ready",
                 "log_phase": "launch",
                 "log_tail": _read_log_tail(self._log_file, max_lines=5),
+                "trace_tail": _read_log_tail(self._trace_file, max_lines=5),
                 **self._startup_log_context(),
             },
         )
@@ -957,6 +970,7 @@ class SGLangEngine:
         formatting as training logs (JSONL when TUI is active).
         """
         sglang_logger = logging.getLogger("sglang")
+        trace_logger = logging.getLogger("sglang.runtime_trace")
 
         def tail_log() -> None:
             try:
@@ -986,8 +1000,53 @@ class SGLangEngine:
             except Exception:
                 pass  # File closed or thread killed
 
+        def tail_trace() -> None:
+            try:
+                for _ in range(30):
+                    if self._trace_file.exists():
+                        break
+                    time.sleep(0.1)
+
+                with open(self._trace_file, encoding="utf-8") as handle:
+                    while True:
+                        line = handle.readline()
+                        if not line:
+                            time.sleep(0.1)
+                            continue
+                        raw = line.strip()
+                        if not raw:
+                            continue
+                        try:
+                            payload = json.loads(raw)
+                        except Exception:
+                            trace_logger.warning(
+                                "sglang runtime trace parse failed",
+                                extra={
+                                    "event": "sglang_runtime_trace_parse_failed",
+                                    "trace_line": raw,
+                                    **self._startup_log_context(),
+                                },
+                            )
+                            continue
+                        event = payload.get("event")
+                        if not isinstance(event, str) or not event:
+                            event = "sglang_runtime_trace_event"
+                        trace_logger.info(
+                            "sglang runtime trace",
+                            extra={
+                                **payload,
+                                "event": event,
+                                "trace_source": "sidecar",
+                                **self._startup_log_context(),
+                            },
+                        )
+            except Exception:
+                pass
+
         thread = threading.Thread(target=tail_log, daemon=True)
         thread.start()
+        trace_thread = threading.Thread(target=tail_trace, daemon=True)
+        trace_thread.start()
         return thread
 
     def _is_session_alive(self) -> bool:
@@ -1111,6 +1170,7 @@ class SGLangEngine:
                 "event": "inference_log_path_final",
                 "log_phase": "shutdown",
                 "log_tail": _read_log_tail(self._log_file, max_lines=40),
+                "trace_tail": _read_log_tail(self._trace_file, max_lines=40),
                 **self._startup_log_context(),
             },
         )

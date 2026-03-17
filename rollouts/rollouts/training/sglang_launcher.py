@@ -17,6 +17,39 @@ import os
 import sys
 import threading
 import traceback
+from datetime import UTC, datetime
+from pathlib import Path
+
+_SIDECAR_LOCK = threading.Lock()
+
+
+def _sidecar_trace_path() -> Path | None:
+    raw = os.environ.get("ROLLOUTS_SGLANG_TRACE_PATH")
+    if not raw:
+        return None
+    try:
+        return Path(raw)
+    except Exception:
+        return None
+
+
+def _write_sidecar_event(payload: dict[str, object]) -> None:
+    path = _sidecar_trace_path()
+    if path is None:
+        return
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with _SIDECAR_LOCK:
+            with path.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(payload, sort_keys=True) + "\n")
+    except Exception:
+        return
+
+
+def _should_mirror_to_stderr(event: str) -> bool:
+    if _sidecar_trace_path() is None:
+        return True
+    return not event.startswith("sglang_runtime_")
 
 
 def _patch_transformers() -> None:
@@ -39,8 +72,16 @@ def _patch_transformers() -> None:
 
 
 def _emit_argus_diag(event: str, **data: object) -> None:
+    payload = {
+        "event": event,
+        "ts": datetime.now(UTC).isoformat(),
+        **data,
+    }
+    _write_sidecar_event(payload)
+    if not _should_mirror_to_stderr(event):
+        return
     try:
-        sys.stderr.write(f"__ARGUS_DIAG__{json.dumps({'event': event, **data}, sort_keys=True)}\n")
+        sys.stderr.write(f"__ARGUS_DIAG__{json.dumps(payload, sort_keys=True)}\n")
         sys.stderr.flush()
     except Exception:
         return
