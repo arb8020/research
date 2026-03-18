@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import inspect
 import json
+import logging
 import os
 import re
 import shutil
@@ -17,7 +18,53 @@ from ..drivers import ClaudeDriver, CodexDriver, run_driver_to_trajectory
 from ..dtypes import StreamChunk
 from ..training.types import AttemptRow, ProblemRow, Status
 
+_event_logger = logging.getLogger("rollouts.eval.events")
+
 PromptBuilder = Callable[[dict[str, Any]], str]
+
+
+def _make_eval_on_event(
+    sample_id: str,
+    caller_on_event: Callable[[Any], Awaitable[None]] | None,
+) -> Callable[[Any], Awaitable[None]]:
+    """Return an on_event handler that emits turn events to _event_logger.
+
+    External drivers (ClaudeDriver, CodexDriver) emit typed dataclass events,
+    not StreamChunk.  LLMCallStart signals a new turn; ToolCallStart/End give
+    finer-grained status.  We forward these to _event_logger so events.jsonl
+    gets turn-level progress during external evals.
+
+    Composes with any existing caller on_event so both receive every event.
+    """
+    from ..dtypes import LLMCallStart, ToolCallEnd, ToolCallStart
+
+    turn: list[int] = [0]  # mutable cell so inner async fn can update it
+
+    async def on_event(event: Any) -> None:
+        if isinstance(event, LLMCallStart):
+            _event_logger.info(
+                "turn",
+                extra={"sample_id": sample_id, "turn": turn[0], "status": "streaming..."},
+            )
+            turn[0] += 1
+        elif isinstance(event, ToolCallStart):
+            _event_logger.info(
+                "turn",
+                extra={
+                    "sample_id": sample_id,
+                    "turn": turn[0],
+                    "status": "calling tool...",
+                },
+            )
+        elif isinstance(event, ToolCallEnd):
+            _event_logger.info(
+                "turn",
+                extra={"sample_id": sample_id, "turn": turn[0], "status": "tool done"},
+            )
+        if caller_on_event is not None:
+            await caller_on_event(event)
+
+    return on_event
 
 
 @dataclass(frozen=True)
@@ -156,7 +203,7 @@ async def trajectory_from_claude_code(
         timeout_seconds=timeout_seconds,
         on_raw_line=_make_raw_driver_line_handler(run_config, driver="claude"),
     )
-    on_event = getattr(run_config, "on_chunk", None)
+    on_event = _make_eval_on_event(sample_id, getattr(run_config, "on_chunk", None))
     trajectory = await run_driver_to_trajectory(
         driver,
         prompt,
@@ -194,7 +241,7 @@ async def trajectory_from_codex(
         timeout_seconds=timeout_seconds,
         on_raw_line=_make_raw_driver_line_handler(run_config, driver="codex"),
     )
-    on_event = getattr(run_config, "on_chunk", None)
+    on_event = _make_eval_on_event(sample_id, getattr(run_config, "on_chunk", None))
     trajectory = await run_driver_to_trajectory(
         driver,
         prompt,
