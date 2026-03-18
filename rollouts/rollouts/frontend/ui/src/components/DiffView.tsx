@@ -1,30 +1,95 @@
-import { useMemo, useEffect } from 'react'
+import { useMemo } from 'react'
 import { FileDiff, File as DiffsFile } from '@pierre/diffs/react'
 import { parseDiffFromFile } from '@pierre/diffs'
 import type { WorkspaceSnapshot } from '../types'
 
-// Force diffs-container to fill its flex parent and match our dark theme
-let diffStylesInjected = false
-function ensureDiffStyles() {
-  if (diffStylesInjected) return
-  diffStylesInjected = true
-  const el = document.createElement('style')
-  el.textContent = `
-    diffs-container {
-      display: block;
-      width: 100%;
-      /* Force dark mode so light-dark() resolves to dark variants */
-      color-scheme: dark;
-      /* Typography */
-      --diffs-font-size: 12px;
-      --diffs-line-height: 1.5;
-      --diffs-font-family: "IBM Plex Mono", monospace;
-      --diffs-header-font-family: "IBM Plex Mono", monospace;
-      --diffs-gap-inline: 0px;
-      --diffs-gap-block: 0px;
+// Static styles applied once to document head — controls diffs-container layout and theme.
+const docStyle = document.createElement('style')
+docStyle.textContent = `
+  diffs-container {
+    display: block;
+    width: 100%;
+    /* Force dark mode so light-dark() resolves to dark variants */
+    color-scheme: dark;
+    /* Typography */
+    --diffs-font-size: 12px;
+    --diffs-line-height: 1.5;
+    --diffs-font-family: "IBM Plex Mono", monospace;
+    --diffs-header-font-family: "IBM Plex Mono", monospace;
+    --diffs-gap-inline: 0px;
+    --diffs-gap-block: 0px;
+  }
+`
+document.head.appendChild(docStyle)
+
+// Static overrides injected into diffs-container's shadow root whenever it appears.
+// Uses MutationObserver so injection survives the library tearing down and recreating
+// the shadow DOM on file change — no useEffect, no setTimeout, no React lifecycle dependency.
+const SHADOW_OVERRIDE_ID = 'rollouts-overrides'
+const SHADOW_OVERRIDE_CSS = `
+  [data-separator-content] { border-radius: 0 !important; }
+  [data-expand-button] { border-radius: 0 !important; }
+  [data-separator-wrapper] { border-radius: 0 !important; }
+  /* Kill pill radius from @supports (width: 1cqi) block */
+  [data-unified] [data-separator='line-info'] [data-separator-wrapper] [data-separator-content] { border-radius: 0 !important; }
+  [data-gutter] [data-separator='line-info'] [data-separator-content] { border-radius: 0 !important; }
+  [data-separator='line-info'] [data-separator-wrapper] [data-expand-both],
+  [data-separator='line-info'] [data-separator-wrapper] [data-expand-down],
+  [data-separator='line-info'] [data-separator-wrapper] [data-expand-up] { border-radius: 0 !important; }
+  /* More breathing room below the file header */
+  [data-diffs-header] { padding-block: 10px 14px; }
+  /* Gap between file icon and filename */
+  [data-header-content] { gap: 8px; }
+`
+
+// TODO: We don't know whether @pierre/diffs recreates the diffs-container element
+// on file change (triggering bodyObserver) or mutates the shadow root in place
+// (triggering the inner shadow observer). We're defending against both simultaneously.
+// Add console.logs on each path to find out which actually fires, then remove the
+// redundant observer.
+function injectIntoShadow(el: Element) {
+  const shadow = (el as HTMLElement).shadowRoot
+  if (!shadow) return
+  if (shadow.querySelector(`#${SHADOW_OVERRIDE_ID}`)) return
+  const style = document.createElement('style')
+  style.id = SHADOW_OVERRIDE_ID
+  style.textContent = SHADOW_OVERRIDE_CSS
+  shadow.appendChild(style)
+  // Re-inject if the library wipes shadow root children without removing the element.
+  // TODO: may be redundant with bodyObserver if the library always recreates the element.
+  new MutationObserver(() => {
+    if (!shadow.querySelector(`#${SHADOW_OVERRIDE_ID}`)) {
+      const s = document.createElement('style')
+      s.id = SHADOW_OVERRIDE_ID
+      s.textContent = SHADOW_OVERRIDE_CSS
+      shadow.appendChild(s)
     }
-  `
-  document.head.appendChild(el)
+  }).observe(shadow, { childList: true })
+}
+
+// Watch document for diffs-container being added, then inject into its shadow root.
+// TODO: may be redundant with the inner shadow observer in injectIntoShadow.
+const bodyObserver = new MutationObserver((mutations) => {
+  for (const mutation of mutations) {
+    for (const node of Array.from(mutation.addedNodes)) {
+      if (!(node instanceof Element)) continue
+      if (node.tagName === 'DIFFS-CONTAINER') injectIntoShadow(node)
+      node.querySelectorAll('diffs-container').forEach(injectIntoShadow)
+    }
+  }
+})
+
+// document.body may not exist at module parse time — defer until DOM ready.
+function startObserving() {
+  bodyObserver.observe(document.body, { childList: true, subtree: true })
+  // Handle case where diffs-container already exists in the DOM
+  document.querySelectorAll('diffs-container').forEach(injectIntoShadow)
+}
+
+if (document.body) {
+  startObserving()
+} else {
+  document.addEventListener('DOMContentLoaded', startObserving)
 }
 
 interface DiffViewProps {
@@ -42,41 +107,6 @@ function buildFileDiff(name: string, oldContents: string, newContents: string) {
 }
 
 export function DiffView({ snapshotA, snapshotB, selectedFile, onSelectFile }: DiffViewProps) {
-  useEffect(() => {
-    ensureDiffStyles()
-    // Inject styles into shadow root to kill the pill border-radius on separators
-    const inject = () => {
-      const dc = document.querySelector('diffs-container') as HTMLElement | null
-      const shadow = dc?.shadowRoot
-      if (!shadow) return false
-      if (shadow.querySelector('#rollouts-overrides')) return true
-      const style = document.createElement('style')
-      style.id = 'rollouts-overrides'
-      style.textContent = `
-        [data-separator-content] { border-radius: 0 !important; }
-        [data-expand-button] { border-radius: 0 !important; }
-        [data-separator-wrapper] { border-radius: 0 !important; }
-        [data-container-size] { container-type: normal !important; }
-        /* Kill pill radius from @supports (width: 1cqi) block */
-        [data-unified] [data-separator='line-info'] [data-separator-wrapper] [data-separator-content] { border-radius: 0 !important; }
-        [data-gutter] [data-separator='line-info'] [data-separator-content] { border-radius: 0 !important; }
-        [data-separator='line-info'] [data-separator-wrapper] [data-expand-both],
-        [data-separator='line-info'] [data-separator-wrapper] [data-expand-down],
-        [data-separator='line-info'] [data-separator-wrapper] [data-expand-up] { border-radius: 0 !important; }
-        /* More breathing room below the file header */
-        [data-diffs-header] { padding-block: 10px 14px; }
-        /* Gap between file icon and filename */
-        [data-header-content] { gap: 8px; }
-      `
-      shadow.appendChild(style)
-      return true
-    }
-    if (!inject()) {
-      // Shadow root not ready yet — retry after short delay
-      const t = setTimeout(inject, 200)
-      return () => clearTimeout(t)
-    }
-  }, [snapshotA, snapshotB])
 
   // Compute per-file diffs, only for files that exist in either snapshot
   const diffs = useMemo(() => {
