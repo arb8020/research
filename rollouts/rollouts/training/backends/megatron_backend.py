@@ -78,7 +78,12 @@ def _normalize_megatron_checkpoint_args(
         "async_ckpt_io_priority": 3,
         "async_save": False,
         "ckpt_assume_constant_structure": False,
-        "ckpt_format": "torch_dist",
+        # Megatron's torch_dist optimizer checkpoint path is currently dishonest
+        # for our mixed-precision runtime: it cannot map optimizer params back to
+        # the model sharded-state tensors. Use the legacy torch checkpoint format
+        # when optimizer state is requested, and keep torch_dist for model-only
+        # checkpoints where the distributed format is working.
+        "ckpt_format": "torch" if save_optimizer_state else "torch_dist",
         "ckpt_fully_parallel_save": True,
         "ckpt_fully_parallel_save_process_group": "dp",
         "dist_ckpt_optim_fully_reshardable": False,
