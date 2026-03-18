@@ -122,7 +122,7 @@ def _default_group_summary() -> dict[str, object]:
     return payload
 
 
-def _receiver_distributed_state_snapshot() -> dict[str, object]:
+def _distributed_env_snapshot() -> dict[str, object]:
     keys = (
         "MASTER_ADDR",
         "MASTER_PORT",
@@ -141,6 +141,10 @@ def _receiver_distributed_state_snapshot() -> dict[str, object]:
         "env": {key: os.environ.get(key) for key in keys},
         "default_group": _default_group_summary(),
     }
+
+
+def _receiver_distributed_state_snapshot() -> dict[str, object]:
+    return _distributed_env_snapshot()
 
 
 def _tcp_state_name(state_hex: str) -> str:
@@ -701,6 +705,7 @@ class WeightSyncSender:
             socket_ifname=socket_ifname,
             socket_ifname_source=socket_ifname_source,
             nccl_env=_nccl_env_snapshot(),
+            distributed_state=_distributed_env_snapshot(),
         )
         if self.device.type == "cuda":
             torch.cuda.set_device(self.device)
@@ -853,6 +858,7 @@ class WeightSyncSender:
                                 torch.cuda.current_device() if torch.cuda.is_available() else None
                             ),
                         },
+                        distributed_state=_distributed_env_snapshot(),
                         socket_state=socket_state,
                         bootstrap_socket_state=_filter_socket_snapshot_for_port(
                             socket_state, port=self.master_port
@@ -888,6 +894,7 @@ class WeightSyncSender:
                                     else None
                                 ),
                             },
+                            distributed_state=_distributed_env_snapshot(),
                             socket_state=socket_state,
                             bootstrap_socket_state=_filter_socket_snapshot_for_port(
                                 socket_state, port=self.master_port
@@ -919,6 +926,7 @@ class WeightSyncSender:
                                 torch.cuda.current_device() if torch.cuda.is_available() else None
                             ),
                         },
+                        distributed_state=_distributed_env_snapshot(),
                         socket_state=socket_state,
                         bootstrap_socket_state=_filter_socket_snapshot_for_port(
                             socket_state, port=self.master_port
