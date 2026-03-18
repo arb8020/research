@@ -122,6 +122,76 @@ def _default_group_summary() -> dict[str, object]:
     return payload
 
 
+def _group_summary(group: object | None) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "is_none": group is None,
+        "type": type(group).__name__ if group is not None else None,
+        "id": hex(id(group)) if group is not None else None,
+    }
+    target = None if group is None else group
+    try:
+        payload["backend"] = dist.get_backend(target)
+    except Exception as exc:
+        payload["backend_error"] = f"{type(exc).__name__}: {exc}"
+    try:
+        payload["rank"] = dist.get_rank(target)
+    except Exception as exc:
+        payload["rank_error"] = f"{type(exc).__name__}: {exc}"
+    try:
+        payload["world_size"] = dist.get_world_size(target)
+    except Exception as exc:
+        payload["world_size_error"] = f"{type(exc).__name__}: {exc}"
+    return payload
+
+
+def _all_process_groups_snapshot() -> dict[str, object]:
+    try:
+        from torch.distributed.distributed_c10d import _world
+    except Exception as exc:
+        return {"error": f"{type(exc).__name__}: {exc}"}
+
+    default_pg = getattr(_world, "default_pg", None)
+    groups: list[dict[str, object]] = []
+    seen: set[int] = set()
+    pg_group_ranks = getattr(_world, "pg_group_ranks", {})
+    pg_names = getattr(_world, "pg_names", {})
+    pg_to_tag = getattr(_world, "pg_to_tag", {})
+    pg_backend_config = getattr(_world, "pg_backend_config", {})
+
+    for group in list(pg_group_ranks.keys()):
+        group_id = id(group)
+        if group_id in seen:
+            continue
+        seen.add(group_id)
+        summary = _group_summary(group)
+        summary["is_default"] = group is default_pg
+        try:
+            summary["name"] = pg_names.get(group)
+        except Exception:
+            pass
+        try:
+            summary["tag"] = pg_to_tag.get(group)
+        except Exception:
+            pass
+        try:
+            summary["backend_config"] = repr(pg_backend_config.get(group))[:200]
+        except Exception:
+            pass
+        try:
+            ranks = pg_group_ranks.get(group)
+            if isinstance(ranks, dict):
+                summary["registered_ranks"] = sorted(int(k) for k in ranks.keys())
+        except Exception:
+            pass
+        groups.append(summary)
+
+    return {
+        "default_group": _group_summary(default_pg),
+        "group_count": len(groups),
+        "groups": groups[:16],
+    }
+
+
 def _distributed_env_snapshot() -> dict[str, object]:
     keys = (
         "MASTER_ADDR",
@@ -140,6 +210,7 @@ def _distributed_env_snapshot() -> dict[str, object]:
     return {
         "env": {key: os.environ.get(key) for key in keys},
         "default_group": _default_group_summary(),
+        "all_groups": _all_process_groups_snapshot(),
     }
 
 
@@ -761,6 +832,8 @@ class WeightSyncSender:
             socket_ifname=socket_ifname,
             socket_ifname_source=socket_ifname_source,
             nccl_env=_nccl_env_snapshot(),
+            distributed_state=_distributed_env_snapshot(),
+            process_group=_group_summary(self._process_group),
         )
 
     def broadcast_payload(
@@ -859,6 +932,7 @@ class WeightSyncSender:
                             ),
                         },
                         distributed_state=_distributed_env_snapshot(),
+                        process_group=_group_summary(self._process_group),
                         socket_state=socket_state,
                         bootstrap_socket_state=_filter_socket_snapshot_for_port(
                             socket_state, port=self.master_port
@@ -895,6 +969,7 @@ class WeightSyncSender:
                                 ),
                             },
                             distributed_state=_distributed_env_snapshot(),
+                            process_group=_group_summary(self._process_group),
                             socket_state=socket_state,
                             bootstrap_socket_state=_filter_socket_snapshot_for_port(
                                 socket_state, port=self.master_port
@@ -927,6 +1002,7 @@ class WeightSyncSender:
                             ),
                         },
                         distributed_state=_distributed_env_snapshot(),
+                        process_group=_group_summary(self._process_group),
                         socket_state=socket_state,
                         bootstrap_socket_state=_filter_socket_snapshot_for_port(
                             socket_state, port=self.master_port
