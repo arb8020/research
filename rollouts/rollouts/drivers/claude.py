@@ -435,7 +435,11 @@ class _ClaudeEventParser:
                             tool_name=tool_name,
                         )
                     )
-                    self._active_tools[tool_id] = {"name": tool_name, "args_json": ""}
+                    self._active_tools[tool_id] = {
+                        "name": tool_name,
+                        "args_json": "",
+                        "index": index,
+                    }
 
             case "content_block_delta":
                 delta = event.get("delta", {})
@@ -454,13 +458,12 @@ class _ClaudeEventParser:
                         self._active_thinking[index] += text
 
                 elif delta_type == "input_json_delta":
-                    # Tool call argument streaming
+                    # Tool call argument streaming — route by content_index
                     partial = delta.get("partial_json", "")
-                    # Find the active tool for this index
-                    # Note: Claude streams tool args, we accumulate them
-                    for tool_id, tool in self._active_tools.items():
-                        tool["args_json"] += partial
-                        break  # Assume one tool at a time per index
+                    for tool in self._active_tools.values():
+                        if tool["index"] == index:
+                            tool["args_json"] += partial
+                            break
 
             case "content_block_stop":
                 # Emit end events for completed blocks
