@@ -46,10 +46,29 @@ export function RunViewer({ runId, sampleId, onBack }: RunViewerProps) {
   const [error, setError] = useState<string | null>(null)
   const [workspaceData, setWorkspaceData] = useState<WorkspaceData | null>(null)
   const [selectedTurn, setSelectedTurn] = useState(0)
-  const [conversationRef, setConversationRef] = useState<{ scrollToMessage: (idx: number) => void } | null>(null)
   const [splitPct, setSplitPct] = useSplitPct()
+  const [checkedTurns, setCheckedTurns] = useState<Set<number>>(new Set())
   const dragging = useRef(false)
   const containerRef = useRef<HTMLDivElement>(null)
+
+  const handleFitWidth = useCallback((contentWidthPx: number) => {
+    if (!containerRef.current) return
+    const totalWidth = containerRef.current.getBoundingClientRect().width
+    if (totalWidth <= 0) return
+    // Right panel needs: diff content + file sidebar (160px) + padding (24px)
+    const rightNeeded = contentWidthPx + 160 + 24
+    const fitLeftPct = Math.min(78, Math.max(10, Math.round((1 - rightNeeded / totalWidth) * 100)))
+    setSplitPct(fitLeftPct)
+  }, [setSplitPct])
+
+  const handleToggleTurn = useCallback((turn: number) => {
+    setCheckedTurns(prev => {
+      const next = new Set(prev)
+      if (next.has(turn)) next.delete(turn)
+      else next.add(turn)
+      return next
+    })
+  }, [])
 
   useEffect(() => {
     setLoading(true)
@@ -63,10 +82,9 @@ export function RunViewer({ runId, sampleId, onBack }: RunViewerProps) {
       .catch(() => setWorkspaceData(null))
   }, [runId, sampleId])
 
-  const handleJumpToMessage = useCallback((messageIndex: number) => {
-    conversationRef?.scrollToMessage(messageIndex)
+  const handleJumpToMessage = useCallback((_messageIndex: number) => {
     setActiveTab('conversation')
-  }, [conversationRef])
+  }, [])
 
   const onDividerMouseDown = useCallback((e: React.MouseEvent) => {
     e.preventDefault()
@@ -230,6 +248,8 @@ export function RunViewer({ runId, sampleId, onBack }: RunViewerProps) {
                 <ConversationView
                   sample={sample}
                   onMessageVisible={hasWorkspace ? (idx) => setSelectedTurn(messageToTurn(idx)) : undefined}
+                  checkedTurns={checkedTurns}
+                  onToggleTurn={handleToggleTurn}
                 />
               </ErrorBoundary>
             )}
@@ -355,7 +375,9 @@ export function RunViewer({ runId, sampleId, onBack }: RunViewerProps) {
                 <WorkspacePanel
                   workspaceData={workspaceData!}
                   selectedTurn={selectedTurn}
+                  checkedTurns={[...checkedTurns].sort((a, b) => a - b)}
                   onJumpToMessage={handleJumpToMessage}
+                  onFitWidth={handleFitWidth}
                 />
               </ErrorBoundary>
             </div>

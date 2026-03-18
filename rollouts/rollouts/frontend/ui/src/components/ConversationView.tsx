@@ -5,6 +5,10 @@ import type { TraceSample } from '../types'
 const css = `
 .rv-msg { border-radius: 2px; margin-bottom: 4px; }
 
+.rv-msg-row {
+  display: flex;
+  align-items: stretch;
+}
 .rv-msg-header {
   display: flex;
   align-items: center;
@@ -13,8 +17,20 @@ const css = `
   cursor: pointer;
   user-select: none;
   transition: background 100ms;
+  flex: 1;
+  min-width: 0;
 }
 .rv-msg-header:hover { background: #1c1c1c; }
+.rv-msg-pin-col {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  flex-shrink: 0;
+  border-left: 1px solid transparent;
+}
+.rv-msg-pin-col:hover { background: #1c1c1c; }
+.rv-msg-pinned .rv-msg-pin-col { border-left-color: #3b82f6; }
 
 .rv-role-tag {
   font-family: "IBM Plex Mono", monospace;
@@ -351,7 +367,7 @@ function highlightJson(obj: unknown): string {
 
 // ─── Message component ────────────────────────────────────────────────────────
 
-function Message({ msg }: { msg: ParsedMessage }) {
+function Message({ msg, isPinned, onTogglePin }: { msg: ParsedMessage; isPinned?: boolean; onTogglePin?: () => void }) {
   const [open, setOpen] = useState(false)
   const [openText, setOpenText] = useState<Set<number>>(new Set())
   const [openThinking, setOpenThinking] = useState<Set<number>>(new Set())
@@ -360,12 +376,36 @@ function Message({ msg }: { msg: ParsedMessage }) {
   const preview = msg.subtitle || msgPreview(msg.blocks)
 
   return (
-    <div className="rv-msg">
-      <div className="rv-msg-header" onClick={() => setOpen(o => !o)}>
-        <span className={`rv-role-tag rv-role-${msg.role}`}>{msg.role}</span>
-        {preview && <span className="rv-msg-subtitle">{preview}</span>}
-        <span className="rv-collapse-icon" style={{ transform: open ? '' : 'rotate(-90deg)' }}>▾</span>
-        {msg.timestamp && <span className="rv-msg-ts">{fmtTs(msg.timestamp)}</span>}
+    <div className={isPinned ? 'rv-msg rv-msg-pinned' : 'rv-msg'}>
+      <div className="rv-msg-row">
+        <div className="rv-msg-header" onClick={() => setOpen(o => !o)}>
+          <span className="rv-collapse-icon" style={{ transform: open ? '' : 'rotate(-90deg)' }}>▾</span>
+          <span className={`rv-role-tag rv-role-${msg.role}`}>{msg.role}</span>
+          {preview && <span className="rv-msg-subtitle">{preview}</span>}
+          {msg.timestamp && <span className="rv-msg-ts">{fmtTs(msg.timestamp)}</span>}
+        </div>
+        {onTogglePin && (
+          <div className="rv-msg-pin-col" onClick={e => { e.stopPropagation(); onTogglePin() }}>
+            <div style={{
+              width: 12,
+              height: 12,
+              borderRadius: 2,
+              border: `1.5px solid ${isPinned ? '#3b82f6' : '#444'}`,
+              background: isPinned ? '#3b82f6' : 'transparent',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              cursor: 'pointer',
+              flexShrink: 0,
+            }}>
+              {isPinned && (
+                <svg width="7" height="7" viewBox="0 0 7 7" fill="none">
+                  <path d="M1 3.5l1.8 1.8 3.2-3.2" stroke="white" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+              )}
+            </div>
+          </div>
+        )}
       </div>
 
       {open && (
@@ -487,12 +527,22 @@ function ensureStyles() {
 export function ConversationView({
   sample,
   onMessageVisible,
+  checkedTurns,
+  onToggleTurn,
 }: {
   sample: TraceSample
   onMessageVisible?: (messageIndex: number) => void
+  // TODO: Future improvement — group all messages per turn into collapsible rows
+  // and put the checkbox on the turn row rather than individual assistant messages.
+  // Currently checkboxes appear only on assistant messages (natural turn boundaries).
+  checkedTurns?: Set<number>
+  onToggleTurn?: (turn: number) => void
 }) {
   ensureStyles()
   const messages = useMemo(() => parseMessages(sample.trajectory.messages), [sample])
+
+  // Track turn index: increment on each assistant message
+  let turnCounter = -1
 
   if (!messages.length) {
     return (
@@ -504,15 +554,22 @@ export function ConversationView({
 
   return (
     <div>
-      {messages.map((msg, i) => (
-        <div
-          key={i}
-          onClick={onMessageVisible ? () => onMessageVisible(i) : undefined}
-          style={{ cursor: onMessageVisible ? 'pointer' : undefined }}
-        >
-          <Message msg={msg} />
-        </div>
-      ))}
+      {messages.map((msg, i) => {
+        const isAssistant = msg.role === 'assistant'
+        if (isAssistant) turnCounter++
+        const turn = turnCounter
+        const isChecked = isAssistant && checkedTurns?.has(turn)
+
+        return (
+          <div key={i} onClick={onMessageVisible ? () => onMessageVisible(i) : undefined}>
+            <Message
+              msg={msg}
+              isPinned={isChecked}
+              onTogglePin={isAssistant && onToggleTurn ? () => onToggleTurn(turn) : undefined}
+            />
+          </div>
+        )
+      })}
     </div>
   )
 }

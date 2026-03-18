@@ -1,8 +1,14 @@
-import { useState, useMemo, useRef, useEffect } from 'react'
+import { useState, useMemo, useRef, useEffect, useCallback } from 'react'
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism'
 import { ChevronRight, ChevronDown, File, Folder, Terminal, AlertTriangle } from 'lucide-react'
 import type { WorkspaceData, WorkspaceSnapshot, LineEdit } from '../types'
+import { DiffView } from './DiffView'
+
+type PanelMode = 'state' | 'diff' | 'split'
+
+const SPLIT_HEIGHT_KEY = 'workspace-split-height-pct'
+const DEFAULT_SPLIT_HEIGHT = 50
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -343,29 +349,95 @@ function BashHistory({ entries }: { entries: WorkspaceSnapshot['bash_history'] }
 export function WorkspacePanel({
   workspaceData,
   selectedTurn,
+  checkedTurns,
   onJumpToMessage,
+  onFitWidth,
 }: {
   workspaceData: WorkspaceData
   selectedTurn: number
+  checkedTurns: number[]
   onJumpToMessage: (messageIndex: number) => void
+  onFitWidth?: (contentWidthPx: number) => void
 }) {
   const { snapshots, line_history, source } = workspaceData
 
-  // Find snapshot for current turn (or nearest prior)
-  const snapshot = useMemo(() => {
-    const candidates = snapshots.filter(s => s.turn <= selectedTurn)
-    return candidates.length > 0 ? candidates[candidates.length - 1] : snapshots[0]
-  }, [snapshots, selectedTurn])
-
+  // Default to diff mode showing full run (turn 0 → last turn)
+  const [mode, setMode] = useState<PanelMode>('diff')
   const [selectedFile, setSelectedFile] = useState<string | null>(null)
 
-  // Auto-select first file
-  useEffect(() => {
-    if (!selectedFile && snapshot) {
-      const files = Object.keys(snapshot.files)
-      if (files.length > 0) setSelectedFile(files[0])
+  // Resizable split: top panel height as % of total (persisted)
+  const [splitHeightPct, setSplitHeightPct] = useState(() => {
+    try { return Number(localStorage.getItem(SPLIT_HEIGHT_KEY)) || DEFAULT_SPLIT_HEIGHT } catch { return DEFAULT_SPLIT_HEIGHT }
+  })
+  const splitContainerRef = useRef<HTMLDivElement>(null)
+  const splitDragging = useRef(false)
+
+  const onSplitDividerMouseDown = useCallback((e: React.MouseEvent) => {
+    e.preventDefault()
+    splitDragging.current = true
+    const onMove = (ev: MouseEvent) => {
+      if (!splitDragging.current || !splitContainerRef.current) return
+      const rect = splitContainerRef.current.getBoundingClientRect()
+      const pct = Math.min(80, Math.max(20, ((ev.clientY - rect.top) / rect.height) * 100))
+      const rounded = Math.round(pct)
+      setSplitHeightPct(rounded)
+      try { localStorage.setItem(SPLIT_HEIGHT_KEY, String(rounded)) } catch {}
     }
-  }, [snapshot])
+    const onUp = () => { splitDragging.current = false; window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp) }
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+  }, [])
+
+  // Find snapshot at or before a given turn
+  function snapshotAt(turn: number): WorkspaceSnapshot {
+    const candidates = snapshots.filter(s => s.turn <= turn)
+    return candidates.length > 0 ? candidates[candidates.length - 1] : snapshots[0]
+  }
+
+  // Snapshot just before turn T: the snapshot at end of turn T-1
+  function snapshotBefore(turn: number): WorkspaceSnapshot {
+    if (turn === 0) return snapshots[0]
+    const candidates = snapshots.filter(s => s.turn < turn)
+    return candidates.length > 0 ? candidates[candidates.length - 1] : snapshots[0]
+  }
+
+  // Derive diff range from checkedTurns:
+  //   0 checked → snapshot[0] to last snapshot (full run)
+  //   1 checked (turn T) → snapshot just before T to snapshot at T (before/after that turn)
+  //   2+ checked → snapshot before min-turn to snapshot at max-turn
+  const { snapshotA, snapshotB } = useMemo(() => {
+    const last = snapshots[snapshots.length - 1]
+    if (checkedTurns.length === 0) {
+      return { snapshotA: snapshots[0], snapshotB: last }
+    }
+    if (checkedTurns.length === 1) {
+      const t = checkedTurns[0]
+      return { snapshotA: snapshotBefore(t), snapshotB: snapshotAt(t) }
+    }
+    const sorted = [...checkedTurns].sort((a, b) => a - b)
+    return {
+      snapshotA: snapshotBefore(sorted[0]),
+      snapshotB: snapshotAt(sorted[sorted.length - 1]),
+    }
+  }, [checkedTurns, snapshots])
+
+  // State mode uses selectedTurn (driven by clicking conversation messages)
+  const snapshot = useMemo(() => snapshotAt(selectedTurn), [snapshots, selectedTurn])
+
+  // Auto-select first modified file in diff mode, first file in state mode
+  useEffect(() => {
+    if (mode === 'diff') {
+      const changed = Object.keys(snapshotB.files).find(
+        f => (snapshotA.files[f] ?? '') !== (snapshotB.files[f] ?? '')
+      )
+      setSelectedFile(changed ?? Object.keys(snapshotB.files)[0] ?? null)
+    } else {
+      if (!selectedFile) {
+        const files = Object.keys(snapshot.files)
+        if (files.length > 0) setSelectedFile(files[0])
+      }
+    }
+  }, [mode, snapshotA, snapshotB])
 
   const modifiedFiles = useMemo(() => new Set(Object.keys(line_history)), [line_history])
 
@@ -387,49 +459,156 @@ export function WorkspacePanel({
         <div className="flex items-center gap-2">
           <Terminal className="h-3 w-3" />
           <span className="font-mono">workspace</span>
-          <span style={{ color: 'var(--color-dark-text-muted)', fontSize: 10 }}>
-            turn {snapshot.turn}
-          </span>
-        </div>
-        {source === 'reconstructed' && (
-          <span style={{ color: '#f59e0b', fontSize: 9 }}>⚠ reconstructed</span>
-        )}
-      </div>
-
-      {/* Main area: file tree + file viewer */}
-      <div className="flex flex-1 overflow-hidden" style={{ minHeight: 0 }}>
-        {/* File tree (left) */}
-        <div
-          className="flex-shrink-0 overflow-hidden"
-          style={{
-            width: 160,
-            borderRight: '1px solid var(--color-dark-border)',
-            background: '#111',
-          }}
-        >
-          <FileTree
-            files={snapshot.files}
-            selectedFile={selectedFile}
-            onSelect={setSelectedFile}
-            modifiedFiles={modifiedFiles}
-          />
-        </div>
-
-        {/* File viewer (right) */}
-        <div className="flex-1 overflow-hidden relative">
-          {selectedFile ? (
-            <FileViewer
-              filename={selectedFile}
-              contents={fileContents}
-              lineHistory={fileLineHistory}
-              onJumpToMessage={onJumpToMessage}
-            />
+          {mode === 'state' ? (
+            <span style={{ color: 'var(--color-dark-text-muted)', fontSize: 10 }}>turn {snapshot.turn}</span>
+          ) : mode === 'diff' ? (
+            <span style={{ color: 'var(--color-dark-text-muted)', fontSize: 10 }}>
+              {snapshotA.turn} → {snapshotB.turn}
+            </span>
           ) : (
-            <div className="flex items-center justify-center h-full text-xs" style={{ color: 'var(--color-dark-text-muted)' }}>
-              select a file
-            </div>
+            <span style={{ color: 'var(--color-dark-text-muted)', fontSize: 10 }}>
+              turn {snapshot.turn} / {snapshotA.turn} → {snapshotB.turn}
+            </span>
           )}
         </div>
+        <div className="flex items-center gap-2">
+          {source === 'reconstructed' && (
+            <span style={{ color: '#f59e0b', fontSize: 9 }}>⚠ reconstructed</span>
+          )}
+          {/* Fit width button — only in diff/split mode */}
+          {mode !== 'state' && (
+            <button
+              onClick={() => {
+                if (!onFitWidth) return
+                const dc = document.querySelector('diffs-container') as HTMLElement | null
+                if (!dc) return
+                // Temporarily force dc narrow so [data-code] overflows and scrollWidth = true content width
+                const saved = dc.style.width
+                dc.style.width = '1px'
+                const shadow = dc.shadowRoot
+                const dataCode = shadow?.querySelector('[data-code]') as HTMLElement | null
+                const contentWidthPx = dataCode?.scrollWidth ?? 600
+                dc.style.width = saved
+                onFitWidth(contentWidthPx)
+              }}
+              title="Expand panel to fit diff width"
+              className="font-mono"
+              style={{ fontSize: 10, color: 'var(--color-dark-text-muted)', padding: '1px 4px', border: '1px solid var(--color-dark-border)', borderRadius: 2 }}
+            >
+              ↔
+            </button>
+          )}
+          {/* [State | Diff | Split] toggle */}
+          <div className="flex rounded overflow-hidden" style={{ border: '1px solid var(--color-dark-border)', fontSize: 10 }}>
+            {(['state', 'diff', 'split'] as PanelMode[]).map(m => (
+              <button
+                key={m}
+                onClick={() => setMode(m)}
+                className="px-2 py-0.5 font-mono capitalize"
+                style={{
+                  background: mode === m ? 'var(--color-dark-text)' : 'transparent',
+                  color: mode === m ? 'var(--color-dark-bg)' : 'var(--color-dark-text-muted)',
+                }}
+              >
+                {m}
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      {/* Main area */}
+      <div ref={splitContainerRef} className="flex flex-col flex-1 overflow-hidden" style={{ minHeight: 0 }}>
+        {mode === 'diff' ? (
+          <DiffView
+            snapshotA={snapshotA}
+            snapshotB={snapshotB}
+            selectedFile={selectedFile}
+            onSelectFile={setSelectedFile}
+          />
+        ) : mode === 'state' ? (
+          <div className="flex flex-1 overflow-hidden" style={{ minHeight: 0 }}>
+            {/* File tree (left) */}
+            <div
+              className="flex-shrink-0 overflow-hidden"
+              style={{ width: 160, borderRight: '1px solid var(--color-dark-border)', background: '#111' }}
+            >
+              <FileTree
+                files={snapshot.files}
+                selectedFile={selectedFile}
+                onSelect={setSelectedFile}
+                modifiedFiles={modifiedFiles}
+              />
+            </div>
+            {/* File viewer (right) */}
+            <div className="flex-1 overflow-hidden relative">
+              {selectedFile ? (
+                <FileViewer
+                  filename={selectedFile}
+                  contents={fileContents}
+                  lineHistory={fileLineHistory}
+                  onJumpToMessage={onJumpToMessage}
+                />
+              ) : (
+                <div className="flex items-center justify-center h-full text-xs" style={{ color: 'var(--color-dark-text-muted)' }}>
+                  select a file
+                </div>
+              )}
+            </div>
+          </div>
+        ) : (
+          /* Split mode: State on top, Diff on bottom, resizable */
+          <>
+            {/* State panel (top) */}
+            <div className="flex overflow-hidden flex-shrink-0" style={{ height: `${splitHeightPct}%`, minHeight: 0 }}>
+              <div
+                className="flex-shrink-0 overflow-hidden"
+                style={{ width: 160, borderRight: '1px solid var(--color-dark-border)', background: '#111' }}
+              >
+                <FileTree
+                  files={snapshot.files}
+                  selectedFile={selectedFile}
+                  onSelect={setSelectedFile}
+                  modifiedFiles={modifiedFiles}
+                />
+              </div>
+              <div className="flex-1 overflow-hidden relative">
+                {selectedFile ? (
+                  <FileViewer
+                    filename={selectedFile}
+                    contents={fileContents}
+                    lineHistory={fileLineHistory}
+                    onJumpToMessage={onJumpToMessage}
+                  />
+                ) : (
+                  <div className="flex items-center justify-center h-full text-xs" style={{ color: 'var(--color-dark-text-muted)' }}>
+                    select a file
+                  </div>
+                )}
+              </div>
+            </div>
+            {/* Horizontal drag divider */}
+            <div
+              onMouseDown={onSplitDividerMouseDown}
+              style={{
+                height: 5,
+                flexShrink: 0,
+                cursor: 'row-resize',
+                background: 'transparent',
+                transition: 'background 100ms',
+              }}
+              onMouseEnter={e => (e.currentTarget.style.background = 'var(--color-dark-border)')}
+              onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
+            />
+            {/* Diff panel (bottom) */}
+            <DiffView
+              snapshotA={snapshotA}
+              snapshotB={snapshotB}
+              selectedFile={selectedFile}
+              onSelectFile={setSelectedFile}
+            />
+          </>
+        )}
       </div>
 
       {/* Bash history (bottom) */}
@@ -445,10 +624,10 @@ export function WorkspacePanel({
           className="px-2 py-0.5 text-[10px] uppercase tracking-wide font-medium flex-shrink-0"
           style={{ color: 'var(--color-dark-text-muted)', borderBottom: '1px solid #1e1e1e' }}
         >
-          bash history ({snapshot.bash_history.length})
+          bash history ({(mode === 'diff' ? snapshotB : snapshot).bash_history.length})
         </div>
         <div style={{ height: 'calc(100% - 20px)' }}>
-          <BashHistory entries={snapshot.bash_history} />
+          <BashHistory entries={(mode === 'diff' ? snapshotB : snapshot).bash_history} />
         </div>
       </div>
     </div>
