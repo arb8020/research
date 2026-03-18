@@ -23,7 +23,7 @@ import threading
 import time
 import webbrowser
 from datetime import datetime
-from http.server import HTTPServer, SimpleHTTPRequestHandler
+from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -2404,7 +2404,7 @@ def main() -> None:
     DevLoopServer.known_results_dirs = all_dirs
 
     # Create server
-    server = HTTPServer(("localhost", args.port), DevLoopServer)
+    server = ThreadingHTTPServer(("localhost", args.port), DevLoopServer)
 
     url = f"http://localhost:{args.port}"
     print(f"\n{'=' * 60}")
