@@ -645,17 +645,5 @@ def _parse_custom_tool_output(raw: str) -> tuple[str, bool]:
         return raw, True
 
 
-# ── Internal flush sentinel ───────────────────────────────────────────────────
-
-from dataclasses import dataclass as _dc
-
-
-@_dc
-class _FlushAssistantMessage:
-    """Internal sentinel: tells _EventAccumulator to flush pending blocks now.
-
-    Not a real StreamEvent — only used inside the Codex driver pipeline.
-    Emitted after each assistant message boundary so turn structure is preserved.
-    """
-
-    type: str = "flush_assistant_message"
+# Re-export so callers that imported this from codex continue to work
+from .runner import _FlushAssistantMessage as _FlushAssistantMessage  # noqa: F401

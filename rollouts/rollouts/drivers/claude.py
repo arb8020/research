@@ -60,6 +60,7 @@ from ..dtypes import (
     ToolCallStart,
     ToolResultReceived,
 )
+from .runner import _FlushAssistantMessage
 
 logger = logging.getLogger(__name__)
 
@@ -483,7 +484,9 @@ class _ClaudeEventParser:
                     )
 
             case "message_stop":
-                # Message complete - emit any pending tool calls
+                # Message complete - emit any pending tool calls then flush the turn.
+                # _FlushAssistantMessage tells _EventAccumulator to finalize the current
+                # assistant message so each LLM response becomes a separate Message object.
                 for tool_id, tool in list(self._active_tools.items()):
                     try:
                         args = json.loads(tool["args_json"]) if tool["args_json"] else {}
@@ -500,6 +503,7 @@ class _ClaudeEventParser:
                         )
                     )
                 self._active_tools.clear()
+                events.append(_FlushAssistantMessage())
 
         return events
 

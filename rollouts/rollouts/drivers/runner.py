@@ -52,6 +52,18 @@ if TYPE_CHECKING:
 _event_logger = logging.getLogger("rollouts.eval.events")
 
 
+from dataclasses import dataclass as _dc
+
+
+@_dc
+class _FlushAssistantMessage:
+    """Sentinel: tells _EventAccumulator to flush pending content blocks now.
+
+    Not a real StreamEvent — emitted by drivers at assistant message boundaries
+    so multi-turn sessions produce correctly separated Message objects.
+    """
+
+
 def _event_to_log_dict(event: StreamEvent) -> dict[str, object]:
     if is_dataclass(event):
         return asdict(event)
@@ -79,11 +91,6 @@ class _EventAccumulator:
 
     def handle(self, event: Any) -> None:
         """Process a StreamEvent, updating internal state."""
-        # _FlushAssistantMessage is a Codex-internal sentinel, not a real StreamEvent.
-        # It signals a turn boundary so we emit an assistant message immediately
-        # rather than waiting for finalize() at the end.
-        from .codex import _FlushAssistantMessage
-
         if isinstance(event, _FlushAssistantMessage):
             self._finalize_assistant_message()
             return
