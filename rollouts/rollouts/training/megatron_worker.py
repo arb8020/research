@@ -177,12 +177,16 @@ def _resolve_local_host_ip() -> tuple[str, str]:
     return "127.0.0.1", "fallback:loopback"
 
 
-def _allocate_tcp_port(preferred_port: int = 29500) -> int:
+def _allocate_tcp_port(preferred_port: int = 29500) -> tuple[int, str]:
     import socket
 
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        sock.bind(("", preferred_port))
-        return int(sock.getsockname()[1])
+        try:
+            sock.bind(("", preferred_port))
+            return int(sock.getsockname()[1]), "preferred"
+        except OSError:
+            sock.bind(("", 0))
+            return int(sock.getsockname()[1]), "ephemeral"
 
 
 def _clear_training_pg_env_for_subprocess() -> None:
@@ -1373,10 +1377,13 @@ def _do_sync_weights_nccl(
     request_weight_version = payload.version
     isolated_master_addr: str | None = None
     isolated_master_port: int | None = None
+    isolated_master_port_source: str | None = None
     if witness:
         resolved_host_ip, _ = _resolve_local_host_ip()
         isolated_master_addr = resolved_host_ip
-        isolated_master_port = _allocate_tcp_port(int(getattr(backend, "_nccl_master_port", 29550)))
+        isolated_master_port, isolated_master_port_source = _allocate_tcp_port(
+            int(getattr(backend, "_nccl_master_port", 29550))
+        )
         request_group_name = f"weight_sync_witness_{isolated_master_port}"
     executor = concurrent.futures.ThreadPoolExecutor(max_workers=max(1, len(inference_endpoints)))
     try:
@@ -1408,16 +1415,18 @@ def _do_sync_weights_nccl(
                 assert isolated_master_port is not None
                 isolated_group_name = request_group_name
                 logger.info(
-                    "weight_sync_megatron_isolated_witness_start master=%s:%s group=%s tensors=%s",
+                    "weight_sync_megatron_isolated_witness_start master=%s:%s group=%s tensors=%s port_source=%s",
                     isolated_master_addr,
                     isolated_master_port,
                     isolated_group_name,
                     len(payload.tensors),
+                    isolated_master_port_source,
                 )
                 _emit_argus_diag(
                     "weight_sync_megatron_isolated_witness_start",
                     master_addr=isolated_master_addr,
                     master_port=isolated_master_port,
+                    master_port_source=isolated_master_port_source,
                     group=isolated_group_name,
                     tensors=len(payload.tensors),
                 )
