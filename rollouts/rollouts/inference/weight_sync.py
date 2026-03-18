@@ -122,6 +122,48 @@ def _default_group_summary() -> dict[str, object]:
     return payload
 
 
+def _default_pg_missing(exc: Exception) -> bool:
+    return isinstance(exc, ValueError) and "Default process group has not been initialized" in str(
+        exc
+    )
+
+
+def _process_group_backend_name(group: object | None) -> str:
+    try:
+        return str(dist.get_backend(group))
+    except Exception as exc:
+        if group is None or not _default_pg_missing(exc):
+            raise
+        backend_name = getattr(group, "_get_backend_name", None)
+        if callable(backend_name):
+            return str(backend_name())
+        raise
+
+
+def _process_group_rank(group: object | None) -> int:
+    try:
+        return int(dist.get_rank(group))
+    except Exception as exc:
+        if group is None or not _default_pg_missing(exc):
+            raise
+        rank_fn = getattr(group, "rank", None)
+        if callable(rank_fn):
+            return int(rank_fn())
+        raise
+
+
+def _process_group_world_size(group: object | None) -> int:
+    try:
+        return int(dist.get_world_size(group))
+    except Exception as exc:
+        if group is None or not _default_pg_missing(exc):
+            raise
+        size_fn = getattr(group, "size", None)
+        if callable(size_fn):
+            return int(size_fn())
+        raise
+
+
 def _group_summary(group: object | None) -> dict[str, object]:
     payload: dict[str, object] = {
         "is_none": group is None,
@@ -130,15 +172,15 @@ def _group_summary(group: object | None) -> dict[str, object]:
     }
     target = None if group is None else group
     try:
-        payload["backend"] = dist.get_backend(target)
+        payload["backend"] = _process_group_backend_name(target)
     except Exception as exc:
         payload["backend_error"] = f"{type(exc).__name__}: {exc}"
     try:
-        payload["rank"] = dist.get_rank(target)
+        payload["rank"] = _process_group_rank(target)
     except Exception as exc:
         payload["rank_error"] = f"{type(exc).__name__}: {exc}"
     try:
-        payload["world_size"] = dist.get_world_size(target)
+        payload["world_size"] = _process_group_world_size(target)
     except Exception as exc:
         payload["world_size_error"] = f"{type(exc).__name__}: {exc}"
     return payload
@@ -805,6 +847,9 @@ class WeightSyncSender:
             group_name=self.group_name,
             timeout=timedelta(seconds=self.timeout_seconds),
         )
+        pg_backend = _process_group_backend_name(self._process_group)
+        pg_rank = _process_group_rank(self._process_group)
+        pg_world_size = _process_group_world_size(self._process_group)
         logger.info(
             "weight_sync_sender_init_ok world_size=%s master=%s:%s device=%s group=%s pg_backend=%s pg_rank=%s pg_world_size=%s socket_ifname=%s socket_ifname_source=%s nccl_env=%s",
             self.world_size,
@@ -812,9 +857,9 @@ class WeightSyncSender:
             self.master_port,
             self.device,
             self.group_name,
-            dist.get_backend(self._process_group),
-            dist.get_rank(self._process_group),
-            dist.get_world_size(self._process_group),
+            pg_backend,
+            pg_rank,
+            pg_world_size,
             socket_ifname,
             socket_ifname_source,
             _nccl_env_snapshot(),
@@ -826,9 +871,9 @@ class WeightSyncSender:
             master_port=self.master_port,
             device=str(self.device),
             group=self.group_name,
-            pg_backend=dist.get_backend(self._process_group),
-            pg_rank=dist.get_rank(self._process_group),
-            pg_world_size=dist.get_world_size(self._process_group),
+            pg_backend=pg_backend,
+            pg_rank=pg_rank,
+            pg_world_size=pg_world_size,
             socket_ifname=socket_ifname,
             socket_ifname_source=socket_ifname_source,
             nccl_env=_nccl_env_snapshot(),
@@ -907,8 +952,8 @@ class WeightSyncSender:
                     "storage_offset": int(data.storage_offset()),
                     "element_size": int(data.element_size()),
                     "nbytes": int(data.numel() * data.element_size()),
-                    "group_rank": dist.get_rank(self._process_group),
-                    "group_world_size": dist.get_world_size(self._process_group),
+                    "group_rank": _process_group_rank(self._process_group),
+                    "group_world_size": _process_group_world_size(self._process_group),
                 }
                 logger.info(
                     "weight_sync_sender_broadcast_tensor index=%s total_tensors=%s async_op=%s tensor=%s",
@@ -942,7 +987,7 @@ class WeightSyncSender:
                             "master_port": self.master_port,
                             "group_name": self.group_name,
                             "rank": 0,
-                            "world_size": dist.get_world_size(self._process_group),
+                            "world_size": _process_group_world_size(self._process_group),
                             "src": 0,
                         },
                     )
@@ -979,7 +1024,7 @@ class WeightSyncSender:
                                 "master_port": self.master_port,
                                 "group_name": self.group_name,
                                 "rank": 0,
-                                "world_size": dist.get_world_size(self._process_group),
+                                "world_size": _process_group_world_size(self._process_group),
                                 "src": 0,
                             },
                         )
@@ -1012,7 +1057,7 @@ class WeightSyncSender:
                             "master_port": self.master_port,
                             "group_name": self.group_name,
                             "rank": 0,
-                            "world_size": dist.get_world_size(self._process_group),
+                            "world_size": _process_group_world_size(self._process_group),
                             "src": 0,
                         },
                     )
@@ -1063,7 +1108,7 @@ class WeightSyncSender:
                         "master_port": self.master_port,
                         "group_name": self.group_name,
                         "rank": 0,
-                        "world_size": dist.get_world_size(self._process_group),
+                        "world_size": _process_group_world_size(self._process_group),
                         "src": 0,
                     },
                 )
@@ -1248,6 +1293,9 @@ class WeightSyncReceiver:
         )
         self._stateless_group = None
         self._communicator = None
+        pg_backend = _process_group_backend_name(self._process_group)
+        pg_rank = _process_group_rank(self._process_group)
+        pg_world_size = _process_group_world_size(self._process_group)
         logger.info(
             "weight_sync_receiver_pg_create_ok rank=%s world_size=%s init_method=%s device=%s group=%s pg_backend=%s pg_rank=%s pg_world_size=%s",
             self.rank,
@@ -1255,9 +1303,9 @@ class WeightSyncReceiver:
             init_method,
             self.device,
             self.group_name,
-            dist.get_backend(self._process_group),
-            dist.get_rank(self._process_group),
-            dist.get_world_size(self._process_group),
+            pg_backend,
+            pg_rank,
+            pg_world_size,
         )
         _emit_argus_diag(
             "weight_sync_receiver_pg_create_ok",
@@ -1266,9 +1314,9 @@ class WeightSyncReceiver:
             init_method=init_method,
             device=str(self.device),
             group=self.group_name,
-            pg_backend=dist.get_backend(self._process_group),
-            pg_rank=dist.get_rank(self._process_group),
-            pg_world_size=dist.get_world_size(self._process_group),
+            pg_backend=pg_backend,
+            pg_rank=pg_rank,
+            pg_world_size=pg_world_size,
         )
         logger.info(
             "weight_sync_receiver_init_ok rank=%s world_size=%s master=%s:%s device=%s group=%s pg_backend=%s pg_rank=%s pg_world_size=%s communicator=%s socket_ifname=%s socket_ifname_source=%s nccl_env=%s",
@@ -1278,9 +1326,9 @@ class WeightSyncReceiver:
             self.master_port,
             self.device,
             self.group_name,
-            dist.get_backend(self._process_group),
-            dist.get_rank(self._process_group),
-            dist.get_world_size(self._process_group),
+            pg_backend,
+            pg_rank,
+            pg_world_size,
             "dist.broadcast",
             socket_ifname,
             socket_ifname_source,
@@ -1294,9 +1342,9 @@ class WeightSyncReceiver:
             master_port=self.master_port,
             device=str(self.device),
             group=self.group_name,
-            pg_backend=dist.get_backend(self._process_group),
-            pg_rank=dist.get_rank(self._process_group),
-            pg_world_size=dist.get_world_size(self._process_group),
+            pg_backend=pg_backend,
+            pg_rank=pg_rank,
+            pg_world_size=pg_world_size,
             communicator="dist.broadcast",
             socket_ifname=socket_ifname,
             socket_ifname_source=socket_ifname_source,
@@ -1391,10 +1439,10 @@ class WeightSyncReceiver:
                 "storage_offset": int(buffer.storage_offset()),
                 "element_size": int(buffer.element_size()),
                 "nbytes": int(buffer.numel() * buffer.element_size()),
-                "group_rank": dist.get_rank(self._process_group)
+                "group_rank": _process_group_rank(self._process_group)
                 if self._process_group is not None
                 else self.rank,
-                "group_world_size": dist.get_world_size(self._process_group)
+                "group_world_size": _process_group_world_size(self._process_group)
                 if self._process_group is not None
                 else self.world_size,
             }
