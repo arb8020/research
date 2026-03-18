@@ -1346,7 +1346,7 @@ def _training_loop(
                 requested_path = msg.get("path")
                 if requested_path:
                     backend.checkpoint_dir = Path(requested_path)
-                saved_path = backend.save_checkpoint(checkpoint_step).result()
+                saved_path = _resolve_train_future(backend.save_checkpoint(checkpoint_step))
                 if rank == 0:
                     handle.send({"status": "saved", "path": str(saved_path)})
 
