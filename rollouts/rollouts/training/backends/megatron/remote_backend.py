@@ -333,6 +333,7 @@ class MegatronRemoteBackend:
             self._step = int(initialized_step)
         else:
             self._restore_local_step_from_checkpoint()
+        logger.info("Megatron remote initialize restored step=%s", self._step)
         self._initialized = True
         logger.info("All workers initialized")
 

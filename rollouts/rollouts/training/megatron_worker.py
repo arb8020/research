@@ -1165,6 +1165,7 @@ def train(handle: Worker) -> None:
 
         if checkpoint_path is not None:
             backend._step = int(checkpoint_iteration)
+            logger.info("Restored backend step from checkpoint: %s", backend._step)
 
         logger.info("Model initialized, entering training loop")
 
