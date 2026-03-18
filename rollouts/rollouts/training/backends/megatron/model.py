@@ -594,7 +594,7 @@ class MegatronModelConfig:
 def setup_megatron_model(
     config: MegatronModelConfig,
     checkpoint_path: Path | None = None,
-) -> tuple[list[Any], Any, Any]:
+) -> tuple[list[Any], Any, Any, int]:
     """Create Megatron model with optimizer from HuggingFace checkpoint.
 
     Uses mbridge/AutoBridge to convert HF models to Megatron format.
@@ -623,7 +623,7 @@ def setup_megatron_model(
         ...     model_name="THUDM/GLM-4.7-Flash",  # Now supported via custom bridge
         ...     lr=1e-6,
         ... )
-        >>> model, optimizer, scheduler = setup_megatron_model(config)
+        >>> model, optimizer, scheduler, checkpoint_iteration = setup_megatron_model(config)
     """
     # Register our custom bridges for GLM models before importing AutoBridge
     try:
@@ -746,10 +746,11 @@ def setup_megatron_model(
     )
 
     # Load checkpoint if provided
+    checkpoint_iteration = 0
     if checkpoint_path is not None:
-        _load_checkpoint(model, optimizer, scheduler, checkpoint_path)
+        checkpoint_iteration = _load_checkpoint(model, optimizer, scheduler, checkpoint_path)
 
-    return model, optimizer, scheduler
+    return model, optimizer, scheduler, checkpoint_iteration
 
 
 def _populate_gpt_model_defaults(
@@ -841,7 +842,7 @@ def _load_checkpoint(
     optimizer: Any,
     scheduler: Any,
     checkpoint_path: Path,
-) -> None:
+) -> int:
     """Load checkpoint into model/optimizer/scheduler.
 
     Args:
@@ -854,14 +855,14 @@ def _load_checkpoint(
         from megatron.training.checkpointing import load_checkpoint
     except ImportError:
         logger.warning("Megatron checkpointing not available, skipping load")
-        return
+        return 0
 
     logger.info("Loading checkpoint from: %s", checkpoint_path)
     signature = inspect.signature(load_checkpoint)
     parameters = signature.parameters
 
     if "load_dir" in parameters:
-        load_checkpoint(
+        loaded_iteration = load_checkpoint(
             model=model,
             optimizer=optimizer,
             opt_param_scheduler=scheduler,
@@ -874,8 +875,9 @@ def _load_checkpoint(
         previous_load = getattr(args, "load", None)
         try:
             args.load = str(checkpoint_path)
-            load_checkpoint(model, optimizer, scheduler)
+            loaded_iteration = load_checkpoint(model, optimizer, scheduler)
         finally:
             args.load = previous_load
 
     logger.info("Checkpoint loaded")
+    return int(loaded_iteration or 0)

@@ -1134,7 +1134,7 @@ def train(handle: Worker) -> None:
         checkpoint_path = Path(checkpoint_path_raw) if checkpoint_path_raw else None
 
         logger.info("Setting up Megatron model...")
-        model, optimizer, scheduler = setup_megatron_model(
+        model, optimizer, scheduler, checkpoint_iteration = setup_megatron_model(
             model_config,
             checkpoint_path=checkpoint_path,
         )
@@ -1164,16 +1164,7 @@ def train(handle: Worker) -> None:
         )
 
         if checkpoint_path is not None:
-            try:
-                from megatron.training.global_vars import get_args
-
-                backend._step = int(get_args().iteration)
-            except Exception as exc:
-                logger.warning(
-                    "Failed to restore backend step from loaded checkpoint: %s: %s",
-                    type(exc).__name__,
-                    exc,
-                )
+            backend._step = int(checkpoint_iteration)
 
         logger.info("Model initialized, entering training loop")
 
