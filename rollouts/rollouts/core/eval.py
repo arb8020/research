@@ -9,7 +9,7 @@ from ..training.types import AttemptRow, SampleScorer
 
 if TYPE_CHECKING:
     from ..agents import RunConfig
-    from ..dtypes import Endpoint, Environment
+    from ..dtypes import Endpoint, Environment, Trajectory
 
 
 @dataclass(frozen=True)
@@ -33,7 +33,13 @@ class Score:
         return sum(value * weight for value, weight in weighted) / total_weight
 
 
-ScoreFn = Callable[[AttemptRow], Score] | Callable[[AttemptRow], Awaitable[Score]]
+# ScoreFn takes (trajectory, row) so external scorers can access ground truth from the
+# row without needing to smuggle it through AttemptRow internals.
+# Environments that own their own scoring implement env.score(trajectory) instead.
+ScoreFn = (
+    Callable[["Trajectory", dict[str, Any]], Score]
+    | Callable[["Trajectory", dict[str, Any]], Awaitable[Score]]
+)
 PrepareMessagesFn = Callable[[dict[str, Any]], list[Any]]
 EnvironmentFactory = Callable[[dict[str, Any]], Any]
 AttemptExecutor = Callable[
@@ -46,9 +52,20 @@ AttemptExecutor = Callable[
 class EvalConfig:
     endpoint: Endpoint | None
     prepare_messages: PrepareMessagesFn | None
+    # score_fn is optional: environments that own scoring implement env.score(trajectory),
+    # open-ended environments (local coding, SFT data gen) may have no scorer at all.
     score_fn: ScoreFn | None = None
     sample_scorer: SampleScorer | None = None
     environment: Environment | None = None
+    # environment_factory is the preferred construction path for task environments.
+    # It should be a thin wrapper around row_to_state + Environment.deserialize:
+    #
+    #   environment_factory = lambda row: MyEnvironment.deserialize(row_to_state(row))
+    #
+    # row_to_state is a pure function that maps dataset row columns to the state dict
+    # the environment needs. It can be nearly identity (thin pointer to a registry) or
+    # do real setup work (clone repo, create worktree) and return the resulting paths.
+    # All I/O that constructs live resources belongs in Environment.deserialize, not here.
     environment_factory: EnvironmentFactory | None = None
     attempt_executor: AttemptExecutor | None = None
     run_config: RunConfig | None = None
@@ -68,7 +85,5 @@ class EvalConfig:
     metadata: dict[str, Any] | None = None
 
     def __post_init__(self) -> None:
-        if self.score_fn is None and self.sample_scorer is None:
-            raise ValueError("EvalConfig requires either score_fn or sample_scorer")
         if self.prepare_messages is None and self.attempt_executor is None:
             raise ValueError("EvalConfig requires either prepare_messages or attempt_executor")

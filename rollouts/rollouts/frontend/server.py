@@ -53,8 +53,10 @@ class DevLoopServer(SimpleHTTPRequestHandler):
     - /api/generate - Generate new config files
     """
 
-    # Class variable to store project root (set by main())
+    # Class variables (set by main())
     project_root: Path = Path.cwd()
+    results_dir: Path = Path.cwd() / "results"
+    known_results_dirs: list[Path] = []
 
     def log_message(self, format: str, *args: object) -> None:
         """Override to use our logger instead of stderr."""
@@ -62,15 +64,38 @@ class DevLoopServer(SimpleHTTPRequestHandler):
 
     def do_GET(self) -> None:
         """Handle GET requests."""
+        try:
+            self._do_GET_inner()
+        except Exception:
+            logger.exception(f"Unhandled error in GET {self.path}")
+            try:
+                self.send_error(500, "Internal server error")
+            except Exception:
+                pass
+
+    def _do_GET_inner(self) -> None:
         parsed = urlparse(self.path)
         path = parsed.path
 
         if path == "/" or path == "/index.html":
-            self._serve_index()
+            self._serve_ui_index()
+        elif path.startswith("/assets/"):
+            self._serve_ui_static(path)
         elif path == "/api/configs":
             self._list_configs()
         elif path == "/api/traces":
             self._list_traces()
+        elif path.startswith("/api/trace/") and "/sample/" in path and path.endswith("/workspace"):
+            # /api/trace/{id}/sample/{sampleId}/workspace — environment state snapshots
+            rest = path.split("/api/trace/")[1]
+            trace_id, _, rest2 = rest.partition("/sample/")
+            sample_id = rest2.removesuffix("/workspace")
+            self._get_workspace(trace_id, sample_id)
+        elif path.startswith("/api/trace/") and "/sample/" in path:
+            # Extract trace ID and sample ID from /api/trace/{id}/sample/{sampleId}
+            rest = path.split("/api/trace/")[1]
+            trace_id, _, sample_id = rest.partition("/sample/")
+            self._get_sample(trace_id, sample_id)
         elif path.startswith("/api/trace/"):
             # Extract trace ID from path like /api/trace/02_agent_multiturn_20231114_143022
             trace_id = path.split("/api/trace/")[1]
@@ -105,6 +130,8 @@ class DevLoopServer(SimpleHTTPRequestHandler):
             self._list_datasets()
         elif path == "/api/runs":
             self._list_active_runs()
+        elif path == "/api/results-dirs":
+            self._list_results_dirs()
         elif path.startswith("/api/stream/"):
             # Extract run_id from path like /api/stream/run_1_1234567890
             run_id = path.split("/api/stream/")[1]
@@ -115,6 +142,16 @@ class DevLoopServer(SimpleHTTPRequestHandler):
 
     def do_POST(self) -> None:
         """Handle POST requests."""
+        try:
+            self._do_POST_inner()
+        except Exception:
+            logger.exception(f"Unhandled error in POST {self.path}")
+            try:
+                self.send_error(500, "Internal server error")
+            except Exception:
+                pass
+
+    def _do_POST_inner(self) -> None:
         parsed = urlparse(self.path)
         path = parsed.path
 
@@ -126,6 +163,8 @@ class DevLoopServer(SimpleHTTPRequestHandler):
             self._log_from_frontend()
         elif path == "/api/preview-dataset":
             self._preview_dataset_direct()
+        elif path == "/api/set-results-dir":
+            self._set_results_dir()
         elif path.startswith("/api/kill/"):
             # Extract run_id from path like /api/kill/run_1_1234567890
             run_id = path.split("/api/kill/")[1]
@@ -137,8 +176,45 @@ class DevLoopServer(SimpleHTTPRequestHandler):
         else:
             self.send_error(404, "Not found")
 
+    def _serve_ui_index(self) -> None:
+        """Serve the React UI from ui/dist/index.html (falls back to legacy index.html)."""
+        ui_dist = Path(__file__).parent / "ui" / "dist" / "index.html"
+        legacy = Path(__file__).parent / "index.html"
+
+        index_path = ui_dist if ui_dist.exists() else legacy
+
+        if not index_path.exists():
+            self.send_error(404, "index.html not found")
+            return
+
+        content = index_path.read_bytes()
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html")
+        self.send_header("Content-Length", str(len(content)))
+        self.end_headers()
+        self.wfile.write(content)
+
+    def _serve_ui_static(self, path: str) -> None:
+        """Serve static assets from ui/dist/assets/."""
+        import mimetypes
+
+        asset_path = Path(__file__).parent / "ui" / "dist" / path.lstrip("/")
+
+        if not asset_path.exists() or not asset_path.is_file():
+            self.send_error(404, f"Asset not found: {path}")
+            return
+
+        content = asset_path.read_bytes()
+        mime_type, _ = mimetypes.guess_type(str(asset_path))
+        self.send_response(200)
+        self.send_header("Content-Type", mime_type or "application/octet-stream")
+        self.send_header("Content-Length", str(len(content)))
+        self.send_header("Cache-Control", "public, max-age=31536000, immutable")
+        self.end_headers()
+        self.wfile.write(content)
+
     def _serve_index(self) -> None:
-        """Serve the main HTML file."""
+        """Serve the main HTML file (legacy config builder)."""
         index_path = Path(__file__).parent / "index.html"
 
         if not index_path.exists():
@@ -176,8 +252,8 @@ class DevLoopServer(SimpleHTTPRequestHandler):
         self._json_response(configs)
 
     def _list_traces(self) -> None:
-        """List available evaluation traces in results/."""
-        results_dir = self.project_root / "results"
+        """List available evaluation traces in results_dir."""
+        results_dir = self.results_dir
 
         if not results_dir.exists():
             self._json_response([])
@@ -208,7 +284,7 @@ class DevLoopServer(SimpleHTTPRequestHandler):
 
     def _get_trace(self, trace_id: str) -> None:
         """Load a specific evaluation trace."""
-        trace_dir = self.project_root / "results" / trace_id
+        trace_dir = self.results_dir / trace_id
 
         if not trace_dir.exists():
             self.send_error(404, f"Trace not found: {trace_id}")
@@ -270,6 +346,195 @@ class DevLoopServer(SimpleHTTPRequestHandler):
         }
 
         self._json_response(trace_data)
+
+    def _get_sample(self, trace_id: str, sample_id: str) -> None:
+        """Load a sample JSON, inlining trajectory from trajectory_path if needed.
+
+        Some eval frameworks (e.g. charisma) store trajectory separately and
+        only put a trajectory_path pointer in the sample JSON. We resolve it
+        here so the frontend always receives a consistent shape with a
+        trajectory: {completions, messages, rewards} field present.
+        """
+        sample_path = self.results_dir / trace_id / "samples" / f"{sample_id}.json"
+
+        if not sample_path.exists():
+            # Also try .jsonl — some evals only write the JSONL form
+            jsonl_path = self.results_dir / trace_id / "samples" / f"{sample_id}.jsonl"
+            if jsonl_path.exists():
+                first_line = jsonl_path.read_text().splitlines()[0]
+                sample = json.loads(first_line)
+            else:
+                self.send_error(404, f"Sample not found: {trace_id}/{sample_id}")
+                return
+        else:
+            sample = json.loads(sample_path.read_text())
+
+        # If trajectory is missing but trajectory_path is present, inline it
+        if "trajectory" not in sample and "trajectory_path" in sample:
+            traj_rel = sample["trajectory_path"]
+            traj_file = self.results_dir / trace_id / traj_rel
+            if traj_file.exists():
+                lines = [l for l in traj_file.read_text().splitlines() if l.strip()]
+                if lines:
+                    last = json.loads(lines[-1])
+                    if last.get("role"):
+                        # New format: one message dict per line
+                        sample["trajectory"] = {
+                            "completions": [],
+                            "messages": [json.loads(l) for l in lines],
+                        }
+                    else:
+                        # Old format: last line is a {"messages": [...]} snapshot
+                        sample["trajectory"] = last
+                else:
+                    sample["trajectory"] = {"completions": [], "messages": []}
+            else:
+                sample["trajectory"] = {"completions": [], "messages": []}
+
+        # Normalise: ensure trajectory always has completions and messages keys
+        traj = sample.get("trajectory", {})
+        if "completions" not in traj:
+            traj["completions"] = []
+        if "messages" not in traj:
+            traj["messages"] = []
+        sample["trajectory"] = traj
+
+        content = json.dumps(sample).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(content)))
+        self.end_headers()
+        self.wfile.write(content)
+
+    def _get_workspace(self, trace_id: str, sample_id: str) -> None:
+        """Return workspace snapshots and line history for a sample.
+
+        Attempts to read live workspace_snapshot events from events.jsonl.
+        Falls back to reconstructing from trajectory tool calls when none exist.
+        """
+        # Import workspace_snapshot directly by file path to avoid triggering
+        # the full rollouts package import chain (which requires trio, etc.).
+        # Must register in sys.modules before exec so @dataclass works in Python 3.13.
+        import importlib.util as _ilu
+        import sys as _sys
+
+        _mod_name = "_rollouts_workspace_snapshot"
+        if _mod_name not in _sys.modules:
+            _ws_path = Path(__file__).parent.parent / "eval" / "workspace_snapshot.py"
+            _spec = _ilu.spec_from_file_location(_mod_name, _ws_path)
+            _ws_mod = _ilu.module_from_spec(_spec)
+            _sys.modules[_mod_name] = _ws_mod
+            _spec.loader.exec_module(_ws_mod)
+        _ws_mod = _sys.modules[_mod_name]
+        reconstruct_workspace_snapshots = _ws_mod.reconstruct_workspace_snapshots
+        snapshots_to_api_response = _ws_mod.snapshots_to_api_response
+
+        # Search primary and all known results dirs for the trace
+        run_dir = None
+        for search_dir in [self.results_dir] + list(self.__class__.known_results_dirs):
+            candidate = search_dir / trace_id
+            if candidate.is_dir():
+                run_dir = candidate
+                break
+        if run_dir is None:
+            self.send_error(404, f"Trace not found: {trace_id}")
+            return
+
+        trajectory_path = run_dir / "trajectories" / f"{sample_id}.jsonl"
+        if not trajectory_path.exists():
+            self.send_error(404, f"Trajectory not found: {sample_id}")
+            return
+
+        # Load trajectory messages
+        messages = []
+        with trajectory_path.open() as f:
+            for line in f:
+                stripped = line.strip()
+                if stripped:
+                    try:
+                        messages.append(json.loads(stripped))
+                    except json.JSONDecodeError:
+                        pass
+
+        # Check for live workspace_snapshot events in events.jsonl
+        events_path = run_dir / "events.jsonl"
+        live_snapshots = []
+        if events_path.exists():
+            with events_path.open() as f:
+                for line in f:
+                    stripped = line.strip()
+                    if not stripped:
+                        continue
+                    try:
+                        evt = json.loads(stripped)
+                        if (
+                            evt.get("type") == "workspace_snapshot"
+                            and evt.get("sample_id") == sample_id
+                        ):
+                            live_snapshots.append(evt)
+                    except json.JSONDecodeError:
+                        pass
+
+        if live_snapshots:
+            # Live path: events were emitted during the run
+            # Convert to WorkspaceSnapshot format
+            # TODO: implement live snapshot deserialization
+            # For now fall through to reconstruction
+            pass
+
+        # Reconstructed path: derive from trajectory tool calls
+        # Load initial file state from sample metadata if available
+        initial_files: dict[str, str] = {}
+        sample_path = run_dir / "samples" / f"{sample_id}.json"
+        cwd = "/workspace"
+        if sample_path.exists():
+            try:
+                sample_meta = json.loads(sample_path.read_text())
+                meta = sample_meta.get("metadata", {})
+                challenge_root = meta.get("challenge_root") or meta.get("workspace_dir")
+                cwd = meta.get("cwd") or meta.get("workspace_dir") or "/workspace"
+                if challenge_root:
+                    from pathlib import Path as _Path
+
+                    cr = _Path(challenge_root)
+                    if cr.exists():
+                        for p in cr.rglob("*.py"):
+                            if p.stat().st_size < 200_000:  # skip large files
+                                rel = str(p.relative_to(cr))
+                                try:
+                                    initial_files[rel] = p.read_text(errors="replace")
+                                except OSError:
+                                    pass
+            except (json.JSONDecodeError, OSError):
+                pass
+
+        snapshots, line_history = reconstruct_workspace_snapshots(
+            messages,
+            initial_files=initial_files or None,
+            cwd=cwd,
+        )
+
+        # Strip cwd prefix from file keys for cleaner display
+        def _strip_cwd(path: str) -> str:
+            if cwd and path.startswith(cwd + "/"):
+                return path[len(cwd) + 1 :]
+            return path
+
+        for snap in snapshots:
+            snap.files = {_strip_cwd(k): v for k, v in snap.files.items()}
+
+        stripped_line_history = {_strip_cwd(k): v for k, v in line_history.items()}
+
+        response = snapshots_to_api_response(
+            snapshots, stripped_line_history, source="reconstructed"
+        )
+        content = json.dumps(response).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(content)))
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        self.wfile.write(content)
 
     def _load_config(self, config_name: str) -> None:
         """Load and parse an existing config file."""
@@ -1793,6 +2058,29 @@ def prepare_messages(sample_data: Dict[str, Any]) -> List[Message]:
 
         self._json_response({"runs": runs})
 
+    def _list_results_dirs(self) -> None:
+        """Return all known results directories and the currently active one."""
+        dirs = []
+        for d in self.__class__.known_results_dirs:
+            label = f"{d.parent.name}/{d.name}" if d.name == "results" else d.name
+            dirs.append({"path": str(d), "label": label, "exists": d.exists()})
+        self._json_response({
+            "current": str(self.__class__.results_dir),
+            "dirs": dirs,
+        })
+
+    def _set_results_dir(self) -> None:
+        """Hot-swap the results directory. Body: {"path": "/abs/path/to/results"}"""
+        length = int(self.headers.get("Content-Length", 0))
+        body = json.loads(self.rfile.read(length))
+        new_path = Path(body["path"]).expanduser().resolve()
+        if not new_path.exists():
+            self.send_error(400, f"Directory does not exist: {new_path}")
+            return
+        self.__class__.results_dir = new_path
+        logger.info(f"Results dir switched to: {new_path}")
+        self._json_response({"ok": True, "path": str(new_path)})
+
     def _kill_run(self, run_id: str) -> None:
         """Kill a running process."""
         global _active_runs
@@ -1903,11 +2191,30 @@ def main() -> None:
     parser.add_argument(
         "--no-browser", action="store_true", help="Don't automatically open browser"
     )
+    parser.add_argument(
+        "--results-dirs",
+        nargs="*",
+        type=Path,
+        default=[],
+        help="Additional results directories to offer in the UI (space-separated paths)",
+    )
 
     args = parser.parse_args()
 
     # Set project root on server class
     DevLoopServer.project_root = args.project.resolve()
+
+    # Build known results dirs: project's own results/ first, then any extras
+    primary = args.project.resolve() / "results"
+    extras = [Path(p).expanduser().resolve() for p in (args.results_dirs or [])]
+    all_dirs: list[Path] = []
+    seen: set[Path] = set()
+    for d in [primary] + extras:
+        if d not in seen:
+            all_dirs.append(d)
+            seen.add(d)
+    DevLoopServer.results_dir = all_dirs[0] if all_dirs else primary
+    DevLoopServer.known_results_dirs = all_dirs
 
     # Create server
     server = HTTPServer(("localhost", args.port), DevLoopServer)

@@ -403,11 +403,15 @@ async def run_agent_step(
     # Let environment respond to assistant message (e.g., execute code, provide feedback)
     # This happens AFTER updating state but BEFORE tool processing
     # Only call if we actually have an assistant message
-    if state.environment and last_message and last_message.role == "assistant":
+    on_assistant_message = getattr(state.environment, "on_assistant_message", None)
+    if (
+        state.environment
+        and last_message
+        and last_message.role == "assistant"
+        and callable(on_assistant_message)
+    ):
         try:
-            current_state = await state.environment.on_assistant_message(
-                last_message, current_state
-            )
+            current_state = await on_assistant_message(last_message, current_state)
         except Exception as e:
             logger.exception(f"❌ ENVIRONMENT RESPONSE FAILED: {e}")
             logger.exception(f"   Environment type: {type(state.environment).__name__}")

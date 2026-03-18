@@ -171,7 +171,7 @@ async def _eval_single_task(
     finally:
         if env is not None:
             try:
-                await env.cleanup()
+                await env.close()
             except Exception as e:
                 logger.warning(f"Error cleaning up environment: {e}")
 

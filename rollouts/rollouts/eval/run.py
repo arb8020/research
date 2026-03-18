@@ -213,8 +213,8 @@ async def run_with_api(
     )
     score_fn = getattr(config_module, "score_fn", None)
     sample_scorer = getattr(config_module, "sample_scorer", None)
-    if score_fn is None and sample_scorer is None:
-        raise ValueError("Config must define 'score_fn' or 'sample_scorer'")
+    # score_fn and sample_scorer are both optional: environments that own scoring
+    # implement env.score(trajectory), and open-ended envs may have no scorer.
 
     # Environment (optional)
     environment: Environment | None = run_spec.environment if run_spec is not None else None

@@ -54,7 +54,5 @@ def validate_eval_config_module(config_module: Any, config_path: Path) -> None:
             f"Eval config {config_path} must export callable prepare_messages or attempt_executor or run_spec"
         )
 
-    score_fn = getattr(config_module, "score_fn", None)
-    sample_scorer = getattr(config_module, "sample_scorer", None)
-    if score_fn is None and sample_scorer is None:
-        raise ValueError(f"Eval config {config_path} must define 'score_fn' or 'sample_scorer'")
+    # score_fn and sample_scorer are both optional: environments that own scoring
+    # implement env.score(trajectory), and open-ended envs may have no scorer.

@@ -711,17 +711,17 @@ class _AgentRunResult:
     is_provider_error: bool = False
 
 
-async def _cleanup_environment(environment: Environment | None, sample_id: str) -> None:
-    """Cleanup environment if it has a cleanup method."""
+async def _close_environment(environment: Environment | None, sample_id: str) -> None:
+    """Close environment, releasing external resources (sandboxes, containers, etc.)."""
     if environment is None:
         return
-    cleanup_fn = getattr(environment, "cleanup", None)
-    if cleanup_fn is None:
+    close_fn = getattr(environment, "close", None)
+    if close_fn is None:
         return
     try:
-        await cleanup_fn()
+        await close_fn()
     except Exception as e:
-        logger.warning(f"Environment cleanup failed for {sample_id}: {e}")
+        logger.warning(f"Environment close failed for {sample_id}: {e}")
 
 
 async def _run_agent_with_error_handling(
@@ -1151,14 +1151,38 @@ async def evaluate_sample(
 
     sample.metadata = {**sample.metadata, **exec_metadata}
 
-    # Compute score after execution status/error metadata is attached so scorer stages can
-    # short-circuit cleanly on environment/resource failures.
-    score = await _compute_score(
-        config.score_fn,
-        sample,
-        sample_scorer=config.sample_scorer,
-        scoring_context=ScoringContext(environment=final_env),
-    )
+    # Score resolution: env.score() owns scoring when the environment has a verification
+    # oracle (e.g. TerminalBench run_tests, KernelBench benchmark). Falls back to an
+    # externally-injected score_fn(trajectory, row) for environments without built-in
+    # scoring. Records no score for open-ended/SFT environments that have neither.
+    # env.score() runs before close() so the sandbox is still alive for verification.
+    score: Score | None = None
+    env_score_fn = getattr(final_env, "score", None)
+    if env_score_fn is not None:
+        try:
+            score = await env_score_fn(final_trajectory)
+        except Exception as e:
+            logger.warning(f"Environment score() failed for {sample_id}: {e}")
+            score = Score(metrics=(Metric("error", 0.0, weight=1.0, metadata={"error": str(e)}),))
+    elif config.sample_scorer is not None:
+        await config.sample_scorer.score_samples(
+            [sample], contexts=[ScoringContext(environment=final_env)]
+        )
+        if sample.score is not None:
+            score = sample.score
+    elif config.score_fn is not None:
+        try:
+            score_result = config.score_fn(final_trajectory, sample_data)
+            if isawaitable(score_result):
+                score = await score_result
+            else:
+                score = score_result
+        except Exception as e:
+            logger.exception(f"score_fn failed for {sample_id}: {e}")
+            score = Score(metrics=(Metric("error", 0.0, weight=1.0, metadata={"error": str(e)}),))
+
+    # Close environment after scoring — sandbox/container is no longer needed
+    await _close_environment(environment, sample_id)
 
     # Compute duration and log completion
     duration_seconds = time.time() - start_time
@@ -1168,9 +1192,6 @@ async def evaluate_sample(
     _log_sample_completion(
         sample_id, reward, exec_metadata, final_trajectory, score, config.verbose
     )
-
-    # Cleanup environment
-    await _cleanup_environment(environment, sample_id)
 
     # Update sample with score and reward
     sample.score = score

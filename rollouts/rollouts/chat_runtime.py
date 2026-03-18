@@ -58,9 +58,9 @@ def create_session_store(
 
 
 async def cleanup_environment(environment: Environment | None) -> None:
-    if environment is None or not hasattr(environment, "cleanup"):
+    if environment is None or not hasattr(environment, "close"):
         return
-    await environment.cleanup()
+    await environment.close()
 
 
 def get_tbench_agent_timeout_sec(environment: Environment | None) -> float | None:

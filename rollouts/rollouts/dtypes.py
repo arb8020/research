@@ -9,12 +9,16 @@ from datetime import datetime
 from enum import Enum, IntEnum
 from pathlib import Path
 from typing import (
+    TYPE_CHECKING,
     Any,
     Literal,
     Protocol,
     Self,
     runtime_checkable,
 )
+
+if TYPE_CHECKING:
+    from .core.eval import Score
 
 import dacite
 import trio
@@ -1500,7 +1504,48 @@ class ToolConfirmResult(JsonSerializable):
 
 @runtime_checkable
 class Environment(Protocol):
-    """Protocol that all environments must satisfy for composition over inheritance."""
+    """Protocol that all environments must satisfy for composition over inheritance.
+
+    An Environment has two coupled responsibilities that belong together:
+      1. Resource setup — spin up sandboxes, fetch tasks, write files, start containers
+      2. Tool contract — define what tools the agent sees and route calls to those resources
+
+    These are coupled because the tool contract is meaningless without the resources behind it.
+
+    ## Intended usage pattern
+
+    A rollout/eval/training run is fully determined by three things:
+
+        (Environment, Endpoint, DatasetRow) → Trajectory → Score
+
+    Adding a new task means adding a new DatasetRow — not a new Environment class.
+    The environment knows how to read its row's columns and do the right thing.
+
+    The construction path is:
+
+        row_to_state(row: dict) -> dict        # pure, defined in eval config
+        Environment.deserialize(state: dict)   # I/O, defined on the environment
+
+    `row_to_state` is a pure function in the eval config that transforms a dataset row
+    into the serialized state dict the environment expects. It can be as thin as
+    `{"task_id": row["task_id"]}` or as fat as cloning a repo and writing files —
+    whatever the environment needs to reconstruct itself without the original row.
+
+    `deserialize` is the single construction path for live environments, whether the
+    state came from a fresh row or a mid-run checkpoint. Environments that today raise
+    NotImplementedError in deserialize should instead implement it as the general
+    construction path from data → live resources.
+
+    ## Scoring
+
+    Environments that own a verification oracle (test runner, benchmark, LLM judge)
+    implement `score(trajectory) -> Score`. The eval runner calls this after the agent
+    loop, while resources are still live, before calling `close()`.
+
+    Environments without built-in scoring leave `score` unimplemented. The eval runner
+    falls back to an externally-injected `score_fn(trajectory, row)`, or records no
+    score for open-ended/SFT use cases.
+    """
 
     def get_tools(self) -> list[Tool]:
         """Return available tools for this environment."""
@@ -1618,6 +1663,29 @@ class Environment(Protocol):
         """
         ...
 
+    async def close(self) -> None:
+        """Release environment resources.
+
+        Called by the eval runner after score() completes. Environments that own
+        containers, sandboxes, or other external resources must implement this.
+
+        Optional - environments with no external resources can omit it.
+        """
+        ...
+
+    async def score(self, trajectory: Trajectory) -> Score:
+        """Score the agent's trajectory using this environment's resources.
+
+        Called after the agent loop completes, before close(). The environment
+        still has access to its live resources (sandbox, container, etc.) here,
+        so scoring can run tests, call verification oracles, or query the sandbox.
+
+        Optional - environments that don't own scoring should not implement this.
+        The eval runner falls back to an externally-injected score_fn when this
+        method is absent, and records no score when neither is present.
+        """
+        ...
+
     async def serialize(self) -> dict:
         """Serialize environment state to dictionary.
 
@@ -1643,18 +1711,28 @@ class Environment(Protocol):
 
     @staticmethod
     async def deserialize(data: dict) -> Environment:
-        """Deserialize environment from dictionary.
+        """Construct a live environment from a state dictionary.
 
-        Should validate env_kind and version before restoring state.
+        This is the single construction path for environments — used both for
+        initial setup from a dataset row and for resuming a mid-run checkpoint.
 
-        Example:
-            >>> @staticmethod
-            ... async def deserialize(data: dict) -> 'MyEnvironment':
-            ...     assert data["env_kind"] == MyEnvironment.ENV_KIND
-            ...     assert data["version"].startswith("1.")  # compatible versions
-            ...     env = MyEnvironment()
-            ...     env._history = data["history"]
-            ...     return env
+        The intended flow from the eval config:
+
+            row_to_state(row: dict) -> dict          # pure function in eval config
+            MyEnvironment.deserialize(state: dict)   # does all I/O here
+
+        `row_to_state` transforms a dataset row into the state dict this method
+        expects. It can be a thin pointer (e.g. {"task_id": row["task_id"]}) or
+        a fat snapshot that includes everything needed to reconstruct the environment
+        without network calls (Dockerfile contents, test scripts, repo worktree path).
+
+        Some row_to_state functions do real work themselves — clone a repo, create a
+        worktree, run uv sync — and return the resulting paths as the fat state.
+        Others are nearly identity and let deserialize do the fetching (registry model).
+        Both are valid; the invariant is that deserialize receives enough state to
+        construct the live environment without the original row.
+
+        Should validate env_kind and version before restoring state from a checkpoint.
         """
         ...
 

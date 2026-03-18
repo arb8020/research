@@ -22,7 +22,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import asdict, is_dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from ..dtypes import (
     ContentBlock,
@@ -77,8 +77,17 @@ class _EventAccumulator:
         # Completed content blocks for current assistant message
         self._completed_blocks: list[tuple[int, ContentBlock]] = []  # (index, block)
 
-    def handle(self, event: StreamEvent) -> None:
+    def handle(self, event: Any) -> None:
         """Process a StreamEvent, updating internal state."""
+        # _FlushAssistantMessage is a Codex-internal sentinel, not a real StreamEvent.
+        # It signals a turn boundary so we emit an assistant message immediately
+        # rather than waiting for finalize() at the end.
+        from .codex import _FlushAssistantMessage
+
+        if isinstance(event, _FlushAssistantMessage):
+            self._finalize_assistant_message()
+            return
+
         match event:
             # Text content
             case TextStart(content_index=idx):

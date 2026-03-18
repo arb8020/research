@@ -39,6 +39,9 @@ from ..dtypes import (
     TextDelta,
     TextEnd,
     TextStart,
+    ThinkingDelta,
+    ThinkingEnd,
+    ThinkingStart,
     ToolCall,
     ToolCallEnd,
     ToolCallStart,
@@ -273,8 +276,26 @@ class CodexDriver:
 class _CodexEventParser:
     """Parse Codex NDJSON messages into StreamEvents.
 
-    Codex events are simpler than Claude's - no streaming deltas,
-    just complete items.
+    Handles two wire formats:
+
+    Old format (codex exec, older CLI versions):
+        {"type": "thread.started", "thread_id": "..."}
+        {"type": "turn.started"}
+        {"type": "item.started",   "item": {"type": "command_execution", ...}}
+        {"type": "item.completed", "item": {"type": "agent_message", "text": "..."}}
+        {"type": "turn.completed", "usage": {...}}
+
+    New format (o3/o4-mini, codex session files):
+        {"type": "session_meta",   "payload": {"id": "...", ...}}
+        {"type": "response_item",  "payload": {"type": "message",       "role": "assistant", ...}}
+        {"type": "response_item",  "payload": {"type": "reasoning",     "summary": [...]}}
+        {"type": "response_item",  "payload": {"type": "function_call", "name": "exec_command", ...}}
+        {"type": "response_item",  "payload": {"type": "function_call_output", "call_id": "...", "output": "..."}}
+        {"type": "response_item",  "payload": {"type": "custom_tool_call",        "name": "apply_patch", ...}}
+        {"type": "response_item",  "payload": {"type": "custom_tool_call_output", "call_id": "...", "output": "..."}}
+        {"type": "event_msg",      "payload": {"type": "task_completed", ...}}
+
+    Both formats are handled in a single pass so session files replay correctly.
     """
 
     def __init__(self) -> None:
@@ -285,17 +306,30 @@ class _CodexEventParser:
 
     def parse(self, msg: dict[str, Any]) -> list:
         """Parse a single NDJSON message into zero or more StreamEvents."""
-        events = []
+        events: list = []
         msg_type = msg.get("type")
 
         match msg_type:
+            # ── New format ────────────────────────────────────────────────────
             case "session_meta":
-                # Capture session ID from session metadata (in session files)
                 payload = msg.get("payload", {})
                 self._session_id = payload.get("id")
+                self._model = payload.get("model") or self._model
+                events.append(LLMCallStart())
 
+            case "response_item":
+                payload = msg.get("payload", {})
+                events.extend(self._parse_response_item(payload))
+
+            case "event_msg":
+                payload = msg.get("payload", {})
+                if payload.get("type") == "task_completed":
+                    events.append(StreamDone(finish_reason="stop"))
+                elif payload.get("type") == "task_failed":
+                    events.append(StreamError(error=payload.get("message", "task failed")))
+
+            # ── Old format ────────────────────────────────────────────────────
             case "thread.started":
-                # Capture thread_id as session_id (in live output, thread_id IS the session_id)
                 self._thread_id = msg.get("thread_id")
                 self._session_id = self._thread_id
                 events.append(LLMCallStart())
@@ -315,7 +349,7 @@ class _CodexEventParser:
                 usage = msg.get("usage", {})
                 events.append(
                     LLMCallEnd(
-                        duration_ms=0.0,  # Codex doesn't report duration
+                        duration_ms=0.0,
                         provider="codex",
                         model=self._model,
                         tokens_in=usage.get("input_tokens"),
@@ -331,15 +365,140 @@ class _CodexEventParser:
 
         return events
 
+    # ── New format handlers ───────────────────────────────────────────────────
+
+    def _parse_response_item(self, payload: dict[str, Any]) -> list:
+        """Parse a response_item payload into StreamEvents."""
+        events: list = []
+        item_type = payload.get("type")
+
+        match item_type:
+            case "message":
+                role = payload.get("role", "")
+                # Only emit assistant messages into the trajectory.
+                # developer/user messages are context injected by Codex itself.
+                if role != "assistant":
+                    return events
+                content_blocks = payload.get("content") or []
+                text = " ".join(
+                    b.get("text", "") for b in content_blocks if b.get("type") == "output_text"
+                )
+                if text:
+                    idx = self._content_index
+                    events.append(TextStart(content_index=idx))
+                    events.append(TextDelta(content_index=idx, delta=text))
+                    events.append(TextEnd(content_index=idx, content=text))
+                    self._content_index += 1
+                    # Flush into an assistant message now — each assistant
+                    # message in the new format is a complete turn boundary.
+                    events.append(_FlushAssistantMessage())
+
+            case "reasoning":
+                # Thinking content — summary is visible, actual content is encrypted.
+                summary_blocks = payload.get("summary") or []
+                summary = " ".join(
+                    b.get("text", "") for b in summary_blocks if b.get("type") == "summary_text"
+                )
+                if summary:
+                    idx = self._content_index
+                    events.append(ThinkingStart(content_index=idx))
+                    events.append(ThinkingDelta(content_index=idx, delta=summary))
+                    events.append(ThinkingEnd(content_index=idx, content=summary))
+                    self._content_index += 1
+
+            case "function_call":
+                # Shell command or other built-in function
+                call_id = payload.get("call_id", "")
+                name = payload.get("name", "function")
+                raw_args = payload.get("arguments", "{}")
+                try:
+                    args = json.loads(raw_args) if raw_args else {}
+                except json.JSONDecodeError:
+                    args = {"raw": raw_args}
+                idx = self._content_index
+                events.append(
+                    ToolCallStart(content_index=idx, tool_call_id=call_id, tool_name=name)
+                )
+                events.append(
+                    ToolCallEnd(
+                        content_index=idx,
+                        tool_call=ToolCall(id=call_id, name=name, args=args),
+                    )
+                )
+                self._content_index += 1
+
+            case "function_call_output":
+                call_id = payload.get("call_id", "")
+                raw_output = payload.get("output", "")
+                output, exit_code = _parse_function_call_output(raw_output)
+                is_error = exit_code != 0
+                events.append(
+                    ToolExecutionEnd(
+                        tool_call_id=call_id,
+                        tool_name="function",
+                        duration_ms=0.0,
+                        status="error" if is_error else "success",
+                        is_error=is_error,
+                        result_summary={"exit_code": exit_code},
+                    )
+                )
+                events.append(
+                    ToolResultReceived(
+                        tool_call_id=call_id,
+                        content=output,
+                        is_error=is_error,
+                    )
+                )
+
+            case "custom_tool_call":
+                call_id = payload.get("call_id", "")
+                name = payload.get("name", "tool")
+                raw_input = payload.get("input", "")
+                idx = self._content_index
+                events.append(
+                    ToolCallStart(content_index=idx, tool_call_id=call_id, tool_name=name)
+                )
+                events.append(
+                    ToolCallEnd(
+                        content_index=idx,
+                        tool_call=ToolCall(id=call_id, name=name, args={"input": raw_input}),
+                    )
+                )
+                self._content_index += 1
+
+            case "custom_tool_call_output":
+                call_id = payload.get("call_id", "")
+                raw_output = payload.get("output", "")
+                output, is_error = _parse_custom_tool_output(raw_output)
+                events.append(
+                    ToolExecutionEnd(
+                        tool_call_id=call_id,
+                        tool_name="custom_tool",
+                        duration_ms=0.0,
+                        status="error" if is_error else "success",
+                        is_error=is_error,
+                        result_summary={},
+                    )
+                )
+                events.append(
+                    ToolResultReceived(
+                        tool_call_id=call_id,
+                        content=output,
+                        is_error=is_error,
+                    )
+                )
+
+        return events
+
+    # ── Old format handlers (unchanged) ──────────────────────────────────────
+
     def _parse_item_started(self, item: dict[str, Any]) -> list:
-        """Parse an item.started event."""
-        events = []
+        """Parse an item.started event (old format)."""
+        events: list = []
         item_id = item.get("id", "")
         item_type = item.get("type")
 
         if item_type == "command_execution":
-            command = item.get("command", "")
-            # Emit tool call start
             events.append(
                 ToolCallStart(
                     content_index=self._content_index,
@@ -347,17 +506,10 @@ class _CodexEventParser:
                     tool_name="shell",
                 )
             )
-            events.append(
-                ToolExecutionStart(
-                    tool_call_id=item_id,
-                    tool_name="shell",
-                )
-            )
+            events.append(ToolExecutionStart(tool_call_id=item_id, tool_name="shell"))
             self._content_index += 1
 
         elif item_type == "file_change":
-            # File changes also get tool events
-            path = item.get("path", "")
             events.append(
                 ToolCallStart(
                     content_index=self._content_index,
@@ -365,37 +517,40 @@ class _CodexEventParser:
                     tool_name="file_edit",
                 )
             )
-            events.append(
-                ToolExecutionStart(
-                    tool_call_id=item_id,
-                    tool_name="file_edit",
-                )
-            )
+            events.append(ToolExecutionStart(tool_call_id=item_id, tool_name="file_edit"))
             self._content_index += 1
 
         return events
 
     def _parse_item_completed(self, item: dict[str, Any]) -> list:
-        """Parse an item.completed event."""
-        events = []
+        """Parse an item.completed event (old format)."""
+        events: list = []
         item_id = item.get("id", "")
         item_type = item.get("type")
 
         if item_type == "agent_message":
-            # Text message from agent
             text = item.get("text", "")
-            events.append(TextStart(content_index=self._content_index))
-            events.append(TextDelta(content_index=self._content_index, delta=text))
-            events.append(TextEnd(content_index=self._content_index, content=text))
+            idx = self._content_index
+            events.append(TextStart(content_index=idx))
+            events.append(TextDelta(content_index=idx, delta=text))
+            events.append(TextEnd(content_index=idx, content=text))
             self._content_index += 1
+            # Flush after each agent_message — each is a complete turn boundary.
+            events.append(_FlushAssistantMessage())
 
         elif item_type == "command_execution":
-            # Command completed
             command = item.get("command", "")
             output = item.get("aggregated_output", "")
             exit_code = item.get("exit_code", 0)
             is_error = exit_code != 0
-
+            # ToolCallEnd before ToolResultReceived so the block is flushed
+            # into the correct assistant message, not the next one.
+            events.append(
+                ToolCallEnd(
+                    content_index=0,
+                    tool_call=ToolCall(id=item_id, name="shell", args={"command": command}),
+                )
+            )
             events.append(
                 ToolExecutionEnd(
                     tool_call_id=item_id,
@@ -413,22 +568,16 @@ class _CodexEventParser:
                     is_error=is_error,
                 )
             )
+
+        elif item_type == "file_change":
+            path = item.get("path", "")
+            diff = item.get("diff", "")
             events.append(
                 ToolCallEnd(
                     content_index=0,
-                    tool_call=ToolCall(
-                        id=item_id,
-                        name="shell",
-                        args={"command": command},
-                    ),
+                    tool_call=ToolCall(id=item_id, name="file_edit", args={"path": path}),
                 )
             )
-
-        elif item_type == "file_change":
-            # File change completed
-            path = item.get("path", "")
-            diff = item.get("diff", "")
-
             events.append(
                 ToolExecutionEnd(
                     tool_call_id=item_id,
@@ -446,15 +595,67 @@ class _CodexEventParser:
                     is_error=False,
                 )
             )
-            events.append(
-                ToolCallEnd(
-                    content_index=0,
-                    tool_call=ToolCall(
-                        id=item_id,
-                        name="file_edit",
-                        args={"path": path},
-                    ),
-                )
-            )
 
         return events
+
+
+# ── Output parsers ────────────────────────────────────────────────────────────
+
+
+def _parse_function_call_output(raw: str) -> tuple[str, int]:
+    """Extract stdout and exit code from function_call_output.output.
+
+    Format:
+        Chunk ID: <hex>\n
+        Wall time: <float> seconds\n
+        Process exited with code <N>\n
+        Original token count: <N>\n
+        Output:\n
+        <actual stdout>
+    """
+    exit_code = 0
+    for line in raw.splitlines():
+        if line.startswith("Process exited with code "):
+            try:
+                exit_code = int(line.split()[-1])
+            except ValueError:
+                pass
+            break
+
+    marker = "Output:\n"
+    idx = raw.find(marker)
+    output = raw[idx + len(marker) :] if idx != -1 else raw
+    return output.rstrip("\n"), exit_code
+
+
+def _parse_custom_tool_output(raw: str) -> tuple[str, bool]:
+    """Extract output text and error flag from custom_tool_call_output.output.
+
+    The output field is either:
+    - JSON: {"output": "...", "metadata": {"exit_code": N, ...}}
+    - Plain error string (when the tool itself failed)
+    """
+    try:
+        data = json.loads(raw)
+        text = data.get("output", "")
+        exit_code = data.get("metadata", {}).get("exit_code", 0)
+        return str(text), exit_code != 0
+    except (json.JSONDecodeError, AttributeError):
+        # Not JSON — treat as a raw error message from the tool
+        return raw, True
+
+
+# ── Internal flush sentinel ───────────────────────────────────────────────────
+
+from dataclasses import dataclass as _dc
+
+
+@_dc
+class _FlushAssistantMessage:
+    """Internal sentinel: tells _EventAccumulator to flush pending blocks now.
+
+    Not a real StreamEvent — only used inside the Codex driver pipeline.
+    Emitted after each assistant message boundary so turn structure is preserved.
+    """
+
+    type: str = "flush_assistant_message"

@@ -392,7 +392,7 @@ class TerminalBenchEnvironment:
             )
         return cls(resource=resource)
 
-    async def cleanup(self) -> None:
+    async def close(self) -> None:
         await self.resource.close()
 
     def get_tools(self) -> list[Tool]:
