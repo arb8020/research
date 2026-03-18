@@ -135,6 +135,7 @@ def _spawn_megatron_workers(config: PretrainConfig) -> list[Any]:
     megatron_config = MegatronRemoteConfig(
         model_name=config.model.name,
         dtype=config.model.dtype,
+        checkpoint_path=config.model.checkpoint_path,
         lowering=lowering,
         sequence_parallel=config.trainer.sequence_parallel,
         lr=config.trainer.lr,

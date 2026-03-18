@@ -55,6 +55,7 @@ class MegatronRemoteConfig:
     # Model
     model_name: str
     dtype: str = "bfloat16"
+    checkpoint_path: str | None = None
 
     # Lowered Megatron provisioning derived from RealizationPlan
     lowering: MegatronLowering = field(default_factory=MegatronLowering)
@@ -109,6 +110,25 @@ class MegatronRemoteBackend:
 
     _step: int = field(default=0, init=False)
     _initialized: bool = field(default=False, init=False)
+
+    def _restore_local_step_from_checkpoint(self) -> None:
+        checkpoint_path = self.config.checkpoint_path
+        if not checkpoint_path:
+            return
+
+        tracker_path = Path(checkpoint_path) / "latest_checkpointed_iteration.txt"
+        if not tracker_path.exists():
+            return
+
+        try:
+            self._step = int(tracker_path.read_text(encoding="utf-8").strip())
+        except Exception as exc:
+            logger.warning(
+                "Failed to restore Megatron checkpoint iteration from %s: %s: %s",
+                tracker_path,
+                type(exc).__name__,
+                exc,
+            )
 
     def _worker_snapshot(self) -> list[dict[str, Any]]:
         snapshot: list[dict[str, Any]] = []
@@ -267,6 +287,7 @@ class MegatronRemoteBackend:
                 "world_size": len(self.workers),
                 "config": {
                     "model_name": self.config.model_name,
+                    "checkpoint_path": self.config.checkpoint_path,
                     "lowering": {
                         "provisioning": {
                             "tp": self.config.lowering.provisioning.tp,
@@ -307,6 +328,7 @@ class MegatronRemoteBackend:
         )
         assert response["status"] == "initialized", f"Init failed: {response}"
 
+        self._restore_local_step_from_checkpoint()
         self._initialized = True
         logger.info("All workers initialized")
 
@@ -495,10 +517,12 @@ class MegatronRemoteBackend:
         self._nccl_inference_endpoints = []
 
     def load_checkpoint(self, checkpoint_path: Path) -> TrainFuture[None]:
-        """Checkpoint restore is handled inside remote workers; stub for interface."""
-        del checkpoint_path
-        logger.info("Remote Megatron backend does not support direct checkpoint restore from host.")
-        return ImmediateTrainFuture(None, operation="load_checkpoint")
+        """Megatron restore happens during worker initialization, not from the host."""
+        raise NotImplementedError(
+            "Megatron remote checkpoint restore is initialization-owned. "
+            "Set model.checkpoint_path before backend.initialize(), not backend.load_checkpoint(). "
+            f"Received direct host restore request for {checkpoint_path}."
+        )
 
     def shutdown(self) -> None:
         """Shutdown all workers."""

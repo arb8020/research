@@ -20,6 +20,7 @@ import os
 import sys
 import time
 from enum import IntEnum
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -1129,8 +1130,14 @@ def train(handle: Worker) -> None:
             sequence_parallel=config.get("sequence_parallel", False),
         )
 
+        checkpoint_path_raw = config.get("checkpoint_path")
+        checkpoint_path = Path(checkpoint_path_raw) if checkpoint_path_raw else None
+
         logger.info("Setting up Megatron model...")
-        model, optimizer, scheduler = setup_megatron_model(model_config)
+        model, optimizer, scheduler = setup_megatron_model(
+            model_config,
+            checkpoint_path=checkpoint_path,
+        )
         logger.info("Model setup complete")
 
         # Create backend

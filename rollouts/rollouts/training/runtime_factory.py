@@ -217,6 +217,7 @@ def create_training_backend_runtime(
         megatron_config = MegatronRemoteConfig(
             model_name=model.name,
             dtype=model.dtype,
+            checkpoint_path=model.checkpoint_path,
             lowering=lowering,
             sequence_parallel=trainer.sequence_parallel,
             lr=trainer.lr,

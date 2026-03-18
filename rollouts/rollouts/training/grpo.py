@@ -1353,6 +1353,7 @@ async def _grpo_train_async(
         megatron_config = MegatronRemoteConfig(
             model_name=config.model.name,
             dtype=config.model.dtype,
+            checkpoint_path=config.model.checkpoint_path,
             lowering=lowering,
             sequence_parallel=config.trainer.sequence_parallel,
             lr=config.trainer.lr,
@@ -1556,7 +1557,13 @@ async def _grpo_train_async(
         # Load checkpoint if provided (for SFT → RL pipeline)
         if config.model.checkpoint_path:
             ckpt_path = Path(config.model.checkpoint_path)
-            if (ckpt_path / "pytorch_model.bin").exists():
+            megatron_tracker = ckpt_path / "latest_checkpointed_iteration.txt"
+            if config.trainer.backend == "megatron" and megatron_tracker.exists():
+                logger.info(
+                    "Megatron checkpoint restore is owned by backend initialization: %s",
+                    ckpt_path,
+                )
+            elif (ckpt_path / "pytorch_model.bin").exists():
                 # Our checkpoint format
                 logger.info(f"Loading checkpoint from {ckpt_path}")
                 load_result = backend.load_checkpoint(ckpt_path)
