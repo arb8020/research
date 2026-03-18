@@ -14,6 +14,7 @@ from __future__ import annotations
 import concurrent.futures
 import json
 import logging
+import multiprocessing
 import os
 import sys
 import time
@@ -174,6 +175,180 @@ def _resolve_local_host_ip() -> tuple[str, str]:
         pass
 
     return "127.0.0.1", "fallback:loopback"
+
+
+def _allocate_tcp_port(preferred_port: int = 29500) -> int:
+    import socket
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("", preferred_port))
+        return int(sock.getsockname()[1])
+
+
+def _clear_training_pg_env_for_subprocess() -> None:
+    for key in (
+        "MASTER_ADDR",
+        "MASTER_PORT",
+        "RANK",
+        "WORLD_SIZE",
+        "LOCAL_RANK",
+        "LOCAL_WORLD_SIZE",
+    ):
+        os.environ.pop(key, None)
+
+
+def _isolated_weight_sync_sender_main(
+    result_queue: multiprocessing.queues.Queue,
+    *,
+    master_addr: str,
+    master_port: int,
+    inference_endpoints: list[str],
+    group_name: str,
+    payload_kind: str,
+    version: int,
+    tensors: list[dict[str, object]],
+) -> None:
+    try:
+        import requests
+        import torch
+
+        from rollouts.inference.weight_sync import WeightSyncSender
+        from rollouts.training.weight_sync_protocol import (
+            InitWeightUpdateGroupRequest,
+            ReceiveWeightUpdateRequest,
+            WeightUpdatePayload,
+            WeightWireTensor,
+        )
+
+        _clear_training_pg_env_for_subprocess()
+        os.environ["NCCL_SHM_DISABLE"] = "1"
+        os.environ.setdefault("NCCL_CUMEM_ENABLE", "0")
+        os.environ.setdefault("NCCL_ASYNC_ERROR_HANDLING", "1")
+        os.environ.setdefault("NCCL_P2P_DISABLE", "1")
+        os.environ.setdefault("TORCH_DISABLE_SHARE_RDZV_TCP_STORE", "1")
+
+        logger.info(
+            "weight_sync_megatron_isolated_sender_start master=%s:%s group=%s endpoints=%s",
+            master_addr,
+            master_port,
+            group_name,
+            inference_endpoints,
+        )
+        _emit_argus_diag(
+            "weight_sync_megatron_isolated_sender_start",
+            master_addr=master_addr,
+            master_port=master_port,
+            group=group_name,
+            endpoints=inference_endpoints,
+            pid=os.getpid(),
+            env={
+                "MASTER_ADDR": os.environ.get("MASTER_ADDR"),
+                "MASTER_PORT": os.environ.get("MASTER_PORT"),
+                "RANK": os.environ.get("RANK"),
+                "WORLD_SIZE": os.environ.get("WORLD_SIZE"),
+                "LOCAL_RANK": os.environ.get("LOCAL_RANK"),
+                "LOCAL_WORLD_SIZE": os.environ.get("LOCAL_WORLD_SIZE"),
+                "CUDA_VISIBLE_DEVICES": os.environ.get("CUDA_VISIBLE_DEVICES"),
+            },
+        )
+
+        world_size = 1 + len(inference_endpoints)
+        for index, endpoint in enumerate(inference_endpoints, start=1):
+            request = InitWeightUpdateGroupRequest(
+                master_address=master_addr,
+                master_port=master_port,
+                rank_offset=index,
+                world_size=world_size,
+                group_name=group_name,
+            )
+            response = requests.post(
+                f"{endpoint}/init_weights_update_group",
+                json=request.to_dict(),
+                timeout=300.0,
+            )
+            response.raise_for_status()
+
+        sender = WeightSyncSender(
+            master_addr=master_addr,
+            master_port=master_port,
+            inference_world_size=len(inference_endpoints),
+            group_name=group_name,
+        )
+        sender.init_group()
+
+        weight_tensors: list[WeightWireTensor] = []
+        for item in tensors:
+            cpu_tensor = item["cpu_tensor"]
+            if not isinstance(cpu_tensor, torch.Tensor):
+                raise TypeError(f"Expected cpu_tensor Tensor, got {type(cpu_tensor).__name__}")
+            gpu_tensor = cpu_tensor.to(device="cuda", non_blocking=False)
+            weight_tensors.append(
+                WeightWireTensor(
+                    wire_name=str(item["wire_name"]),
+                    load_name=str(item["load_name"]),
+                    shape=tuple(int(dim) for dim in item["shape"]),
+                    dtype=str(item["dtype"]),
+                    tensor=gpu_tensor,
+                    payload_kind=str(item["payload_kind"]),
+                    metadata=dict(item.get("metadata", {})),
+                )
+            )
+
+        request = ReceiveWeightUpdateRequest(
+            names=tuple(item.wire_name for item in weight_tensors),
+            load_names=tuple(item.load_name for item in weight_tensors),
+            shapes=tuple(item.shape for item in weight_tensors),
+            dtypes=tuple(item.dtype for item in weight_tensors),
+        )
+        futures = []
+        executor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=max(1, len(inference_endpoints))
+        )
+        try:
+            for endpoint in inference_endpoints:
+                futures.append(
+                    executor.submit(
+                        requests.post,
+                        f"{endpoint}/update_weights_from_distributed",
+                        json={
+                            **request.to_dict(),
+                            "group_name": group_name,
+                            "flush_cache": False,
+                            "weight_version": str(version),
+                        },
+                        timeout=300.0,
+                    )
+                )
+
+            sender.broadcast_payload(
+                WeightUpdatePayload(
+                    tensors=tuple(weight_tensors),
+                    payload_kind=payload_kind,
+                    version=version,
+                    metadata={"witness": True, "isolated_sender": True},
+                ),
+                async_op=True,
+                advance_version=False,
+            )
+
+            for future in futures:
+                response = future.result()
+                response.raise_for_status()
+        finally:
+            executor.shutdown(wait=False)
+            sender.cleanup()
+
+        result_queue.put({"ok": True})
+    except Exception as exc:
+        logger.exception("weight_sync_megatron_isolated_sender_failed")
+        _emit_argus_diag(
+            "weight_sync_megatron_isolated_sender_failed",
+            error=f"{type(exc).__name__}: {exc}",
+        )
+        result_queue.put({
+            "ok": False,
+            "error": f"{type(exc).__name__}: {exc}",
+        })
 
 
 def _select_native_loss_fn(config: dict[str, Any]) -> Any:
@@ -1141,7 +1316,7 @@ def _do_sync_weights_nccl(
         return
 
     sender = getattr(backend, "_nccl_weight_sender", None)
-    if sender is None:
+    if sender is None and not witness:
         raise RuntimeError("NCCL sender not initialized. Call init_nccl_weight_sync first.")
 
     payload = export.to_weight_update_payload(version=sender.weight_version + 1)
@@ -1194,23 +1369,33 @@ def _do_sync_weights_nccl(
         witness,
         tensor_limit,
     )
+    request_group_name = "weight_sync"
+    request_weight_version = payload.version
+    isolated_master_addr: str | None = None
+    isolated_master_port: int | None = None
+    if witness:
+        resolved_host_ip, _ = _resolve_local_host_ip()
+        isolated_master_addr = resolved_host_ip
+        isolated_master_port = _allocate_tcp_port(int(getattr(backend, "_nccl_master_port", 29550)))
+        request_group_name = f"weight_sync_witness_{isolated_master_port}"
     executor = concurrent.futures.ThreadPoolExecutor(max_workers=max(1, len(inference_endpoints)))
     try:
         futures = []
-        for endpoint in inference_endpoints:
-            futures.append(
-                executor.submit(
-                    requests.post,
-                    f"{endpoint}/update_weights_from_distributed",
-                    json={
-                        **receive_request.to_dict(),
-                        "group_name": "weight_sync",
-                        "flush_cache": False,
-                        "weight_version": str(payload.version),
-                    },
-                    timeout=300.0,
+        if not witness:
+            for endpoint in inference_endpoints:
+                futures.append(
+                    executor.submit(
+                        requests.post,
+                        f"{endpoint}/update_weights_from_distributed",
+                        json={
+                            **receive_request.to_dict(),
+                            "group_name": request_group_name,
+                            "flush_cache": False,
+                            "weight_version": str(request_weight_version),
+                        },
+                        timeout=300.0,
+                    )
                 )
-            )
         logger.info(
             "weight_sync_megatron_metadata_requests_sent endpoints=%s count=%s",
             inference_endpoints,
@@ -1218,12 +1403,83 @@ def _do_sync_weights_nccl(
         )
 
         try:
-            sender.broadcast_payload(
-                payload,
-                async_op=True,
-                advance_version=not witness,
-            )
-            logger.info("weight_sync_megatron_broadcast_wait_ok tensors=%s", len(payload.tensors))
+            if witness:
+                assert isolated_master_addr is not None
+                assert isolated_master_port is not None
+                isolated_group_name = request_group_name
+                logger.info(
+                    "weight_sync_megatron_isolated_witness_start master=%s:%s group=%s tensors=%s",
+                    isolated_master_addr,
+                    isolated_master_port,
+                    isolated_group_name,
+                    len(payload.tensors),
+                )
+                _emit_argus_diag(
+                    "weight_sync_megatron_isolated_witness_start",
+                    master_addr=isolated_master_addr,
+                    master_port=isolated_master_port,
+                    group=isolated_group_name,
+                    tensors=len(payload.tensors),
+                )
+                serialized_tensors = []
+                for item in payload.tensors:
+                    serialized_tensors.append({
+                        "wire_name": item.wire_name,
+                        "load_name": item.load_name,
+                        "shape": tuple(item.shape),
+                        "dtype": item.dtype,
+                        "payload_kind": item.payload_kind,
+                        "metadata": dict(item.metadata),
+                        "cpu_tensor": item.tensor.detach().cpu().clone(),
+                    })
+                ctx = multiprocessing.get_context("spawn")
+                result_queue = ctx.Queue(maxsize=1)
+                helper = ctx.Process(
+                    target=_isolated_weight_sync_sender_main,
+                    kwargs={
+                        "result_queue": result_queue,
+                        "master_addr": isolated_master_addr,
+                        "master_port": isolated_master_port,
+                        "inference_endpoints": list(inference_endpoints),
+                        "group_name": isolated_group_name,
+                        "payload_kind": payload.payload_kind,
+                        "version": payload.version,
+                        "tensors": serialized_tensors,
+                    },
+                    daemon=False,
+                )
+                helper.start()
+                helper.join(timeout=60.0)
+                if helper.is_alive():
+                    helper.terminate()
+                    helper.join(timeout=5.0)
+                    raise TimeoutError("Isolated witness sender helper timed out after 60s")
+                if result_queue.empty():
+                    raise RuntimeError(
+                        f"Isolated witness sender exited without result exitcode={helper.exitcode}"
+                    )
+                helper_result = result_queue.get_nowait()
+                if not helper_result.get("ok"):
+                    raise RuntimeError(
+                        f"Isolated witness sender failed: {helper_result.get('error')}"
+                    )
+                logger.info(
+                    "weight_sync_megatron_isolated_witness_ok tensors=%s",
+                    len(payload.tensors),
+                )
+                _emit_argus_diag(
+                    "weight_sync_megatron_isolated_witness_ok",
+                    tensors=len(payload.tensors),
+                )
+            else:
+                sender.broadcast_payload(
+                    payload,
+                    async_op=True,
+                    advance_version=not witness,
+                )
+                logger.info(
+                    "weight_sync_megatron_broadcast_wait_ok tensors=%s", len(payload.tensors)
+                )
 
             for future in futures:
                 response = future.result()
