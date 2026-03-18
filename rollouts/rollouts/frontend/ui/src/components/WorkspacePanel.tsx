@@ -1,9 +1,8 @@
 import { useState, useMemo, useRef, useEffect, useCallback } from 'react'
-import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
-import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism'
 import { ChevronRight, ChevronDown, File, Folder, Terminal, AlertTriangle } from 'lucide-react'
-import type { WorkspaceData, WorkspaceSnapshot, LineEdit } from '../types'
+import type { WorkspaceData, WorkspaceSnapshot } from '../types'
 import { DiffView } from './DiffView'
+import { File as DiffsFile } from '@pierre/diffs/react'
 
 type PanelMode = 'state' | 'diff' | 'split'
 
@@ -11,17 +10,6 @@ const SPLIT_HEIGHT_KEY = 'workspace-split-height-pct'
 const DEFAULT_SPLIT_HEIGHT = 50
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
-
-function detectLanguage(filename: string): string {
-  const ext = filename.split('.').pop()?.toLowerCase() ?? ''
-  const map: Record<string, string> = {
-    py: 'python', js: 'javascript', ts: 'typescript', tsx: 'tsx',
-    jsx: 'jsx', sh: 'bash', bash: 'bash', md: 'markdown',
-    json: 'json', yaml: 'yaml', yml: 'yaml', toml: 'toml',
-    rs: 'rust', go: 'go', c: 'c', cpp: 'cpp', h: 'c',
-  }
-  return map[ext] ?? 'text'
-}
 
 function buildFileTree(files: Record<string, string>): TreeNode[] {
   const root: Record<string, TreeNode> = {}
@@ -139,149 +127,6 @@ function FileTree({
   )
 }
 
-// ── LineBlamePopover ──────────────────────────────────────────────────────────
-
-function LineBlamePopover({
-  edits,
-  onJumpToMessage,
-  onClose,
-}: {
-  edits: LineEdit[]
-  onJumpToMessage: (messageIndex: number) => void
-  onClose: () => void
-}) {
-  const ref = useRef<HTMLDivElement>(null)
-  useEffect(() => {
-    function handler(e: MouseEvent) {
-      if (ref.current && !ref.current.contains(e.target as Node)) onClose()
-    }
-    document.addEventListener('mousedown', handler)
-    return () => document.removeEventListener('mousedown', handler)
-  }, [onClose])
-
-  return (
-    <div
-      ref={ref}
-      className="absolute z-50 rounded shadow-lg text-xs"
-      style={{
-        right: 0,
-        top: '100%',
-        minWidth: 280,
-        maxWidth: 400,
-        background: '#18181b',
-        border: '1px solid var(--color-dark-border)',
-        maxHeight: 240,
-        overflowY: 'auto',
-      }}
-    >
-      <div className="px-2 py-1 font-semibold" style={{ color: 'var(--color-dark-text-muted)', borderBottom: '1px solid var(--color-dark-border)' }}>
-        {edits.length} edit{edits.length !== 1 ? 's' : ''} touched this line
-      </div>
-      {[...edits].reverse().map((edit, i) => (
-        <div
-          key={i}
-          className="px-2 py-1.5 cursor-pointer hover:opacity-80"
-          style={{ borderBottom: i < edits.length - 1 ? '1px solid #27272a' : undefined }}
-          onClick={() => { onJumpToMessage(edit.message_index); onClose() }}
-        >
-          <div className="flex items-center gap-2 mb-0.5">
-            <span
-              className="rounded px-1 py-0.5 font-mono"
-              style={{
-                background: edit.type === 'patch' ? '#1e3a2f' : edit.type === 'write' ? '#1e2a3f' : '#2a1e1e',
-                color: edit.type === 'patch' ? '#22c55e' : edit.type === 'write' ? '#93c5fd' : '#fca5a5',
-              }}
-            >
-              {edit.type}
-            </span>
-            <span style={{ color: 'var(--color-dark-text-muted)' }}>turn {edit.turn}</span>
-            <span className="ml-auto" style={{ color: '#3b82f6', textDecoration: 'underline' }}>→ jump</span>
-          </div>
-          {edit.diff && (
-            <div className="font-mono truncate" style={{ color: '#a1a1aa', fontSize: 10 }}>
-              {edit.diff.slice(0, 80)}
-            </div>
-          )}
-        </div>
-      ))}
-    </div>
-  )
-}
-
-// ── FileViewer ────────────────────────────────────────────────────────────────
-
-function FileViewer({
-  filename,
-  contents,
-  lineHistory,
-  onJumpToMessage,
-}: {
-  filename: string
-  contents: string
-  lineHistory: Record<string, LineEdit[]>
-  onJumpToMessage: (messageIndex: number) => void
-}) {
-  const [blameLine, setBlameLine] = useState<number | null>(null)
-
-  const editedLines = useMemo(() => {
-    return new Set(Object.keys(lineHistory).map(Number))
-  }, [lineHistory])
-
-  return (
-    <div className="relative h-full overflow-auto" style={{ background: '#0d1117' }}>
-      <div className="text-[10px] font-mono px-2 py-1 sticky top-0 flex items-center gap-2" style={{ background: '#161b22', borderBottom: '1px solid #30363d', color: '#8b949e' }}>
-        <span>{filename}</span>
-        {Object.keys(lineHistory).length > 0 && (
-          <span style={{ color: '#fbbf24' }}>
-            {Object.keys(lineHistory).length} edited lines
-          </span>
-        )}
-      </div>
-      <SyntaxHighlighter
-        language={detectLanguage(filename)}
-        style={vscDarkPlus}
-        showLineNumbers
-        wrapLines
-        lineNumberStyle={{ minWidth: '2.5em', paddingRight: '0.5em', color: '#484f58', userSelect: 'none' }}
-        customStyle={{ margin: 0, padding: '0.5rem 0', background: 'transparent', fontSize: '11px', lineHeight: '1.5' }}
-        lineProps={(lineNumber) => {
-          const hasEdit = editedLines.has(lineNumber)
-          const isBlameOpen = blameLine === lineNumber
-          return {
-            style: {
-              display: 'block',
-              cursor: hasEdit ? 'pointer' : 'default',
-              background: isBlameOpen
-                ? 'rgba(59,130,246,0.15)'
-                : hasEdit
-                ? 'rgba(251,191,36,0.06)'
-                : undefined,
-              position: 'relative' as const,
-            },
-            onClick: hasEdit ? () => setBlameLine(blameLine === lineNumber ? null : lineNumber) : undefined,
-          }
-        }}
-      >
-        {contents}
-      </SyntaxHighlighter>
-
-      {/* Blame popover rendered outside syntax highlighter */}
-      {blameLine !== null && lineHistory[String(blameLine)] && (
-        <div
-          className="absolute"
-          style={{ top: `${(blameLine - 1) * 18 + 28}px`, right: '8px' }}
-        >
-          <LineBlamePopover
-            edits={lineHistory[String(blameLine)]}
-            onJumpToMessage={onJumpToMessage}
-            onClose={() => setBlameLine(null)}
-          />
-        </div>
-      )}
-    </div>
-  )
-}
-
 // ── BashHistory ───────────────────────────────────────────────────────────────
 
 function BashHistory({ entries }: { entries: WorkspaceSnapshot['bash_history'] }) {
@@ -350,7 +195,7 @@ export function WorkspacePanel({
   workspaceData,
   selectedTurn,
   checkedTurns,
-  onJumpToMessage,
+  onJumpToMessage: _onJumpToMessage,
   onFitWidth,
 }: {
   workspaceData: WorkspaceData
@@ -444,7 +289,6 @@ export function WorkspacePanel({
   if (!snapshot) return null
 
   const fileContents = selectedFile ? snapshot.files[selectedFile] ?? '' : ''
-  const fileLineHistory = selectedFile ? (line_history[selectedFile] ?? {}) : {}
 
   return (
     <div
@@ -541,13 +385,12 @@ export function WorkspacePanel({
               />
             </div>
             {/* File viewer (right) */}
-            <div className="flex-1 overflow-hidden relative">
+            <div className="flex-1 overflow-auto" style={{ minWidth: 0, minHeight: 0 }}>
               {selectedFile ? (
-                <FileViewer
-                  filename={selectedFile}
-                  contents={fileContents}
-                  lineHistory={fileLineHistory}
-                  onJumpToMessage={onJumpToMessage}
+                <DiffsFile
+                  file={{ name: selectedFile, contents: fileContents }}
+                  options={{ theme: 'pierre-dark' }}
+                  style={{ width: '100%', display: 'block' }}
                 />
               ) : (
                 <div className="flex items-center justify-center h-full text-xs" style={{ color: 'var(--color-dark-text-muted)' }}>
@@ -572,13 +415,12 @@ export function WorkspacePanel({
                   modifiedFiles={modifiedFiles}
                 />
               </div>
-              <div className="flex-1 overflow-hidden relative">
+              <div className="flex-1 overflow-auto" style={{ minWidth: 0, minHeight: 0 }}>
                 {selectedFile ? (
-                  <FileViewer
-                    filename={selectedFile}
-                    contents={fileContents}
-                    lineHistory={fileLineHistory}
-                    onJumpToMessage={onJumpToMessage}
+                  <DiffsFile
+                    file={{ name: selectedFile, contents: fileContents }}
+                    options={{ theme: 'pierre-dark' }}
+                    style={{ width: '100%', display: 'block' }}
                   />
                 ) : (
                   <div className="flex items-center justify-center h-full text-xs" style={{ color: 'var(--color-dark-text-muted)' }}>
