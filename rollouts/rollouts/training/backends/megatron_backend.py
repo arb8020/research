@@ -30,6 +30,7 @@ Usage:
 
 from __future__ import annotations
 
+import inspect
 import logging
 from collections.abc import Sequence
 from dataclasses import dataclass, field
@@ -646,5 +647,25 @@ class MegatronTrainingBackend:
             return ImmediateTrainFuture(ckpt_path)
 
         ckpt_path = self.checkpoint_dir / f"step_{step}"
-        save_checkpoint(step, self.model, self.optimizer, self.opt_param_scheduler)
+        signature = inspect.signature(save_checkpoint)
+        checkpoint_kwargs: dict[str, Any] = {}
+
+        # We do not currently track Megatron's cumulative FLOP counter in this
+        # backend, so preserve the same explicit zero sentinel used by slime.
+        if "num_floating_point_operations_so_far" in signature.parameters:
+            checkpoint_kwargs["num_floating_point_operations_so_far"] = 0
+        if "checkpointing_context" in signature.parameters:
+            checkpoint_kwargs["checkpointing_context"] = None
+        if "train_data_iterator" in signature.parameters:
+            checkpoint_kwargs["train_data_iterator"] = None
+        if "preprocess_common_state_dict_fn" in signature.parameters:
+            checkpoint_kwargs["preprocess_common_state_dict_fn"] = None
+
+        save_checkpoint(
+            step,
+            self.model,
+            self.optimizer,
+            self.opt_param_scheduler,
+            **checkpoint_kwargs,
+        )
         return ImmediateTrainFuture(ckpt_path)
