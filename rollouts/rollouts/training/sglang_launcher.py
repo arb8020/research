@@ -260,6 +260,118 @@ def _current_weight_update_context() -> dict[str, object] | None:
     }
 
 
+def _extract_weight_sync_contract(
+    owner: object,
+    *,
+    owner_class: str,
+    method_name: str,
+    args: tuple[object, ...],
+    kwargs: dict[str, object],
+) -> dict[str, object] | None:
+    def _from_object(value: object) -> dict[str, object]:
+        contract: dict[str, object] = {}
+        for key in (
+            "master_address",
+            "master_port",
+            "rank_offset",
+            "world_size",
+            "group_name",
+            "backend",
+        ):
+            attr = getattr(value, key, None)
+            if attr is not None:
+                contract[key] = attr
+        return contract
+
+    contract: dict[str, object] = {}
+    for key in (
+        "master_address",
+        "master_port",
+        "rank_offset",
+        "world_size",
+        "group_name",
+        "backend",
+    ):
+        if key in kwargs and kwargs[key] is not None:
+            contract[key] = kwargs[key]
+    if args:
+        if hasattr(args[0], "__dict__"):
+            contract.update({k: v for k, v in _from_object(args[0]).items() if k not in contract})
+        if method_name == "init_weights_update_group" and owner_class == "ModelRunner":
+            names = (
+                "master_address",
+                "master_port",
+                "rank_offset",
+                "world_size",
+                "group_name",
+                "backend",
+            )
+            for index, key in enumerate(names):
+                if index < len(args) and key not in contract and args[index] is not None:
+                    contract[key] = args[index]
+    if "group_name" not in contract and method_name.startswith("update_weights"):
+        remembered = getattr(owner, "_rollouts_weight_sync_contracts", None)
+        if isinstance(remembered, dict) and len(remembered) == 1:
+            only_contract = next(iter(remembered.values()))
+            if isinstance(only_contract, dict):
+                contract.update({k: v for k, v in only_contract.items() if k not in contract})
+    if not contract:
+        return None
+    return contract
+
+
+def _remember_weight_sync_contract(owner: object, contract: dict[str, object] | None) -> None:
+    if not contract:
+        return
+    group_name = contract.get("group_name")
+    if group_name is None:
+        return
+    contracts = getattr(owner, "_rollouts_weight_sync_contracts", None)
+    if not isinstance(contracts, dict):
+        contracts = {}
+        try:
+            owner._rollouts_weight_sync_contracts = contracts
+        except Exception:
+            return
+    contracts[str(group_name)] = dict(contract)
+
+
+def _filter_socket_snapshot_for_port(
+    snapshot: dict[str, object], *, port: int | None
+) -> dict[str, object] | None:
+    if port is None:
+        return None
+    proc_net = snapshot.get("proc_net")
+    if not isinstance(proc_net, dict):
+        return None
+    needle = f":{port}"
+
+    def _filter_rows(rows: object) -> list[dict[str, object]]:
+        filtered: list[dict[str, object]] = []
+        if not isinstance(rows, list):
+            return filtered
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            local = str(row.get("local", ""))
+            remote = str(row.get("remote", ""))
+            if needle not in local and needle not in remote:
+                continue
+            filtered.append({
+                "local": local,
+                "remote": remote,
+                "state": row.get("state"),
+            })
+        return filtered
+
+    return {
+        "pid": snapshot.get("pid"),
+        "port": port,
+        "tcp": _filter_rows(proc_net.get("tcp")),
+        "tcp6": _filter_rows(proc_net.get("tcp6")),
+    }
+
+
 def _should_trace_weight_update_collectives(owner_cls: type[object], method_name: str) -> bool:
     if method_name not in {
         "init_weights_update_group",
@@ -394,6 +506,9 @@ def _instrument_torch_distributed_collectives() -> None:
                 "context": context,
                 "process": _process_context(),
             }
+            current = context.get("current", {})
+            if isinstance(current, dict) and current.get("contract") is not None:
+                payload["weight_sync_contract"] = current["contract"]
             group = kwargs.get("group")
             if group is None and name == "barrier" and args:
                 group = args[0]
@@ -405,6 +520,17 @@ def _instrument_torch_distributed_collectives() -> None:
                 payload["src"] = kwargs.get("src", args[1] if len(args) > 1 else None)
                 payload["async_op"] = kwargs.get("async_op", False)
                 payload["socket_state"] = _capture_ss_snapshot(pid=os.getpid())
+                contract = payload.get("weight_sync_contract")
+                master_port = None
+                if isinstance(contract, dict):
+                    try:
+                        raw_port = contract.get("master_port")
+                        master_port = int(raw_port) if raw_port is not None else None
+                    except Exception:
+                        master_port = None
+                payload["bootstrap_socket_state"] = _filter_socket_snapshot_for_port(
+                    payload["socket_state"], port=master_port
+                )
                 try:
                     import torch
 
@@ -973,14 +1099,27 @@ def _wrap_runtime_method(owner_cls: type[object], method_name: str) -> None:
         async def wrapped(self: object, *args: object, **kwargs: object) -> object:  # type: ignore[no-untyped-def]
             _ensure_owner_instrumented(self)
             trace_collectives = _should_trace_weight_update_collectives(owner_cls, method_name)
+            contract = _extract_weight_sync_contract(
+                self,
+                owner_class=owner_cls.__name__,
+                method_name=method_name,
+                args=args,
+                kwargs=kwargs,
+            )
             if trace_collectives:
-                _push_weight_update_context(owner_class=owner_cls.__name__, method=method_name)
+                _push_weight_update_context(
+                    owner_class=owner_cls.__name__,
+                    method=method_name,
+                )
+                if contract is not None:
+                    _weight_update_stack()[-1]["contract"] = contract
             _emit_argus_diag(
                 "sglang_runtime_method_enter",
                 owner_class=owner_cls.__name__,
                 method=method_name,
                 process=_process_context(),
                 owner_state=_method_owner_state(self),
+                weight_sync_contract=contract,
                 args=_jsonable_summary(args),
                 kwargs=_jsonable_summary(kwargs),
             )
@@ -1034,12 +1173,14 @@ def _wrap_runtime_method(owner_cls: type[object], method_name: str) -> None:
             finally:
                 if trace_collectives:
                     _pop_weight_update_context()
+            _remember_weight_sync_contract(self, contract)
             _emit_argus_diag(
                 "sglang_runtime_method_ok",
                 owner_class=owner_cls.__name__,
                 method=method_name,
                 process=_process_context(),
                 owner_state=_method_owner_state(self),
+                weight_sync_contract=contract,
                 result=_jsonable_summary(result),
             )
             _emit_modelrunner_socket_snapshot(
@@ -1067,14 +1208,27 @@ def _wrap_runtime_method(owner_cls: type[object], method_name: str) -> None:
         def wrapped(self: object, *args: object, **kwargs: object) -> object:  # type: ignore[no-untyped-def]
             _ensure_owner_instrumented(self)
             trace_collectives = _should_trace_weight_update_collectives(owner_cls, method_name)
+            contract = _extract_weight_sync_contract(
+                self,
+                owner_class=owner_cls.__name__,
+                method_name=method_name,
+                args=args,
+                kwargs=kwargs,
+            )
             if trace_collectives:
-                _push_weight_update_context(owner_class=owner_cls.__name__, method=method_name)
+                _push_weight_update_context(
+                    owner_class=owner_cls.__name__,
+                    method=method_name,
+                )
+                if contract is not None:
+                    _weight_update_stack()[-1]["contract"] = contract
             _emit_argus_diag(
                 "sglang_runtime_method_enter",
                 owner_class=owner_cls.__name__,
                 method=method_name,
                 process=_process_context(),
                 owner_state=_method_owner_state(self),
+                weight_sync_contract=contract,
                 args=_jsonable_summary(args),
                 kwargs=_jsonable_summary(kwargs),
             )
@@ -1128,12 +1282,14 @@ def _wrap_runtime_method(owner_cls: type[object], method_name: str) -> None:
             finally:
                 if trace_collectives:
                     _pop_weight_update_context()
+            _remember_weight_sync_contract(self, contract)
             _emit_argus_diag(
                 "sglang_runtime_method_ok",
                 owner_class=owner_cls.__name__,
                 method=method_name,
                 process=_process_context(),
                 owner_state=_method_owner_state(self),
+                weight_sync_contract=contract,
                 result=_jsonable_summary(result),
             )
             _emit_modelrunner_socket_snapshot(

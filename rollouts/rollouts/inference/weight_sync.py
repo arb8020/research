@@ -225,6 +225,39 @@ def _proc_socket_snapshot(pid: int | None = None) -> dict[str, object]:
     }
 
 
+def _filter_socket_snapshot_for_port(
+    snapshot: dict[str, object],
+    *,
+    port: int,
+) -> dict[str, object]:
+    needle = f":{port}"
+
+    def _filter_rows(rows: object) -> list[dict[str, object]]:
+        filtered: list[dict[str, object]] = []
+        if not isinstance(rows, list):
+            return filtered
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            local = str(row.get("local", ""))
+            remote = str(row.get("remote", ""))
+            if needle not in local and needle not in remote:
+                continue
+            filtered.append({
+                "local": local,
+                "remote": remote,
+                "state": row.get("state"),
+            })
+        return filtered
+
+    return {
+        "pid": snapshot.get("pid"),
+        "port": port,
+        "tcp": _filter_rows(snapshot.get("tcp")),
+        "tcp6": _filter_rows(snapshot.get("tcp6")),
+    }
+
+
 def _resolve_socket_ifname() -> tuple[str | None, str]:
     explicit = os.environ.get("NCCL_SOCKET_IFNAME") or os.environ.get("GLOO_SOCKET_IFNAME")
     if explicit:
@@ -742,6 +775,7 @@ class WeightSyncSender:
                     broadcast_meta,
                 )
                 if index == 0:
+                    socket_state = _proc_socket_snapshot()
                     _emit_argus_diag(
                         "weight_sync_sender_first_collective_start",
                         total_tensors=total_tensors,
@@ -754,7 +788,18 @@ class WeightSyncSender:
                                 torch.cuda.current_device() if torch.cuda.is_available() else None
                             ),
                         },
-                        socket_state=_proc_socket_snapshot(),
+                        socket_state=socket_state,
+                        bootstrap_socket_state=_filter_socket_snapshot_for_port(
+                            socket_state, port=self.master_port
+                        ),
+                        collective_contract={
+                            "master_addr": self.master_addr,
+                            "master_port": self.master_port,
+                            "group_name": self.group_name,
+                            "rank": 0,
+                            "world_size": dist.get_world_size(self._process_group),
+                            "src": 0,
+                        },
                     )
                 try:
                     handle = dist.broadcast(
@@ -762,6 +807,7 @@ class WeightSyncSender:
                     )
                 except Exception as exc:
                     if index == 0:
+                        socket_state = _proc_socket_snapshot()
                         _emit_argus_diag(
                             "weight_sync_sender_first_collective_failed",
                             total_tensors=total_tensors,
@@ -777,13 +823,25 @@ class WeightSyncSender:
                                     else None
                                 ),
                             },
-                            socket_state=_proc_socket_snapshot(),
+                            socket_state=socket_state,
+                            bootstrap_socket_state=_filter_socket_snapshot_for_port(
+                                socket_state, port=self.master_port
+                            ),
+                            collective_contract={
+                                "master_addr": self.master_addr,
+                                "master_port": self.master_port,
+                                "group_name": self.group_name,
+                                "rank": 0,
+                                "world_size": dist.get_world_size(self._process_group),
+                                "src": 0,
+                            },
                         )
                     raise RuntimeError(
                         "Weight sync sender broadcast failed "
                         f"index={index} total_tensors={total_tensors} tensor={broadcast_meta}"
                     ) from exc
                 if index == 0:
+                    socket_state = _proc_socket_snapshot()
                     _emit_argus_diag(
                         "weight_sync_sender_first_collective_ok",
                         total_tensors=total_tensors,
@@ -796,7 +854,18 @@ class WeightSyncSender:
                                 torch.cuda.current_device() if torch.cuda.is_available() else None
                             ),
                         },
-                        socket_state=_proc_socket_snapshot(),
+                        socket_state=socket_state,
+                        bootstrap_socket_state=_filter_socket_snapshot_for_port(
+                            socket_state, port=self.master_port
+                        ),
+                        collective_contract={
+                            "master_addr": self.master_addr,
+                            "master_port": self.master_port,
+                            "group_name": self.group_name,
+                            "rank": 0,
+                            "world_size": dist.get_world_size(self._process_group),
+                            "src": 0,
+                        },
                     )
                 if use_async:
                     handles.append(handle)
@@ -830,12 +899,24 @@ class WeightSyncSender:
             )
             if handles:
                 wait_started_at = time.monotonic()
+                socket_state = _proc_socket_snapshot()
                 _emit_argus_diag(
                     "weight_sync_sender_collective_wait_start",
                     total_tensors=total_tensors,
                     async_op=async_op,
                     handles=len(handles),
-                    socket_state=_proc_socket_snapshot(),
+                    socket_state=socket_state,
+                    bootstrap_socket_state=_filter_socket_snapshot_for_port(
+                        socket_state, port=self.master_port
+                    ),
+                    collective_contract={
+                        "master_addr": self.master_addr,
+                        "master_port": self.master_port,
+                        "group_name": self.group_name,
+                        "rank": 0,
+                        "world_size": dist.get_world_size(self._process_group),
+                        "src": 0,
+                    },
                 )
                 try:
                     for handle in handles:
