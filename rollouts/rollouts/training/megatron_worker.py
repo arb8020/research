@@ -414,26 +414,92 @@ def _isolated_weight_sync_sender_main(
             shapes=tuple(item.shape for item in weight_tensors),
             dtypes=tuple(item.dtype for item in weight_tensors),
         )
+        update_connect_timeout_sec = 5.0
+        update_read_timeout_sec = 300.0
+
+        def _update_remote_endpoint(endpoint: str) -> dict[str, object]:
+            started_at = time.monotonic()
+            _put_progress(
+                "remote_update_start",
+                endpoint=endpoint,
+                tensor_count=len(weight_tensors),
+                group=group_name,
+                version=version,
+                connect_timeout_sec=update_connect_timeout_sec,
+                read_timeout_sec=update_read_timeout_sec,
+            )
+            response: requests.Response | None = None
+            try:
+                response = requests.post(
+                    f"{endpoint}/update_weights_from_distributed",
+                    json={
+                        **request.to_dict(),
+                        "group_name": group_name,
+                        "flush_cache": False,
+                        "weight_version": str(version),
+                    },
+                    timeout=(update_connect_timeout_sec, update_read_timeout_sec),
+                )
+                elapsed_sec = round(time.monotonic() - started_at, 3)
+                response.raise_for_status()
+                _put_progress(
+                    "remote_update_ok",
+                    endpoint=endpoint,
+                    status_code=response.status_code,
+                    elapsed_sec=elapsed_sec,
+                )
+                return {
+                    "endpoint": endpoint,
+                    "status_code": response.status_code,
+                    "elapsed_sec": elapsed_sec,
+                }
+            except Exception as exc:
+                elapsed_sec = round(time.monotonic() - started_at, 3)
+                status_code = None
+                response_text = None
+                if response is not None:
+                    status_code = response.status_code
+                    try:
+                        response_text = response.text[:400]
+                    except Exception:
+                        response_text = "<response text unavailable>"
+                logger.exception(
+                    "weight_sync_megatron_isolated_remote_update_failed endpoint=%s",
+                    endpoint,
+                )
+                _emit_argus_diag(
+                    "weight_sync_megatron_isolated_remote_update_failed",
+                    endpoint=endpoint,
+                    group=group_name,
+                    version=version,
+                    tensor_count=len(weight_tensors),
+                    elapsed_sec=elapsed_sec,
+                    status_code=status_code,
+                    response_text=response_text,
+                    error_type=type(exc).__name__,
+                    error=str(exc),
+                )
+                _put_progress(
+                    "remote_update_failed",
+                    endpoint=endpoint,
+                    group=group_name,
+                    version=version,
+                    tensor_count=len(weight_tensors),
+                    elapsed_sec=elapsed_sec,
+                    status_code=status_code,
+                    response_text=response_text,
+                    error_type=type(exc).__name__,
+                    error=str(exc),
+                )
+                raise
+
         futures = []
         executor = concurrent.futures.ThreadPoolExecutor(
             max_workers=max(1, len(inference_endpoints))
         )
         try:
             for endpoint in inference_endpoints:
-                _put_progress("remote_update_start", endpoint=endpoint)
-                futures.append(
-                    executor.submit(
-                        requests.post,
-                        f"{endpoint}/update_weights_from_distributed",
-                        json={
-                            **request.to_dict(),
-                            "group_name": group_name,
-                            "flush_cache": False,
-                            "weight_version": str(version),
-                        },
-                        timeout=300.0,
-                    )
-                )
+                futures.append((endpoint, executor.submit(_update_remote_endpoint, endpoint)))
 
             _put_progress("broadcast_start")
             sender.broadcast_payload(
@@ -448,13 +514,9 @@ def _isolated_weight_sync_sender_main(
             )
             _put_progress("broadcast_ok")
 
-            for future in futures:
-                response = future.result()
-                response.raise_for_status()
-                _put_progress(
-                    "remote_update_ok",
-                    status_code=response.status_code,
-                )
+            for endpoint, future in futures:
+                _put_progress("remote_update_wait_start", endpoint=endpoint)
+                future.result()
         finally:
             executor.shutdown(wait=False)
             _put_progress("sender_cleanup_start")

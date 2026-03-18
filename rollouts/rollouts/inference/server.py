@@ -851,9 +851,42 @@ def create_app(engine: InferenceEngineV2) -> Any:
         """
         from .weight_sync import ParamInfo
 
+        request_group_name = request.get("group_name", "weight_sync")
+        request_weight_version = request.get("weight_version")
+        request_flush_cache = request.get("flush_cache")
         receiver = _nccl_state["receiver"]
+        stored_group_name = _nccl_state.get("group_name")
+        stored_rank = _nccl_state.get("rank")
+        stored_world_size = _nccl_state.get("world_size")
+        _emit_argus_diag(
+            "weight_sync_inference_http_update_start",
+            request_group=request_group_name,
+            request_weight_version=request_weight_version,
+            request_flush_cache=request_flush_cache,
+            receiver_initialized=receiver is not None,
+            stored_group=stored_group_name,
+            stored_rank=stored_rank,
+            stored_world_size=stored_world_size,
+        )
         if receiver is None:
-            raise HTTPException(status_code=400, detail="NCCL group not initialized")
+            detail = (
+                "NCCL group not initialized "
+                f"request_group={request_group_name!r} "
+                f"stored_group={stored_group_name!r} "
+                f"stored_rank={stored_rank!r} "
+                f"stored_world_size={stored_world_size!r}"
+            )
+            _emit_argus_diag(
+                "weight_sync_inference_http_update_rejected",
+                request_group=request_group_name,
+                request_weight_version=request_weight_version,
+                request_flush_cache=request_flush_cache,
+                stored_group=stored_group_name,
+                stored_rank=stored_rank,
+                stored_world_size=stored_world_size,
+                detail=detail,
+            )
+            raise HTTPException(status_code=400, detail=detail)
 
         names = request.get("names", [])
         shapes = request.get("shapes", [])
@@ -866,7 +899,13 @@ def create_app(engine: InferenceEngineV2) -> Any:
         }
 
         try:
-            logger.info(f"Receiving {len(names)} weight tensors via NCCL")
+            logger.info(
+                "Receiving %s weight tensors via NCCL request_group=%s stored_group=%s version=%s",
+                len(names),
+                request_group_name,
+                stored_group_name,
+                request_weight_version,
+            )
             param_infos = [
                 ParamInfo(
                     name=name,
@@ -880,9 +919,30 @@ def create_app(engine: InferenceEngineV2) -> Any:
             # Apply weights
             engine.reload_weights(new_state_dict)
             logger.info("NCCL weight update complete")
+            _emit_argus_diag(
+                "weight_sync_inference_http_update_ok",
+                request_group=request_group_name,
+                request_weight_version=request_weight_version,
+                request_flush_cache=request_flush_cache,
+                stored_group=stored_group_name,
+                stored_rank=stored_rank,
+                stored_world_size=stored_world_size,
+                num_tensors=len(names),
+            )
             return {"status": "ok", "num_tensors": len(names)}
         except Exception as e:
             logger.exception("Error in /update_weights_from_distributed")
+            _emit_argus_diag(
+                "weight_sync_inference_http_update_failed",
+                request_group=request_group_name,
+                request_weight_version=request_weight_version,
+                request_flush_cache=request_flush_cache,
+                stored_group=stored_group_name,
+                stored_rank=stored_rank,
+                stored_world_size=stored_world_size,
+                num_tensors=len(names),
+                error=f"{type(e).__name__}: {e}",
+            )
             raise HTTPException(status_code=500, detail=str(e)) from e
 
     @app.post("/destroy_weights_update_group")
