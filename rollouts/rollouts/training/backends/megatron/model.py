@@ -594,6 +594,8 @@ class MegatronModelConfig:
 def setup_megatron_model(
     config: MegatronModelConfig,
     checkpoint_path: Path | None = None,
+    *,
+    save_optimizer_state: bool = True,
 ) -> tuple[list[Any], Any, Any, int]:
     """Create Megatron model with optimizer from HuggingFace checkpoint.
 
@@ -607,6 +609,7 @@ def setup_megatron_model(
     Args:
         config: Model and training configuration
         checkpoint_path: Optional path to load checkpoint from
+        save_optimizer_state: Whether checkpoints include optimizer/scheduler state
 
     Returns:
         Tuple of (model_chunks, optimizer, scheduler)
@@ -748,7 +751,13 @@ def setup_megatron_model(
     # Load checkpoint if provided
     checkpoint_iteration = 0
     if checkpoint_path is not None:
-        checkpoint_iteration = _load_checkpoint(model, optimizer, scheduler, checkpoint_path)
+        checkpoint_iteration = _load_checkpoint(
+            model,
+            optimizer,
+            scheduler,
+            checkpoint_path,
+            save_optimizer_state=save_optimizer_state,
+        )
 
     return model, optimizer, scheduler, checkpoint_iteration
 
@@ -842,6 +851,8 @@ def _load_checkpoint(
     optimizer: Any,
     scheduler: Any,
     checkpoint_path: Path,
+    *,
+    save_optimizer_state: bool,
 ) -> int:
     """Load checkpoint into model/optimizer/scheduler.
 
@@ -865,26 +876,34 @@ def _load_checkpoint(
             f"latest_checkpointed_iteration.txt: {tracker_path}"
         )
 
+    from megatron.training.global_vars import get_args
+
+    from rollouts.training.backends.megatron_backend import _normalize_megatron_checkpoint_args
+
+    args = get_args()
+    _normalize_megatron_checkpoint_args(
+        args,
+        checkpoint_path,
+        save_optimizer_state=save_optimizer_state,
+    )
+
     signature = inspect.signature(load_checkpoint)
     parameters = signature.parameters
 
-    if "load_dir" in parameters:
-        load_result = load_checkpoint(
-            model=model,
-            optimizer=optimizer,
-            opt_param_scheduler=scheduler,
-            load_dir=str(checkpoint_path),
-        )
-    else:
-        from megatron.training.global_vars import get_args
-
-        args = get_args()
-        previous_load = getattr(args, "load", None)
-        try:
-            args.load = str(checkpoint_path)
+    previous_load = getattr(args, "load", None)
+    try:
+        args.load = str(checkpoint_path)
+        if "load_dir" in parameters:
+            load_result = load_checkpoint(
+                model=model,
+                optimizer=optimizer,
+                opt_param_scheduler=scheduler,
+                load_dir=str(checkpoint_path),
+            )
+        else:
             load_result = load_checkpoint(model, optimizer, scheduler)
-        finally:
-            args.load = previous_load
+    finally:
+        args.load = previous_load
 
     logger.info("Checkpoint loaded")
     tracker_text = tracker_path.read_text(encoding="utf-8").strip()

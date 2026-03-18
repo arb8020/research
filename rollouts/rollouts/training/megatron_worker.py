@@ -1139,6 +1139,7 @@ def train(handle: Worker) -> None:
         model, optimizer, scheduler, checkpoint_iteration = setup_megatron_model(
             model_config,
             checkpoint_path=checkpoint_path,
+            save_optimizer_state=config.get("save_optimizer_state", True),
         )
         logger.info("Model setup complete")
 
