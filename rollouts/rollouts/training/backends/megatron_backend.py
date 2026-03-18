@@ -59,6 +59,56 @@ def _extract_megatron_logits(output_tensor: Any) -> Any:
     return output_tensor
 
 
+def _normalize_megatron_checkpoint_args(args: Any, checkpoint_dir: Path) -> None:
+    """Fill checkpoint config defaults expected by newer Megatron saves.
+
+    Our worker constructs a minimal Megatron args namespace for model/runtime
+    initialization. Recent Megatron checkpoint code assumes the checkpoint
+    config product type has already been populated as well. Normalize those
+    fields here instead of depending on parser/version-specific side effects.
+    """
+
+    checkpoint_defaults = {
+        "async_ckpt_cpu_priority": 10,
+        "async_ckpt_io_priority": 3,
+        "async_save": False,
+        "ckpt_assume_constant_structure": False,
+        "ckpt_format": "torch_dist",
+        "ckpt_fully_parallel_save": True,
+        "ckpt_fully_parallel_save_process_group": "dp",
+        "dist_ckpt_optim_fully_reshardable": False,
+        "dist_ckpt_save_pre_mcore_014": False,
+        "dist_ckpt_workers": 1,
+        "distrib_optim_fully_reshardable_mem_efficient": False,
+        "log_progress": False,
+        "non_persistent_ckpt_type": None,
+        "non_persistent_global_ckpt_dir": None,
+        "non_persistent_local_ckpt_algo": "fully_parallel",
+        "save_interval": 1,
+        "save_retain_interval": None,
+        "use_persistent_ckpt_worker": False,
+    }
+    for name, default in checkpoint_defaults.items():
+        if getattr(args, name, None) is None:
+            setattr(args, name, default)
+
+    if not hasattr(args, "no_save_optim"):
+        args.no_save_optim = not getattr(args, "save_optim", True)
+    if not hasattr(args, "no_save_rng"):
+        args.no_save_rng = not getattr(args, "save_rng", True)
+
+    # This backend owns the save root; keep Megatron's tracker and naming
+    # rooted under the configured checkpoint directory.
+    args.save = str(checkpoint_dir)
+
+    try:
+        from megatron.training.utils import update_use_dist_ckpt
+    except ImportError:
+        args.use_dist_ckpt = args.ckpt_format != "torch"
+    else:
+        update_use_dist_ckpt(args)
+
+
 def _naive_per_token_logprobs(logits: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
     log_probs = torch.nn.functional.log_softmax(logits, dim=-1)
     return log_probs.gather(dim=-1, index=labels.unsqueeze(-1)).squeeze(-1)
@@ -636,6 +686,7 @@ class MegatronTrainingBackend:
         """
         try:
             from megatron.training.checkpointing import save_checkpoint
+            from megatron.training.global_vars import get_args
         except ImportError:
             # Fallback to simple torch.save
             import torch
@@ -646,7 +697,8 @@ class MegatronTrainingBackend:
             torch.save(state_dict, ckpt_path / "model.pt")
             return ImmediateTrainFuture(ckpt_path)
 
-        ckpt_path = self.checkpoint_dir / f"step_{step}"
+        args = get_args()
+        _normalize_megatron_checkpoint_args(args, self.checkpoint_dir)
         signature = inspect.signature(save_checkpoint)
         checkpoint_kwargs: dict[str, Any] = {}
 
@@ -668,4 +720,4 @@ class MegatronTrainingBackend:
             self.opt_param_scheduler,
             **checkpoint_kwargs,
         )
-        return ImmediateTrainFuture(ckpt_path)
+        return ImmediateTrainFuture(self.checkpoint_dir)
