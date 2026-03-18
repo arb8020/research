@@ -1163,11 +1163,23 @@ def train(handle: Worker) -> None:
             loss_fn=_select_native_loss_fn(config),
         )
 
+        if checkpoint_path is not None:
+            try:
+                from megatron.training.global_vars import get_args
+
+                backend._step = int(get_args().iteration)
+            except Exception as exc:
+                logger.warning(
+                    "Failed to restore backend step from loaded checkpoint: %s: %s",
+                    type(exc).__name__,
+                    exc,
+                )
+
         logger.info("Model initialized, entering training loop")
 
         # Rank 0 confirms init complete
         if rank == 0:
-            handle.send({"status": "initialized"})
+            handle.send({"status": "initialized", "step": int(getattr(backend, "_step", 0))})
 
         # Phase 4: Training loop
         _training_loop(handle, backend, rank, config)

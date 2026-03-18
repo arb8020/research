@@ -328,7 +328,11 @@ class MegatronRemoteBackend:
         )
         assert response["status"] == "initialized", f"Init failed: {response}"
 
-        self._restore_local_step_from_checkpoint()
+        initialized_step = response.get("step")
+        if initialized_step is not None:
+            self._step = int(initialized_step)
+        else:
+            self._restore_local_step_from_checkpoint()
         self._initialized = True
         logger.info("All workers initialized")
 
