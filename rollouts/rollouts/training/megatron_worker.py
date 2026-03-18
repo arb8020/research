@@ -1239,6 +1239,18 @@ def _training_loop(
             if cmd_id == -1:
                 raise ValueError(f"Unknown command ID: {cmd_id}")
 
+        checkpoint_step = 0
+        if cmd_id == Command.SAVE_CHECKPOINT:
+            if rank == 0:
+                checkpoint_step = int(msg.get("step", 0))
+                checkpoint_step_tensor = torch.tensor(
+                    [checkpoint_step], dtype=torch.long, device="cuda"
+                )
+            else:
+                checkpoint_step_tensor = torch.zeros(1, dtype=torch.long, device="cuda")
+            dist.broadcast(checkpoint_step_tensor, src=0)
+            checkpoint_step = int(checkpoint_step_tensor.item())
+
         command_name = CMD_NAME.get(Command(cmd_id), f"unknown_{cmd_id}")
 
         # Handle shutdown
@@ -1317,10 +1329,9 @@ def _training_loop(
 
             # Handle save_checkpoint
             elif cmd_id == Command.SAVE_CHECKPOINT:
+                backend.save_checkpoint(checkpoint_step)
                 if rank == 0:
                     path = msg.get("path", "./checkpoints")
-                    step = msg.get("step", 0)
-                    backend.save_checkpoint(step)
                     handle.send({"status": "saved", "path": path})
 
             logger.info("command_ok name=%s rank=%s", command_name, rank)
