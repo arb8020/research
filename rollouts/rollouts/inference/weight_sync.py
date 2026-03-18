@@ -258,6 +258,23 @@ def _filter_socket_snapshot_for_port(
     }
 
 
+def _store_summary(store: object) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "type": type(store).__name__,
+        "repr": repr(store)[:240],
+    }
+    for attr in ("host", "port", "world_size", "timeout", "_underlying_non_prefix_store"):
+        try:
+            value = getattr(store, attr)
+        except Exception:
+            continue
+        if attr == "_underlying_non_prefix_store":
+            payload[attr] = type(value).__name__
+        else:
+            payload[attr] = repr(value)[:120]
+    return payload
+
+
 def _resolve_socket_ifname() -> tuple[str | None, str]:
     explicit = os.environ.get("NCCL_SOCKET_IFNAME") or os.environ.get("GLOO_SOCKET_IFNAME")
     if explicit:
@@ -473,7 +490,15 @@ def _init_process_group_like_miles(
     if timeout is None:
         timeout = default_pg_timeout
 
+    bootstrap_port: int | None = None
+    if init_method and init_method.startswith("tcp://"):
+        try:
+            bootstrap_port = int(init_method.rsplit(":", 1)[1])
+        except Exception:
+            bootstrap_port = None
+
     if store is None:
+        socket_state = _proc_socket_snapshot()
         logger.info(
             "weight_sync_pg_rendezvous_start group=%s rank=%s world_size=%s",
             group_name,
@@ -485,10 +510,17 @@ def _init_process_group_like_miles(
             group=group_name,
             rank=rank,
             world_size=world_size,
+            init_method=init_method,
+            bootstrap_socket_state=(
+                _filter_socket_snapshot_for_port(socket_state, port=bootstrap_port)
+                if bootstrap_port is not None
+                else None
+            ),
         )
         rendezvous_iterator = rendezvous(init_method, rank, world_size, timeout=timeout)
         store, rank, world_size = next(rendezvous_iterator)
         store.set_timeout(timeout)
+        socket_state = _proc_socket_snapshot()
         logger.info(
             "weight_sync_pg_rendezvous_ok group=%s rank=%s world_size=%s",
             group_name,
@@ -500,8 +532,29 @@ def _init_process_group_like_miles(
             group=group_name,
             rank=rank,
             world_size=world_size,
+            store=_store_summary(store),
+            bootstrap_socket_state=(
+                _filter_socket_snapshot_for_port(socket_state, port=bootstrap_port)
+                if bootstrap_port is not None
+                else None
+            ),
         )
-        store = PrefixStore(group_name, store)
+        prefixed_store = PrefixStore(group_name, store)
+        socket_state = _proc_socket_snapshot()
+        _emit_argus_diag(
+            "weight_sync_pg_prefix_store_created",
+            group=group_name,
+            rank=rank,
+            world_size=world_size,
+            base_store=_store_summary(store),
+            prefixed_store=_store_summary(prefixed_store),
+            bootstrap_socket_state=(
+                _filter_socket_snapshot_for_port(socket_state, port=bootstrap_port)
+                if bootstrap_port is not None
+                else None
+            ),
+        )
+        store = prefixed_store
 
     pg_helper_sig = inspect.signature(_new_process_group_helper)
     if "backend_options" in pg_helper_sig.parameters:
@@ -527,6 +580,12 @@ def _init_process_group_like_miles(
         backend=backend,
         rank=rank,
         world_size=world_size,
+        store=_store_summary(store),
+        bootstrap_socket_state=(
+            _filter_socket_snapshot_for_port(_proc_socket_snapshot(), port=bootstrap_port)
+            if bootstrap_port is not None
+            else None
+        ),
     )
     pg, _ = _new_process_group_helper(
         world_size,
@@ -551,6 +610,12 @@ def _init_process_group_like_miles(
         backend=backend,
         rank=rank,
         world_size=world_size,
+        store=_store_summary(store),
+        bootstrap_socket_state=(
+            _filter_socket_snapshot_for_port(_proc_socket_snapshot(), port=bootstrap_port)
+            if bootstrap_port is not None
+            else None
+        ),
     )
 
     # Register in world for cleanup
