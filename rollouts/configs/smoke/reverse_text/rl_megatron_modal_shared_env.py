@@ -20,6 +20,10 @@ hardware = HardwareConfig(
 
 config = replace(
     _base_config,
+    checkpoint=replace(
+        _base_config.checkpoint,
+        save_optimizer_state=False,
+    ),
     output=replace(
         _base_config.output,
         experiment_name="smoke_reverse_text_megatron_modal_shared_env",

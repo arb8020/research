@@ -59,7 +59,12 @@ def _extract_megatron_logits(output_tensor: Any) -> Any:
     return output_tensor
 
 
-def _normalize_megatron_checkpoint_args(args: Any, checkpoint_dir: Path) -> None:
+def _normalize_megatron_checkpoint_args(
+    args: Any,
+    checkpoint_dir: Path,
+    *,
+    save_optimizer_state: bool,
+) -> None:
     """Fill checkpoint config defaults expected by newer Megatron saves.
 
     Our worker constructs a minimal Megatron args namespace for model/runtime
@@ -92,8 +97,7 @@ def _normalize_megatron_checkpoint_args(args: Any, checkpoint_dir: Path) -> None
         if getattr(args, name, None) is None:
             setattr(args, name, default)
 
-    if not hasattr(args, "no_save_optim"):
-        args.no_save_optim = not getattr(args, "save_optim", True)
+    args.no_save_optim = not save_optimizer_state
     if not hasattr(args, "no_save_rng"):
         args.no_save_rng = not getattr(args, "save_rng", True)
 
@@ -378,6 +382,7 @@ class MegatronConfig:
         bf16: Use BF16 mixed precision
         use_flash_attn: Enable FlashAttention
         seq_length: Maximum sequence length
+        save_optimizer_state: Include optimizer/scheduler state in checkpoints
     """
 
     tensor_model_parallel_size: int = 1
@@ -392,6 +397,7 @@ class MegatronConfig:
     bf16: bool = True
     use_flash_attn: bool = True
     seq_length: int = 4096
+    save_optimizer_state: bool = True
 
 
 @dataclass
@@ -698,7 +704,11 @@ class MegatronTrainingBackend:
             return ImmediateTrainFuture(ckpt_path)
 
         args = get_args()
-        _normalize_megatron_checkpoint_args(args, self.checkpoint_dir)
+        _normalize_megatron_checkpoint_args(
+            args,
+            self.checkpoint_dir,
+            save_optimizer_state=self.config.save_optimizer_state,
+        )
         signature = inspect.signature(save_checkpoint)
         checkpoint_kwargs: dict[str, Any] = {}
 

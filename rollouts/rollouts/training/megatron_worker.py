@@ -1142,6 +1142,7 @@ def train(handle: Worker) -> None:
             micro_batch_size=model_config.micro_batch_size,
             global_batch_size=model_config.global_batch_size,
             seq_length=model_config.seq_length,
+            save_optimizer_state=config.get("save_optimizer_state", True),
             clip_grad=config.get("clip_grad", 1.0),
             bf16=model_config.bf16,
         )

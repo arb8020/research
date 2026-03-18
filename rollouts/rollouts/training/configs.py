@@ -544,6 +544,10 @@ class CheckpointConfig:
     num_steps: int = 100
     log_every: int = 1
     checkpoint_every: int = 20  # Save to disk (for recovery/resuming)
+    # Whether checkpoints should include optimizer/scheduler state.
+    # Disable this when a backend's optimizer serializer is known-broken and
+    # the run only needs model-weight recovery.
+    save_optimizer_state: bool = True
     sync_weights_every: int = 1  # Sync to inference engine (for on-policy vs off-policy)
     # Weight sync mode: "disk" (save to /dev/shm, reload) or "nccl" (direct tensor broadcast).
     # "nccl" chooses the transport only. Whether updates are blocking or inflight

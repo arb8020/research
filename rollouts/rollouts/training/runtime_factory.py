@@ -228,6 +228,7 @@ def create_training_backend_runtime(
             micro_batch_size=trainer.micro_batch_size or 1,
             global_batch_size=global_batch_size,
             seq_length=seq_len,
+            save_optimizer_state=checkpoint.save_optimizer_state,
             master_port=checkpoint.nccl_master_port,
             inference_endpoints=list(megatron_inference_endpoints),
             cuda_device_ids=trainer.cuda_device_ids,

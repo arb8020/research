@@ -72,6 +72,7 @@ class MegatronRemoteConfig:
     micro_batch_size: int = 1
     global_batch_size: int = 8
     seq_length: int = 4096
+    save_optimizer_state: bool = True
 
     # NCCL
     master_addr: str = "127.0.0.1"
@@ -289,6 +290,7 @@ class MegatronRemoteBackend:
                     "micro_batch_size": self.config.micro_batch_size,
                     "global_batch_size": self.config.global_batch_size,
                     "seq_length": self.config.seq_length,
+                    "save_optimizer_state": self.config.save_optimizer_state,
                     "clip_grad": self.config.max_grad_norm,
                     "master_addr": self.config.master_addr,
                     "master_port": self.config.master_port,
