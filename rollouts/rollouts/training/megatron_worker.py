@@ -1115,6 +1115,9 @@ def train(handle: Worker) -> None:
             config=parallelism_config,
             master_addr=config.get("master_addr"),
             master_port=config.get("master_port"),
+            global_batch_size=config.get("global_batch_size", 8),
+            micro_batch_size=config.get("micro_batch_size", 1),
+            seq_length=config.get("seq_length", 4096),
         )
         logger.info("init_megatron complete")
 
