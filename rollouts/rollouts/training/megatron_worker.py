@@ -212,6 +212,11 @@ def _isolated_weight_sync_sender_main(
     version: int,
     tensors: list[dict[str, object]],
 ) -> None:
+    def _put_progress(stage: str, **data: object) -> None:
+        payload = {"kind": "progress", "stage": stage, **data}
+        result_queue.put(payload)
+        _emit_argus_diag("weight_sync_megatron_isolated_sender_progress", **payload)
+
     try:
         import requests
         import torch
@@ -255,9 +260,23 @@ def _isolated_weight_sync_sender_main(
                 "CUDA_VISIBLE_DEVICES": os.environ.get("CUDA_VISIBLE_DEVICES"),
             },
         )
+        _put_progress(
+            "sender_start",
+            master_addr=master_addr,
+            master_port=master_port,
+            group=group_name,
+            endpoints=inference_endpoints,
+            pid=os.getpid(),
+        )
 
         world_size = 1 + len(inference_endpoints)
         for index, endpoint in enumerate(inference_endpoints, start=1):
+            _put_progress(
+                "remote_init_start",
+                endpoint=endpoint,
+                rank_offset=index,
+                world_size=world_size,
+            )
             request = InitWeightUpdateGroupRequest(
                 master_address=master_addr,
                 master_port=master_port,
@@ -271,7 +290,14 @@ def _isolated_weight_sync_sender_main(
                 timeout=300.0,
             )
             response.raise_for_status()
+            _put_progress(
+                "remote_init_ok",
+                endpoint=endpoint,
+                rank_offset=index,
+                status_code=response.status_code,
+            )
 
+        _put_progress("sender_pg_init_start")
         sender = WeightSyncSender(
             master_addr=master_addr,
             master_port=master_port,
@@ -279,6 +305,7 @@ def _isolated_weight_sync_sender_main(
             group_name=group_name,
         )
         sender.init_group()
+        _put_progress("sender_pg_init_ok")
 
         weight_tensors: list[WeightWireTensor] = []
         for item in tensors:
@@ -297,6 +324,11 @@ def _isolated_weight_sync_sender_main(
                     metadata=dict(item.get("metadata", {})),
                 )
             )
+        _put_progress(
+            "payload_ready",
+            tensor_count=len(weight_tensors),
+            first_tensor=weight_tensors[0].wire_name if weight_tensors else None,
+        )
 
         request = ReceiveWeightUpdateRequest(
             names=tuple(item.wire_name for item in weight_tensors),
@@ -310,6 +342,7 @@ def _isolated_weight_sync_sender_main(
         )
         try:
             for endpoint in inference_endpoints:
+                _put_progress("remote_update_start", endpoint=endpoint)
                 futures.append(
                     executor.submit(
                         requests.post,
@@ -324,6 +357,7 @@ def _isolated_weight_sync_sender_main(
                     )
                 )
 
+            _put_progress("broadcast_start")
             sender.broadcast_payload(
                 WeightUpdatePayload(
                     tensors=tuple(weight_tensors),
@@ -334,15 +368,22 @@ def _isolated_weight_sync_sender_main(
                 async_op=True,
                 advance_version=False,
             )
+            _put_progress("broadcast_ok")
 
             for future in futures:
                 response = future.result()
                 response.raise_for_status()
+                _put_progress(
+                    "remote_update_ok",
+                    status_code=response.status_code,
+                )
         finally:
             executor.shutdown(wait=False)
+            _put_progress("sender_cleanup_start")
             sender.cleanup()
+            _put_progress("sender_cleanup_ok")
 
-        result_queue.put({"ok": True})
+        result_queue.put({"kind": "result", "ok": True})
     except Exception as exc:
         logger.exception("weight_sync_megatron_isolated_sender_failed")
         _emit_argus_diag(
@@ -350,6 +391,7 @@ def _isolated_weight_sync_sender_main(
             error=f"{type(exc).__name__}: {exc}",
         )
         result_queue.put({
+            "kind": "result",
             "ok": False,
             "error": f"{type(exc).__name__}: {exc}",
         })
@@ -1442,7 +1484,7 @@ def _do_sync_weights_nccl(
                         "cpu_tensor": item.tensor.detach().cpu().clone(),
                     })
                 ctx = multiprocessing.get_context("spawn")
-                result_queue = ctx.Queue(maxsize=1)
+                result_queue = ctx.Queue(maxsize=64)
                 helper = ctx.Process(
                     target=_isolated_weight_sync_sender_main,
                     kwargs={
@@ -1458,16 +1500,40 @@ def _do_sync_weights_nccl(
                     daemon=False,
                 )
                 helper.start()
-                helper.join(timeout=60.0)
-                if helper.is_alive():
+                helper_result: dict[str, object] | None = None
+                deadline = time.time() + 60.0
+                while time.time() < deadline:
+                    while not result_queue.empty():
+                        message = result_queue.get_nowait()
+                        kind = message.get("kind")
+                        if kind == "progress":
+                            logger.info(
+                                "weight_sync_megatron_isolated_sender_progress stage=%s data=%s",
+                                message.get("stage"),
+                                {k: v for k, v in message.items() if k not in {"kind", "stage"}},
+                            )
+                        elif kind == "result":
+                            helper_result = message
+                            break
+                    if helper_result is not None:
+                        break
+                    if not helper.is_alive():
+                        break
+                    helper.join(timeout=0.5)
+                if helper_result is None and helper.is_alive():
                     helper.terminate()
                     helper.join(timeout=5.0)
                     raise TimeoutError("Isolated witness sender helper timed out after 60s")
-                if result_queue.empty():
-                    raise RuntimeError(
-                        f"Isolated witness sender exited without result exitcode={helper.exitcode}"
-                    )
-                helper_result = result_queue.get_nowait()
+                if helper_result is None:
+                    while not result_queue.empty():
+                        message = result_queue.get_nowait()
+                        if message.get("kind") == "result":
+                            helper_result = message
+                            break
+                    if helper_result is None:
+                        raise RuntimeError(
+                            f"Isolated witness sender exited without result exitcode={helper.exitcode}"
+                        )
                 if not helper_result.get("ok"):
                     raise RuntimeError(
                         f"Isolated witness sender failed: {helper_result.get('error')}"
