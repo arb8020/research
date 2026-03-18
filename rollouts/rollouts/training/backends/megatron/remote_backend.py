@@ -20,6 +20,10 @@ Architecture:
 from __future__ import annotations
 
 import logging
+import os
+import select
+import signal
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -34,6 +38,9 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _CONTROL_MESSAGE_MAX_BYTES = 64 * 1024
+_WITNESS_RESPONSE_TIMEOUT_SEC = 20.0
+_RESPONSE_POLL_INTERVAL_SEC = 0.25
+_RESPONSE_PROGRESS_LOG_INTERVAL_SEC = 5.0
 
 
 @dataclass
@@ -102,6 +109,75 @@ class MegatronRemoteBackend:
     _step: int = field(default=0, init=False)
     _initialized: bool = field(default=False, init=False)
 
+    def _worker_snapshot(self) -> list[dict[str, Any]]:
+        snapshot: list[dict[str, Any]] = []
+        for worker in self.workers:
+            pid = getattr(worker, "pid", None)
+            try:
+                alive = bool(worker.is_alive())
+            except Exception as exc:
+                snapshot.append({
+                    "pid": pid,
+                    "alive": False,
+                    "state_error": f"{type(exc).__name__}: {exc}",
+                })
+                continue
+            snapshot.append({"pid": pid, "alive": alive})
+        return snapshot
+
+    def _abort_workers(self, *, reason: str, context: str) -> None:
+        before = self._worker_snapshot()
+        logger.warning(
+            "megatron_remote_abort_start",
+            extra={
+                "event": "megatron_remote_abort_start",
+                "context": context,
+                "reason": reason,
+                "workers_before": before,
+            },
+        )
+        try:
+            self.shutdown()
+        except Exception as exc:
+            logger.warning(
+                "megatron_remote_abort_shutdown_failed",
+                extra={
+                    "event": "megatron_remote_abort_shutdown_failed",
+                    "context": context,
+                    "reason": reason,
+                    "error_type": type(exc).__name__,
+                    "error": str(exc),
+                },
+            )
+        for sig in (signal.SIGTERM, signal.SIGKILL):
+            for worker in self.workers:
+                pid = getattr(worker, "pid", None)
+                if pid is None:
+                    continue
+                try:
+                    if worker.is_alive():
+                        os.kill(pid, sig)
+                except Exception:
+                    pass
+            if sig == signal.SIGTERM:
+                time.sleep(0.5)
+        for worker in self.workers:
+            try:
+                worker.close()
+            except Exception:
+                pass
+        after = self._worker_snapshot()
+        logger.warning(
+            "megatron_remote_abort_complete",
+            extra={
+                "event": "megatron_remote_abort_complete",
+                "context": context,
+                "reason": reason,
+                "workers_before": before,
+                "workers_after": after,
+            },
+        )
+
     def _recv_response(self, worker: Worker, *, context: str, max_size: int) -> dict[str, Any]:
         response = worker.recv(max_size=max_size)
         if response.get("status") == "error":
@@ -113,6 +189,64 @@ class MegatronRemoteBackend:
                 )
             raise RuntimeError(f"Megatron worker failed during {context}: {error}")
         return response
+
+    def _recv_response_polling(
+        self,
+        worker: Worker,
+        *,
+        context: str,
+        max_size: int,
+        timeout_sec: float,
+    ) -> dict[str, Any]:
+        start = time.monotonic()
+        next_progress_log = start + _RESPONSE_PROGRESS_LOG_INTERVAL_SEC
+        logger.info(
+            "megatron_remote_response_wait_start",
+            extra={
+                "event": "megatron_remote_response_wait_start",
+                "context": context,
+                "timeout_sec": timeout_sec,
+                "workers": self._worker_snapshot(),
+            },
+        )
+        while True:
+            ready, _, _ = select.select([worker], [], [], _RESPONSE_POLL_INTERVAL_SEC)
+            if ready:
+                elapsed = time.monotonic() - start
+                logger.info(
+                    "megatron_remote_response_wait_ready",
+                    extra={
+                        "event": "megatron_remote_response_wait_ready",
+                        "context": context,
+                        "elapsed_sec": round(elapsed, 3),
+                    },
+                )
+                return self._recv_response(worker, context=context, max_size=max_size)
+
+            now = time.monotonic()
+            elapsed = now - start
+            if now >= next_progress_log:
+                logger.warning(
+                    "megatron_remote_response_wait_progress",
+                    extra={
+                        "event": "megatron_remote_response_wait_progress",
+                        "context": context,
+                        "elapsed_sec": round(elapsed, 3),
+                        "timeout_sec": timeout_sec,
+                        "workers": self._worker_snapshot(),
+                    },
+                )
+                next_progress_log = now + _RESPONSE_PROGRESS_LOG_INTERVAL_SEC
+
+            if not worker.is_alive():
+                self._abort_workers(reason="worker_exited_while_waiting", context=context)
+                raise EOFError(f"Megatron worker {worker.pid} exited while waiting for {context}")
+
+            if elapsed >= timeout_sec:
+                self._abort_workers(reason="response_timeout", context=context)
+                raise TimeoutError(
+                    f"Megatron worker response timed out during {context} after {elapsed:.3f}s"
+                )
 
     def initialize(self) -> None:
         """Initialize all workers with config.
@@ -331,10 +465,11 @@ class MegatronRemoteBackend:
             "tensor_limit": tensor_limit,
             "witness": True,
         })
-        response = self._recv_response(
+        response = self._recv_response_polling(
             self.workers[0],
             context="sync_weights_nccl_witness",
             max_size=_CONTROL_MESSAGE_MAX_BYTES,
+            timeout_sec=_WITNESS_RESPONSE_TIMEOUT_SEC,
         )
         assert response["status"] == "nccl_synced", f"NCCL witness sync failed: {response}"
 
