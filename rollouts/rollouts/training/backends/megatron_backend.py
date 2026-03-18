@@ -73,6 +73,8 @@ def _normalize_megatron_checkpoint_args(
     fields here instead of depending on parser/version-specific side effects.
     """
 
+    desired_ckpt_format = "torch" if save_optimizer_state else "torch_dist"
+
     checkpoint_defaults = {
         "async_ckpt_cpu_priority": 10,
         "async_ckpt_io_priority": 3,
@@ -83,7 +85,7 @@ def _normalize_megatron_checkpoint_args(
         # the model sharded-state tensors. Use the legacy torch checkpoint format
         # when optimizer state is requested, and keep torch_dist for model-only
         # checkpoints where the distributed format is working.
-        "ckpt_format": "torch" if save_optimizer_state else "torch_dist",
+        "ckpt_format": desired_ckpt_format,
         "ckpt_fully_parallel_save": True,
         "ckpt_fully_parallel_save_process_group": "dp",
         "dist_ckpt_optim_fully_reshardable": False,
@@ -102,6 +104,11 @@ def _normalize_megatron_checkpoint_args(
         if getattr(args, name, None) is None:
             setattr(args, name, default)
 
+    # The worker args namespace often already carries a default torch_dist
+    # checkpoint format from Megatron initialization. For checkpoint save
+    # semantics we need the format to follow the requested product type, not
+    # whatever ambient default happened to be set earlier.
+    args.ckpt_format = desired_ckpt_format
     args.no_save_optim = not save_optimizer_state
     if not hasattr(args, "no_save_rng"):
         args.no_save_rng = not getattr(args, "save_rng", True)
@@ -713,6 +720,13 @@ class MegatronTrainingBackend:
             args,
             self.checkpoint_dir,
             save_optimizer_state=self.config.save_optimizer_state,
+        )
+        logger.info(
+            "Megatron save_checkpoint step=%s format=%s save_optimizer_state=%s use_dist_ckpt=%s",
+            step,
+            getattr(args, "ckpt_format", None),
+            self.config.save_optimizer_state,
+            getattr(args, "use_dist_ckpt", None),
         )
         signature = inspect.signature(save_checkpoint)
         checkpoint_kwargs: dict[str, Any] = {}
