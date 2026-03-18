@@ -282,6 +282,14 @@ def _create_inference_engines(
     Returns:
         List of inference engines (one per GPU or TP group)
     """
+    # Architectural note:
+    # Training backends already lower through `runtime_factory`. Inference
+    # backends do not: this is still an inline selector over concrete engine
+    # classes. As a result, `config.inference.backend` and
+    # `config.checkpoint.pipeline_mode` are not jointly validated/lowered into a
+    # single runtime plan yet. If you add a backend or new pipeline semantics,
+    # prefer moving that work behind an inference runtime factory instead of
+    # extending this branch tree further.
     from ..training.weight_sync import EngineV2Engine, SGLangEngine, VLLMEngine
 
     engines = []
@@ -642,6 +650,117 @@ def _build_training_client_surface(config: GRPOConfig, inference_engine: Any) ->
         extra_params=config.rollout.extra_params or None,
     )
     return tokenizer, endpoint
+
+
+def _megatron_worker_snapshot(backend: Any) -> list[dict[str, Any]]:
+    workers = getattr(backend, "workers", None)
+    if not isinstance(workers, list):
+        return []
+    snapshot: list[dict[str, Any]] = []
+    for worker in workers:
+        pid = getattr(worker, "pid", None)
+        try:
+            alive = bool(worker.is_alive())
+        except Exception as exc:
+            alive = False
+            snapshot.append({
+                "pid": pid,
+                "alive": alive,
+                "state_error": f"{type(exc).__name__}: {exc}",
+            })
+            continue
+        snapshot.append({"pid": pid, "alive": alive})
+    return snapshot
+
+
+async def _abort_failed_megatron_witness_backend(
+    backend: Any,
+    logger: logging.Logger,
+    run_context: dict[str, Any],
+    *,
+    reason: str,
+) -> None:
+    import os
+    import signal
+
+    workers = getattr(backend, "workers", None)
+    if not isinstance(workers, list) or not workers:
+        logger.warning(
+            "training_preflight_weight_sync_witness_abort_skipped",
+            extra={
+                "event": "training_preflight_weight_sync_witness_abort_skipped",
+                **run_context,
+                "reason": reason,
+                "abort_kind": "no_workers",
+            },
+        )
+        return
+
+    before = _megatron_worker_snapshot(backend)
+    logger.warning(
+        "training_preflight_weight_sync_witness_abort_start",
+        extra={
+            "event": "training_preflight_weight_sync_witness_abort_start",
+            **run_context,
+            "reason": reason,
+            "workers_before": before,
+        },
+    )
+
+    try:
+        shutdown = getattr(backend, "shutdown", None)
+        if callable(shutdown):
+            shutdown()
+    except Exception as exc:
+        logger.warning(
+            "training_preflight_weight_sync_witness_abort_shutdown_failed",
+            extra={
+                "event": "training_preflight_weight_sync_witness_abort_shutdown_failed",
+                **run_context,
+                "reason": reason,
+                "error_type": type(exc).__name__,
+                "error": str(exc),
+            },
+        )
+
+    for worker in workers:
+        pid = getattr(worker, "pid", None)
+        if pid is None:
+            continue
+        try:
+            if worker.is_alive():
+                os.kill(pid, signal.SIGTERM)
+        except Exception:
+            pass
+
+    await trio.sleep(0.5)
+
+    for worker in workers:
+        pid = getattr(worker, "pid", None)
+        if pid is None:
+            continue
+        try:
+            if worker.is_alive():
+                os.kill(pid, signal.SIGKILL)
+        except Exception:
+            pass
+        try:
+            worker.close()
+        except Exception:
+            pass
+
+    await trio.sleep(0.1)
+    after = _megatron_worker_snapshot(backend)
+    logger.warning(
+        "training_preflight_weight_sync_witness_abort_complete",
+        extra={
+            "event": "training_preflight_weight_sync_witness_abort_complete",
+            **run_context,
+            "reason": reason,
+            "workers_before": before,
+            "workers_after": after,
+        },
+    )
 
 
 async def _run_training_preflight(
@@ -1505,6 +1624,7 @@ async def _grpo_train_async(
                     if hasattr(engine, "log_path")
                 ]
                 inference_log_tails = {}
+                resource_watchdog.set_phase("weight_sync_witness", tensor_limit=1)
                 logger.info(
                     "training_preflight_weight_sync_witness_start",
                     extra={
@@ -1536,6 +1656,13 @@ async def _grpo_train_async(
                             inference_log_tails[str(log_path)] = (
                                 f"<failed to read log tail: {type(tail_exc).__name__}: {tail_exc}>"
                             )
+                    if config.trainer.backend == "megatron":
+                        await _abort_failed_megatron_witness_backend(
+                            backend,
+                            logger,
+                            run_context,
+                            reason="weight_sync_witness_failed",
+                        )
                     logger.exception(
                         "training_preflight_weight_sync_witness_failed",
                         extra={
@@ -1608,6 +1735,13 @@ async def _grpo_train_async(
         )
         from ..training.train import train as _train_loop
 
+        # Architectural note:
+        # This `pipeline_mode` switch is still a GRPO-owned orchestration state
+        # machine. The requested mode is not yet lowered into validated trainer
+        # and inference runtime capabilities the way training backends are.
+        # `true_pipeline` in particular should eventually be realized through an
+        # explicit runtime plan for both sides, not treated as "GRPO does a
+        # different branch and hopes the selected backends can keep up".
         if config.checkpoint.pipeline_mode == "sync":
             staleness_policy = StalenessPolicy.synchronous()
             weight_visibility_policy = WeightVisibilityPolicy.synchronous(
@@ -2022,6 +2156,16 @@ async def _grpo_train_async(
                                 # Trainer-side non-blocking publication. Current
                                 # direct receive/load realizations may still pause
                                 # new admissions while sync is in progress.
+                                #
+                                # Architectural note:
+                                # This reaches through the backend abstraction to
+                                # `backend.model`, which means `true_pipeline`
+                                # currently depends on a PyTorch-shaped training
+                                # backend capability that is not represented in
+                                # `TrainingBackend`. A real lowering should ask
+                                # the training backend for an explicit async
+                                # publication capability instead of assuming the
+                                # concrete model object is available here.
                                 should_sync = (step + 1) % config.checkpoint.sync_weights_every == 0
                                 if should_sync:
                                     logger.debug(
