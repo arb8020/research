@@ -858,6 +858,13 @@ def _load_checkpoint(
         return 0
 
     logger.info("Loading checkpoint from: %s", checkpoint_path)
+    tracker_path = checkpoint_path / "latest_checkpointed_iteration.txt"
+    if not tracker_path.exists():
+        raise FileNotFoundError(
+            "Explicit Megatron checkpoint path must contain "
+            f"latest_checkpointed_iteration.txt: {tracker_path}"
+        )
+
     signature = inspect.signature(load_checkpoint)
     parameters = signature.parameters
 
@@ -880,12 +887,7 @@ def _load_checkpoint(
             args.load = previous_load
 
     logger.info("Checkpoint loaded")
-    tracker_path = checkpoint_path / "latest_checkpointed_iteration.txt"
-    if tracker_path.exists():
-        tracker_text = tracker_path.read_text(encoding="utf-8").strip()
-        if tracker_text == "release":
-            return 0
-        return int(tracker_text)
-
-    loaded_iteration = load_result[0] if isinstance(load_result, tuple) else load_result
-    return int(loaded_iteration or 0)
+    tracker_text = tracker_path.read_text(encoding="utf-8").strip()
+    if tracker_text == "release":
+        return 0
+    return int(tracker_text)

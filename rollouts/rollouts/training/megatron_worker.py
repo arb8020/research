@@ -1132,6 +1132,8 @@ def train(handle: Worker) -> None:
 
         checkpoint_path_raw = config.get("checkpoint_path")
         checkpoint_path = Path(checkpoint_path_raw) if checkpoint_path_raw else None
+        checkpoint_dir_raw = config.get("checkpoint_dir")
+        checkpoint_dir = Path(checkpoint_dir_raw) if checkpoint_dir_raw else Path("./checkpoints")
 
         logger.info("Setting up Megatron model...")
         model, optimizer, scheduler, checkpoint_iteration = setup_megatron_model(
@@ -1159,6 +1161,7 @@ def train(handle: Worker) -> None:
             optimizer=optimizer,
             opt_param_scheduler=scheduler,
             config=backend_config,
+            checkpoint_dir=checkpoint_dir,
             lowering=lowering,
             loss_fn=_select_native_loss_fn(config),
         )
@@ -1340,10 +1343,12 @@ def _training_loop(
 
             # Handle save_checkpoint
             elif cmd_id == Command.SAVE_CHECKPOINT:
-                backend.save_checkpoint(checkpoint_step)
+                requested_path = msg.get("path")
+                if requested_path:
+                    backend.checkpoint_dir = Path(requested_path)
+                saved_path = backend.save_checkpoint(checkpoint_step).result()
                 if rank == 0:
-                    path = msg.get("path", "./checkpoints")
-                    handle.send({"status": "saved", "path": path})
+                    handle.send({"status": "saved", "path": str(saved_path)})
 
             logger.info("command_ok name=%s rank=%s", command_name, rank)
         except Exception as exc:

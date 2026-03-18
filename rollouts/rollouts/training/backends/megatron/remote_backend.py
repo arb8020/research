@@ -288,6 +288,7 @@ class MegatronRemoteBackend:
                 "config": {
                     "model_name": self.config.model_name,
                     "checkpoint_path": self.config.checkpoint_path,
+                    "checkpoint_dir": str(self.checkpoint_dir),
                     "lowering": {
                         "provisioning": {
                             "tp": self.config.lowering.provisioning.tp,
