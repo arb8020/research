@@ -224,6 +224,7 @@ def _isolated_weight_sync_sender_main(
         from rollouts.inference.weight_sync import WeightSyncSender
         from rollouts.training.weight_sync_protocol import (
             InitWeightUpdateGroupRequest,
+            InitWeightUpdateGroupResponse,
             ReceiveWeightUpdateRequest,
             WeightUpdatePayload,
             WeightWireTensor,
@@ -270,42 +271,119 @@ def _isolated_weight_sync_sender_main(
         )
 
         world_size = 1 + len(inference_endpoints)
-        for index, endpoint in enumerate(inference_endpoints, start=1):
-            _put_progress(
-                "remote_init_start",
-                endpoint=endpoint,
-                rank_offset=index,
-                world_size=world_size,
-            )
-            request = InitWeightUpdateGroupRequest(
-                master_address=master_addr,
-                master_port=master_port,
-                rank_offset=index,
-                world_size=world_size,
-                group_name=group_name,
-            )
-            response = requests.post(
-                f"{endpoint}/init_weights_update_group",
-                json=request.to_dict(),
-                timeout=300.0,
-            )
-            response.raise_for_status()
-            _put_progress(
-                "remote_init_ok",
-                endpoint=endpoint,
-                rank_offset=index,
-                status_code=response.status_code,
-            )
-
-        _put_progress("sender_pg_init_start")
         sender = WeightSyncSender(
             master_addr=master_addr,
             master_port=master_port,
             inference_world_size=len(inference_endpoints),
             group_name=group_name,
         )
-        sender.init_group()
-        _put_progress("sender_pg_init_ok")
+        init_connect_timeout_sec = 5.0
+        init_read_timeout_sec = 10.0
+
+        def _init_remote_endpoint(endpoint: str, rank_offset: int) -> dict[str, object]:
+            started_at = time.monotonic()
+            _put_progress(
+                "remote_init_start",
+                endpoint=endpoint,
+                rank_offset=rank_offset,
+                world_size=world_size,
+                connect_timeout_sec=init_connect_timeout_sec,
+                read_timeout_sec=init_read_timeout_sec,
+            )
+            response: requests.Response | None = None
+            try:
+                request = InitWeightUpdateGroupRequest(
+                    master_address=master_addr,
+                    master_port=master_port,
+                    rank_offset=rank_offset,
+                    world_size=world_size,
+                    group_name=group_name,
+                )
+                response = requests.post(
+                    f"{endpoint}/init_weights_update_group",
+                    json=request.to_dict(),
+                    timeout=(init_connect_timeout_sec, init_read_timeout_sec),
+                )
+                response.raise_for_status()
+                InitWeightUpdateGroupResponse.from_dict(response.json())
+                elapsed_sec = round(time.monotonic() - started_at, 3)
+                _put_progress(
+                    "remote_init_ok",
+                    endpoint=endpoint,
+                    rank_offset=rank_offset,
+                    status_code=response.status_code,
+                    elapsed_sec=elapsed_sec,
+                )
+                return {
+                    "endpoint": endpoint,
+                    "rank_offset": rank_offset,
+                    "status_code": response.status_code,
+                    "elapsed_sec": elapsed_sec,
+                }
+            except Exception as exc:
+                elapsed_sec = round(time.monotonic() - started_at, 3)
+                status_code = None
+                response_text = None
+                if response is not None:
+                    status_code = response.status_code
+                    try:
+                        response_text = response.text[:400]
+                    except Exception:
+                        response_text = "<response text unavailable>"
+                logger.exception(
+                    "weight_sync_megatron_isolated_remote_init_failed endpoint=%s rank_offset=%s",
+                    endpoint,
+                    rank_offset,
+                )
+                _emit_argus_diag(
+                    "weight_sync_megatron_isolated_remote_init_failed",
+                    endpoint=endpoint,
+                    rank_offset=rank_offset,
+                    elapsed_sec=elapsed_sec,
+                    status_code=status_code,
+                    response_text=response_text,
+                    error_type=type(exc).__name__,
+                    error=str(exc),
+                )
+                _put_progress(
+                    "remote_init_failed",
+                    endpoint=endpoint,
+                    rank_offset=rank_offset,
+                    elapsed_sec=elapsed_sec,
+                    status_code=status_code,
+                    response_text=response_text,
+                    error_type=type(exc).__name__,
+                    error=str(exc),
+                )
+                raise
+
+        init_executor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=max(1, len(inference_endpoints))
+        )
+        init_futures: list[tuple[str, int, concurrent.futures.Future[dict[str, object]]]] = []
+        try:
+            for index, endpoint in enumerate(inference_endpoints, start=1):
+                init_futures.append((
+                    endpoint,
+                    index,
+                    init_executor.submit(_init_remote_endpoint, endpoint, index),
+                ))
+
+            # The receiver-side HTTP handler blocks inside dist.init_process_group(),
+            # so rank 0 must join while those requests are still in flight.
+            _put_progress("sender_pg_init_start", world_size=world_size)
+            sender.init_group()
+            _put_progress("sender_pg_init_ok", world_size=world_size)
+
+            for endpoint, rank_offset, future in init_futures:
+                _put_progress(
+                    "remote_init_wait_start",
+                    endpoint=endpoint,
+                    rank_offset=rank_offset,
+                )
+                future.result()
+        finally:
+            init_executor.shutdown(wait=False, cancel_futures=True)
 
         weight_tensors: list[WeightWireTensor] = []
         for item in tensors:
