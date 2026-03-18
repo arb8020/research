@@ -17,6 +17,7 @@ Based on SLIME's model.py but simplified to just the factory function.
 
 from __future__ import annotations
 
+import inspect
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -856,12 +857,25 @@ def _load_checkpoint(
         return
 
     logger.info("Loading checkpoint from: %s", checkpoint_path)
+    signature = inspect.signature(load_checkpoint)
+    parameters = signature.parameters
 
-    load_checkpoint(
-        model=model,
-        optimizer=optimizer,
-        opt_param_scheduler=scheduler,
-        load_dir=str(checkpoint_path),
-    )
+    if "load_dir" in parameters:
+        load_checkpoint(
+            model=model,
+            optimizer=optimizer,
+            opt_param_scheduler=scheduler,
+            load_dir=str(checkpoint_path),
+        )
+    else:
+        from megatron.training.global_vars import get_args
+
+        args = get_args()
+        previous_load = getattr(args, "load", None)
+        try:
+            args.load = str(checkpoint_path)
+            load_checkpoint(model, optimizer, scheduler)
+        finally:
+            args.load = previous_load
 
     logger.info("Checkpoint loaded")
