@@ -8,6 +8,7 @@ interface RunsListProps {
   loading: boolean
   error: string | null
   onSelectRun: (runId: string) => void
+  onSelectLiveSample?: (runId: string, sampleId: string) => void
 }
 
 type SortField = 'name' | 'timestamp' | 'samples' | 'reward'
@@ -29,7 +30,7 @@ function RewardBadge({ reward }: { reward: number }) {
   return <span style={{ color, fontWeight: 500 }}>{pct}%</span>
 }
 
-export function RunsList({ completedRuns, liveRuns, loading, error, onSelectRun }: RunsListProps) {
+export function RunsList({ completedRuns, liveRuns, loading, error, onSelectRun, onSelectLiveSample }: RunsListProps) {
   const [search, setSearch] = useState('')
   const [sortField, setSortField] = useState<SortField>('timestamp')
   const [sortDir, setSortDir] = useState<SortDir>('desc')
@@ -108,7 +109,7 @@ export function RunsList({ completedRuns, liveRuns, loading, error, onSelectRun 
           </div>
           <div className="space-y-2">
             {liveRuns.map(run => (
-              <LiveRunCard key={run.run_id} run={run} />
+              <LiveRunCard key={run.run_id} run={run} onSelectSample={onSelectLiveSample ? (sampleId) => onSelectLiveSample(run.run_id, sampleId) : undefined} />
             ))}
           </div>
         </div>

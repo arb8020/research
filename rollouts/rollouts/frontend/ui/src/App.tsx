@@ -3,18 +3,20 @@ import { useRuns } from './hooks/useRuns'
 import { RunsList } from './components/RunsList'
 import { RunDetail } from './components/RunDetail'
 import { RunViewer } from './components/RunViewer'
+import { LiveSampleViewer } from './components/LiveSampleViewer'
 import { ResultsDirPicker } from './components/ResultsDirPicker'
 
 type View =
   | { kind: 'runs' }
   | { kind: 'run-detail'; runId: string }
   | { kind: 'sample'; runId: string; sampleId: string }
+  | { kind: 'live-sample'; runId: string; sampleId: string }
 
 export default function App() {
   const [view, setView] = useState<View>({ kind: 'runs' })
   const { completedRuns, liveRuns, loading, error, refresh } = useRuns()
 
-  const isSample = view.kind === 'sample'
+  const isSample = view.kind === 'sample' || view.kind === 'live-sample'
 
   return (
     <div
@@ -58,7 +60,7 @@ export default function App() {
               className="text-xs hover:opacity-80 transition-opacity font-mono truncate max-w-xs"
               style={{ color: 'var(--color-dark-text-secondary)' }}
             >
-              {view.kind === 'run-detail' || view.kind === 'sample' ? view.runId : ''}
+              {view.kind === 'run-detail' || view.kind === 'sample' || view.kind === 'live-sample' ? view.runId : ''}
             </button>
             {view.kind === 'sample' && (
               <>
@@ -103,6 +105,7 @@ export default function App() {
             loading={loading}
             error={error}
             onSelectRun={runId => setView({ kind: 'run-detail', runId })}
+            onSelectLiveSample={(runId, sampleId) => setView({ kind: 'live-sample', runId, sampleId })}
           />
         )}
 
@@ -122,11 +125,20 @@ export default function App() {
           <RunViewer
             runId={view.runId}
             sampleId={view.sampleId}
+            evalName={completedRuns.find(r => r.id === view.runId)?.name}
             onBack={() => {
               if (view.kind === 'sample') {
                 setView({ kind: 'run-detail', runId: view.runId })
               }
             }}
+          />
+        )}
+
+        {view.kind === 'live-sample' && (
+          <LiveSampleViewer
+            run={liveRuns.find(r => r.run_id === view.runId) ?? { run_id: view.runId, config_name: view.runId, start_time: 0, status: 'watching', exit_code: null }}
+            sampleId={view.sampleId}
+            onBack={() => setView({ kind: 'runs' })}
           />
         )}
       </div>

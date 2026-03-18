@@ -169,6 +169,7 @@ export type StreamEvent =
   | { type: 'eval_start'; name: string; total: number; timestamp: string }
   | { type: 'sample_start'; id: string; name: string; timestamp: string }
   | { type: 'turn'; id: string; turn: number; status: string; timestamp: string }
+  | { type: 'assistant_message'; sample_id: string; turn: number; content: string; timestamp: string }
   | { type: 'sample_end'; id: string; score: number; timestamp: string }
   | { type: 'eval_end'; name: string; total: number; timestamp: string }
   | { type: 'stdout'; line: string; timestamp?: string }
@@ -176,12 +177,19 @@ export type StreamEvent =
 
 // Derived types for live run tracking in UI
 
+export interface LiveMessage {
+  turn: number;
+  content: string;
+  timestamp: string;
+}
+
 export interface LiveSample {
   id: string;
   name: string;
   status: 'pending' | 'running' | 'done';
   turn: number;
   score: number | null;
+  messages: LiveMessage[];
 }
 
 export interface LiveRunState {

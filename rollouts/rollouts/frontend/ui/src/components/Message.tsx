@@ -17,7 +17,7 @@ interface MessageProps {
   onToggle: () => void
 }
 
-function TextWithCodeBlocks({ text }: { text: string }) {
+export function TextWithCodeBlocks({ text }: { text: string }) {
   const parts: React.ReactNode[] = []
   const codeBlockRegex = /```(\w*)\n([\s\S]*?)```/g
   let lastIndex = 0

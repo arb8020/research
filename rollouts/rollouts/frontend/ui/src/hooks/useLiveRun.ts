@@ -46,7 +46,7 @@ function applyEvent(prev: LiveRunState, event: StreamEvent): LiveRunState {
     }
     case 'sample_start': {
       const samples = new Map(prev.samples)
-      const sample: LiveSample = { id: event.id, name: event.name, status: 'running', turn: 0, score: null }
+      const sample: LiveSample = { id: event.id, name: event.name, status: 'running', turn: 0, score: null, messages: [] }
       samples.set(event.id, sample)
       return { ...prev, samples }
     }
@@ -55,6 +55,15 @@ function applyEvent(prev: LiveRunState, event: StreamEvent): LiveRunState {
       const existing = samples.get(event.id)
       if (existing) {
         samples.set(event.id, { ...existing, turn: event.turn, status: 'running' })
+      }
+      return { ...prev, samples }
+    }
+    case 'assistant_message': {
+      const samples = new Map(prev.samples)
+      const existing = samples.get(event.sample_id)
+      if (existing) {
+        const messages = [...existing.messages, { turn: event.turn, content: event.content, timestamp: event.timestamp }]
+        samples.set(event.sample_id, { ...existing, messages })
       }
       return { ...prev, samples }
     }

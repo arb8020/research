@@ -7,6 +7,7 @@ import type { LiveRun } from '../types'
 interface LiveRunCardProps {
   run: LiveRun
   onFinished?: () => void
+  onSelectSample?: (sampleId: string) => void
 }
 
 function elapsed(startTime: number): string {
@@ -38,7 +39,7 @@ function ScoreDot({ score, status }: { score: number | null; status: 'pending' |
   )
 }
 
-export function LiveRunCard({ run, onFinished: _onFinished }: LiveRunCardProps) {
+export function LiveRunCard({ run, onFinished: _onFinished, onSelectSample }: LiveRunCardProps) {
   const state = useLiveRun(run.run_id, run.status)
   const [expanded, setExpanded] = useState(true)
   const [killing, setKilling] = useState(false)
@@ -178,7 +179,14 @@ export function LiveRunCard({ run, onFinished: _onFinished }: LiveRunCardProps) 
               </div>
               <div className="flex flex-wrap gap-1">
                 {samples.map(s => (
-                  <ScoreDot key={s.id} score={s.score} status={s.status} />
+                  <div
+                    key={s.id}
+                    onClick={onSelectSample ? () => onSelectSample(s.id) : undefined}
+                    style={{ cursor: onSelectSample ? 'pointer' : 'default' }}
+                    title={`${s.id}${s.status === 'running' ? ` · turn ${s.turn}` : s.score !== null ? ` · ${s.score.toFixed(3)}` : ''} — click to view`}
+                  >
+                    <ScoreDot score={s.score} status={s.status} />
+                  </div>
                 ))}
               </div>
               {/* Score breakdown */}
