@@ -862,7 +862,7 @@ def _load_checkpoint(
     parameters = signature.parameters
 
     if "load_dir" in parameters:
-        loaded_iteration = load_checkpoint(
+        load_result = load_checkpoint(
             model=model,
             optimizer=optimizer,
             opt_param_scheduler=scheduler,
@@ -875,9 +875,10 @@ def _load_checkpoint(
         previous_load = getattr(args, "load", None)
         try:
             args.load = str(checkpoint_path)
-            loaded_iteration = load_checkpoint(model, optimizer, scheduler)
+            load_result = load_checkpoint(model, optimizer, scheduler)
         finally:
             args.load = previous_load
 
     logger.info("Checkpoint loaded")
+    loaded_iteration = load_result[0] if isinstance(load_result, tuple) else load_result
     return int(loaded_iteration or 0)
