@@ -160,7 +160,7 @@ export interface LiveRun {
   run_id: string;
   config_name: string;
   start_time: number;
-  status: 'running' | 'completed' | 'failed' | 'killed';
+  status: 'running' | 'watching' | 'completed' | 'failed' | 'killed';
   exit_code: number | null;
   output_length?: number;
 }

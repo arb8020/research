@@ -50,6 +50,7 @@ export function LiveRunCard({ run, onFinished: _onFinished }: LiveRunCardProps) 
 
   const statusColor = {
     running: '#22c55e',
+    watching: '#3b82f6',
     completed: 'var(--color-dark-text-muted)',
     failed: '#ef4444',
     killed: 'var(--color-neutral-500)',
@@ -91,7 +92,7 @@ export function LiveRunCard({ run, onFinished: _onFinished }: LiveRunCardProps) 
               width: 8,
               height: 8,
               background: statusColor,
-              ...(state.status === 'running' ? { animation: 'pulse-subtle 1.5s ease-in-out infinite' } : {}),
+              ...(state.status === 'running' || run.status === 'watching' ? { animation: 'pulse-subtle 1.5s ease-in-out infinite' } : {}),
             }}
           />
         </div>
@@ -110,7 +111,7 @@ export function LiveRunCard({ run, onFinished: _onFinished }: LiveRunCardProps) 
             >
               {elapsed(run.start_time)}
             </span>
-            {state.status !== 'running' && (
+            {state.status !== 'running' && run.status !== 'watching' && (
               <span
                 className="text-xs px-1.5 py-0.5 rounded"
                 style={{

@@ -35,6 +35,10 @@ export function openRunStream(runId: string): EventSource {
   return new EventSource(`/api/stream/${runId}`)
 }
 
+export function openWatchStream(runId: string): EventSource {
+  return new EventSource(`/api/watch/${runId}`)
+}
+
 export interface ResultsDirsResponse {
   current: string
   dirs: Array<{ path: string; label: string; exists: boolean }>

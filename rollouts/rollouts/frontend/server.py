@@ -136,6 +136,10 @@ class DevLoopServer(SimpleHTTPRequestHandler):
             # Extract run_id from path like /api/stream/run_1_1234567890
             run_id = path.split("/api/stream/")[1]
             self._stream_run_output(run_id)
+        elif path.startswith("/api/watch/"):
+            # Attach to an externally-launched run by results dir name
+            run_id = path.split("/api/watch/")[1]
+            self._watch_run(run_id)
         else:
             # Default behavior for other files
             super().do_GET()
@@ -2011,6 +2015,126 @@ def prepare_messages(sample_data: Dict[str, Any]) -> List[Message]:
             with _run_lock:
                 run_data["status"] = "failed"
 
+    def _watch_run(self, run_id: str) -> None:
+        """Stream events.jsonl from a results dir not launched by this server.
+
+        Discovers the results dir by scanning known_results_dirs for a subdir
+        named run_id that contains events.jsonl.  Tails the file, normalises
+        field names to match the StreamEvent schema the frontend expects, and
+        emits each record as an SSE event.  Stops when eval_end is seen or the
+        file stops growing (eval finished while we were connecting).
+
+        Field normalisation (events.jsonl → StreamEvent):
+          message      → type
+          sample_id    → id
+          sample_name  → name   (sample_start only)
+          eval_name    → name   (eval_start / eval_end only)
+        """
+        from pathlib import Path
+
+        # Find the results dir across all known dirs
+        events_file: Path | None = None
+        for search_dir in [self.__class__.results_dir] + list(self.__class__.known_results_dirs):
+            candidate = search_dir / run_id / "events.jsonl"
+            if candidate.exists():
+                events_file = candidate
+                break
+
+        if events_file is None:
+            self.send_error(404, f"No events.jsonl found for run: {run_id}")
+            return
+
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection", "keep-alive")
+        self.send_header("X-Accel-Buffering", "no")
+        self.end_headers()
+
+        def _normalise(raw: dict) -> dict:
+            """Map events.jsonl fields to StreamEvent shape."""
+            event_type = raw.get("message", "")
+            out: dict = {"type": event_type, "timestamp": raw.get("timestamp", "")}
+
+            if event_type == "eval_start":
+                out["name"] = raw.get("eval_name", "")
+                out["total"] = raw.get("total", 0)
+            elif event_type == "sample_start":
+                out["id"] = raw.get("sample_id", "")
+                out["name"] = raw.get("sample_name", "")
+            elif event_type == "turn":
+                out["id"] = raw.get("sample_id", "")
+                out["turn"] = raw.get("turn", 0)
+                out["status"] = raw.get("status", "")
+            elif event_type == "sample_end":
+                out["id"] = raw.get("sample_id", "")
+                out["score"] = raw.get("score", 0)
+            elif event_type == "eval_end":
+                out["name"] = raw.get("eval_name", "")
+                out["total"] = raw.get("total", 0)
+            else:
+                # Forward unknown events with all fields, type already set
+                out.update({k: v for k, v in raw.items() if k not in ("message", "timestamp")})
+
+            return out
+
+        try:
+            import time
+
+            poll_interval = 0.25  # seconds between reads when no new data
+            max_idle = 300  # stop after 5 min of no new data post eval_end
+            idle_since: float | None = None
+            done = False
+
+            with open(events_file) as fh:
+                # Replay existing content from the beginning so the UI gets
+                # the full picture even when attaching mid-run.
+                while True:
+                    line = fh.readline()
+                    if not line:
+                        # Caught up — switch to tail mode
+                        break
+                    line = line.strip()
+                    if not line:
+                        continue
+                    raw = json.loads(line)
+                    normalised = _normalise(raw)
+                    self.wfile.write(f"data: {json.dumps(normalised)}\n\n".encode())
+                    self.wfile.flush()
+                    if raw.get("message") == "eval_end":
+                        done = True
+                        break
+
+                # Tail mode: poll for new lines
+                while not done:
+                    line = fh.readline()
+                    if line:
+                        line = line.strip()
+                        if line:
+                            raw = json.loads(line)
+                            normalised = _normalise(raw)
+                            self.wfile.write(f"data: {json.dumps(normalised)}\n\n".encode())
+                            self.wfile.flush()
+                            if raw.get("message") == "eval_end":
+                                done = True
+                        idle_since = None
+                    else:
+                        # No new data
+                        if idle_since is None:
+                            idle_since = time.monotonic()
+                        elif time.monotonic() - idle_since > max_idle:
+                            break
+                        time.sleep(poll_interval)
+
+            # Emit complete so frontend transitions out of running state
+            self.wfile.write(
+                f"data: {json.dumps({'type': 'complete', 'exit_code': 0, 'status': 'success'})}\n\n".encode()
+            )
+            self.wfile.flush()
+
+        except Exception as e:
+            logger.exception(f"Error watching run {run_id}: {e}")
+
     def _log_from_frontend(self) -> None:
         """Receive log messages from frontend."""
         content_length = int(self.headers.get("Content-Length", 0))
@@ -2040,8 +2164,70 @@ def prepare_messages(sample_data: Dict[str, Any]) -> List[Message]:
             logger.exception(f"Failed to process frontend log: {e}")
             self.send_error(400, str(e))
 
+    def _discover_watching_runs(self) -> list[dict]:
+        """Scan results dirs for runs with events.jsonl but no report.json.
+
+        These are externally-launched evals that are either in progress or
+        finished without writing a report.  Excludes run_ids already tracked
+        in _active_runs (launched by this server).
+        """
+        watching = []
+        seen_ids: set[str] = set(_active_runs.keys())
+        all_dirs = [self.__class__.results_dir] + list(self.__class__.known_results_dirs)
+
+        for results_dir in all_dirs:
+            if not results_dir.exists():
+                continue
+            for subdir in results_dir.iterdir():
+                if not subdir.is_dir():
+                    continue
+                run_id = subdir.name
+                if run_id in seen_ids:
+                    continue
+                events_file = subdir / "events.jsonl"
+                report_file = subdir / "report.json"
+                if not events_file.exists():
+                    continue
+                # Only surface runs that are still in progress:
+                # - no report.json (not finished successfully)
+                # - last event is not eval_end (primary signal)
+                # - events.jsonl modified within the last 30 minutes (fallback: stale
+                #   crashed run that never wrote eval_end)
+                if report_file.exists():
+                    continue
+                # Check last line for eval_end first — this is the primary signal.
+                # Must come before the mtime check because repair_stale_runs.py appends
+                # eval_end, which updates mtime to now and would otherwise pass the age
+                # filter and re-appear as live.
+                try:
+                    with open(events_file, "rb") as _f:
+                        _f.seek(0, 2)
+                        _size = _f.tell()
+                        _f.seek(max(0, _size - 4096))
+                        _tail = _f.read().decode("utf-8", errors="replace")
+                    _last_line = next((l for l in reversed(_tail.splitlines()) if l.strip()), "")
+                    if '"eval_end"' in _last_line or '"message": "eval_end"' in _last_line:
+                        continue
+                except OSError:
+                    pass
+                # Fallback: exclude runs stale for >30 min that never wrote eval_end
+                age_seconds = time.time() - events_file.stat().st_mtime
+                if age_seconds > 1800:
+                    continue
+                seen_ids.add(run_id)
+                watching.append({
+                    "run_id": run_id,
+                    "config_name": run_id,
+                    "start_time": events_file.stat().st_mtime,
+                    "status": "watching",
+                    "exit_code": None,
+                    "output_length": 0,
+                })
+
+        return watching
+
     def _list_active_runs(self) -> None:
-        """List all active and recent runs."""
+        """List all active and recent runs, including externally-launched ones."""
         global _active_runs
 
         runs = []
@@ -2056,6 +2242,7 @@ def prepare_messages(sample_data: Dict[str, Any]) -> List[Message]:
                     "output_length": len(data.get("output_lines", [])),
                 })
 
+        runs.extend(self._discover_watching_runs())
         self._json_response({"runs": runs})
 
     def _list_results_dirs(self) -> None:
