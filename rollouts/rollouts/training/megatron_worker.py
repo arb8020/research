@@ -416,15 +416,25 @@ def _isolated_weight_sync_sender_main(
         )
         update_connect_timeout_sec = 5.0
         update_read_timeout_sec = 300.0
+        update_load_format = "flattened_bucket" if len(weight_tensors) == 1 else None
 
         def _update_remote_endpoint(endpoint: str) -> dict[str, object]:
             started_at = time.monotonic()
+            request_payload: dict[str, object] = {
+                **request.to_dict(),
+                "group_name": group_name,
+                "flush_cache": False,
+                "weight_version": str(version),
+            }
+            if update_load_format is not None:
+                request_payload["load_format"] = update_load_format
             _put_progress(
                 "remote_update_start",
                 endpoint=endpoint,
                 tensor_count=len(weight_tensors),
                 group=group_name,
                 version=version,
+                load_format=update_load_format,
                 connect_timeout_sec=update_connect_timeout_sec,
                 read_timeout_sec=update_read_timeout_sec,
             )
@@ -432,12 +442,7 @@ def _isolated_weight_sync_sender_main(
             try:
                 response = requests.post(
                     f"{endpoint}/update_weights_from_distributed",
-                    json={
-                        **request.to_dict(),
-                        "group_name": group_name,
-                        "flush_cache": False,
-                        "weight_version": str(version),
-                    },
+                    json=request_payload,
                     timeout=(update_connect_timeout_sec, update_read_timeout_sec),
                 )
                 elapsed_sec = round(time.monotonic() - started_at, 3)
@@ -447,11 +452,13 @@ def _isolated_weight_sync_sender_main(
                     endpoint=endpoint,
                     status_code=response.status_code,
                     elapsed_sec=elapsed_sec,
+                    load_format=update_load_format,
                 )
                 return {
                     "endpoint": endpoint,
                     "status_code": response.status_code,
                     "elapsed_sec": elapsed_sec,
+                    "load_format": update_load_format,
                 }
             except Exception as exc:
                 elapsed_sec = round(time.monotonic() - started_at, 3)
@@ -473,6 +480,7 @@ def _isolated_weight_sync_sender_main(
                     group=group_name,
                     version=version,
                     tensor_count=len(weight_tensors),
+                    load_format=update_load_format,
                     elapsed_sec=elapsed_sec,
                     status_code=status_code,
                     response_text=response_text,
@@ -485,6 +493,7 @@ def _isolated_weight_sync_sender_main(
                     group=group_name,
                     version=version,
                     tensor_count=len(weight_tensors),
+                    load_format=update_load_format,
                     elapsed_sec=elapsed_sec,
                     status_code=status_code,
                     response_text=response_text,
