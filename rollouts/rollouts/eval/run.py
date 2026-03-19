@@ -27,9 +27,16 @@ Config files should export:
 
     - tasks: list[dict] OR tasks_path: Path (one required)
     - prepare_messages: Callable[[dict], list[Message]]
-    - attempt_executor: Callable[[dict, str, Environment | None, RunConfig], AttemptRow] (optional)
+    - attempt_executor: Callable[[dict, str, Environment | None, RunConfig], AttemptRow] (optional, current compatibility shape)
     - score_fn: Callable[[AttemptRow], Score] or sample_scorer
     - make_environment: Callable[[], Environment] (optional)
+
+TODO:
+    The current runner still carries compatibility types from the older eval
+    contract. The intended stage split is "row -> raw execution result ->
+    scored/evaluated record", with explicit evaluation-time scorers winning over
+    environment-owned scoring and attempt-only workflows potentially moving to a
+    separate entrypoint.
 """
 
 from __future__ import annotations
@@ -222,8 +229,10 @@ async def run_with_api(
     )
     score_fn = getattr(config_module, "score_fn", None)
     sample_scorer = getattr(config_module, "sample_scorer", None)
-    # score_fn and sample_scorer are both optional: environments that own scoring
-    # implement env.score(trajectory), and open-ended envs may have no scorer.
+    # TODO: This loader still permits scorer-less configs for compatibility. The
+    # intended contract is that scored evals choose an explicit scoring stage,
+    # with environment-owned scoring as a fallback rather than the only source
+    # of truth.
 
     # Environment (optional)
     environment: Environment | None = run_spec.environment if run_spec is not None else None

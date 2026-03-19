@@ -178,6 +178,10 @@ async def _score_attempt(config_module: Any, env: Any | None, attempt: AttemptRo
 
     score_fn = getattr(config_module, "score_fn", None)
     sample_scorer = getattr(config_module, "sample_scorer", None)
+    # TODO: This launch path still treats scorer absence as a valid state. Once
+    # attempt generation and scored eval are split more cleanly, require an
+    # explicit scoring story here instead of silently returning unscored
+    # attempts.
     if score_fn is None and sample_scorer is None:
         return
 

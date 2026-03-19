@@ -98,6 +98,9 @@ AttemptExecutor = Callable[
     [dict[str, Any], str, Any | None, "AgentRunConfig"],
     "AttemptRow | Awaitable[AttemptRow]",
 ]
+# TODO: Narrow this to the raw execution-result type once eval no longer relies
+# on AttemptRow as the compatibility carrier for both execution and scoring
+# stages.
 
 
 @dataclass(frozen=True)

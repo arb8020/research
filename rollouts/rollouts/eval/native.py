@@ -275,6 +275,10 @@ async def _run_attempt_executor(
     run_config: RunConfig,
 ) -> AttemptResult:
     """Run a custom per-sample executor and normalize the result shape."""
+    # TODO: Tighten this contract after the eval-stage split settles. The
+    # intended ownership is row -> AttemptResult at execution time, then an
+    # explicit scoring stage turns that raw result into the richer scored row /
+    # training record. Accepting AttemptRow here is a compatibility bridge.
     sample = attempt_executor(sample_data, sample_id, environment, run_config)
     if isawaitable(sample):
         sample = await sample
@@ -311,6 +315,10 @@ async def _compute_score(
     scoring_context: ScoringContext | None = None,
 ) -> Score:
     """Compute score from either an explicit scorer stage or a legacy score function."""
+    # TODO: Keep this lower-level scoring primitive exposed, but make the stage
+    # boundaries more honest. The higher-level eval path should own
+    # AttemptResult -> evaluated record materialization on top of this, rather
+    # than forcing every caller through a single callback shape.
     import inspect
     from typing import cast
 
@@ -1170,20 +1178,17 @@ async def evaluate_sample(
     assert final_trajectory is not None
     sample.metadata = {**sample.metadata, **exec_metadata}
 
-    # Score resolution: env.score() owns scoring when the environment has a verification
-    # oracle (e.g. TerminalBench run_tests, KernelBench benchmark). Falls back to an
-    # externally-injected score_fn(trajectory, row) for environments without built-in
-    # scoring. Records no score for open-ended/SFT environments that have neither.
-    # env.score() runs before close() so the sandbox is still alive for verification.
+    # TODO: Revisit scoring precedence and denotation. The desired contract is:
+    # explicit injected scorer wins, environment-owned scoring is a fallback for
+    # environments that keep verification resources live, and true scored evals
+    # should not silently degrade into no-score/open-ended runs. If attempt-only
+    # workflows remain, they likely deserve a separate top-level pipeline.
+    #
+    # env.score() still has to run before close() so live sandbox/container
+    # resources remain available during verification.
     score: Score | None = None
     env_score_fn = getattr(final_env, "score", None)
-    if env_score_fn is not None:
-        try:
-            score = await env_score_fn(final_trajectory)
-        except Exception as e:
-            logger.warning(f"Environment score() failed for {sample_id}: {e}")
-            score = Score(metrics=(Metric("error", 0.0, weight=1.0, metadata={"error": str(e)}),))
-    elif config.sample_scorer is not None:
+    if config.sample_scorer is not None:
         scoring_attempt = AttemptRow.from_result(sample)
         await config.sample_scorer.score_samples(
             [scoring_attempt], contexts=[ScoringContext(environment=final_env)]
@@ -1199,6 +1204,12 @@ async def evaluate_sample(
                 score = score_result
         except Exception as e:
             logger.exception(f"score_fn failed for {sample_id}: {e}")
+            score = Score(metrics=(Metric("error", 0.0, weight=1.0, metadata={"error": str(e)}),))
+    elif env_score_fn is not None:
+        try:
+            score = await env_score_fn(final_trajectory)
+        except Exception as e:
+            logger.warning(f"Environment score() failed for {sample_id}: {e}")
             score = Score(metrics=(Metric("error", 0.0, weight=1.0, metadata={"error": str(e)}),))
 
     # Close environment after scoring — sandbox/container is no longer needed
@@ -1405,7 +1416,7 @@ async def evaluate(
 
         # Write report and emit eval_end regardless of how we exited.
         # results is [] if we were killed before any samples completed.
-        if config.output_dir and (results or _interrupted):
+        if config.output_dir:
             summary_metrics = compute_summary_metrics(results)
             endpoint_config = (
                 sanitize_api_keys(asdict(config.endpoint)) if config.endpoint else None
@@ -1427,7 +1438,7 @@ async def evaluate(
                 config_path=config.config_path,
             )
             await report.save(config.output_dir)
-        elif results:
+        elif not _interrupted:
             # output_dir not set — build report in memory for return value only
             summary_metrics = compute_summary_metrics(results)
             endpoint_config = (

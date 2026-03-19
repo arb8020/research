@@ -54,5 +54,8 @@ def validate_eval_config_module(config_module: Any, config_path: Path) -> None:
             f"Eval config {config_path} must export callable prepare_messages or attempt_executor or run_spec"
         )
 
-    # score_fn and sample_scorer are both optional: environments that own scoring
-    # implement env.score(trajectory), and open-ended envs may have no scorer.
+    # TODO: Revisit the top-level eval contract. For true scored evals, a scorer
+    # should probably be required (explicit sample_scorer / score_fn, or an
+    # environment-owned scorer as a deliberate fallback). Attempt-only /
+    # open-ended workflows may deserve a separate entrypoint instead of sharing
+    # the same validation contract.

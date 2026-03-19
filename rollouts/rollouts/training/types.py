@@ -205,6 +205,10 @@ class AttemptEvaluation:
 class AttemptResult:
     """Canonical result of one execution attempt."""
 
+    # TODO: Rename AttemptResult / AttemptRow to reflect stage semantics more
+    # honestly. Current intent: AttemptResult is the raw execution result, while
+    # AttemptRow is the richer scored/training-oriented record.
+
     attempt_id: str = ""
     problem: ProblemRow | None = None
     trajectory: "Trajectory | None" = None

@@ -33,15 +33,19 @@ class Score:
         return sum(value * weight for value, weight in weighted) / total_weight
 
 
-# ScoreFn takes (trajectory, row) so external scorers can access ground truth from the
-# row without needing to smuggle it through AttemptRow internals.
-# Environments that own their own scoring implement env.score(trajectory) instead.
+# TODO: Revisit the eval-stage contract. Current ScoreFn takes (trajectory, row),
+# but the more honest contract may be a scorer over a raw execution result plus
+# explicit scoring context. Keep the lower-level scoring primitive exposed even
+# if higher-level convenience APIs materialize richer scored records on top.
 ScoreFn = (
     Callable[["Trajectory", dict[str, Any]], Score]
     | Callable[["Trajectory", dict[str, Any]], Awaitable[Score]]
 )
 PrepareMessagesFn = Callable[[dict[str, Any]], list[Any]]
 EnvironmentFactory = Callable[[dict[str, Any]], Any]
+# TODO: AttemptExecutor currently returns AttemptRow for compatibility, but the
+# intended stage split may be row -> AttemptResult, then scorer attaches
+# evaluation / richer row semantics afterward.
 AttemptExecutor = Callable[
     [dict[str, Any], str, "Environment | None", "RunConfig"],
     AttemptRow | Awaitable[AttemptRow],
@@ -52,8 +56,9 @@ AttemptExecutor = Callable[
 class EvalConfig:
     endpoint: Endpoint | None
     prepare_messages: PrepareMessagesFn | None
-    # score_fn is optional: environments that own scoring implement env.score(trajectory),
-    # open-ended environments (local coding, SFT data gen) may have no scorer at all.
+    # TODO: A true scored eval should probably require an explicit scoring stage
+    # (score_fn, sample_scorer, or equivalent). Open-ended / attempt-only runs
+    # may deserve a separate top-level API instead of weakening EvalConfig.
     score_fn: ScoreFn | None = None
     sample_scorer: SampleScorer | None = None
     environment: Environment | None = None

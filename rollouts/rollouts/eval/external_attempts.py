@@ -152,6 +152,10 @@ async def execute_external_attempt(
     prompt_builder: PromptBuilder,
     trajectory_adapter: TrajectoryAdapter,
 ) -> AttemptRow:
+    # TODO: Tighten this stage boundary. External attempt execution should
+    # denotationally return the raw execution result, with scoring/evaluation as
+    # a later stage. Returning AttemptRow here keeps current eval plumbing
+    # working, but it blurs execution vs scored-record ownership.
     del environment
     prompt = prompt_builder(sample_data)
     if _trajectory_adapter_accepts_run_config(trajectory_adapter):
