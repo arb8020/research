@@ -4,8 +4,8 @@ import html
 import json
 from typing import Any
 
-from ..export import format_content_html
-from .artifacts import normalize_sample_payload
+from .export import format_content_html
+from .sample_views import normalize_sample_payload
 
 
 def _render_json(value: Any) -> str:

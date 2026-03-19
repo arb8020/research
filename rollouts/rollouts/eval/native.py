@@ -29,7 +29,7 @@ from ..dtypes import (
     ThinkingDelta,
     ToolExecutionEnd,
 )
-from ..frontend.html_export import run_to_html, sample_to_html
+from ..export_html import run_to_html, sample_to_html
 from ..progress import MultiProgress
 from ..training.types import (
     AttemptEvaluation,

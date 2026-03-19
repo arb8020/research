@@ -26,12 +26,12 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
+from ..export_html import run_to_html, sample_to_html
 from .artifacts import (
     find_trace_dir,
     load_sample_payload,
     load_trace_payload,
 )
-from .html_export import run_to_html, sample_to_html
 from .live_runs import (
     acquire_run_slot,
     active_run_ids,

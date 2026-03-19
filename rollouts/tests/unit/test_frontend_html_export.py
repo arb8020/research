@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from rollouts.frontend.html_export import run_to_html, sample_to_html
+from rollouts.export_html import run_to_html, sample_to_html
 
 
 def _sample() -> dict:
