@@ -6,7 +6,6 @@ import type { LiveRun } from '../types'
 
 interface LiveRunCardProps {
   run: LiveRun
-  onFinished?: () => void
   onSelectSample?: (sampleId: string) => void
 }
 
@@ -39,7 +38,7 @@ function ScoreDot({ score, status }: { score: number | null; status: 'pending' |
   )
 }
 
-export function LiveRunCard({ run, onFinished: _onFinished, onSelectSample }: LiveRunCardProps) {
+export function LiveRunCard({ run, onSelectSample }: LiveRunCardProps) {
   const state = useLiveRun(run.run_id, run.status)
   const [expanded, setExpanded] = useState(true)
   const [killing, setKilling] = useState(false)
@@ -61,8 +60,8 @@ export function LiveRunCard({ run, onFinished: _onFinished, onSelectSample }: Li
     setKilling(true)
     try {
       await killRun(run.run_id)
-    } catch {
-      // ignore
+    } catch (err) {
+      console.error(`Failed to kill run ${run.run_id}`, err)
     } finally {
       setKilling(false)
     }

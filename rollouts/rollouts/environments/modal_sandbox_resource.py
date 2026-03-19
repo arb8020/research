@@ -10,6 +10,7 @@ import time
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from pathlib import PurePosixPath
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
 import trio
@@ -114,7 +115,7 @@ class ModalSandboxResource:
     async def close(self) -> None:
         if self._sandbox is None:
             return
-        self._sandbox.terminate()
+        await self._terminate_sandbox()
         self._sandbox = None
         self._sandbox_id = None
         self._started = False
@@ -122,7 +123,7 @@ class ModalSandboxResource:
     async def reset(self) -> None:
         if self._sandbox is not None:
             try:
-                self._sandbox.terminate()
+                await self._terminate_sandbox()
             except Exception as exc:
                 self._last_error = str(exc)
         self._sandbox = None
@@ -380,7 +381,7 @@ class ModalSandboxResource:
         self._start_attempts += 1
         started_at = time.perf_counter()
         try:
-            sandbox_id = await trio.to_thread.run_sync(self._create_sandbox_subprocess)
+            sandbox_id = await self._provision_sandbox_via_broker()
             self._sandbox_id = sandbox_id
 
             import modal
@@ -397,53 +398,76 @@ class ModalSandboxResource:
             self._provision_duration_ms = (time.perf_counter() - started_at) * 1000.0
             raise
 
-    def _create_sandbox_subprocess(self) -> str:
-        import subprocess
-        import sys
-
-        result = subprocess.run(
-            [sys.executable, "-c", self._build_sandbox_creation_script()],
-            capture_output=True,
-            text=True,
-            env={**os.environ},
+    def _broker_deps(self) -> Any:
+        return SimpleNamespace(
+            source_type="registry",
+            source_ref=self.config.image_registry,
+            python_version=self.config.python_version,
+            system_packages=tuple(self.config.apt_packages),
+            pip_packages=tuple(self.config.pip_packages),
+            pip_index_url=None,
+            pip_extra_index_url=None,
+            pip_prerelease=False,
+            env=dict(self.config.env),
+            bootstrap_commands=(
+                tuple(self.config.run_commands)
+                + (self._manifest_write_command(),)
+            ),
         )
-        if result.returncode != 0:
-            raise RuntimeError(f"Sandbox creation failed: {result.stderr}")
-        return result.stdout.strip().splitlines()[-1]
 
-    def _build_sandbox_creation_script(self) -> str:
-        apt_packages = ", ".join(repr(pkg) for pkg in self.config.apt_packages)
-        pip_packages = ", ".join(repr(pkg) for pkg in self.config.pip_packages)
-        run_commands = ", ".join(repr(cmd) for cmd in self.config.run_commands)
-        env_json = json.dumps(self.config.env)
-        return f"""
-import asyncio
-import json
-import os
-import modal
-
-async def create_sandbox() -> None:
-    app = modal.App.lookup({self.config.app_name!r}, create_if_missing=True)
-    image = (
-        modal.Image.from_registry(
-            {self.config.image_registry!r},
-            add_python={self.config.python_version!r},
+    def _manifest_write_command(self) -> str:
+        payload = {
+            "schema_version": 1,
+            "source_type": "registry",
+            "source_ref": self.config.image_registry,
+            "resolved_image_ref": None,
+            "image_name": None,
+            "cuda_version": self.config.image_registry.split(":")[1].split("-")[0]
+            if ":" in self.config.image_registry
+            else None,
+            "python_version": self.config.python_version,
+            "env": self.config.env,
+            "features": ["kernelbench-v3", "kernelbench-backend:cuda"],
+            "installed_groups": ["kernelbench-v3-runtime"],
+            "paths": {
+                "workspace_dir": self.config.workspace_dir,
+                "thunderkittens_root": self.config.env.get("THUNDERKITTENS_ROOT", ""),
+            },
+        }
+        encoded = base64.b64encode(json.dumps(payload, indent=2, sort_keys=True).encode()).decode()
+        return (
+            "python3 -c \"import base64; from pathlib import Path; "
+            "path = Path('/etc/rollouts-image.json').expanduser(); "
+            "path.parent.mkdir(parents=True, exist_ok=True); "
+            f"path.write_text(base64.b64decode('{encoded}').decode('utf-8'))\""
         )
-        .apt_install({apt_packages})
-        .pip_install({pip_packages})
-        .env(json.loads({env_json!r}))
-        .run_commands({run_commands})
-    )
-    sandbox = modal.Sandbox.create(
-        app=app,
-        image=image,
-        gpu={self.config.gpu!r},
-        timeout={self.config.timeout_seconds},
-    )
-    print(sandbox.object_id)
 
-asyncio.run(create_sandbox())
-"""
+    async def _provision_sandbox_via_broker(self) -> str:
+        from broker.providers import modal as broker_modal
+        from broker.types import ProvisionRequest
+
+        request = ProvisionRequest(
+            gpu_type=self.config.gpu,
+            gpu_count=1,
+            provider="modal",
+            name=self.config.app_name,
+            raw_data={"deps": self._broker_deps()},
+        )
+        instance = await broker_modal.provision_instance(request)
+        if instance is None:
+            raise RuntimeError(
+                f"Broker failed to provision Modal sandbox for app={self.config.app_name!r}"
+            )
+        return instance.id
+
+    async def _terminate_sandbox(self) -> None:
+        if self._sandbox_id is None:
+            return
+        from broker.providers import modal as broker_modal
+
+        terminated = await broker_modal.terminate_instance(self._sandbox_id)
+        if not terminated and self._sandbox is not None:
+            self._sandbox.terminate()
 
     async def _run_runtime_probe(self, sandbox: modal.Sandbox) -> dict[str, Any]:
         script = build_gpu_runtime_probe_script()

@@ -2,20 +2,28 @@
 
 This is the current parity checklist for the `rollouts` Megatron -> SGLang
 NCCL hot-update path against the `miles` baseline we are actually running in
-Modal.
+Modal, cross-checked against a fresh `slime` checkout.
 
 ## Scope
 
-- Trainer-side reference:
+- Trainer-side references:
   [`/tmp/miles/miles/backends/megatron_utils/update_weight/update_weight_from_distributed.py`](/tmp/miles/miles/backends/megatron_utils/update_weight/update_weight_from_distributed.py)
+  [`/tmp/slime-fresh-20260316/slime/backends/megatron_utils/update_weight/update_weight_from_distributed.py`](/tmp/slime-fresh-20260316/slime/backends/megatron_utils/update_weight/update_weight_from_distributed.py)
 - Shared process-group helper:
   [`/tmp/miles/miles/utils/distributed_utils.py`](/tmp/miles/miles/utils/distributed_utils.py)
+  [`/tmp/slime-fresh-20260316/slime/utils/distributed_utils.py`](/tmp/slime-fresh-20260316/slime/utils/distributed_utils.py)
 - Engine wrapper reference:
   [`/tmp/miles/miles/backends/sglang_utils/sglang_engine.py`](/tmp/miles/miles/backends/sglang_utils/sglang_engine.py)
+  [`/tmp/slime-fresh-20260316/slime/backends/sglang_utils/sglang_engine.py`](/tmp/slime-fresh-20260316/slime/backends/sglang_utils/sglang_engine.py)
 - Receiver-side patches:
   [`/tmp/miles/docker/patch/v0.5.0rc0-cu126/sglang.patch`](/tmp/miles/docker/patch/v0.5.0rc0-cu126/sglang.patch)
   [`/tmp/miles/docker/patch/v0.5.5.post1/sglang.patch`](/tmp/miles/docker/patch/v0.5.5.post1/sglang.patch)
   [`/tmp/miles/docker/patch/v0.5.6/sglang.patch`](/tmp/miles/docker/patch/v0.5.6/sglang.patch)
+  [`/tmp/slime-fresh-20260316/docker/patch/v0.5.0rc0-cu126/sglang.patch`](/tmp/slime-fresh-20260316/docker/patch/v0.5.0rc0-cu126/sglang.patch)
+  [`/tmp/slime-fresh-20260316/docker/patch/v0.5.5.post1/sglang.patch`](/tmp/slime-fresh-20260316/docker/patch/v0.5.5.post1/sglang.patch)
+  [`/tmp/slime-fresh-20260316/docker/patch/v0.5.6/sglang.patch`](/tmp/slime-fresh-20260316/docker/patch/v0.5.6/sglang.patch)
+  [`/tmp/slime-fresh-20260316/docker/patch/v0.5.7/sglang.patch`](/tmp/slime-fresh-20260316/docker/patch/v0.5.7/sglang.patch)
+  [`/tmp/slime-fresh-20260316/docker/patch/latest/sglang.patch`](/tmp/slime-fresh-20260316/docker/patch/latest/sglang.patch)
 
 Current runtime image:
 - [`examples/rl/base_config.py`](/Users/chiraagbalu/research/rollouts/examples/rl/base_config.py)
@@ -45,6 +53,16 @@ We still have a hybrid:
 - their patched SGLang receiver image
 
 That is the main reason they do not hit the same failure mode.
+
+`slime` confirms the same overall shape:
+
+- trainer-side `rollout_engine_lock` guarding each bucketed broadcast
+- dedicated `PrefixStore(group_name, ...)` process-group helper
+- `pause_generation -> flush_cache -> broadcast -> continue_generation`
+- SGLang `update_weights_from_distributed` routed under
+  `model_update_lock.writer_lock`
+- newer SGLang patches add `AMEM_ENABLE`-gated `nccl_pause()` /
+  `nccl_resume()` hooks
 
 ## Checklist
 
@@ -114,7 +132,8 @@ That is the main reason they do not hit the same failure mode.
   Status: missing
   Why it matters:
   The lock makes the update channel a single-owner effect and is explicitly
-  described as deadlock prevention in `miles`.
+  described as deadlock prevention in `miles`, and `slime` uses the same
+  lock pattern.
 
 - `miles` performs update in bucketed chunks.
   Status: partially matched
@@ -133,6 +152,7 @@ That is the main reason they do not hit the same failure mode.
   Status: matched indirectly via image
   Evidence:
   [`v0.5.0rc0-cu126/sglang.patch`](/tmp/miles/docker/patch/v0.5.0rc0-cu126/sglang.patch)
+  [`v0.5.0rc0-cu126/sglang.patch`](/tmp/slime-fresh-20260316/docker/patch/v0.5.0rc0-cu126/sglang.patch)
 
 - Newer `miles` patches add `PyNcclCommunicator.nccl_pause()` /
   `nccl_resume()` and use them when pausing CUDA-graph-related memory
@@ -141,13 +161,16 @@ That is the main reason they do not hit the same failure mode.
   Evidence:
   [`v0.5.5.post1/sglang.patch`](/tmp/miles/docker/patch/v0.5.5.post1/sglang.patch)
   [`v0.5.6/sglang.patch`](/tmp/miles/docker/patch/v0.5.6/sglang.patch)
+  [`v0.5.5.post1/sglang.patch`](/tmp/slime-fresh-20260316/docker/patch/v0.5.5.post1/sglang.patch)
+  [`v0.5.6/sglang.patch`](/tmp/slime-fresh-20260316/docker/patch/v0.5.6/sglang.patch)
 
 - Our current SGLang launch env does not set `AMEM_ENABLE=1`.
   Status: missing compared with the newer pause/resume path
   Evidence:
   [`weight_sync.py`](/Users/chiraagbalu/research/rollouts/rollouts/training/weight_sync.py)
 
-This is the most plausible still-missing runtime effect.
+This is the most plausible still-missing runtime effect. `slime` does not
+weaken that conclusion; it reinforces it.
 
 ### Runtime Topology
 
@@ -192,9 +215,10 @@ The strongest remaining hypotheses are:
 
 1. We still lack the newer SGLang-side communicator pause/resume effect
    (`AMEM_ENABLE=1` + `nccl_pause()/nccl_resume()` patches).
-2. We still lack `miles`' rollout-engine lock semantics on the trainer side.
+2. We still lack `miles/slime` rollout-engine lock semantics on the trainer
+   side.
 3. Our hybrid runtime topology is violating a communicator ownership invariant
-   that does not exist inside the native `miles` Ray actor graph.
+   that does not exist inside the native `miles/slime` Ray actor graph.
 
 ## Next Patches To Try
 
@@ -210,10 +234,3 @@ The strongest remaining hypotheses are:
 
 4. Emit a structured `training_preflight_weight_sync_witness_failed` event and
    force orderly shutdown when the witness fails.
-
-## Notes
-
-- I could not verify `slime` locally in this pass because there is no usable
-  `/tmp/slime` checkout in this environment.
-- The checklist above is therefore grounded in the `miles` code and patches
-  that our Modal image is explicitly pinned to.

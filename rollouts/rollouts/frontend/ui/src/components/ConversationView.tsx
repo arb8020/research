@@ -262,6 +262,33 @@ interface ParsedMessage {
   blocks: ParsedBlock[]
 }
 
+function splitAssistantBlocks(blocks: ParsedBlock[]): ParsedBlock[][] {
+  const segments: ParsedBlock[][] = []
+  let current: ParsedBlock[] = []
+
+  const flush = () => {
+    if (current.length > 0) {
+      segments.push(current)
+      current = []
+    }
+  }
+
+  for (const block of blocks) {
+    const resumesAssistantNarration =
+      (block.type === 'text' || block.type === 'thinking') &&
+      current.some(existing => existing.type === 'toolCall')
+
+    if (resumesAssistantNarration) {
+      flush()
+    }
+
+    current.push(block)
+  }
+
+  flush()
+  return segments
+}
+
 function parseMessages(messages: TraceSample['trajectory']['messages']): ParsedMessage[] {
   if (!messages) return []
 
@@ -312,7 +339,9 @@ function parseMessages(messages: TraceSample['trajectory']['messages']): ParsedM
         if (b.type === 'toolCall') return { type: 'toolCall' as const, id: b.id as string, name: b.name as string, arguments: b.arguments as Record<string, unknown> }
         return { type: 'text' as const, text: JSON.stringify(b) }
       })
-      parsed.push({ role: 'assistant', timestamp: msg.timestamp as string | undefined, blocks: normalized })
+      for (const segment of splitAssistantBlocks(normalized)) {
+        parsed.push({ role: 'assistant', timestamp: msg.timestamp as string | undefined, blocks: segment })
+      }
     }
   }
   return parsed
@@ -541,13 +570,13 @@ export function ConversationView({
   ensureStyles()
   const messages = useMemo(() => parseMessages(sample.trajectory.messages), [sample])
 
-  // Track turn index: increment on each assistant message
+  // Track display turns: UI-only projection over canonical assistant messages.
   let turnCounter = -1
 
   if (!messages.length) {
     return (
       <div style={{ color: '#636363', fontFamily: '"IBM Plex Mono", monospace', fontSize: 12, fontStyle: 'italic' }}>
-        No messages in trajectory
+        No recorded agent turns for this sample
       </div>
     )
   }

@@ -11,6 +11,12 @@ repos:
   # ty type checker (using system hook until official hook available)
   - repo: local
     hooks:
+      - id: complexity-report
+        name: complexity report (warning only)
+        entry: python3 scripts/complexity_report.py --top 15
+        language: system
+        types: [python]
+        pass_filenames: true
       - id: ty
         name: ty type checker
         entry: uvx ty check

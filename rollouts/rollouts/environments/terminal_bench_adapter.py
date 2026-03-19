@@ -96,7 +96,9 @@ def load_terminal_bench_tasks(
     try:
         import yaml
     except ImportError:
-        raise ImportError("PyYAML is required to load terminal-bench tasks: pip install pyyaml") from None
+        raise ImportError(
+            "PyYAML is required to load terminal-bench tasks: pip install pyyaml"
+        ) from None
 
     tasks_path = Path(tasks_dir)
     assert tasks_path.is_dir(), f"tasks_dir does not exist: {tasks_dir}"

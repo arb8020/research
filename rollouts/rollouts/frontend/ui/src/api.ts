@@ -64,3 +64,11 @@ export async function getWorkspace(runId: string, sampleId: string): Promise<Wor
   if (!res.ok) return null
   return res.json()
 }
+
+export function getRunHtmlExportUrl(runId: string): string {
+  return `/api/trace/${encodeURIComponent(runId)}/export.html`
+}
+
+export function getSampleHtmlExportUrl(runId: string, sampleId: string): string {
+  return `/api/trace/${encodeURIComponent(runId)}/sample/${encodeURIComponent(sampleId)}/export.html`
+}

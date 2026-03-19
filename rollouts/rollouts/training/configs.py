@@ -460,6 +460,15 @@ class InferenceConfig:
     Supports multiple inference engines for higher throughput (PipelineRL-style).
     Each GPU in cuda_device_ids gets its own inference server on a separate port.
 
+    Architectural note:
+    Training backends already go through an explicit factory/lowering path.
+    Inference backends are not there yet: `backend` is still a stringly selector
+    that gets interpreted directly in `grpo._create_inference_engines()`.
+    That means pipeline semantics like `checkpoint.pipeline_mode="true_pipeline"`
+    are not yet lowered jointly against trainer and inference capabilities.
+    Keep this config honest about concrete engine settings; do not treat it as a
+    full runtime-capability contract yet.
+
     Example:
         # Single inference engine on GPU 0
         InferenceConfig(cuda_device_ids=(0,), port=30000)
@@ -565,6 +574,12 @@ class CheckpointConfig:
     #                     filtering. Current direct-receive realizations still block at the
     #                     inference weight-application boundary, so new admissions should be
     #                     treated as paused while sync is in progress.
+    #
+    # Architectural note:
+    # This flag is still interpreted mostly by GRPO orchestration code. It is
+    # not yet an honestly lowered cross-backend capability: training and
+    # inference backends are not both validating/realizing it through a shared
+    # runtime plan today.
     pipeline_mode: str = "sync"
     # Maximum weight version lag for async pipeline (samples older than this are discarded)
     # Only used if pipeline_mode="async". Set to 0 for strict on-policy.

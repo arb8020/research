@@ -47,8 +47,8 @@ if TYPE_CHECKING:
     from ..frontends.protocol import Frontend
     from .protocol import ExternalAgentDriver
 
-# Event logger for eval infrastructure — writes to events.jsonl and per-sample files
-# when setup_eval_logging() has been called
+# Event logger for eval infrastructure — writes to events.jsonl when
+# setup_eval_logging() has been called.
 _event_logger = logging.getLogger("rollouts.eval.events")
 
 

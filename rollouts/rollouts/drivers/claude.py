@@ -367,7 +367,13 @@ class _ClaudeEventParser:
 
             case "assistant":
                 # Complete assistant message
-                # Skip if we already streamed via stream_event (avoid duplicates)
+                # Skip if we already streamed via stream_event (avoid duplicates).
+                #
+                # Important trust boundary: Claude's streamed tool_use events can be
+                # lossy for arguments, while the persisted session JSONL often contains
+                # the complete tool input payloads. For completed runs, prefer the
+                # session file as the authoritative source of truth and treat the live
+                # stream as provisional UI/debug data.
                 if self._streamed_content:
                     pass  # Already handled via streaming
                 else:

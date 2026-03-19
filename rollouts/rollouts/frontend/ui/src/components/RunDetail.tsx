@@ -1,16 +1,6 @@
-import { useState, useEffect } from 'react'
-import { ChevronLeft } from 'lucide-react'
-import { getRunReport } from '../api'
-import type { RunReport } from '../types'
-
-interface SampleRow {
-  id: string
-  reward: number | null
-  turns: number | null
-  tokens: number | null
-  duration: number | null
-  status: string | null
-}
+import { ChevronLeft, Download } from 'lucide-react'
+import { getRunHtmlExportUrl } from '../api'
+import { useRunDetail } from '../hooks/useRunDetail'
 
 interface RunDetailProps {
   runId: string
@@ -28,29 +18,9 @@ function RewardCell({ reward }: { reward: number | null }) {
 }
 
 export function RunDetail({ runId, onBack, onSelectSample }: RunDetailProps) {
-  const [report, setReport] = useState<RunReport | null>(null)
-  const [samples, setSamples] = useState<SampleRow[]>([])
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
+  const state = useRunDetail(runId)
 
-  useEffect(() => {
-    setLoading(true)
-    getRunReport(runId)
-      .then(({ report: r, sample_ids }) => {
-        setReport(r)
-        // Build sample rows from report data
-        // detailed per-sample stats come from the results JSONL via the /api/trace endpoint
-        // For now seed rows from sample_ids; richer data fetched by RunViewer
-        setSamples(
-          sample_ids.map(id => ({ id, reward: null, turns: null, tokens: null, duration: null, status: null }))
-        )
-        setError(null)
-      })
-      .catch(err => setError(err instanceof Error ? err.message : 'Failed to load run'))
-      .finally(() => setLoading(false))
-  }, [runId])
-
-  if (loading) {
+  if (state.kind === 'loading') {
     return (
       <div className="flex items-center justify-center" style={{ height: 200 }}>
         <div
@@ -61,17 +31,18 @@ export function RunDetail({ runId, onBack, onSelectSample }: RunDetailProps) {
     )
   }
 
-  if (error) {
+  if (state.kind === 'error') {
     return (
       <div className="p-6">
-        <p className="text-sm" style={{ color: '#ef4444' }}>Error: {error}</p>
+        <p className="text-sm" style={{ color: '#ef4444' }}>Error: {state.error}</p>
         <button onClick={onBack} className="text-sm mt-2" style={{ color: 'var(--color-dark-text-muted)' }}>← Back</button>
       </div>
     )
   }
 
-  const metrics = report?.summary_metrics
-  const model = report?.config?.endpoint?.model ?? '—'
+  const { report, samples } = state
+  const metrics = report.summary_metrics
+  const model = report.config?.endpoint?.model ?? '—'
 
   return (
     <div className="p-4 sm:p-6 max-w-5xl mx-auto">
@@ -92,6 +63,18 @@ export function RunDetail({ runId, onBack, onSelectSample }: RunDetailProps) {
             {model}
           </p>
         </div>
+        <a
+          href={getRunHtmlExportUrl(runId)}
+          className="ml-auto inline-flex items-center gap-2 rounded px-3 py-2 text-xs font-medium transition-opacity hover:opacity-80"
+          style={{
+            color: 'var(--color-dark-text)',
+            background: 'var(--color-dark-card)',
+            border: '1px solid var(--color-dark-border)',
+          }}
+        >
+          <Download className="h-3.5 w-3.5" />
+          Export HTML
+        </a>
       </div>
 
       {/* Summary metrics */}

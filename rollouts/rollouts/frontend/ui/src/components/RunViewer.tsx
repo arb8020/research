@@ -1,10 +1,12 @@
-import { useState, useEffect, useCallback, useRef, type ReactNode } from 'react'
-import { ChevronLeft } from 'lucide-react'
-import { getSample, getWorkspace } from '../api'
+import { useState, useCallback, useMemo, useRef, type ReactNode } from 'react'
+import { ChevronLeft, Download } from 'lucide-react'
 import { ConversationView } from './ConversationView'
 import { WorkspacePanel } from './WorkspacePanel'
 import { ErrorBoundary } from './ErrorBoundary'
-import type { TraceSample, WorkspaceData } from '../types'
+import { resolvePlugin } from '../plugins/registry'
+import { getSampleHtmlExportUrl } from '../api'
+import { useSampleData } from '../hooks/useSampleData'
+import type { TraceSample } from '../types'
 
 const SPLIT_KEY = 'rollouts-split-pct'
 const DEFAULT_SPLIT = 54  // left panel % width
@@ -34,22 +36,155 @@ function SummaryField({ label, children }: { label: string; children: ReactNode 
 interface RunViewerProps {
   runId: string
   sampleId: string
+  evalName?: string
   onBack: () => void
 }
 
 type TabId = 'conversation' | 'summary' | 'json'
 
-export function RunViewer({ runId, sampleId, onBack }: RunViewerProps) {
+function getRewardColor(value: number): string {
+  if (value >= 0.8) return '#22c55e'
+  if (value >= 0.4) return '#3b82f6'
+  return 'var(--color-dark-text)'
+}
+
+function getScoreMetrics(sample: TraceSample) {
+  return sample.score?.metrics ?? sample.rewards ?? []
+}
+
+function hasInput(sample: TraceSample): boolean {
+  return sample.input != null && Object.keys(sample.input).length > 0
+}
+
+function hasMetadata(sample: TraceSample): boolean {
+  return sample.metadata != null && Object.keys(sample.metadata).length > 0
+}
+
+function RunViewerContent({
+  activeTab,
+  sample,
+  showWorkspaceSelection,
+  checkedTurns,
+  onToggleTurn,
+  onMessageVisible,
+}: {
+  activeTab: TabId
+  sample: TraceSample
+  showWorkspaceSelection: boolean
+  checkedTurns: Set<number>
+  onToggleTurn: (turn: number) => void
+  onMessageVisible?: (messageIndex: number) => void
+}) {
+  const scoreMetrics = getScoreMetrics(sample)
+
+  if (activeTab === 'conversation') {
+    return (
+      <ErrorBoundary label="ConversationView">
+        <ConversationView
+          sample={sample}
+          onMessageVisible={onMessageVisible}
+          checkedTurns={showWorkspaceSelection ? checkedTurns : undefined}
+          onToggleTurn={showWorkspaceSelection ? onToggleTurn : undefined}
+        />
+      </ErrorBoundary>
+    )
+  }
+
+  if (activeTab === 'summary') {
+    return (
+      <ErrorBoundary label="Summary">
+        <div className="space-y-4">
+          {sample.reward != null && (
+            <SummaryField label="Reward">
+              <span className="font-mono font-semibold text-sm" style={{ color: getRewardColor(sample.reward) }}>
+                {sample.reward.toFixed(3)}
+              </span>
+            </SummaryField>
+          )}
+
+          {scoreMetrics.length > 0 && (
+            <SummaryField label="Score breakdown">
+              <div className="space-y-1">
+                {scoreMetrics.map((metric, i) => (
+                  <div key={i} className="flex items-center gap-3 text-sm">
+                    <span style={{ color: 'var(--color-dark-text-secondary)' }}>{metric.name}</span>
+                    <span
+                      className="font-mono font-semibold"
+                      style={{ color: getRewardColor(metric.value) }}
+                    >
+                      {metric.value.toFixed(3)}
+                    </span>
+                    {metric.weight !== 1.0 && (
+                      <span className="text-xs" style={{ color: 'var(--color-dark-text-muted)' }}>w={metric.weight}</span>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </SummaryField>
+          )}
+
+          {hasInput(sample) && (
+            <SummaryField label="Input">
+              <div className="space-y-2">
+                {Object.entries(sample.input ?? {}).map(([key, value]) => (
+                  <div key={key}>
+                    <span className="text-[10px] uppercase tracking-wide" style={{ color: 'var(--color-dark-text-muted)' }}>{key}: </span>
+                    <span className="text-sm" style={{ color: 'var(--color-dark-text)' }}>
+                      {typeof value === 'string' ? value : JSON.stringify(value)}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </SummaryField>
+          )}
+
+          {hasMetadata(sample) && (
+            <SummaryField label="Metadata">
+              <div className="space-y-1">
+                {Object.entries(sample.metadata ?? {}).map(([key, value]) => (
+                  <div key={key} className="flex items-center gap-2 text-sm flex-wrap">
+                    <span style={{ color: 'var(--color-dark-text-secondary)' }}>{key}</span>
+                    <span className="font-mono" style={{ color: 'var(--color-dark-text)' }}>{String(value)}</span>
+                  </div>
+                ))}
+              </div>
+            </SummaryField>
+          )}
+
+          <SummaryField label="Completions">
+            <p className="text-sm font-mono" style={{ color: 'var(--color-dark-text)' }}>
+              {sample.trajectory.completions.length}
+            </p>
+          </SummaryField>
+        </div>
+      </ErrorBoundary>
+    )
+  }
+
+  return (
+    <div
+      className="overflow-auto font-mono text-xs"
+      style={{
+        background: '#0a0a0a',
+        padding: '0.75rem',
+        borderRadius: '2px',
+        color: 'var(--color-neutral-300)',
+        maxHeight: '70vh',
+      }}
+    >
+      <pre>{JSON.stringify(sample, null, 2)}</pre>
+    </div>
+  )
+}
+
+export function RunViewer({ runId, sampleId, evalName, onBack }: RunViewerProps) {
   const [activeTab, setActiveTab] = useState<TabId>('conversation')
-  const [sample, setSample] = useState<TraceSample | null>(null)
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
-  const [workspaceData, setWorkspaceData] = useState<WorkspaceData | null>(null)
   const [selectedTurn, setSelectedTurn] = useState(0)
   const [splitPct, setSplitPct] = useSplitPct()
   const [checkedTurns, setCheckedTurns] = useState<Set<number>>(new Set())
   const dragging = useRef(false)
   const containerRef = useRef<HTMLDivElement>(null)
+  const sampleState = useSampleData(runId, sampleId)
 
   const handleFitWidth = useCallback((contentWidthPx: number) => {
     if (!containerRef.current) return
@@ -69,18 +204,6 @@ export function RunViewer({ runId, sampleId, onBack }: RunViewerProps) {
       return next
     })
   }, [])
-
-  useEffect(() => {
-    setLoading(true)
-    getSample(runId, sampleId)
-      .then(s => { setSample(s); setError(null) })
-      .catch(err => setError(err instanceof Error ? err.message : 'Failed to load sample'))
-      .finally(() => setLoading(false))
-    // Load workspace data in parallel (non-blocking — not all runs have workspace)
-    getWorkspace(runId, sampleId)
-      .then(w => setWorkspaceData(w))
-      .catch(() => setWorkspaceData(null))
-  }, [runId, sampleId])
 
   const handleJumpToMessage = useCallback((_messageIndex: number) => {
     setActiveTab('conversation')
@@ -109,15 +232,20 @@ export function RunViewer({ runId, sampleId, onBack }: RunViewerProps) {
   // Track which conversation message index maps to which turn
   const messageToTurn = useCallback((messageIndex: number) => {
     // Each assistant message = one turn. Count assistant messages up to messageIndex.
-    const messages = sample?.trajectory?.messages ?? []
+    const messages = sampleState.kind === 'loaded' ? sampleState.sample.trajectory?.messages ?? [] : []
     let turn = 0
     for (let i = 0; i <= messageIndex && i < messages.length; i++) {
       if (messages[i]?.role === 'assistant') turn++
     }
     return Math.max(0, turn - 1)
-  }, [sample])
+  }, [sampleState])
 
-  const hasWorkspace = workspaceData !== null && workspaceData.snapshots.length > 0
+  const sample = sampleState.kind === 'loaded' ? sampleState.sample : null
+  const workspaceData = sampleState.kind === 'loaded' ? sampleState.workspaceData : null
+  const checkedTurnsSorted = useMemo(() => [...checkedTurns].sort((a, b) => a - b), [checkedTurns])
+  const hasWorkspace = workspaceData !== null && workspaceData.snapshots.some(s => Object.keys(s.files).length > 0)
+  const plugin = resolvePlugin(evalName, sample)
+  const hasRightPanel = hasWorkspace || plugin !== null
 
   // Header + tabs shared by both layouts
   const header = (
@@ -138,6 +266,18 @@ export function RunViewer({ runId, sampleId, onBack }: RunViewerProps) {
             {runId}
           </p>
         </div>
+        <a
+          href={getSampleHtmlExportUrl(runId, sampleId)}
+          className="ml-auto inline-flex items-center gap-2 rounded px-3 py-2 text-xs font-medium transition-opacity hover:opacity-80"
+          style={{
+            color: 'var(--color-dark-text)',
+            background: 'var(--color-dark-card)',
+            border: '1px solid var(--color-dark-border)',
+          }}
+        >
+          <Download className="h-3.5 w-3.5" />
+          Export HTML
+        </a>
       </div>
       <div className="flex gap-1 mb-4" style={{ borderBottom: '1px solid var(--color-dark-border)' }}>
         {tabs.map(tab => (
@@ -159,48 +299,25 @@ export function RunViewer({ runId, sampleId, onBack }: RunViewerProps) {
   )
 
   // Non-workspace layout (simple, scrollable)
-  if (!hasWorkspace) {
+  if (!hasRightPanel) {
     return (
       <div className="p-4 sm:p-6 max-w-5xl mx-auto">
         {header}
         <div className="rounded p-4" style={{ background: 'var(--color-dark-card)', border: '1px solid var(--color-dark-border)' }}>
-          {loading ? (
+          {sampleState.kind === 'loading' ? (
             <div className="flex items-center justify-center" style={{ height: 160 }}>
               <div className="rounded-full animate-spin" style={{ width: 24, height: 24, border: '2px solid var(--color-dark-border)', borderTopColor: 'var(--color-dark-text)' }} />
             </div>
-          ) : error ? (
-            <p className="text-sm" style={{ color: '#ef4444' }}>{error}</p>
+          ) : sampleState.kind === 'error' ? (
+            <p className="text-sm" style={{ color: '#ef4444' }}>{sampleState.error}</p>
           ) : sample ? (
-            <>
-              {activeTab === 'conversation' && (
-                <ErrorBoundary label="ConversationView">
-                  <ConversationView sample={sample} />
-                </ErrorBoundary>
-              )}
-              {activeTab === 'summary' && (
-                <ErrorBoundary label="Summary">
-                  <div className="space-y-4">
-                    {sample.reward != null && (
-                      <SummaryField label="Reward">
-                        <span className="font-mono font-semibold text-sm" style={{ color: sample.reward >= 0.8 ? '#22c55e' : sample.reward >= 0.4 ? '#3b82f6' : 'var(--color-dark-text)' }}>
-                          {(sample.reward as number).toFixed(3)}
-                        </span>
-                      </SummaryField>
-                    )}
-                    {sample.trajectory.completions.length > 0 && (
-                      <SummaryField label="Completions">
-                        <p className="text-sm font-mono" style={{ color: 'var(--color-dark-text)' }}>{sample.trajectory.completions.length}</p>
-                      </SummaryField>
-                    )}
-                  </div>
-                </ErrorBoundary>
-              )}
-              {activeTab === 'json' && (
-                <div className="overflow-auto font-mono text-xs" style={{ background: '#0a0a0a', padding: '0.75rem', borderRadius: '2px', color: 'var(--color-neutral-300)', maxHeight: '70vh' }}>
-                  <pre>{JSON.stringify(sample, null, 2)}</pre>
-                </div>
-              )}
-            </>
+            <RunViewerContent
+              activeTab={activeTab}
+              sample={sample}
+              showWorkspaceSelection={false}
+              checkedTurns={checkedTurns}
+              onToggleTurn={handleToggleTurn}
+            />
           ) : null}
         </div>
       </div>
@@ -217,12 +334,12 @@ export function RunViewer({ runId, sampleId, onBack }: RunViewerProps) {
 
       {/* Split content — fills remaining height */}
       <div className="flex-1 min-h-0 px-4 pb-3">
-      {loading ? (
+      {sampleState.kind === 'loading' ? (
         <div className="flex items-center justify-center rounded" style={{ height: 160, background: 'var(--color-dark-card)', border: '1px solid var(--color-dark-border)' }}>
           <div className="rounded-full animate-spin" style={{ width: 24, height: 24, border: '2px solid var(--color-dark-border)', borderTopColor: 'var(--color-dark-text)' }} />
         </div>
-      ) : error ? (
-        <p className="text-sm rounded p-4" style={{ color: '#ef4444', background: 'var(--color-dark-card)', border: '1px solid var(--color-dark-border)' }}>{error}</p>
+      ) : sampleState.kind === 'error' ? (
+        <p className="text-sm rounded p-4" style={{ color: '#ef4444', background: 'var(--color-dark-card)', border: '1px solid var(--color-dark-border)' }}>{sampleState.error}</p>
       ) : sample ? (
         <div
           ref={containerRef}
@@ -242,118 +359,18 @@ export function RunViewer({ runId, sampleId, onBack }: RunViewerProps) {
               height: '100%',
             }}
           >
-          <>
-            {activeTab === 'conversation' && (
-              <ErrorBoundary label="ConversationView">
-                <ConversationView
-                  sample={sample}
-                  onMessageVisible={hasWorkspace ? (idx) => setSelectedTurn(messageToTurn(idx)) : undefined}
-                  checkedTurns={checkedTurns}
-                  onToggleTurn={handleToggleTurn}
-                />
-              </ErrorBoundary>
-            )}
-
-            {activeTab === 'summary' && (
-              <ErrorBoundary label="Summary">
-              <div className="space-y-4">
-                {/* Reward — scalar, present in both rollouts and charisma */}
-                {sample.reward != null && (
-                  <SummaryField label="Reward">
-                    <span
-                      className="font-mono font-semibold text-sm"
-                      style={{ color: sample.reward >= 0.8 ? '#22c55e' : sample.reward >= 0.4 ? '#3b82f6' : 'var(--color-dark-text)' }}
-                    >
-                      {(sample.reward as number).toFixed(3)}
-                    </span>
-                  </SummaryField>
-                )}
-
-                {/* Score metrics (charisma: score.metrics; rollouts: rewards[]) */}
-                {(() => {
-                  const metrics = sample.score?.metrics ?? sample.rewards ?? []
-                  if (metrics.length === 0) return null
-                  return (
-                    <SummaryField label="Score breakdown">
-                      <div className="space-y-1">
-                        {metrics.map((r, i) => (
-                          <div key={i} className="flex items-center gap-3 text-sm">
-                            <span style={{ color: 'var(--color-dark-text-secondary)' }}>{r.name}</span>
-                            <span
-                              className="font-mono font-semibold"
-                              style={{ color: r.value >= 0.8 ? '#22c55e' : r.value >= 0.4 ? '#3b82f6' : 'var(--color-dark-text)' }}
-                            >
-                              {r.value.toFixed(3)}
-                            </span>
-                            {r.weight !== 1.0 && (
-                              <span className="text-xs" style={{ color: 'var(--color-dark-text-muted)' }}>w={r.weight}</span>
-                            )}
-                          </div>
-                        ))}
-                      </div>
-                    </SummaryField>
-                  )
-                })()}
-
-                {/* Input fields (rollouts) — skip if null */}
-                {sample.input != null && Object.keys(sample.input).length > 0 && (
-                  <SummaryField label="Input">
-                    <div className="space-y-2">
-                      {Object.entries(sample.input).map(([k, v]) => (
-                        <div key={k}>
-                          <span className="text-[10px] uppercase tracking-wide" style={{ color: 'var(--color-dark-text-muted)' }}>{k}: </span>
-                          <span className="text-sm" style={{ color: 'var(--color-dark-text)' }}>
-                            {typeof v === 'string' ? v : JSON.stringify(v)}
-                          </span>
-                        </div>
-                      ))}
-                    </div>
-                  </SummaryField>
-                )}
-
-                {/* Metadata */}
-                {sample.metadata != null && Object.keys(sample.metadata).length > 0 && (
-                  <SummaryField label="Metadata">
-                    <div className="space-y-1">
-                      {Object.entries(sample.metadata).map(([k, v]) => (
-                        <div key={k} className="flex items-center gap-2 text-sm flex-wrap">
-                          <span style={{ color: 'var(--color-dark-text-secondary)' }}>{k}</span>
-                          <span className="font-mono" style={{ color: 'var(--color-dark-text)' }}>{String(v)}</span>
-                        </div>
-                      ))}
-                    </div>
-                  </SummaryField>
-                )}
-
-                {/* Completions count */}
-                <SummaryField label="Completions">
-                  <p className="text-sm font-mono" style={{ color: 'var(--color-dark-text)' }}>
-                    {sample.trajectory.completions.length}
-                  </p>
-                </SummaryField>
-              </div>
-              </ErrorBoundary>
-            )}
-
-            {activeTab === 'json' && (
-              <div
-                className="overflow-auto font-mono text-xs"
-                style={{
-                  background: '#0a0a0a',
-                  padding: '0.75rem',
-                  borderRadius: '2px',
-                  color: 'var(--color-neutral-300)',
-                  maxHeight: '70vh',
-                }}
-              >
-                <pre>{JSON.stringify(sample, null, 2)}</pre>
-              </div>
-            )}
-          </>
+            <RunViewerContent
+              activeTab={activeTab}
+              sample={sample}
+              showWorkspaceSelection={hasWorkspace}
+              checkedTurns={checkedTurns}
+              onToggleTurn={handleToggleTurn}
+              onMessageVisible={hasWorkspace ? (idx) => setSelectedTurn(messageToTurn(idx)) : undefined}
+            />
           </div>
 
           {/* Drag divider */}
-          {hasWorkspace && (
+          {hasRightPanel && (
             <div
               onMouseDown={onDividerMouseDown}
               style={{
@@ -368,18 +385,29 @@ export function RunViewer({ runId, sampleId, onBack }: RunViewerProps) {
             />
           )}
 
-          {/* Workspace panel (right, only when workspace data exists) */}
-          {hasWorkspace && (
-            <div style={{ flex: 1, minWidth: 0, height: '100%' }}>
-              <ErrorBoundary label="WorkspacePanel">
-                <WorkspacePanel
-                  workspaceData={workspaceData!}
-                  selectedTurn={selectedTurn}
-                  checkedTurns={[...checkedTurns].sort((a, b) => a - b)}
-                  onJumpToMessage={handleJumpToMessage}
-                  onFitWidth={handleFitWidth}
-                />
-              </ErrorBoundary>
+          {/* Right panel: workspace or plugin */}
+          {hasRightPanel && (
+            <div style={{ flex: 1, minWidth: 0, height: '100%', overflow: 'hidden', borderRadius: 4, border: '1px solid var(--color-dark-border)', background: 'var(--color-dark-card)' }}>
+              {hasWorkspace ? (
+                <ErrorBoundary label="WorkspacePanel">
+                  <WorkspacePanel
+                    workspaceData={workspaceData!}
+                    selectedTurn={selectedTurn}
+                    checkedTurns={checkedTurnsSorted}
+                    onJumpToMessage={handleJumpToMessage}
+                    onFitWidth={handleFitWidth}
+                  />
+                </ErrorBoundary>
+              ) : plugin && sample ? (
+                <ErrorBoundary label={plugin.label}>
+                  {plugin.render({
+                    sample,
+                    runId,
+                    selectedTurn,
+                    checkedTurns: checkedTurnsSorted,
+                  })}
+                </ErrorBoundary>
+              ) : null}
             </div>
           )}
         </div>

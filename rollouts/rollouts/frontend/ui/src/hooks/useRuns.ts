@@ -2,11 +2,34 @@ import { useState, useEffect, useCallback } from 'react'
 import { listRuns, listActiveRuns } from '../api'
 import type { RunListItem, LiveRun } from '../types'
 
+type RunsState =
+  | {
+      kind: 'loading'
+      completedRuns: RunListItem[]
+      liveRuns: LiveRun[]
+      error: null
+    }
+  | {
+      kind: 'loaded'
+      completedRuns: RunListItem[]
+      liveRuns: LiveRun[]
+      error: null
+    }
+  | {
+      kind: 'error'
+      completedRuns: RunListItem[]
+      liveRuns: LiveRun[]
+      error: string
+    }
+
 export function useRuns() {
-  const [completedRuns, setCompletedRuns] = useState<RunListItem[]>([])
-  const [liveRuns, setLiveRuns] = useState<LiveRun[]>([])
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
+  const [state, setState] = useState<RunsState>({
+    kind: 'loading',
+    completedRuns: [],
+    liveRuns: [],
+    error: null,
+  })
+  const [autoPoll, setAutoPoll] = useState(false)
 
   const refresh = useCallback(async () => {
     try {
@@ -14,13 +37,19 @@ export function useRuns() {
         listRuns(),
         listActiveRuns(),
       ])
-      setCompletedRuns(completed)
-      setLiveRuns(live)
-      setError(null)
+      setState({
+        kind: 'loaded',
+        completedRuns: completed,
+        liveRuns: live,
+        error: null,
+      })
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load runs')
-    } finally {
-      setLoading(false)
+      setState(prev => ({
+        kind: 'error',
+        completedRuns: prev.completedRuns,
+        liveRuns: prev.liveRuns,
+        error: err instanceof Error ? err.message : 'Failed to load runs',
+      }))
     }
   }, [])
 
@@ -29,15 +58,29 @@ export function useRuns() {
     void refresh()
   }, [refresh])
 
-  // Poll for live run updates every 2s
+  // Poll for live run updates every 2s when explicitly enabled
   useEffect(() => {
+    if (!autoPoll) return
+
     const interval = setInterval(() => {
       void listActiveRuns()
-        .then(setLiveRuns)
-        .catch(() => {})
+        .then(liveRuns => {
+          setState(prev => ({ ...prev, liveRuns }))
+        })
+        .catch(err => {
+          console.error('Failed to refresh live runs', err)
+        })
     }, 2000)
     return () => clearInterval(interval)
-  }, [])
+  }, [autoPoll])
 
-  return { completedRuns, liveRuns, loading, error, refresh }
+  return {
+    completedRuns: state.completedRuns,
+    liveRuns: state.liveRuns,
+    loading: state.kind === 'loading',
+    error: state.error,
+    autoPoll,
+    setAutoPoll,
+    refresh,
+  }
 }

@@ -1,4 +1,4 @@
-import { useState, useMemo, useRef, useEffect, useCallback } from 'react'
+import { useState, useMemo, useRef, useCallback } from 'react'
 import { ChevronRight, ChevronDown, File, Folder, Terminal, AlertTriangle } from 'lucide-react'
 import type { WorkspaceData, WorkspaceSnapshot } from '../types'
 import { DiffView } from './DiffView'
@@ -269,26 +269,18 @@ export function WorkspacePanel({
   // State mode uses selectedTurn (driven by clicking conversation messages)
   const snapshot = useMemo(() => snapshotAt(selectedTurn), [snapshots, selectedTurn])
 
-  // Auto-select first modified file in diff mode, first file in state mode
-  useEffect(() => {
-    if (mode === 'diff') {
-      const changed = Object.keys(snapshotB.files).find(
-        f => (snapshotA.files[f] ?? '') !== (snapshotB.files[f] ?? '')
-      )
-      setSelectedFile(changed ?? Object.keys(snapshotB.files)[0] ?? null)
-    } else {
-      if (!selectedFile) {
-        const files = Object.keys(snapshot.files)
-        if (files.length > 0) setSelectedFile(files[0])
-      }
-    }
-  }, [mode, snapshotA, snapshotB])
-
   const modifiedFiles = useMemo(() => new Set(Object.keys(line_history)), [line_history])
-
-  if (!snapshot) return null
-
-  const fileContents = selectedFile ? snapshot.files[selectedFile] ?? '' : ''
+  const preferredDiffFile = Object.keys(snapshotB.files).find(
+    f => (snapshotA.files[f] ?? '') !== (snapshotB.files[f] ?? '')
+  ) ?? Object.keys(snapshotB.files)[0] ?? null
+  const preferredStateFile = Object.keys(snapshot.files)[0] ?? null
+  const activeFileSet = mode === 'diff' ? snapshotB.files : snapshot.files
+  const selectedFileForMode = selectedFile && selectedFile in activeFileSet
+    ? selectedFile
+    : mode === 'diff'
+    ? preferredDiffFile
+    : preferredStateFile
+  const fileContents = selectedFileForMode ? snapshot.files[selectedFileForMode] ?? '' : ''
 
   return (
     <div
@@ -367,7 +359,7 @@ export function WorkspacePanel({
           <DiffView
             snapshotA={snapshotA}
             snapshotB={snapshotB}
-            selectedFile={selectedFile}
+            selectedFile={selectedFileForMode}
             onSelectFile={setSelectedFile}
           />
         ) : mode === 'state' ? (
@@ -379,16 +371,16 @@ export function WorkspacePanel({
             >
               <FileTree
                 files={snapshot.files}
-                selectedFile={selectedFile}
+                selectedFile={selectedFileForMode}
                 onSelect={setSelectedFile}
                 modifiedFiles={modifiedFiles}
               />
             </div>
             {/* File viewer (right) */}
             <div className="flex-1 overflow-auto" style={{ minWidth: 0, minHeight: 0 }}>
-              {selectedFile ? (
+              {selectedFileForMode ? (
                 <DiffsFile
-                  file={{ name: selectedFile, contents: fileContents }}
+                  file={{ name: selectedFileForMode, contents: fileContents }}
                   options={{ theme: 'pierre-dark' }}
                   style={{ width: '100%', display: 'block' }}
                 />
@@ -410,15 +402,15 @@ export function WorkspacePanel({
               >
                 <FileTree
                   files={snapshot.files}
-                  selectedFile={selectedFile}
+                  selectedFile={selectedFileForMode}
                   onSelect={setSelectedFile}
                   modifiedFiles={modifiedFiles}
                 />
               </div>
               <div className="flex-1 overflow-auto" style={{ minWidth: 0, minHeight: 0 }}>
-                {selectedFile ? (
+                {selectedFileForMode ? (
                   <DiffsFile
-                    file={{ name: selectedFile, contents: fileContents }}
+                    file={{ name: selectedFileForMode, contents: fileContents }}
                     options={{ theme: 'pierre-dark' }}
                     style={{ width: '100%', display: 'block' }}
                   />
@@ -446,7 +438,7 @@ export function WorkspacePanel({
             <DiffView
               snapshotA={snapshotA}
               snapshotB={snapshotB}
-              selectedFile={selectedFile}
+              selectedFile={selectedFileForMode}
               onSelectFile={setSelectedFile}
             />
           </>

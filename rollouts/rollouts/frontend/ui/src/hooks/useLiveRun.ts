@@ -2,8 +2,8 @@ import { useState, useEffect } from 'react'
 import { openRunStream, openWatchStream } from '../api'
 import type { LiveRunState, LiveSample, StreamEvent } from '../types'
 
-export function useLiveRun(runId: string, initialStatus: string) {
-  const [state, setState] = useState<LiveRunState>({
+function makeInitialState(runId: string, initialStatus: string): LiveRunState {
+  return {
     run_id: runId,
     config_name: '',
     start_time: Date.now() / 1000,
@@ -11,9 +11,15 @@ export function useLiveRun(runId: string, initialStatus: string) {
     total: null,
     samples: new Map(),
     stdout_lines: [],
-  })
+  }
+}
+
+export function useLiveRun(runId: string, initialStatus: string) {
+  const [state, setState] = useState<LiveRunState>(() => makeInitialState(runId, initialStatus))
 
   useEffect(() => {
+    setState(makeInitialState(runId, initialStatus))
+
     // Don't open SSE for finished runs
     if (initialStatus !== 'running' && initialStatus !== 'watching') return
 
@@ -23,8 +29,8 @@ export function useLiveRun(runId: string, initialStatus: string) {
       try {
         const data = JSON.parse(event.data) as StreamEvent
         setState(prev => applyEvent(prev, data))
-      } catch {
-        // ignore parse errors
+      } catch (err) {
+        console.error('Failed to parse live run stream event', err)
       }
     }
 

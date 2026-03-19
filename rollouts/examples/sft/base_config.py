@@ -234,13 +234,13 @@ async def _train_async(config: BaseConfig) -> list[dict]:
         gpu_rank = int(config.device.split(":")[-1]) if ":" in config.device else 0
         realization = None
         if (
-            config.trainer.torchtitan_local_layouts
-            or config.trainer.torchtitan_collective_transitions
+            config.trainer.realization_local_layouts
+            or config.trainer.realization_collective_transitions
         ):
             realization = RealizationPlan(
-                local_layouts=config.trainer.torchtitan_local_layouts,
-                collective_transitions=config.trainer.torchtitan_collective_transitions,
-                packed_sequences=config.trainer.torchtitan_packed_sequences,
+                local_layouts=config.trainer.realization_local_layouts,
+                collective_transitions=config.trainer.realization_collective_transitions,
+                packed_sequences=config.trainer.realization_packed_sequences,
             )
         backend, cleanup = create_torchtitan_backend(
             checkpoint_dir=output_dir / "checkpoints",
@@ -255,7 +255,7 @@ async def _train_async(config: BaseConfig) -> list[dict]:
             tp=config.trainer.torchtitan_tp,
             cp=config.trainer.torchtitan_cp,
             pp=config.trainer.torchtitan_pp,
-            packed_sequences=config.trainer.torchtitan_packed_sequences,
+            packed_sequences=config.trainer.realization_packed_sequences,
             mode="supervised",
             realization=realization,
         )

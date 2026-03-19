@@ -129,6 +129,24 @@ def load_config_module(config_path: Path) -> Any:
     return module
 
 
+def load_tasks_from_module(config_module: Any) -> list[dict[str, Any]]:
+    """Load task rows from an eval config module."""
+    if hasattr(config_module, "tasks"):
+        tasks = config_module.tasks
+    elif hasattr(config_module, "tasks_path"):
+        import json
+
+        tasks_path = Path(config_module.tasks_path)
+        data = json.loads(tasks_path.read_text())
+        tasks = data if isinstance(data, list) else data.get("tasks", [])
+    else:
+        raise ValueError("Config must define 'tasks' or 'tasks_path'")
+
+    if not isinstance(tasks, list):
+        raise ValueError("Eval config tasks must be a list")
+    return tasks
+
+
 def get_api_key(provider: str) -> str:
     """Get API key from environment for provider."""
     env_vars = {
@@ -182,16 +200,7 @@ async def run_with_api(
         )
 
     # Load tasks
-    if hasattr(config_module, "tasks"):
-        tasks = config_module.tasks
-    elif hasattr(config_module, "tasks_path"):
-        import json
-
-        tasks_path = Path(config_module.tasks_path)
-        data = json.loads(tasks_path.read_text())
-        tasks = data if isinstance(data, list) else data.get("tasks", [])
-    else:
-        raise ValueError("Config must define 'tasks' or 'tasks_path'")
+    tasks = load_tasks_from_module(config_module)
 
     if run_config.max_samples:
         tasks = tasks[: run_config.max_samples]
@@ -343,29 +352,62 @@ Examples:
         """,
     )
 
-    parser.add_argument("--config", type=Path, required=True, help="Config file path")
+    subparsers = parser.add_subparsers(dest="command")
 
-    # Endpoint overrides
-    parser.add_argument("--provider", choices=["anthropic", "openai", "google", "sglang", "vllm"])
-    parser.add_argument("--model", help="Override model")
-    parser.add_argument("--base-url", help="Override base URL (for SGLang/vLLM)")
+    run_parser = subparsers.add_parser("run", help="Run batch evaluation")
+    launch_parser = subparsers.add_parser(
+        "launch",
+        help="Launch one eval sample in an external runtime",
+    )
 
-    # Run overrides
-    parser.add_argument("--limit", type=int, help="Limit number of samples")
-    parser.add_argument("--max-concurrent", type=int, help="Max parallel samples")
-    parser.add_argument("--max-turns", type=int, help="Max conversation turns")
+    for subparser in (run_parser, launch_parser):
+        subparser.add_argument("--config", type=Path, required=True, help="Config file path")
 
-    # Hardware (for SGLang provisioning)
-    parser.add_argument("--provision", action="store_true", help="Provision GPU for SGLang")
-    parser.add_argument("--gpu-type", default="A100", help="GPU type for provisioning")
-    parser.add_argument("--hardware-provider", choices=["modal", "runpod", "lambdalabs", "vast"])
+    # Batch run flags
+    run_parser.add_argument(
+        "--provider", choices=["anthropic", "openai", "google", "sglang", "vllm"]
+    )
+    run_parser.add_argument("--model", help="Override model")
+    run_parser.add_argument("--base-url", help="Override base URL (for SGLang/vLLM)")
+    run_parser.add_argument("--limit", type=int, help="Limit number of samples")
+    run_parser.add_argument("--max-concurrent", type=int, help="Max parallel samples")
+    run_parser.add_argument("--max-turns", type=int, help="Max conversation turns")
+    run_parser.add_argument("--provision", action="store_true", help="Provision GPU for SGLang")
+    run_parser.add_argument("--gpu-type", default="A100", help="GPU type for provisioning")
+    run_parser.add_argument(
+        "--hardware-provider", choices=["modal", "runpod", "lambdalabs", "vast"]
+    )
+    run_parser.add_argument("--output-dir", type=Path, help="Override output directory")
+    run_parser.add_argument("--verbose", action="store_true", default=True)
+    run_parser.add_argument("--quiet", action="store_true")
 
-    # Output
-    parser.add_argument("--output-dir", type=Path, help="Override output directory")
-    parser.add_argument("--verbose", action="store_true", default=True)
-    parser.add_argument("--quiet", action="store_true")
+    # Launch flags
+    launch_parser.add_argument(
+        "--sample",
+        required=True,
+        help="Sample selector: zero-based index or id/problem_id/name",
+    )
+    launch_parser.add_argument(
+        "--runtime",
+        required=True,
+        choices=["claude_code", "codex"],
+        help="External runtime to launch",
+    )
+    launch_parser.add_argument(
+        "--control-mode",
+        default="autonomous",
+        choices=["interactive", "autonomous"],
+        help="Who controls the runtime session",
+    )
+    launch_parser.add_argument("--model", help="Override external runtime model")
+    launch_parser.add_argument("--quiet", action="store_true")
 
-    args = parser.parse_args()
+    argv = sys.argv[1:]
+    if argv and argv[0].startswith("-"):
+        argv = ["run", *argv]
+    args = parser.parse_args(argv)
+    if args.command is None:
+        args.command = "run"
 
     # Setup logging
     log_level = logging.WARNING if args.quiet else logging.INFO
@@ -374,7 +416,6 @@ Examples:
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     )
 
-    # Load config
     config_path = args.config
     if not config_path.is_absolute():
         config_path = REPO_ROOT / config_path
@@ -408,29 +449,37 @@ Examples:
 
     # Apply CLI overrides
     if endpoint_config is None:
-        if args.provider or args.model or args.base_url or args.provision or args.hardware_provider:
+        if args.command == "run" and (
+            args.provider
+            or args.model
+            or args.base_url
+            or args.provision
+            or args.hardware_provider
+        ):
             raise ValueError(
                 "Endpoint overrides and provisioning flags are invalid for attempt-executor-only evals."
             )
     else:
-        if args.provider:
+        if args.command == "run" and args.provider:
             endpoint_config = replace(endpoint_config, provider=args.provider)
-        if args.model:
+        if args.command == "run" and args.model:
             endpoint_config = replace(endpoint_config, model=args.model)
-        if args.base_url:
+        if args.command == "run" and args.base_url:
             endpoint_config = replace(endpoint_config, base_url=args.base_url)
 
-    if args.limit:
+    if args.command == "run" and args.limit:
         run_config = replace(run_config, max_samples=args.limit)
-    if args.max_concurrent:
+    if args.command == "run" and args.max_concurrent:
         run_config = replace(run_config, max_concurrent=args.max_concurrent)
-    if args.max_turns:
+    if args.command == "run" and args.max_turns:
         run_config = replace(run_config, max_turns=args.max_turns)
 
-    if args.output_dir:
+    if args.command == "run" and args.output_dir:
         output_config = replace(output_config, output_dir=args.output_dir)
 
-    if endpoint_config is not None and (args.provision or args.hardware_provider):
+    if args.command == "run" and endpoint_config is not None and (
+        args.provision or args.hardware_provider
+    ):
         if hardware_config is None:
             hardware_config = HardwareConfig()
         if args.gpu_type:
@@ -438,26 +487,51 @@ Examples:
         if args.hardware_provider:
             hardware_config = replace(hardware_config, provider=args.hardware_provider)
 
-    # Print config
     print(f"Config: {config_path}")
-    if endpoint_config is None:
-        print("Endpoint: direct-attempt executor")
+    if args.command == "launch":
+        print(f"Launch sample: {args.sample}")
+        print(f"Runtime: {args.runtime}")
+        print(f"Control mode: {args.control_mode}")
     else:
-        print(f"Endpoint: {endpoint_config.provider}/{endpoint_config.model}")
-        if endpoint_config.base_url:
-            print(f"Base URL: {endpoint_config.base_url}")
-    print(f"Max concurrent: {run_config.max_concurrent}")
+        if endpoint_config is None:
+            print("Endpoint: direct-attempt executor")
+        else:
+            print(f"Endpoint: {endpoint_config.provider}/{endpoint_config.model}")
+            if endpoint_config.base_url:
+                print(f"Base URL: {endpoint_config.base_url}")
+        print(f"Max concurrent: {run_config.max_concurrent}")
 
-    # Dispatch based on endpoint type
     async def _run() -> dict[str, Any]:
+        if args.command == "launch":
+            from .launch import launch_sample
+
+            attempt, session_id = await launch_sample(
+                config_module=config_module,
+                config_path=config_path,
+                sample_selector=args.sample,
+                runtime=args.runtime,
+                control_mode=args.control_mode,
+                run_config=run_config,
+                output_config=output_config,
+                model=args.model,
+            )
+            results: dict[str, Any] = {
+                "sample_id": attempt.id,
+                "session_id": session_id,
+                "runtime": args.runtime,
+                "control_mode": args.control_mode,
+                "message_count": len(attempt.trajectory.messages) if attempt.trajectory else 0,
+            }
+            if attempt.score is not None:
+                results["reward"] = attempt.reward
+            return results
+
         if endpoint_config is not None and endpoint_config.provider in ("sglang", "vllm"):
             if endpoint_config.base_url:
-                # Connect to existing server
                 return await run_with_sglang_local(
                     config_module, endpoint_config, run_config, output_config
                 )
             elif args.provision or hardware_config:
-                # Provision and launch server
                 return await run_with_sglang_provision(
                     config_module,
                     endpoint_config,
@@ -467,7 +541,6 @@ Examples:
                     server_config,
                 )
             else:
-                # Assume local server on default port
                 endpoint_with_url = replace(
                     endpoint_config,
                     base_url=endpoint_config.get_base_url(),
@@ -476,7 +549,6 @@ Examples:
                     config_module, endpoint_with_url, run_config, output_config
                 )
         else:
-            # API endpoint
             return await run_with_api(config_module, endpoint_config, run_config, output_config)
 
     try:

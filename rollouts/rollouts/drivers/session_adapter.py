@@ -1,6 +1,6 @@
 """Session adapters for hot-swapping between drivers.
 
-Converts between rollouts' canonical session format (SessionHandle.messages)
+Converts between rollouts' canonical trajectory message format
 and external driver formats (Claude Code JSONL, Codex threads).
 
 The canonical format is a list of Message objects with role/content. Each
@@ -24,6 +24,14 @@ Usage:
     messages = claude_session_to_messages(claude_session_path)
 """
 
+# Trust boundary:
+# - Canonical rollouts Message/Trajectory types remain the internal source of truth.
+# - For completed Claude Code runs, the persisted Claude session JSONL is more
+#   authoritative than the live stream because stream_event payloads can omit
+#   tool_use arguments that are present in the session file.
+# - Rehydration/replay code should therefore prefer session-backed reconstruction
+#   over live-stream-derived trajectories whenever both are available.
+
 from __future__ import annotations
 
 import json
@@ -38,6 +46,8 @@ from ..dtypes import (
     ThinkingContent,
     ToolCallContent,
 )
+from .codex import _CodexEventParser
+from .runner import _EventAccumulator
 
 
 def _generate_uuid() -> str:
@@ -487,7 +497,8 @@ def codex_session_to_messages(session_path: Path) -> list[Message]:
     Returns:
         List of rollouts Messages
     """
-    messages = []
+    parser = _CodexEventParser()
+    accumulator = _EventAccumulator()
     with open(session_path) as f:
         for line in f:
             line = line.strip()
@@ -495,12 +506,11 @@ def codex_session_to_messages(session_path: Path) -> list[Message]:
                 continue
             try:
                 entry = json.loads(line)
-                rollouts_msg = codex_message_to_rollouts(entry)
-                if rollouts_msg is not None:
-                    messages.append(rollouts_msg)
+                for event in parser.parse(entry):
+                    accumulator.handle(event)
             except json.JSONDecodeError:
                 continue
-    return messages
+    return accumulator.finalize()
 
 
 def read_codex_session_id(session_path: Path) -> str | None:

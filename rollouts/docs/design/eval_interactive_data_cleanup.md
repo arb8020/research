@@ -103,7 +103,6 @@ Several things can feel like the "real" persisted run:
 - historical session-sidecar machinery
 - `AttemptRow`
 - `samples/*.json`
-- `trajectories/*.jsonl`
 - `report.json`
 
 That is too many denotations for one logical thing.
@@ -122,9 +121,7 @@ Interactive/session persistence goes through `rollouts/store.py`.
 Eval persistence goes through `rollouts/eval/native.py` and writes:
 
 - `events.jsonl`
-- `samples/{sample_id}.jsonl`
 - `samples/{sample_id}.json`
-- `trajectories/{sample_id}.jsonl`
 - `report.json`
 
 These represent the same underlying run family but use different persistence stories.
@@ -217,6 +214,39 @@ control-state product type rather than resurrecting ad hoc sidecars.
 - normalized problem row
 - scoring outputs
 - training-specific annotations
+
+## Progress So Far
+
+We already simplified the session/checkpoint side substantially:
+
+- removed durable waiting / queued-input sidecars
+- removed `SessionHandle`
+- removed `SessionStatus` as a persisted type
+- removed `TrajectoryAnnotations` and trajectory-owned reward/group/replica/advantage fields
+- made `Trajectory` the canonical persisted session/checkpoint type
+
+We also made the first eval-side denotational cut:
+
+- introduced `AttemptResult` as the canonical execution result
+- introduced `AttemptEvaluation` as the derived scoring payload
+- kept `AttemptRow` only as a training/scoring bridge for now
+- changed `rollouts/eval/native.py` to persist sample artifacts from `AttemptResult`
+- kept the frontend server backward-compatible by flattening `AttemptResult` + `AttemptEvaluation` into the existing UI DTO shape at read time
+- removed write-time `samples/{sample_id}.jsonl`; `events.jsonl` is now the only canonical operational event stream
+- removed write-time `trajectories/{sample_id}.jsonl`; `samples/{sample_id}.json` now stores the full canonical attempt, including trajectory
+- added write-time `report.html` and `samples/{sample_id}.html` as the default static share surface over the canonical JSON artifacts
+
+So the current intended staging is:
+
+```text
+ProblemRow + Trajectory + environment_state + status + metadata
+-> AttemptResult
+-> optional AttemptEvaluation
+-> optional AttemptRow / TrainingSample bridge for training code
+```
+
+This is not the end state, but it is a materially more honest split than the old
+single `AttemptRow` pretending to be the canonical eval object.
 
 ### 5. Projections
 
@@ -344,7 +374,6 @@ Be explicit that:
 
 - `report.json`
 - `samples/*.json`
-- `trajectories/*.jsonl`
 - `events.jsonl`
 
 are projections/materializations, not the canonical source of a run.

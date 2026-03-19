@@ -455,6 +455,13 @@ class InferenceBackend(Protocol):
     Tiger Style: This is JUST a type annotation (Protocol), not a base class.
     No inheritance! Just duck typing.
 
+    Architectural note:
+    This protocol is cleaner than the current construction story. GRPO still
+    chooses concrete inference engines with an inline string switch rather than
+    going through an inference-side runtime factory/lowering path comparable to
+    training backends. So the lifecycle/update surface is explicit here, but
+    backend selection and pipeline capability validation are not centralized yet.
+
     Lifecycle:
     1. launch() -> str               # Start server in tmux, return session name
     2. start_log_tailer() -> Thread  # Tail logs via Python logging
@@ -590,6 +597,7 @@ class ManagedWeightUpdateChannel:
     - policy lowering is explicit
     - runtime state is explicit
     - transport-specific details still live in inference.apply_weight_update()
+    - engine construction/selection still happens outside this layer
     """
 
     inference: InferenceBackend

@@ -7,16 +7,13 @@ For RL this means at least:
 - `trainer.deps`: training/distributed/backend stack
 - `inference.deps`: inference/server/runtime stack
 
-`hardware.deps` is still the fallback contract for older single-env runners, but
-it should not remain the long-term semantic source of truth for multi-service
-jobs.
-
 Current state:
 
-- the single-sandbox Modal path still uses one shared runtime env
-- configs may now declare `trainer.deps` / `inference.deps`
-- Argus rejects those service-scoped deps on Modal for now, because the launcher
-  cannot realize separate service runtimes yet
+- the current Argus launcher realizes exactly one shared runtime env
+- that shared env must be declared explicitly in `hardware.deps`
+- `trainer.deps` / `inference.deps` are not merged back into `hardware.deps`
+- current launchers reject service-scoped deps instead of pretending to realize
+  them inside one shared env
 
 Target state:
 

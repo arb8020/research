@@ -11,8 +11,9 @@ Modal advantages:
 - Single-node 8xH100 with NVLink
 """
 
+from examples.rl.base_config import default_remote_megatron_training_deps
 from examples.rl.reverse_text.base_config import train as _base_train
-from rollouts.training.configs import DepsConfig, HardwareConfig
+from rollouts.training.configs import HardwareConfig
 from rollouts.training.grpo import (
     CheckpointConfig,
     GRPOConfig,
@@ -31,32 +32,7 @@ hardware = HardwareConfig(
     gpu_type="H100",
     gpu_count=8,
     provider="modal",
-    deps=DepsConfig(
-        python_version="3.11",
-        system_packages=("git", "curl", "wget", "build-essential"),
-        pip_packages=(
-            "torch>=2.4",
-            "transformers>=5.0",
-            "datasets",
-            "accelerate",
-            "safetensors",
-            # Use released sglang instead of git install
-            "sglang[all]>=0.4",
-            "curl_cffi",
-            "peft",
-            "huggingface_hub>=1.4.0",
-            "ninja",
-            "packaging",
-            # Flash attention from pre-built wheel
-            "flash-attn>=2.7",
-        ),
-        pip_index_url="https://download.pytorch.org/whl/cu124",
-        pip_extra_index_url="https://pypi.org/simple",
-        bootstrap_commands=(
-            # Clone Megatron-LM for megatron.core imports
-            "git clone --depth 1 https://github.com/NVIDIA/Megatron-LM.git /root/Megatron-LM",
-        ),
-    ),
+    deps=default_remote_megatron_training_deps(),
 )
 
 # =============================================================================

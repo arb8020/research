@@ -71,7 +71,8 @@ The intended split is:
 - `argus monitor`
   - resolve run identity
   - attach/sync remote artifacts when needed
-  - hand off to a viewer
+  - expose launcher/control-plane-only status such as active launchers
+  - hand off run viewing to a viewer
 - `rollouts monitor`
   - render the workload-aware TUI over local artifacts
 

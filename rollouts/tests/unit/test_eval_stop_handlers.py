@@ -9,7 +9,6 @@ from rollouts.dtypes import ChatCompletion, Choice, Cost, StopReason, Usage
 from rollouts.eval.configs import (
     CostBudgetStop,
     EvalRunConfig,
-    MaxTurnsStop,
     TokenBudgetStop,
     WallClockStop,
 )

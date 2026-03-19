@@ -1,10 +1,11 @@
-import { useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { useRuns } from './hooks/useRuns'
 import { RunsList } from './components/RunsList'
 import { RunDetail } from './components/RunDetail'
 import { RunViewer } from './components/RunViewer'
 import { LiveSampleViewer } from './components/LiveSampleViewer'
 import { ResultsDirPicker } from './components/ResultsDirPicker'
+import { getResultsDirs, setResultsDir } from './api'
 
 type View =
   | { kind: 'runs' }
@@ -12,11 +13,107 @@ type View =
   | { kind: 'sample'; runId: string; sampleId: string }
   | { kind: 'live-sample'; runId: string; sampleId: string }
 
+type LocationState = {
+  resultsDir: string | null
+  view: View
+}
+
+function parseLocationState(search: string): LocationState {
+  const params = new URLSearchParams(search)
+  const resultsDir = params.get('results_dir')
+  const runId = params.get('run_id')
+  const sampleId = params.get('sample_id')
+
+  if (runId && sampleId) {
+    return { resultsDir, view: { kind: 'sample', runId, sampleId } }
+  }
+  if (runId) {
+    return { resultsDir, view: { kind: 'run-detail', runId } }
+  }
+  return { resultsDir, view: { kind: 'runs' } }
+}
+
+function buildLocationSearch(resultsDir: string | null, view: View): string {
+  const params = new URLSearchParams()
+  if (resultsDir) params.set('results_dir', resultsDir)
+  if (view.kind === 'run-detail' || view.kind === 'sample' || view.kind === 'live-sample') {
+    params.set('run_id', view.runId)
+  }
+  if (view.kind === 'sample' || view.kind === 'live-sample') {
+    params.set('sample_id', view.sampleId)
+  }
+  const query = params.toString()
+  return query ? `?${query}` : ''
+}
+
 export default function App() {
   const [view, setView] = useState<View>({ kind: 'runs' })
-  const { completedRuns, liveRuns, loading, error, refresh } = useRuns()
+  const [resultsDir, setCurrentResultsDir] = useState<string | null>(null)
+  const { completedRuns, liveRuns, loading, error, refresh, autoPoll, setAutoPoll } = useRuns()
 
   const isSample = view.kind === 'sample' || view.kind === 'live-sample'
+  const liveCount = liveRuns.filter(r => r.status === 'running' || r.status === 'watching').length
+
+  const setUrlState = useCallback((nextResultsDir: string | null, nextView: View) => {
+    const nextSearch = buildLocationSearch(nextResultsDir, nextView)
+    const nextUrl = `${window.location.pathname}${nextSearch}`
+    if (`${window.location.pathname}${window.location.search}` !== nextUrl) {
+      window.history.replaceState(null, '', nextUrl)
+    }
+  }, [])
+
+  const navigate = useCallback((nextView: View, nextResultsDir: string | null = resultsDir) => {
+    setView(nextView)
+    setUrlState(nextResultsDir, nextView)
+  }, [resultsDir, setUrlState])
+
+  const applyQueryParams = useCallback(async () => {
+    const locationState = parseLocationState(window.location.search)
+
+    if (locationState.resultsDir) {
+      await setResultsDir(locationState.resultsDir)
+      setCurrentResultsDir(locationState.resultsDir)
+      await refresh()
+    }
+
+    setView(locationState.view)
+  }, [refresh])
+
+  useEffect(() => {
+    let cancelled = false
+
+    async function bootstrapFromQuery() {
+      try {
+        await applyQueryParams()
+      } catch (err) {
+        if (cancelled) return
+        console.error('Failed to bootstrap view from query params', err)
+      }
+    }
+
+    void bootstrapFromQuery()
+    return () => {
+      cancelled = true
+    }
+  }, [applyQueryParams])
+
+  useEffect(() => {
+    getResultsDirs()
+      .then(data => {
+        setCurrentResultsDir(current => current ?? data.current)
+      })
+      .catch(() => {})
+  }, [])
+
+  useEffect(() => {
+    const onPopState = () => {
+      void applyQueryParams().catch(err => {
+        console.error('Failed to sync view from browser history', err)
+      })
+    }
+    window.addEventListener('popstate', onPopState)
+    return () => window.removeEventListener('popstate', onPopState)
+  }, [applyQueryParams])
 
   return (
     <div
@@ -38,7 +135,7 @@ export default function App() {
         }}
       >
         <button
-          onClick={() => { setView({ kind: 'runs' }); void refresh() }}
+          onClick={() => { navigate({ kind: 'runs' }); void refresh() }}
           className="text-sm font-semibold tracking-tight hover:opacity-80 transition-opacity"
           style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-dark-text)' }}
         >
@@ -52,9 +149,9 @@ export default function App() {
             <button
               onClick={() => {
                 if (view.kind === 'sample') {
-                  setView({ kind: 'run-detail', runId: view.runId })
+                  navigate({ kind: 'run-detail', runId: view.runId })
                 } else {
-                  setView({ kind: 'runs' })
+                  navigate({ kind: 'runs' })
                 }
               }}
               className="text-xs hover:opacity-80 transition-opacity font-mono truncate max-w-xs"
@@ -74,8 +171,40 @@ export default function App() {
         )}
 
         <div className="ml-auto flex items-center gap-3">
-          <ResultsDirPicker onChanged={() => { setView({ kind: 'runs' }); void refresh() }} />
-          {liveRuns.filter(r => r.status === 'running').length > 0 && (
+          <button
+            onClick={() => { void refresh() }}
+            className="text-xs px-2 py-1 rounded hover:opacity-80 transition-opacity"
+            style={{
+              color: 'var(--color-dark-text-secondary)',
+              border: '1px solid var(--color-dark-border)',
+              background: 'var(--color-dark-card)',
+            }}
+          >
+            Sync
+          </button>
+          <button
+            onClick={() => {
+              const next = !autoPoll
+              setAutoPoll(next)
+              if (next) {
+                void refresh()
+              }
+            }}
+            className="text-xs px-2 py-1 rounded hover:opacity-80 transition-opacity"
+            style={{
+              color: autoPoll ? 'var(--color-dark-text)' : 'var(--color-dark-text-muted)',
+              border: '1px solid var(--color-dark-border)',
+              background: autoPoll ? 'var(--color-dark-elevated)' : 'var(--color-dark-card)',
+            }}
+          >
+            Auto-poll {autoPoll ? 'On' : 'Off'}
+          </button>
+          <ResultsDirPicker onChanged={(path) => {
+            setCurrentResultsDir(path)
+            navigate({ kind: 'runs' }, path)
+            void refresh()
+          }} />
+          {liveCount > 0 && (
             <div className="flex items-center gap-1.5">
               <div
                 className="rounded-full"
@@ -86,7 +215,7 @@ export default function App() {
                 }}
               />
               <span className="text-xs" style={{ color: 'var(--color-dark-text-muted)' }}>
-                {liveRuns.filter(r => r.status === 'running').length} running
+                {liveCount} live
               </span>
             </div>
           )}
@@ -104,18 +233,18 @@ export default function App() {
             liveRuns={liveRuns}
             loading={loading}
             error={error}
-            onSelectRun={runId => setView({ kind: 'run-detail', runId })}
-            onSelectLiveSample={(runId, sampleId) => setView({ kind: 'live-sample', runId, sampleId })}
+            onSelectRun={runId => navigate({ kind: 'run-detail', runId })}
+            onSelectLiveSample={(runId, sampleId) => navigate({ kind: 'live-sample', runId, sampleId })}
           />
         )}
 
         {view.kind === 'run-detail' && (
           <RunDetail
             runId={view.runId}
-            onBack={() => setView({ kind: 'runs' })}
+            onBack={() => navigate({ kind: 'runs' })}
             onSelectSample={sampleId => {
               if (view.kind === 'run-detail') {
-                setView({ kind: 'sample', runId: view.runId, sampleId })
+                navigate({ kind: 'sample', runId: view.runId, sampleId })
               }
             }}
           />
@@ -128,7 +257,7 @@ export default function App() {
             evalName={completedRuns.find(r => r.id === view.runId)?.name}
             onBack={() => {
               if (view.kind === 'sample') {
-                setView({ kind: 'run-detail', runId: view.runId })
+                navigate({ kind: 'run-detail', runId: view.runId })
               }
             }}
           />
@@ -138,7 +267,7 @@ export default function App() {
           <LiveSampleViewer
             run={liveRuns.find(r => r.run_id === view.runId) ?? { run_id: view.runId, config_name: view.runId, start_time: 0, status: 'watching', exit_code: null }}
             sampleId={view.sampleId}
-            onBack={() => setView({ kind: 'runs' })}
+            onBack={() => navigate({ kind: 'runs' })}
           />
         )}
       </div>

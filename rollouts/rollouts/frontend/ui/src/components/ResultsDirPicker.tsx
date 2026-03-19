@@ -1,27 +1,17 @@
 import { useState, useEffect, useRef } from 'react'
 import { ChevronDown, FolderOpen } from 'lucide-react'
-import { getResultsDirs, setResultsDir } from '../api'
-import type { ResultsDirsResponse } from '../api'
+import { setResultsDir } from '../api'
+import { useResultsDirs } from '../hooks/useResultsDirs'
 
 interface ResultsDirPickerProps {
-  onChanged: () => void
+  onChanged: (path: string) => void
 }
 
 export function ResultsDirPicker({ onChanged }: ResultsDirPickerProps) {
-  const [data, setData] = useState<ResultsDirsResponse | null>(null)
   const [open, setOpen] = useState(false)
   const [switching, setSwitching] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
-
-  const load = () => {
-    getResultsDirs()
-      .then(setData)
-      .catch(() => {})
-  }
-
-  useEffect(() => {
-    load()
-  }, [])
+  const { state, refresh } = useResultsDirs()
 
   // Close on outside click
   useEffect(() => {
@@ -36,23 +26,24 @@ export function ResultsDirPicker({ onChanged }: ResultsDirPickerProps) {
   }, [open])
 
   const handleSelect = async (path: string) => {
-    if (path === data?.current) { setOpen(false); return }
+    if (state.kind !== 'loaded') return
+    if (path === state.data.current) { setOpen(false); return }
     setSwitching(true)
     setOpen(false)
     try {
       await setResultsDir(path)
-      load()
-      onChanged()
-    } catch {
-      // ignore
+      await refresh()
+      onChanged(path)
+    } catch (err) {
+      console.error('Failed to switch results directory', err)
     } finally {
       setSwitching(false)
     }
   }
 
-  if (!data || data.dirs.length <= 1) return null
+  if (state.kind !== 'loaded' || state.data.dirs.length <= 1) return null
 
-  const currentLabel = data.dirs.find(d => d.path === data.current)?.label ?? data.current.split('/').pop() ?? '?'
+  const currentLabel = state.data.dirs.find(d => d.path === state.data.current)?.label ?? state.data.current.split('/').pop() ?? '?'
 
   return (
     <div ref={ref} className="relative">
@@ -82,32 +73,24 @@ export function ResultsDirPicker({ onChanged }: ResultsDirPickerProps) {
             boxShadow: '0 4px 12px rgba(0,0,0,0.4)',
           }}
         >
-          {data.dirs.map(d => (
+          {state.data.dirs.map(d => (
             <button
               key={d.path}
               onClick={() => void handleSelect(d.path)}
               disabled={!d.exists}
-              className="w-full text-left px-3 py-2 flex items-center gap-2 transition-colors"
+              className="w-full text-left px-3 py-2 flex items-center gap-2 transition-colors hover:bg-[var(--color-dark-hover)]"
               style={{
-                color: d.path === data.current
+                color: d.path === state.data.current
                   ? 'var(--color-dark-text)'
                   : d.exists
                   ? 'var(--color-dark-text-secondary)'
                   : 'var(--color-dark-text-muted)',
-                background: d.path === data.current ? 'var(--color-dark-elevated)' : undefined,
+                background: d.path === state.data.current ? 'var(--color-dark-elevated)' : undefined,
                 fontSize: 12,
                 opacity: d.exists ? 1 : 0.4,
               }}
-              onMouseEnter={e => {
-                if (d.path !== data.current && d.exists)
-                  (e.currentTarget as HTMLElement).style.background = 'var(--color-dark-hover)'
-              }}
-              onMouseLeave={e => {
-                (e.currentTarget as HTMLElement).style.background =
-                  d.path === data.current ? 'var(--color-dark-elevated)' : ''
-              }}
             >
-              {d.path === data.current && (
+              {d.path === state.data.current && (
                 <span style={{ color: 'var(--color-accent)', fontSize: 10 }}>●</span>
               )}
               <span className="font-mono truncate">{d.label}</span>

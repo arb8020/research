@@ -32,3 +32,17 @@ def test_validate_eval_config_rejects_non_agent_run_spec() -> None:
 
     with pytest.raises(ValueError, match="run_spec: AgentRunSpec"):
         validate_eval_config_module(module, Path("configs/trusted/example.py"))
+
+
+def test_validate_eval_config_accepts_direct_attempt_executor() -> None:
+    run_spec = AgentRunSpec(
+        endpoint=None,
+        execute_attempt=lambda sample, sample_id, environment, run_config: sample,
+    )
+    module = SimpleNamespace(
+        tasks=[{"messages": []}],
+        run_spec=run_spec,
+        score_fn=lambda attempt: None,
+    )
+
+    validate_eval_config_module(module, Path("configs/trusted/example.py"))

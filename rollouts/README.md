@@ -30,7 +30,13 @@ rollouts -c --env coding
 
 ### Launch Against Local Results
 
-Point the viewer at any rollouts-style results directory with `report.json`, `samples/`, and `trajectories/`.
+Point the viewer at any rollouts-style results directory with `report.json` and `samples/`.
+Each saved eval now also emits static HTML artifacts by default:
+
+- `report.html` for the full run
+- `samples/{sample_id}.html` for each sample
+
+Those static files are the default share surface. The React UI is a convenience browser over the same artifacts.
 
 ```bash
 uv run rollouts webui --project /path/to/project
