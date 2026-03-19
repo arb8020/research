@@ -72,6 +72,10 @@ TrajectoryAdapter = Callable[
     ...,
     ExternalAttemptResult | Awaitable[ExternalAttemptResult],
 ]
+ProjectedTrajectoryAdapter = Callable[
+    [str, str, dict[str, Any], Path, Any],
+    Awaitable[ExternalAttemptArtifact],
+]
 
 
 def _trajectory_adapter_accepts_run_config(trajectory_adapter: TrajectoryAdapter) -> bool:
@@ -206,6 +210,43 @@ def make_external_attempt_executor(
         prompt_builder=prompt_builder,
         trajectory_adapter=trajectory_adapter,
     )
+
+
+def make_external_trajectory_adapter(
+    runtime: ExternalRuntime,
+    **trajectory_kwargs: Any,
+) -> ProjectedTrajectoryAdapter:
+    """Build the standard runtime adapter for projected workspaces.
+
+    This is the shared lower-level piece for benchmark-specific wrappers that
+    still need to own workspace projection, grading, or other environment-local
+    effects before converting the final artifact into their own attempt type.
+    """
+
+    base_adapter = _trajectory_adapter_for_runtime(runtime)
+
+    async def projected_adapter(
+        prompt: str,
+        sample_id: str,
+        sample_data: dict[str, Any],
+        cwd: Path,
+        run_config: Any,
+    ) -> ExternalAttemptArtifact:
+        artifact_or_trajectory = base_adapter(
+            prompt,
+            sample_id,
+            sample_data,
+            cwd=cwd,
+            run_config=run_config,
+            **trajectory_kwargs,
+        )
+        if inspect.isawaitable(artifact_or_trajectory):
+            artifact_or_trajectory = await artifact_or_trajectory
+        if isinstance(artifact_or_trajectory, Trajectory):
+            return ExternalAttemptArtifact(trajectory=artifact_or_trajectory)
+        return artifact_or_trajectory
+
+    return projected_adapter
 
 
 async def trajectory_from_claude_code(
