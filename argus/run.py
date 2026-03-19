@@ -20,14 +20,8 @@ Usage:
     python -m argus run --config examples/rl/kernelbench/grpo_01_01.py
     python -m argus run --config configs/trusted/eval_api.py
 
-    # CLI overrides (optional, override config values)
-    python -m argus run --config ... --gpu-type H100  # Override GPU type
-    python -m argus run --config ... --provider modal  # Override provider
+    # Local dev override
     python -m argus run --config ... --local  # Force local execution
-
-    # Legacy CLI flags (still supported for backwards compat)
-    python -m argus run --config ... --modal  # Same as --provider modal
-    python -m argus run --config ... --provision  # Provision via config.hardware.provider
 
 The config file should export one of:
     - training contract:
@@ -39,7 +33,7 @@ The config file should export one of:
       - run_spec or prepare_messages
       - score_fn or sample_scorer
 
-Execution modes (determined by hardware.provider or CLI override):
+Execution modes (determined by hardware.provider, with optional local dev override):
     - "local":     Run on local GPU
     - "modal":     Run on Modal sandbox (fast ~30s cold start)
     - "runpod":    Provision GPU via RunPod SSH
@@ -68,6 +62,7 @@ import sys
 import uuid
 from collections.abc import Generator
 from contextlib import contextmanager
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -160,6 +155,7 @@ from rollouts.remote_runtime import (
     materialization_plan_from_runtime,
     runtime_contract_from_hardware,
 )
+from rollouts.training.configs import HardwareConfig
 
 # TODO(chiraag): This import cluster is the current control-plane leak. Argus
 # should choose an execution substrate and own run/attempt lifecycle, but the
@@ -215,6 +211,43 @@ from rollouts.run_logger import JsonlEventSink, RunLogger, stream_run_logger
 
 class _RunLogger(RunLogger):
     pass
+
+
+@dataclass(frozen=True)
+class ExecutionSpecOverrides:
+    """Transitional CLI patches to the config-owned execution spec.
+
+    `--local` remains as an explicit dev/operator override. The rest of the
+    execution spec should be expressed in config-owned product types rather than
+    patched from the CLI.
+    """
+
+    force_local: bool = False
+
+    @classmethod
+    def from_args(cls, args: argparse.Namespace) -> ExecutionSpecOverrides:
+        return cls(force_local=args.local)
+
+    def used_flags(self) -> list[str]:
+        flags: list[str] = []
+        if self.force_local:
+            flags.append("--local")
+        return flags
+
+    def apply_to_hardware(self, hardware: HardwareConfig) -> HardwareConfig:
+        if self.force_local:
+            hardware = replace(hardware, provider="local")
+        return hardware
+
+    def warn_if_used(self) -> None:
+        used_flags = self.used_flags()
+        if not used_flags:
+            return
+        print(
+            "Warning: --local overrides the config-owned runtime and should stay a dev-only "
+            f"escape hatch: {', '.join(used_flags)}",
+            file=sys.stderr,
+        )
 
 
 def _read_remote_manifest(bifrost: BifrostClient) -> ImageManifest | None:
@@ -610,12 +643,13 @@ async def _deploy_and_submit(
             print("\nError: Invalid API credentials. Check your API keys.", file=sys.stderr)
         elif result.no_offers_found:
             print(
-                f"\nError: No {gpu_type} GPUs found. Try a different --gpu-type.",
+                f"\nError: No {gpu_type} GPUs found. Update hardware.gpu_type in the config.",
                 file=sys.stderr,
             )
         elif result.all_unavailable:
             print(
-                f"\nError: No {gpu_type} GPUs available right now. Try again later or use --gpu-type to pick a different GPU.",
+                f"\nError: No {gpu_type} GPUs available right now. Try again later or update "
+                "hardware.gpu_type in the config.",
                 file=sys.stderr,
             )
         elif result.network_error:
@@ -1187,10 +1221,6 @@ async def run_remote(
 
 
 def main(argv: list[str] | None = None) -> int:
-    from dataclasses import replace
-
-    from rollouts.training.configs import HardwareConfig
-
     parser = argparse.ArgumentParser(
         description="Run an Argus workload (training or eval)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -1202,49 +1232,15 @@ Examples:
     # Eval config
     python -m argus run --config configs/prime_ci/reverse_text/eval_api.py
 
-    # Override provider via CLI
-    python -m argus run --config ... --provider modal
+    # Local dev override
     python -m argus run --config ... --local
-
-    # Legacy flags (still supported)
-    python -m argus run --config ... --modal
-    python -m argus run --config ... --provision --provider runpod
         """,
     )
     parser.add_argument("--config", required=True, help="Path to config file")
 
-    # Provider/hardware overrides
-    parser.add_argument(
-        "--provider",
-        type=str,
-        choices=["local", "modal", "runpod", "lambdalabs", "vast"],
-        help="Override hardware provider from config",
-    )
+    # `--local` stays as an explicit dev/operator escape hatch. The rest of the
+    # execution spec should come from config-owned product types.
     parser.add_argument("--local", action="store_true", help="Force local execution")
-    parser.add_argument("--gpu-type", type=str, help="Override GPU type from config")
-    parser.add_argument("--gpu-count", type=int, help="Override GPU count from config")
-    parser.add_argument("--container-disk-gb", type=int, help="Override container disk size")
-    parser.add_argument("--hf-cache-dir", type=str, help="Override remote HuggingFace cache dir")
-    parser.add_argument(
-        "--persistent-volume-id",
-        type=str,
-        help="Attach a persistent volume when provisioning remote hardware",
-    )
-    parser.add_argument(
-        "--persistent-volume-mount-path",
-        type=str,
-        help="Mount path for the attached persistent volume",
-    )
-    parser.add_argument(
-        "--persistent-volume-location",
-        type=str,
-        help="Provider-specific placement hint for the persistent volume",
-    )
-    # Legacy flags (for backwards compat)
-    parser.add_argument("--modal", action="store_true", help="[Legacy] Same as --provider modal")
-    parser.add_argument(
-        "--provision", action="store_true", help="[Legacy] Provision using config's provider"
-    )
 
     # Remote execution options
     parser.add_argument("--node-id", type=str, help="Reuse existing instance (provider:id)")
@@ -1282,6 +1278,8 @@ Examples:
 
     args = parser.parse_args(argv)
     launcher_id = _new_launcher_id()
+    execution_spec_overrides = ExecutionSpecOverrides.from_args(args)
+    execution_spec_overrides.warn_if_used()
 
     config_path = Path(args.config)
     if not config_path.is_absolute():
@@ -1307,6 +1305,9 @@ Examples:
     # Get hardware config (default to local if not specified)
     hardware: HardwareConfig = getattr(config_module, "hardware", HardwareConfig(provider="local"))
     workload_config = getattr(config_module, "config", None)
+    # TODO(boundary): this loader/merge path is reconstructing a launchable
+    # execution spec from module exports, CLI overrides, and service-scoped deps.
+    # Replace it with one explicit product type that Argus consumes directly.
 
     trainer_service_deps = None
     inference_service_deps = None
@@ -1318,38 +1319,7 @@ Examples:
         inference_service_deps = getattr(inference, "deps", None)
         service_runtime_layout = getattr(workload_config, "service_runtime_layout", "shared_env")
 
-    # Apply CLI overrides
-    if args.local:
-        hardware = replace(hardware, provider="local")
-    elif args.modal:
-        # Legacy --modal flag
-        hardware = replace(hardware, provider="modal")
-    elif args.provider:
-        hardware = replace(hardware, provider=args.provider)
-    elif args.provision and hardware.provider == "local":
-        # Legacy --provision without provider: default to runpod
-        hardware = replace(hardware, provider="runpod")
-
-    if args.gpu_type:
-        hardware = replace(hardware, gpu_type=args.gpu_type)
-    if args.gpu_count:
-        hardware = replace(hardware, gpu_count=args.gpu_count)
-    if args.container_disk_gb:
-        hardware = replace(hardware, container_disk_gb=args.container_disk_gb)
-    if args.hf_cache_dir:
-        hardware = replace(hardware, hf_cache_dir=args.hf_cache_dir)
-    if args.persistent_volume_id:
-        hardware = replace(hardware, persistent_volume_id=args.persistent_volume_id)
-    if args.persistent_volume_mount_path:
-        hardware = replace(
-            hardware,
-            persistent_volume_mount_path=args.persistent_volume_mount_path,
-        )
-    if args.persistent_volume_location:
-        hardware = replace(
-            hardware,
-            persistent_volume_location=args.persistent_volume_location,
-        )
+    hardware = execution_spec_overrides.apply_to_hardware(hardware)
     if service_runtime_layout not in {"shared_env", "split_env"}:
         raise ValueError(
             f"Unknown service_runtime_layout={service_runtime_layout!r}. "
