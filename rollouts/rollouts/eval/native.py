@@ -1497,17 +1497,9 @@ def compute_summary_metrics(results: list[AttemptResult]) -> dict[str, float]:
 
     Aggregates metrics from Score objects across all results.
 
-    TODO: Separate provider_error from failed samples in accuracy calculation
-    Article quote: "As these samples get scored as failure, the scores for the
-    corresponding provider are affected substantially."
-
-    Problem: Currently failed_samples includes both actual failures AND provider errors.
-    This inflates the failure rate when providers have issues (rate limits, timeouts, etc.)
-
-    Fix: Track provider_errors separately and exclude from success_rate calculation:
-        provider_errors = [r for r in results if r.metadata.get("status") == "provider_error"]
-        actual_failures = [r for r in results if r.metadata.get("status") == "failed"]
-        success_rate = (total - len(actual_failures)) / (total - len(provider_errors))
+    Provider errors are tracked separately from actual failed samples and are
+    excluded from `success_rate` so transient infrastructure failures do not
+    count as model/task failures.
     """
     if not results:
         return {}

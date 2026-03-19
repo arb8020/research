@@ -142,30 +142,14 @@ class EndpointConfig:
         - If base_url is None and HardwareConfig is provided, provisions and launches server
     """
 
-    # Provider: "anthropic", "openai", "google", "sglang", "vllm"
     provider: Literal["anthropic", "openai", "google", "sglang", "vllm"] = "anthropic"
-
-    # Model name (provider-specific format)
-    # For API: "claude-sonnet-4-20250514", "gpt-4o", etc.
-    # For SGLang/vLLM: HuggingFace model ID like "Qwen/Qwen2.5-7B-Instruct"
     model: str = "claude-sonnet-4-20250514"
-
-    # Base URL (optional - derived from provider if not set)
-    # For SGLang: "http://localhost:30000/v1"
     base_url: str | None = None
-
-    # API key (optional - read from env if not set)
     api_key: str | None = None
-
-    # Generation parameters
     temperature: float = 0.0
     max_tokens: int = 4096
-
-    # Extended thinking (Anthropic only)
     thinking: bool = False
     thinking_budget: int | None = None
-
-    # Reasoning effort (OpenAI o1/o3 only)
     reasoning_effort: Literal["low", "medium", "high"] | None = None
 
     def get_base_url(self) -> str:
@@ -203,23 +187,16 @@ class EndpointConfig:
 class EvalRunConfig:
     """Evaluation execution settings."""
 
-    # Concurrency
-    max_concurrent: int = 1  # Parallel samples
-    max_api_concurrent: int | None = None  # Parallel API calls (None = no limit)
-    max_tool_concurrent: int | None = None  # Parallel tool executions
-
-    # Limits
-    max_samples: int | None = None  # Limit dataset size
-    max_turns: int = 10  # Legacy default; translated into MaxTurnsStop when stop_handler is unset
+    max_concurrent: int = 1
+    max_api_concurrent: int | None = None
+    max_tool_concurrent: int | None = None
+    max_samples: int | None = None
+    max_turns: int = 10
     stop_handler: EvalStopHandler | None = None
-
-    # Display
     verbose: bool = True
     show_progress: bool = True
-    stream_tokens: bool = False  # Stream tokens to stdout
-
-    # Retry
-    max_sample_retries: int = 2  # Retry failed samples
+    stream_tokens: bool = False
+    max_sample_retries: int = 2
 
     def resolved_stop_handler(self) -> EvalStopHandler:
         return self.stop_handler or MaxTurnsStop(self.max_turns)
@@ -230,9 +207,7 @@ class EvalOutputConfig:
     """Evaluation output settings."""
 
     experiment_name: str = "eval"
-    output_dir: Path | None = None  # Auto-generated if None
-
-    # What to save
+    output_dir: Path | None = None
     save_report: bool = True
     save_samples: bool = True
     save_trajectories: bool = True
@@ -246,7 +221,5 @@ class InferenceServerConfig:
     mem_fraction: float = 0.9
     tensor_parallel_size: int = 1
     dtype: str = "bfloat16"
-
-    # Server startup
-    startup_timeout: int = 300  # seconds
-    health_check_interval: int = 5  # seconds
+    startup_timeout: int = 300
+    health_check_interval: int = 5

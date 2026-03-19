@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import inspect
-import json
 import logging
 import os
 import re
@@ -27,18 +26,10 @@ def _make_eval_on_event(
     sample_id: str,
     caller_on_event: Callable[[Any], Awaitable[None]] | None,
 ) -> Callable[[Any], Awaitable[None]]:
-    """Return an on_event handler that emits turn events to _event_logger.
-
-    External drivers (ClaudeDriver, CodexDriver) emit typed dataclass events,
-    not StreamChunk.  LLMCallStart signals a new turn; ToolCallStart/End give
-    finer-grained status.  We forward these to _event_logger so events.jsonl
-    gets turn-level progress during external evals.
-
-    Composes with any existing caller on_event so both receive every event.
-    """
+    """Emit coarse external-driver progress while forwarding real events."""
     from ..dtypes import LLMCallStart, ToolCallEnd, ToolCallStart
 
-    turn: list[int] = [0]  # mutable cell so inner async fn can update it
+    turn: list[int] = [0]
 
     async def on_event(event: Any) -> None:
         if isinstance(event, LLMCallStart):
@@ -50,11 +41,7 @@ def _make_eval_on_event(
         elif isinstance(event, ToolCallStart):
             _event_logger.info(
                 "turn",
-                extra={
-                    "sample_id": sample_id,
-                    "turn": turn[0],
-                    "status": "calling tool...",
-                },
+                extra={"sample_id": sample_id, "turn": turn[0], "status": "calling tool..."},
             )
         elif isinstance(event, ToolCallEnd):
             _event_logger.info(
@@ -261,83 +248,46 @@ async def trajectory_from_codex(
     )
 
 
-def _resolve_openhands_api_key(model: str, api_key_env_var: str | None) -> tuple[str, str]:
-    if api_key_env_var is not None:
-        key = os.environ.get(api_key_env_var, "")
-        if not key:
-            raise ValueError(f"{api_key_env_var} must be set for OpenHands runtime")
-        return key, api_key_env_var
-
-    if model.startswith("claude"):
-        env_var = "ANTHROPIC_API_KEY"
-    else:
-        env_var = "OPENAI_API_KEY"
-    key = os.environ.get(env_var, "")
-    if not key:
-        raise ValueError(f"{env_var} must be set for OpenHands runtime")
-    return key, env_var
-
-
-def _parse_openhands_json_events(stdout_text: str) -> list[dict[str, Any]]:
-    events: list[dict[str, Any]] = []
-    marker = "--JSON Event--"
-    lines = stdout_text.splitlines()
-    i = 0
-
-    while i < len(lines):
-        if lines[i].strip() != marker:
-            i += 1
-            continue
-
-        i += 1
-        chunk: list[str] = []
-        while i < len(lines):
-            candidate = "\n".join(chunk + [lines[i]])
-            try:
-                event = json.loads(candidate)
-            except json.JSONDecodeError:
-                chunk.append(lines[i])
-                i += 1
-                continue
-            else:
-                events.append(event)
-                i += 1
-                break
-    return events
-
-
-def _message_from_openhands_event(event: dict[str, Any]) -> Message | None:
-    if event.get("kind") != "MessageEvent":
+def _coerce_tool_string(value: Any) -> str | None:
+    if value is None:
         return None
+    text = str(value).strip()
+    return text or None
 
-    llm_message = event.get("llm_message")
-    if not isinstance(llm_message, dict):
+
+def _normalize_openhands_tools(allowed_tools: list[str] | None) -> str | None:
+    if not allowed_tools:
         return None
-
-    role = llm_message.get("role")
-    if role not in {"user", "assistant"}:
-        source = event.get("source")
-        if source == "agent":
-            role = "assistant"
-        elif source == "user":
-            role = "user"
-        else:
-            return None
-
-    raw_content = llm_message.get("content", [])
-    if not isinstance(raw_content, list):
+    normalized = [_coerce_tool_string(tool) for tool in allowed_tools]
+    tools = [tool for tool in normalized if tool is not None]
+    if not tools:
         return None
+    return ",".join(sorted(set(tools)))
 
-    text_parts: list[str] = []
-    for block in raw_content:
-        if isinstance(block, dict) and block.get("type") == "text":
-            text_parts.append(str(block.get("text", "")))
 
-    text = "".join(text_parts).strip()
-    if not text:
-        return None
+def _normalize_openhands_runtime(value: Any) -> str:
+    runtime = _coerce_tool_string(value)
+    if runtime is None:
+        return "docker"
+    return runtime
 
-    return Message(role=role, content=text)
+
+def _normalize_openhands_environment(
+    value: Any,
+    *,
+    allowed_tools: list[str] | None,
+) -> str:
+    environment = _coerce_tool_string(value)
+    if environment is not None:
+        return environment
+    tool_string = _normalize_openhands_tools(allowed_tools)
+    if tool_string is None:
+        return "default"
+    return f"{tool_string},finish"
+
+
+def _looks_like_session_id(value: str) -> bool:
+    return bool(re.fullmatch(r"[0-9a-fA-F-]{16,}", value))
 
 
 async def trajectory_from_openhands(
@@ -345,84 +295,168 @@ async def trajectory_from_openhands(
     sample_id: str,
     sample_data: dict[str, Any],
     *,
-    cwd: Path,
-    model: str,
-    api_key_env_var: str | None = None,
-    base_url: str | None = None,
+    cwd: Path | None = None,
+    run_config: Any | None = None,
+    model: str | None = None,
     timeout_seconds: float = 600.0,
+    max_iterations: int | None = None,
+    allowed_tools: list[str] | None = None,
+    agent_cls: str | None = None,
+    runtime: str = "docker",
+    environment: str | None = None,
 ) -> ExternalAttemptArtifact:
-    del sample_data
+    del sample_data, run_config
 
-    openhands_bin = shutil.which("openhands") or str(Path.home() / ".local" / "bin" / "openhands")
-    if not Path(openhands_bin).exists():
-        raise RuntimeError("OpenHands CLI not found. Install with `uv tool install openhands`.")
+    cli = shutil.which("openhands")
+    if cli is None:
+        raise RuntimeError(
+            "OpenHands CLI not found. Install from https://docs.all-hands.dev/usage/installation"
+        )
 
-    api_key, resolved_api_key_env = _resolve_openhands_api_key(model, api_key_env_var)
-    env = dict(os.environ)
-    env["LLM_API_KEY"] = api_key
-    env["LLM_MODEL"] = model
-    if base_url is not None:
-        env["LLM_BASE_URL"] = base_url
-
+    workdir = Path(cwd or Path.cwd()).resolve()
     cmd = [
-        openhands_bin,
-        "--headless",
-        "--json",
-        "--override-with-envs",
-        "-t",
+        cli,
+        "--non-interactive",
+        "--task",
         prompt,
+        "--model",
+        model or os.environ.get("OPENHANDS_DEFAULT_MODEL", "anthropic/claude-sonnet-4-5"),
+        "--runtime",
+        _normalize_openhands_runtime(runtime),
+        "--workspace",
+        str(workdir),
     ]
 
-    completed = None
-    with trio.move_on_after(timeout_seconds) as timeout_scope:
-        completed = await trio.run_process(
-            cmd,
-            capture_stdout=True,
-            capture_stderr=True,
-            cwd=str(cwd),
-            env=env,
-            check=False,
-        )
-    if timeout_scope.cancelled_caught:
-        raise TimeoutError(f"OpenHands timed out after {timeout_seconds}s")
-    assert completed is not None
-
-    stdout_text = completed.stdout.decode("utf-8", errors="replace")
-    stderr_text = completed.stderr.decode("utf-8", errors="replace")
-    if completed.returncode != 0:
-        raise RuntimeError(
-            "OpenHands run failed "
-            f"(exit={completed.returncode}). stdout tail={stdout_text[-400:]!r} "
-            f"stderr tail={stderr_text[-400:]!r}"
-        )
-
-    events = _parse_openhands_json_events(stdout_text)
-    messages = [message for event in events if (message := _message_from_openhands_event(event))]
-    if not messages:
-        raise RuntimeError(
-            f"OpenHands produced no parseable messages. stdout tail={stdout_text[-800:]!r}"
-        )
-
-    conversation_match = re.search(r"Conversation ID:\s*([0-9a-f-]+)", stdout_text)
-    conversation_id = conversation_match.group(1) if conversation_match else None
-
-    trajectory = Trajectory(
-        messages=messages,
-        metadata={
-            "runtime": "openhands",
-            "conversation_id": conversation_id,
-        },
+    resolved_environment = _normalize_openhands_environment(
+        environment,
+        allowed_tools=allowed_tools,
     )
+    if resolved_environment:
+        cmd.extend(["--environment", resolved_environment])
+
+    if agent_cls:
+        cmd.extend(["--agent-cls", agent_cls])
+    if max_iterations is not None:
+        cmd.extend(["--max-iterations", str(max_iterations)])
+
+    proc = await trio.open_process(
+        cmd,
+        cwd=str(workdir),
+        stdout=trio.subprocess.PIPE,
+        stderr=trio.subprocess.PIPE,
+    )
+
+    stdout_buffer = bytearray()
+    stderr_buffer = bytearray()
+
+    async def _read_stream(stream: trio.abc.ReceiveStream | None, sink: bytearray) -> None:
+        if stream is None:
+            return
+        while True:
+            chunk = await stream.receive_some(4096)
+            if not chunk:
+                break
+            sink.extend(chunk)
+
+    with trio.move_on_after(timeout_seconds) as cancel_scope:
+        async with trio.open_nursery() as nursery:
+            nursery.start_soon(_read_stream, proc.stdout, stdout_buffer)
+            nursery.start_soon(_read_stream, proc.stderr, stderr_buffer)
+            await proc.wait()
+            nursery.cancel_scope.cancel()
+
+    if cancel_scope.cancelled_caught:
+        proc.kill()
+        raise TimeoutError(f"OpenHands run timed out after {timeout_seconds:.1f}s")
+
+    stdout_text = stdout_buffer.decode("utf-8", errors="replace")
+    stderr_text = stderr_buffer.decode("utf-8", errors="replace")
+    combined_output = "\n".join(part for part in (stdout_text, stderr_text) if part).strip()
+
+    session_id = None
+    for line in reversed(combined_output.splitlines()):
+        candidate = line.strip()
+        if _looks_like_session_id(candidate):
+            session_id = candidate
+            break
+    if session_id is None:
+        raise RuntimeError(
+            "OpenHands did not print a recognizable session id.\n"
+            f"stdout:\n{stdout_text}\n\nstderr:\n{stderr_text}"
+        )
+
+    api_url = os.environ.get("OPENHANDS_API_URL", "http://localhost:3000")
+    trajectory = await trio.to_thread.run_sync(
+        _trajectory_from_openhands_session, api_url, session_id
+    )
+
+    metadata: dict[str, Any] = {
+        "runtime": "openhands",
+        "driver": "openhands",
+        "session_id": session_id,
+        "api_url": api_url,
+        "workspace": str(workdir),
+    }
+    if model:
+        metadata["model"] = model
+    if max_iterations is not None:
+        metadata["max_iterations"] = max_iterations
+    if agent_cls:
+        metadata["agent_cls"] = agent_cls
+    if resolved_environment:
+        metadata["environment"] = resolved_environment
+    if proc.returncode is not None:
+        metadata["returncode"] = proc.returncode
+
+    status = Status.COMPLETED if proc.returncode in (None, 0) else Status.FAILED
+    if combined_output:
+        metadata["openhands_output"] = combined_output[-8000:]
+
     return ExternalAttemptArtifact(
         trajectory=trajectory,
-        metadata={
-            "runtime": "openhands",
-            "driver": "openhands",
-            "model": model,
-            "cwd": str(cwd),
-            "conversation_id": conversation_id,
-            "api_key_env_var": resolved_api_key_env,
-            "stdout_tail": stdout_text[-800:],
-            "stderr_tail": stderr_text[-400:],
-        },
+        metadata=metadata,
+        status=status,
     )
+
+
+def _trajectory_from_openhands_session(api_url: str, session_id: str) -> Trajectory:
+    import requests
+
+    response = requests.get(
+        f"{api_url.rstrip('/')}/api/conversations/{session_id}/events",
+        timeout=30,
+    )
+    response.raise_for_status()
+    payload = response.json()
+    if isinstance(payload, dict) and "events" in payload:
+        events = payload["events"]
+    else:
+        events = payload
+    if not isinstance(events, list):
+        raise TypeError(f"Unexpected OpenHands events payload: {type(events)!r}")
+
+    messages: list[Message] = []
+    for event in events:
+        if not isinstance(event, dict):
+            continue
+        source = str(event.get("source") or event.get("role") or "").lower()
+        content = event.get("message") or event.get("content") or ""
+        if isinstance(content, list):
+            content = "\n".join(str(part) for part in content if part)
+        text = str(content).strip()
+        if not text:
+            continue
+
+        if source in {"user", "task"}:
+            role = "user"
+        elif source in {"assistant", "agent"}:
+            role = "assistant"
+        elif source in {"system"}:
+            role = "system"
+        else:
+            role = "assistant"
+        messages.append(Message(role=role, content=text))
+
+    if not messages:
+        raise RuntimeError(f"OpenHands session {session_id} returned no importable messages")
+    return Trajectory(messages=messages)

@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Awaitable, Callable
-from dataclasses import asdict, is_dataclass
+from dataclasses import asdict, dataclass, is_dataclass
 from typing import TYPE_CHECKING, Any
 
 from ..dtypes import (
@@ -47,21 +47,12 @@ if TYPE_CHECKING:
     from ..frontends.protocol import Frontend
     from .protocol import ExternalAgentDriver
 
-# Event logger for eval infrastructure — writes to events.jsonl when
-# setup_eval_logging() has been called.
 _event_logger = logging.getLogger("rollouts.eval.events")
 
 
-from dataclasses import dataclass as _dc
-
-
-@_dc
+@dataclass
 class _FlushAssistantMessage:
-    """Sentinel: tells _EventAccumulator to flush pending content blocks now.
-
-    Not a real StreamEvent — emitted by drivers at assistant message boundaries
-    so multi-turn sessions produce correctly separated Message objects.
-    """
+    """Internal accumulator control signal for assistant-message boundaries."""
 
 
 def _event_to_log_dict(event: StreamEvent) -> dict[str, object]:
@@ -71,59 +62,39 @@ def _event_to_log_dict(event: StreamEvent) -> dict[str, object]:
 
 
 class _EventAccumulator:
-    """Accumulate StreamEvents into Messages.
-
-    Tracks active content blocks (text, thinking, tool calls) and builds
-    complete Messages when blocks finish. Tool results create separate
-    tool-role messages.
-    """
+    """Accumulate StreamEvents into Messages."""
 
     def __init__(self) -> None:
         self._messages: list[Message] = []
-
-        # Active content being built for current assistant message
-        self._active_text: dict[int, str] = {}  # content_index -> text
-        self._active_thinking: dict[int, str] = {}  # content_index -> thinking
-        self._active_tools: dict[str, dict] = {}  # tool_call_id -> {name, args, index}
-
-        # Completed content blocks for current assistant message
-        self._completed_blocks: list[tuple[int, ContentBlock]] = []  # (index, block)
+        self._active_text: dict[int, str] = {}
+        self._active_thinking: dict[int, str] = {}
+        self._active_tools: dict[str, dict] = {}
+        self._completed_blocks: list[tuple[int, ContentBlock]] = []
 
     def handle(self, event: Any) -> None:
-        """Process a StreamEvent, updating internal state."""
         if isinstance(event, _FlushAssistantMessage):
             self._finalize_assistant_message()
             return
 
         match event:
-            # Text content
             case TextStart(content_index=idx):
                 self._active_text[idx] = ""
-
             case TextDelta(content_index=idx, delta=delta):
                 if idx in self._active_text:
                     self._active_text[idx] += delta
-
             case TextEnd(content_index=idx, content=content):
                 self._active_text.pop(idx, None)
                 self._completed_blocks.append((idx, TextContent(text=content)))
-
-            # Thinking content
             case ThinkingStart(content_index=idx):
                 self._active_thinking[idx] = ""
-
             case ThinkingDelta(content_index=idx, delta=delta):
                 if idx in self._active_thinking:
                     self._active_thinking[idx] += delta
-
             case ThinkingEnd(content_index=idx, content=content):
                 self._active_thinking.pop(idx, None)
                 self._completed_blocks.append((idx, ThinkingContent(thinking=content)))
-
-            # Tool calls
             case ToolCallStart(content_index=idx, tool_call_id=tid, tool_name=name):
                 self._active_tools[tid] = {"name": name, "index": idx}
-
             case ToolCallEnd(content_index=idx, tool_call=tc):
                 self._active_tools.pop(tc.id, None)
                 self._completed_blocks.append((
@@ -135,12 +106,8 @@ class _EventAccumulator:
                         parse_error=tc.parse_error,
                     ),
                 ))
-
-            # Tool results → separate message
             case ToolResultReceived(tool_call_id=tid, content=content, is_error=is_error):
-                # Finalize any pending assistant message first
                 self._finalize_assistant_message()
-                # Add tool result as separate message
                 self._messages.append(
                     Message(
                         role="tool",
@@ -150,19 +117,14 @@ class _EventAccumulator:
                 )
 
     def _finalize_assistant_message(self) -> None:
-        """Finalize current assistant message from completed blocks."""
         if not self._completed_blocks:
             return
-
-        # Sort by content_index to preserve order
         self._completed_blocks.sort(key=lambda x: x[0])
         blocks = [block for _, block in self._completed_blocks]
-
         self._messages.append(Message(role="assistant", content=blocks))
         self._completed_blocks = []
 
     def finalize(self) -> list[Message]:
-        """Finalize and return all accumulated messages."""
         self._finalize_assistant_message()
         return self._messages
 
@@ -173,27 +135,6 @@ async def run_driver_to_trajectory(
     sample_id: str | None = None,
     on_event: Callable[[StreamEvent], Awaitable[None]] | None = None,
 ) -> Trajectory:
-    """Run an external agent driver and capture the result as a Trajectory.
-
-    Accumulates StreamEvents into Messages and optionally logs each event
-    for the eval infrastructure (TUI dashboard, per-sample debug files).
-
-    Args:
-        driver: The external agent driver (ClaudeDriver, CodexDriver, etc.)
-        prompt: The task/prompt to send to the agent
-        sample_id: Optional sample ID for logging. If provided, events are
-            logged to rollouts.eval.events logger with sample_id in extra.
-        on_event: Optional live event sink. When provided, each StreamEvent is
-            forwarded before being accumulated into the trajectory.
-
-    Returns:
-        Trajectory containing the accumulated messages
-
-    Example:
-        driver = ClaudeDriver(cwd="/path/to/repo")
-        trajectory = await run_driver_to_trajectory(driver, "Fix the bug", sample_id="001")
-        print(f"Got {len(trajectory.messages)} messages")
-    """
     accumulator = _EventAccumulator()
 
     async for event in driver.run(prompt):
@@ -201,7 +142,6 @@ async def run_driver_to_trajectory(
             accumulator.handle(event)
             continue
 
-        # Log event if sample_id provided and eval logging is configured
         if sample_id is not None:
             _event_logger.debug(
                 event.type,
@@ -222,16 +162,6 @@ async def run_external_agent(
     frontend: Frontend,
     prompt: str,
 ) -> None:
-    """Run an external agent through a frontend.
-
-    Streams events from the driver to the frontend, handling the full
-    lifecycle (start, events, stop).
-
-    Args:
-        driver: The external agent driver (ClaudeDriver, CodexDriver, etc.)
-        frontend: The frontend to render events
-        prompt: The task/prompt to send to the agent
-    """
     await frontend.start()
     try:
         async for event in driver.run(prompt):
