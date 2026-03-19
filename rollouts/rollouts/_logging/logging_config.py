@@ -184,7 +184,9 @@ def setup_logging(
     # Python 3.12+ creates the listener automatically, we just need to start it
     if use_queue_handler:
         get_handler_by_name = getattr(logging, "getHandlerByName", None)
-        queue_handler = get_handler_by_name("queue_handler") if callable(get_handler_by_name) else None
+        queue_handler = (
+            get_handler_by_name("queue_handler") if callable(get_handler_by_name) else None
+        )
         listener = getattr(queue_handler, "listener", None)
         if listener is not None:
             listener.start()

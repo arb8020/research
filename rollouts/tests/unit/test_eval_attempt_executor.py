@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import NoReturn
 
 import pytest
+
 from rollouts.core import EvalConfig, Message, Metric, Score, Trajectory
 from rollouts.eval.native import EvalRuntime, evaluate_sample
 from rollouts.training.types import AttemptRow

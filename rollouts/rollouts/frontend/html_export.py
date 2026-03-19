@@ -97,8 +97,7 @@ def _sample_body(sample: dict[str, Any], *, compact_header: bool = False) -> str
 
     if isinstance(prompt, str) and prompt:
         parts.append(
-            "<section><h2>Prompt</h2>"
-            f'<div class="card prose">{html.escape(prompt)}</div></section>'
+            f'<section><h2>Prompt</h2><div class="card prose">{html.escape(prompt)}</div></section>'
         )
 
     if ground_truth is not None:
@@ -123,7 +122,9 @@ def _sample_body(sample: dict[str, Any], *, compact_header: bool = False) -> str
     if isinstance(messages, list) and messages:
         for index, message in enumerate(messages, start=1):
             if not isinstance(message, dict):
-                parts.append(f'<div class="message"><pre><code>{html.escape(str(message))}</code></pre></div>')
+                parts.append(
+                    f'<div class="message"><pre><code>{html.escape(str(message))}</code></pre></div>'
+                )
                 continue
             role = html.escape(str(message.get("role", "message")))
             role_label = html.escape(_message_role_label(message))
@@ -367,7 +368,9 @@ def run_to_html(
         metadata = sample.get("metadata")
         turns = metadata.get("turns_used") if isinstance(metadata, dict) else None
         tokens = metadata.get("total_tokens") if isinstance(metadata, dict) else None
-        status = sample.get("status") or (metadata.get("status") if isinstance(metadata, dict) else None)
+        status = sample.get("status") or (
+            metadata.get("status") if isinstance(metadata, dict) else None
+        )
         reward = sample.get("reward")
         reward_text = f"{reward:.3f}" if isinstance(reward, (int, float)) else "—"
         sample_rows.append(
@@ -391,10 +394,10 @@ def run_to_html(
         f'<h1 class="page-title">{html.escape(title)}</h1>'
         '<section class="metric-grid">' + "".join(metric_cards) + "</section>"
         '<section class="card" style="margin-bottom: 24px;">'
-        f'<div><strong>Model:</strong> {html.escape(str(endpoint.get("model", "—")))}</div>'
-        f'<div><strong>Provider:</strong> {html.escape(str(endpoint.get("provider", "—")))}</div>'
-        f'<div><strong>Dataset:</strong> {html.escape(str(report.get("dataset_path", "—")))}</div>'
-        f'<div><strong>Timestamp:</strong> {html.escape(str(report.get("timestamp", "—")))}</div>'
+        f"<div><strong>Model:</strong> {html.escape(str(endpoint.get('model', '—')))}</div>"
+        f"<div><strong>Provider:</strong> {html.escape(str(endpoint.get('provider', '—')))}</div>"
+        f"<div><strong>Dataset:</strong> {html.escape(str(report.get('dataset_path', '—')))}</div>"
+        f"<div><strong>Timestamp:</strong> {html.escape(str(report.get('timestamp', '—')))}</div>"
         "</section>"
         "<section><h2>Samples</h2><table><thead><tr><th>Sample</th><th>Reward</th><th>Turns</th><th>Tokens</th><th>Status</th></tr></thead>"
         f"<tbody>{''.join(sample_rows)}</tbody></table></section>"

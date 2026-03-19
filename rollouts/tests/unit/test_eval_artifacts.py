@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 import pytest
+
 from rollouts.core import Message, Metric, Score, Trajectory
 from rollouts.eval.native import EvalReport
 from rollouts.training.types import AttemptEvaluation, AttemptResult, ProblemRow

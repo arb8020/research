@@ -94,7 +94,9 @@ def load_trace_payload(trace_dir: Path, trace_id: str) -> dict[str, Any]:
     }
 
 
-def _rehydrate_external_session_trajectory(sample: dict[str, Any], metadata: dict[str, Any]) -> None:
+def _rehydrate_external_session_trajectory(
+    sample: dict[str, Any], metadata: dict[str, Any]
+) -> None:
     runtime = metadata.get("runtime")
     if runtime == "claude_code" and sample.get("status") == "completed":
         session_id = metadata.get("session_id")

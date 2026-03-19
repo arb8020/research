@@ -242,7 +242,9 @@ def list_registered_runs() -> list[dict[str, Any]]:
     return runs
 
 
-def discover_watching_runs(results_dir: Path, known_results_dirs: list[Path]) -> list[dict[str, Any]]:
+def discover_watching_runs(
+    results_dir: Path, known_results_dirs: list[Path]
+) -> list[dict[str, Any]]:
     watching = []
     seen_ids: set[str] = set(_active_runs.keys())
     all_dirs = [results_dir, *known_results_dirs]

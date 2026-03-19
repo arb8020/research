@@ -25,7 +25,11 @@ def _sample() -> dict:
                     "role": "assistant",
                     "content": [
                         {"type": "thinking", "thinking": "Profiler shows memory bottleneck."},
-                        {"type": "toolCall", "name": "read_file", "arguments": {"path": "kernel.cu"}},
+                        {
+                            "type": "toolCall",
+                            "name": "read_file",
+                            "arguments": {"path": "kernel.cu"},
+                        },
                     ],
                 },
             ],

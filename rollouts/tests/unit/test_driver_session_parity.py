@@ -32,7 +32,12 @@ def test_claude_session_import_matches_live_parser(tmp_path) -> None:
                 "model": "sonnet",
                 "content": [
                     {"type": "text", "text": "I will inspect the file."},
-                    {"type": "tool_use", "id": "toolu_1", "name": "Read", "input": {"path": "perf_takehome.py"}},
+                    {
+                        "type": "tool_use",
+                        "id": "toolu_1",
+                        "name": "Read",
+                        "input": {"path": "perf_takehome.py"},
+                    },
                 ],
             },
         },
@@ -52,7 +57,12 @@ def test_claude_session_import_matches_live_parser(tmp_path) -> None:
                 "model": "sonnet",
                 "content": [
                     {"type": "text", "text": "I will inspect the file."},
-                    {"type": "tool_use", "id": "toolu_1", "name": "Read", "input": {"path": "perf_takehome.py"}},
+                    {
+                        "type": "tool_use",
+                        "id": "toolu_1",
+                        "name": "Read",
+                        "input": {"path": "perf_takehome.py"},
+                    },
                 ],
             },
         },

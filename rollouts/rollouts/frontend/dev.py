@@ -10,7 +10,6 @@ import sys
 import time
 from pathlib import Path
 
-
 SESSION_NAME = "rollouts-webui"
 
 
@@ -163,14 +162,34 @@ def _start_tmux(
         check=True,
     )
     subprocess.run(
-        ["tmux", "split-window", "-t", f"{SESSION_NAME}:0", "-h", "-c", str(repo_root), _watcher_command(ui_dir=ui_dir, log_dir=log_dir)],
+        [
+            "tmux",
+            "split-window",
+            "-t",
+            f"{SESSION_NAME}:0",
+            "-h",
+            "-c",
+            str(repo_root),
+            _watcher_command(ui_dir=ui_dir, log_dir=log_dir),
+        ],
         check=True,
     )
     subprocess.run(
-        ["tmux", "split-window", "-t", f"{SESSION_NAME}:0.1", "-v", "-c", str(repo_root), _tail_command(log_dir)],
+        [
+            "tmux",
+            "split-window",
+            "-t",
+            f"{SESSION_NAME}:0.1",
+            "-v",
+            "-c",
+            str(repo_root),
+            _tail_command(log_dir),
+        ],
         check=True,
     )
-    subprocess.run(["tmux", "select-layout", "-t", f"{SESSION_NAME}:0", "main-vertical"], check=True)
+    subprocess.run(
+        ["tmux", "select-layout", "-t", f"{SESSION_NAME}:0", "main-vertical"], check=True
+    )
     subprocess.run(["tmux", "resize-pane", "-t", f"{SESSION_NAME}:0.0", "-x", "60%"], check=True)
     subprocess.run(["tmux", "select-pane", "-t", f"{SESSION_NAME}:0.0"], check=True)
 

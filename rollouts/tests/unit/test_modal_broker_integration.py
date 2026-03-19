@@ -6,7 +6,10 @@ from types import SimpleNamespace
 import pytest
 
 from broker.providers.modal import _build_image_from_deps
-from rollouts.environments.modal_sandbox_resource import ModalSandboxResource, ModalSandboxResourceConfig
+from rollouts.environments.modal_sandbox_resource import (
+    ModalSandboxResource,
+    ModalSandboxResourceConfig,
+)
 
 
 @dataclass
@@ -14,19 +17,19 @@ class _FakeImage:
     source: str
     actions: list[tuple[str, object]] = field(default_factory=list)
 
-    def apt_install(self, *packages: str) -> "_FakeImage":
+    def apt_install(self, *packages: str) -> _FakeImage:
         self.actions.append(("apt_install", packages))
         return self
 
-    def pip_install(self, *packages: str, **kwargs: object) -> "_FakeImage":
+    def pip_install(self, *packages: str, **kwargs: object) -> _FakeImage:
         self.actions.append(("pip_install", (packages, kwargs)))
         return self
 
-    def run_commands(self, *commands: str) -> "_FakeImage":
+    def run_commands(self, *commands: str) -> _FakeImage:
         self.actions.append(("run_commands", commands))
         return self
 
-    def env(self, env_vars: dict[str, str]) -> "_FakeImage":
+    def env(self, env_vars: dict[str, str]) -> _FakeImage:
         self.actions.append(("env", env_vars))
         return self
 

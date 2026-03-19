@@ -450,11 +450,7 @@ Examples:
     # Apply CLI overrides
     if endpoint_config is None:
         if args.command == "run" and (
-            args.provider
-            or args.model
-            or args.base_url
-            or args.provision
-            or args.hardware_provider
+            args.provider or args.model or args.base_url or args.provision or args.hardware_provider
         ):
             raise ValueError(
                 "Endpoint overrides and provisioning flags are invalid for attempt-executor-only evals."
@@ -477,8 +473,10 @@ Examples:
     if args.command == "run" and args.output_dir:
         output_config = replace(output_config, output_dir=args.output_dir)
 
-    if args.command == "run" and endpoint_config is not None and (
-        args.provision or args.hardware_provider
+    if (
+        args.command == "run"
+        and endpoint_config is not None
+        and (args.provision or args.hardware_provider)
     ):
         if hardware_config is None:
             hardware_config = HardwareConfig()

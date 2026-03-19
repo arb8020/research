@@ -37,7 +37,10 @@ def load_workspace_response(trace_dir: Path, sample_id: str) -> dict[str, Any]:
                     continue
                 try:
                     evt = json.loads(stripped)
-                    if evt.get("type") == "workspace_snapshot" and evt.get("sample_id") == sample_id:
+                    if (
+                        evt.get("type") == "workspace_snapshot"
+                        and evt.get("sample_id") == sample_id
+                    ):
                         live_snapshots.append(evt)
                 except json.JSONDecodeError:
                     pass

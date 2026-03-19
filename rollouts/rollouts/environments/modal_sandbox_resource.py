@@ -5,7 +5,6 @@ import concurrent.futures
 import json
 import logging
 import math
-import os
 import time
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
@@ -410,8 +409,7 @@ class ModalSandboxResource:
             pip_prerelease=False,
             env=dict(self.config.env),
             bootstrap_commands=(
-                tuple(self.config.run_commands)
-                + (self._manifest_write_command(),)
+                tuple(self.config.run_commands) + (self._manifest_write_command(),)
             ),
         )
 
@@ -436,7 +434,7 @@ class ModalSandboxResource:
         }
         encoded = base64.b64encode(json.dumps(payload, indent=2, sort_keys=True).encode()).decode()
         return (
-            "python3 -c \"import base64; from pathlib import Path; "
+            'python3 -c "import base64; from pathlib import Path; '
             "path = Path('/etc/rollouts-image.json').expanduser(); "
             "path.parent.mkdir(parents=True, exist_ok=True); "
             f"path.write_text(base64.b64decode('{encoded}').decode('utf-8'))\""

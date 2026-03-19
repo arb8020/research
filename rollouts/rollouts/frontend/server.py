@@ -130,7 +130,9 @@ class DevLoopServer(SimpleHTTPRequestHandler):
             trace_id, _, rest2 = rest.partition("/sample/")
             sample_id = rest2.removesuffix("/workspace")
             self._get_workspace(trace_id, sample_id)
-        elif path.startswith("/api/trace/") and "/sample/" in path and path.endswith("/export.html"):
+        elif (
+            path.startswith("/api/trace/") and "/sample/" in path and path.endswith("/export.html")
+        ):
             rest = path.split("/api/trace/")[1]
             trace_id, _, rest2 = rest.partition("/sample/")
             sample_id = rest2.removesuffix("/export.html")
