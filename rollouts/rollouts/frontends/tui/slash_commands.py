@@ -150,7 +150,7 @@ async def _fork_session_with_endpoint(
             parent_id=source_session_id,
             branch_point=len(source_trajectory.messages),
             endpoint=new_endpoint,
-            status="pending",
+            stop_reason=None,
             created_at=None,
             updated_at=None,
         ),
@@ -167,7 +167,7 @@ async def _fork_session_with_endpoint(
         message=f"{message}\nSwitched to child session: {child_session.session_id}",
         new_endpoint=new_endpoint,
         new_session_id=child_session.session_id,
-        new_trajectory=child_session.to_trajectory(),
+        new_trajectory=child_session,
     )
 
 
@@ -524,7 +524,7 @@ async def _handle_slice(runner: RunnerContext, args: str) -> SlashCommandResult:
     return SlashCommandResult(
         message=f"Switched to child session: {child.session_id}",
         new_session_id=child.session_id,
-        new_trajectory=child.to_trajectory(),
+        new_trajectory=child,
     )
 
 
@@ -642,7 +642,6 @@ async def _handle_env(runner: RunnerContext, args: str) -> SlashCommandResult:
     """
     from ...dtypes import (
         EnvironmentConfig,
-        SessionStatus,
         Trajectory,
         TrajectoryEnvironment,
         TrajectorySession,
@@ -722,16 +721,10 @@ async def _handle_env(runner: RunnerContext, args: str) -> SlashCommandResult:
     if hasattr(new_env, "serialize"):
         env_state = await new_env.serialize()
 
-    source_trajectory = session.to_trajectory()
     child_trajectory = Trajectory(
         messages=new_messages,
-        completions=list(source_trajectory.completions),
-        rewards=source_trajectory.rewards,
-        group=source_trajectory.group,
-        replica=source_trajectory.replica,
-        advantages=source_trajectory.advantages,
-        metadata=dict(source_trajectory.metadata),
-        annotations=source_trajectory.annotations,
+        completions=list(session.completions),
+        metadata=dict(session.metadata),
         environment=TrajectoryEnvironment.from_session_parts(
             EnvironmentConfig(type=env_spec, config={}),
             env_state,
@@ -741,7 +734,6 @@ async def _handle_env(runner: RunnerContext, args: str) -> SlashCommandResult:
             parent_id=runner.session_id,
             branch_point=len(session.messages),
             endpoint=runner.endpoint,
-            status=SessionStatus.PENDING.value,
             vcs=session.vcs,
         ),
     )
@@ -755,7 +747,7 @@ async def _handle_env(runner: RunnerContext, args: str) -> SlashCommandResult:
         message=f"Switched to session {child_session.session_id} with env {env_spec}",
         new_session_id=child_session.session_id,
         new_environment=new_env,
-        new_trajectory=child_session.to_trajectory(),
+        new_trajectory=child_session,
     )
 
 

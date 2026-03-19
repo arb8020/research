@@ -222,4 +222,4 @@ After running the pipeline:
    - Plot silhouette score distributions
    - Show cluster size vs depth
 
-See `todo.md` for full research roadmap.
+See `docs/project/todo.md` for the full research roadmap.

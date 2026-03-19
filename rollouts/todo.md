@@ -2,6 +2,20 @@
 '~' - in progress, subtasks blocking
 '-' - in progress
 
+# 2026-03-18
+---
+
+[ ] Before the next trace/frontend refactor phase, do an explicit feature-parity pass against `dreadnode/agent-lens`
+    - Repo: https://github.com/dreadnode/agent-lens
+    - Relevant surfaces to match or intentionally reject:
+      - run list + filtering/search
+      - run overview with session/fork relationships
+      - trajectory viewer with thinking blocks, tool calls, and observations
+      - API request/response capture inspection
+      - file state / memory diffs across sessions
+      - replay / resample workflow support and provenance
+    - Decision needed before moving on: which of these belong in `rollouts/frontend/` now vs later
+
 # 2026-02-26
 ---
 

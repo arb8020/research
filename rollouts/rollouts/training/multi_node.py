@@ -20,7 +20,7 @@ NCCL groups:
     2. Weight sync group: Trainer rank 0 + all inference GPUs (5 total)
 
 Tiger Style: Explicit orchestration, clear state transitions.
-PipelineRL: In-flight weight updates, inference never stops.
+PipelineRL reference: versioned async training/sampling with direct weight publication.
 """
 
 from __future__ import annotations

@@ -13,6 +13,7 @@ from rollouts.training.grpo import (
     GRPOOutputConfig,
     InferenceConfig,
     ModelConfig,
+    ResourceWatchdogConfig,
     RolloutConfig,
     TrainerConfig,
 )
@@ -57,9 +58,7 @@ QWEN_TORCHTITAN_VLLM_TRAINER_DEPS = DepsConfig(
 
 QWEN_TORCHTITAN_VLLM_INFERENCE_DEPS = DepsConfig(
     python_version="3.12",
-    pip_packages=(
-        "vllm>=0.13.0,<0.14.0",
-    ),
+    pip_packages=("vllm>=0.13.0,<0.14.0",),
 )
 
 hardware = HardwareConfig(
@@ -84,7 +83,7 @@ config = GRPOConfig(
         lr=3e-6,
         weight_decay=0.0,
         max_grad_norm=1.0,
-        num_minibatches=8,
+        num_minibatches=32,
         loss_type="masked",
         cuda_device_ids=(1,),
     ),
@@ -97,9 +96,9 @@ config = GRPOConfig(
     ),
     rollout=RolloutConfig(
         batch_size=8,
-        n_samples_per_prompt=8,
+        n_samples_per_prompt=16,
         temperature=1.0,
-        max_seq_len=512,
+        max_seq_len=256,
         max_tokens=128,
     ),
     checkpoint=CheckpointConfig(
@@ -107,10 +106,18 @@ config = GRPOConfig(
         log_every=1,
         checkpoint_every=4,
         sync_weights_every=1,
-        weight_sync_mode="disk",
+        weight_sync_mode="nccl",
+        inference_sync_realization="vllm_custom_nccl_broadcast",
         pipeline_mode="sync",
         max_lag=0,
         pipeline_queue_size=0,
+    ),
+    runtime_watchdog=ResourceWatchdogConfig(
+        enabled=True,
+        sample_interval_s=1.0,
+        heartbeat_interval_s=10.0,
+        warn_gpu_reserved_frac=0.88,
+        warn_host_mem_used_frac=0.88,
     ),
     service_runtime_layout="shared_env",
 )

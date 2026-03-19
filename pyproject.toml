@@ -25,6 +25,7 @@ dependencies = [
     "bifrost",
     "infra-utils",
     "rollouts",
+    "verifiers>=0.1.11",
 ]
 
 [project.optional-dependencies]

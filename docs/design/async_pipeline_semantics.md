@@ -10,6 +10,7 @@ important async RL distinctions explicit:
 - whether new admissions are allowed during sync
 - what runtime state the system is actually in
 - how batches are tagged with the version that produced them
+- what service transition is happening between training and inference
 
 If these are not explicit, sync mode and async mode will drift into ad hoc
 control flow instead of remaining one coherent training model.
@@ -76,6 +77,13 @@ This is the semantic object behind:
 - checkpoint publication
 - weight sync
 - version visibility
+
+This object is intentionally semantic, not transport-specific. It answers when
+a version becomes visible, not whether visibility is realized by:
+
+- filesystem checkpoint publication
+- custom HTTP control plane + NCCL data plane
+- direct in-memory process-local update
 
 ### `AdmissionPolicy`
 
@@ -156,6 +164,42 @@ class PipelineRuntimeState:
 This is the explicit runtime state machine surface. It should be observable and
 loggable, not reconstructed from scattered booleans.
 
+For simple modes, that coarse state is enough. For live train/infer systems, we
+also need the service-transition state between the trainer and inference
+service.
+
+### `UpdateChannelState`
+
+This answers:
+
+- has the train/infer update channel been initialized?
+- is inference still serving, or has it quiesced for update?
+- is a new version actively being published right now?
+- has serving resumed on the new version?
+
+Likely shape:
+
+```python
+@dataclass(frozen=True)
+class UpdateChannelState:
+    channel_ready: bool = False
+    quiescing_for_update: bool = False
+    update_in_progress: bool = False
+    last_published_version: int | None = None
+    serving_resumed: bool = False
+```
+
+Interpretation:
+
+- `channel_ready=True` means the runtime update path exists and can be used
+- `quiescing_for_update=True` means serving is draining or pausing admissions
+- `update_in_progress=True` means trainer->inference publication is active
+- `serving_resumed=True` means inference has returned to normal serving on the
+  new version
+
+Without this, "sync in progress" is too coarse to explain failures in systems
+that rely on explicit quiesce/update/resume transitions.
+
 ### `VersionedRolloutBatch`
 
 This answers:
@@ -216,6 +260,9 @@ Interpretation:
 - only exact-version batches are trained on
 - no new admissions during publish
 - the system drains to a clean boundary before serving a new version
+- the update channel behaves like:
+  - `channel_ready -> quiescing_for_update -> update_in_progress ->
+    serving_resumed`
 
 This should be the default worldview for the first real dense RL run.
 
@@ -258,6 +305,8 @@ Interpretation:
 - already-started work can continue during publish
 - new admissions may continue under stream-style production
 - overload handling remains a separate explicit policy surface
+- service transitions still exist, but may not fully drain before visibility
+  changes
 
 This is the natural next step after a clean sync run.
 
@@ -299,6 +348,8 @@ Interpretation:
 - multiple versions may coexist transiently
 - serving and training overlap more aggressively
 - the runtime must track sync state and version lag explicitly
+- the update channel is a first-class long-lived runtime subsystem, not an ad
+  hoc helper call
 
 If this mode needs different concepts entirely, the model is wrong.
 
@@ -314,6 +365,11 @@ able to name and log:
 - each batch’s producing version
 - each batch’s version lag relative to training
 - what policy caused a batch to be accepted or dropped
+- the current update-channel transition:
+  - ready
+  - quiescing
+  - publishing
+  - resumed
 
 This is the minimum semantic bar.
 
@@ -327,5 +383,28 @@ Recommended order:
 1. synchronous dense RL run with explicit policies
 2. version-tagged rollout batches
 3. runtime state observability
-4. bounded async mode
-5. true pipeline only after the above are clean
+4. explicit update-channel state observability
+5. bounded async mode
+6. true pipeline only after the above are clean
+
+The next honest runtime boundary is:
+
+1. semantic policy objects
+2. lowering into a concrete train/infer sync realization
+3. a long-lived update channel that owns:
+   - initialize
+   - publish
+   - close
+
+That channel should sit between:
+
+- a `TrainingBackend` that knows how to prepare/send updates
+- an `InferenceBackend` that knows how to quiesce/receive/resume
+
+This keeps:
+
+- policy semantics
+- transport/runtime realization
+- service lifecycle
+
+separate and observable.

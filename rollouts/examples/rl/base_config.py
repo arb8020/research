@@ -5,8 +5,9 @@ from __future__ import annotations
 from rollouts.image_spec import ImageSpec
 from rollouts.training.configs import DepsConfig
 
-MILES_STABLE_IMAGE_TAG = "nightly-dev-20260113a"
-MILES_STABLE_IMAGE = f"radixark/miles:{MILES_STABLE_IMAGE_TAG}"
+SLIME_STABLE_TAG = "v0.2.3"
+SLIME_STABLE_COMMIT = "6195417d45f272b72d04f619ea334613135d1c1f"
+SLIME_STABLE_IMAGE = f"slimerl/slime:{SLIME_STABLE_TAG}"
 
 
 def _rollouts_runtime_packages() -> tuple[str, ...]:
@@ -55,22 +56,21 @@ def default_remote_training_deps() -> DepsConfig:
 
 
 def default_remote_megatron_training_deps() -> DepsConfig:
-    """Pinned Megatron/SGLang runtime owned by the `miles` image.
+    """Pinned Megatron/SGLang runtime owned by a tagged `slime` image.
 
-    Current shared-env launchers realize one runtime contract in `hardware.deps`.
-    For Megatron that contract should be image-owned, not reconstructed per run.
-    We therefore start from the prebuilt `miles` image and only add the small
-    rollouts-side Python packages we own in this repo.
+    `slimerl/slime:v0.2.3` lines up with the upstream `slime` source tag
+    `v0.2.3` at commit `6195417d45f272b72d04f619ea334613135d1c1f`, which is a
+    much cleaner source↔image contract than the floating `miles` nightlies.
     """
     return DepsConfig(
         python_version="3.12",
         system_packages=(),
         image=ImageSpec.from_registry(
-            MILES_STABLE_IMAGE,
+            SLIME_STABLE_IMAGE,
             python_version="3.12",
             python_runtime="image_owned",
             python_executable="python3",
-            installed_groups=("miles-megatron-runtime",),
+            installed_groups=("slime-megatron-runtime",),
         ),
         pip_packages=_rollouts_runtime_packages(),
         pip_extra_index_url="https://pypi.org/simple",

@@ -4,6 +4,7 @@ Design mirrors run_agent/run_agent_step for easy parallelization.
 Tiger Style: Pure functions, explicit configuration, no hidden state.
 """
 
+import inspect
 import json
 import logging
 import sys
@@ -13,7 +14,7 @@ from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime
 from inspect import isawaitable
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import trio
 
@@ -29,14 +30,22 @@ from ..dtypes import (
     ThinkingDelta,
     ToolExecutionEnd,
 )
+from ..export_html import run_to_html, sample_to_html
 from ..progress import MultiProgress
-from ..training.types import AttemptRow, ProblemRow, SampleScorer, ScoringContext
+from ..training.types import (
+    AttemptEvaluation,
+    AttemptResult,
+    AttemptRow,
+    ProblemRow,
+    SampleScorer,
+    ScoringContext,
+)
 
 logger = logging.getLogger(__name__)  # Human/operator-oriented module logs.
 
 # Structured eval event stream. This is separate from the module logger above:
 # use `_event_logger` for machine-readable operational facts that belong in
-# events.jsonl / per-sample event logs.
+# events.jsonl.
 _event_logger = logging.getLogger("rollouts.eval.events")
 
 
@@ -170,8 +179,8 @@ def _extract_text_from_content(content: object) -> str:
 async def _evaluate_batch(
     samples: list[tuple[str, dict[str, Any]]],
     runtime: EvalRuntime,
-    on_sample_complete: Callable[[AttemptRow, list[AttemptRow]], None] | None = None,
-) -> list[AttemptRow]:
+    on_sample_complete: Callable[[AttemptResult, list[AttemptResult]], None] | None = None,
+) -> list[AttemptResult]:
     """Evaluate a batch of samples, handling sequential vs parallel execution.
 
     This is the core evaluation loop, used for both initial runs and retries.
@@ -185,10 +194,10 @@ async def _evaluate_batch(
     """
     config = runtime.config
     progress = runtime.progress
-    results: list[AttemptRow] = []
+    results: list[AttemptResult] = []
     results_lock = trio.Lock()
 
-    async def run_one(sample_id: str, sample_data: dict[str, Any]) -> AttemptRow:
+    async def run_one(sample_id: str, sample_data: dict[str, Any]) -> AttemptResult:
         """Evaluate a single sample."""
         task_name = sample_data.get("name", sample_id)
         if progress:
@@ -211,7 +220,7 @@ async def _evaluate_batch(
 
         # Mark task complete
         if progress:
-            reward = result.score.reward if result.score else 0.0
+            reward = result.reward
             success = result.metadata.get("status") == "success"
             if success:
                 message = f"reward={reward:.2f}"
@@ -265,16 +274,20 @@ async def _run_attempt_executor(
     sample_id: str,
     environment: Environment | None,
     run_config: RunConfig,
-) -> AttemptRow:
+) -> AttemptResult:
     """Run a custom per-sample executor and normalize the result shape."""
     sample = attempt_executor(sample_data, sample_id, environment, run_config)
     if isawaitable(sample):
         sample = await sample
-    if not isinstance(sample, AttemptRow):
-        raise TypeError(f"attempt_executor must return AttemptRow (got {type(sample).__name__})")
-    if sample.trajectory is None:
-        raise ValueError("attempt_executor must populate AttemptRow.trajectory")
-    return sample
+    if isinstance(sample, AttemptResult):
+        result = sample
+    else:
+        raise TypeError(f"attempt_executor must return AttemptResult (got {type(sample).__name__})")
+    if result.trajectory is None:
+        raise ValueError("attempt_executor must populate attempt trajectory")
+    if not result.attempt_id:
+        result.attempt_id = sample_id
+    return result
 
 
 async def _serialize_environment_state(environment: Environment | None) -> dict[str, Any] | None:
@@ -287,27 +300,49 @@ async def _serialize_environment_state(environment: Environment | None) -> dict[
         return None
 
 
+def _score_fn_accepts_context(score_fn: Callable[..., Any]) -> bool:
+    try:
+        params = inspect.signature(score_fn).parameters.values()
+    except (TypeError, ValueError):
+        return False
+    positional = 0
+    for param in params:
+        if param.kind in (
+            inspect.Parameter.VAR_POSITIONAL,
+            inspect.Parameter.VAR_KEYWORD,
+        ):
+            return True
+        if param.kind in (
+            inspect.Parameter.POSITIONAL_ONLY,
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        ):
+            positional += 1
+    return positional >= 2
+
+
 async def _compute_score(
     score_fn: Callable[..., Any] | None,
-    sample: AttemptRow,
+    result: AttemptResult,
     sample_scorer: SampleScorer | None = None,
     scoring_context: ScoringContext | None = None,
 ) -> Score:
-    """Compute score from either an explicit scorer stage or a legacy score function."""
-    import inspect
+    """Compute score from either an explicit scorer stage or a raw-result score function."""
     from typing import cast
 
     try:
         if sample_scorer is not None:
+            sample = AttemptRow.from_result(result)
             await sample_scorer.score_samples([sample], contexts=[scoring_context])
             if sample.score is None:
                 raise ValueError("sample_scorer must populate sample.score on each sample")
-            sample.reward = sample.score.reward
             return sample.score
 
         assert score_fn is not None, "score_fn required when sample_scorer is not provided"
-        score_result = score_fn(sample)
-        if inspect.iscoroutine(score_result):
+        if _score_fn_accepts_context(score_fn):
+            score_result = score_fn(result, scoring_context)
+        else:
+            score_result = score_fn(result)
+        if isawaitable(score_result):
             return await score_result
         else:
             return cast(Score, score_result)
@@ -390,7 +425,7 @@ def _build_base_run_config(
         )
 
         if has_stream_tokens and stream_tokens_value:
-            from .agents import stdout_handler
+            from ..agents import stdout_handler
 
             on_chunk_handler = stdout_handler
             logger.debug("🔍 Using stdout_handler for token streaming")
@@ -514,7 +549,7 @@ def _get_git_info() -> dict[str, Any]:
     return info
 
 
-def _extract_evaluator_provenance(results: list[AttemptRow]) -> dict[str, Any] | None:
+def _extract_evaluator_provenance(results: list[AttemptResult]) -> dict[str, Any] | None:
     """Best-effort scoring-runtime provenance extracted from sample metadata."""
     for sample in results:
         provenance = sample.metadata.get("evaluator_provenance")
@@ -533,7 +568,7 @@ def _extract_evaluator_provenance(results: list[AttemptRow]) -> dict[str, Any] |
     return None
 
 
-def _build_report_provenance(config: EvalConfig, results: list[AttemptRow]) -> dict[str, Any]:
+def _build_report_provenance(config: EvalConfig, results: list[AttemptResult]) -> dict[str, Any]:
     """Assemble report-level provenance from config metadata and sample outputs."""
     provenance: dict[str, Any] = {}
 
@@ -555,7 +590,7 @@ class EvalReport:
     dataset_path: str
     total_samples: int
     summary_metrics: dict[str, float]
-    sample_results: list[AttemptRow]
+    sample_results: list[AttemptResult]
     config: dict[str, Any]
     provenance: dict[str, Any] = field(default_factory=dict)
     timestamp: str = field(default_factory=lambda: datetime.now().isoformat())
@@ -567,12 +602,9 @@ class EvalReport:
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        trajectories_dir = output_dir / "trajectories"
-        _write_trajectories(trajectories_dir, self.sample_results)
-
-        # Save individual samples as compact summary rows that link to the full trajectory.
+        # Save canonical per-sample attempt artifacts.
         samples_dir = output_dir / "samples"
-        _write_sample_summaries(samples_dir, self.sample_results, output_dir=output_dir)
+        _write_sample_results(samples_dir, self.sample_results)
 
         # Save summary report
         summary = {
@@ -591,16 +623,21 @@ class EvalReport:
         summary = sanitize_api_keys(summary)
         report_file = output_dir / "report.json"
         report_file.write_text(json.dumps(summary, indent=2))
+        _write_html_exports(
+            output_dir,
+            output_dir.name,
+            cast(dict[str, Any], summary),
+            self.sample_results,
+        )
 
         logger.info(f"saved evaluation to {output_dir}")
         logger.info(f"  summary: {report_file}")
         logger.info(f"  samples: {samples_dir}")
-        logger.info(f"  trajectories: {trajectories_dir}")
 
 
 def _write_partial_report(
     output_dir: Path,
-    results: list[AttemptRow],
+    results: list[AttemptResult],
     config: EvalConfig,
     interrupted: bool = False,
     resume_from: int = 0,
@@ -612,11 +649,8 @@ def _write_partial_report(
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    trajectories_dir = output_dir / "trajectories"
-    _write_trajectories(trajectories_dir, results)
-
     samples_dir = output_dir / "samples"
-    _write_sample_summaries(samples_dir, results, output_dir=output_dir)
+    _write_sample_results(samples_dir, results)
 
     # Save partial summary
     summary_metrics = compute_summary_metrics(results)
@@ -633,56 +667,57 @@ def _write_partial_report(
     partial_report = sanitize_api_keys(partial_report)
     report_file = output_dir / "report.json"
     report_file.write_text(json.dumps(partial_report, indent=2))
+    _write_html_exports(
+        output_dir,
+        output_dir.name,
+        cast(dict[str, Any], partial_report),
+        results,
+    )
 
 
-def _compact_sample_dict(
-    sample: AttemptRow,
-    *,
-    trajectory_relpath: str | None = None,
-) -> dict[str, Any]:
-    """Create a compact per-sample summary artifact.
-
-    Samples are the first-line debugging surface: final score, compact turn
-    history, env/resource facts, and links to heavier artifacts. The full
-    conversation transcript lives under trajectories/.
-    """
+def _sample_result_dict(sample: AttemptResult) -> dict[str, Any]:
+    """Create the canonical per-sample attempt artifact."""
     sample_dict = sample.to_dict()
-    sample_dict.pop("trajectory", None)
 
     metadata = dict(sample_dict.get("metadata") or {})
     metadata.pop("sample_data", None)
     sample_dict["metadata"] = metadata
-
-    if trajectory_relpath is not None:
-        sample_dict["trajectory_path"] = trajectory_relpath
     return sample_dict
 
 
-def _write_sample_summaries(
+def _write_sample_results(
     samples_dir: Path,
-    results: list[AttemptRow],
-    *,
-    output_dir: Path,
+    results: list[AttemptResult],
 ) -> None:
     samples_dir.mkdir(exist_ok=True)
     for sample in results:
         sample_file = samples_dir / f"{sample.id}.json"
-        trajectory_relpath = None
-        if sample.trajectory:
-            trajectory_relpath = str(
-                (output_dir / "trajectories" / f"{sample.id}.jsonl").relative_to(output_dir)
-            )
-        sample_dict = _compact_sample_dict(sample, trajectory_relpath=trajectory_relpath)
+        sample_dict = _sample_result_dict(sample)
         sample_dict = sanitize_api_keys(sample_dict)
         sample_file.write_text(json.dumps(sample_dict, indent=2, default=str))
 
 
-def _write_trajectories(trajectories_dir: Path, results: list[AttemptRow]) -> None:
-    trajectories_dir.mkdir(exist_ok=True)
+def _write_html_exports(
+    output_dir: Path,
+    trace_id: str,
+    report: dict[str, Any],
+    results: list[AttemptResult],
+) -> None:
+    samples_dir = output_dir / "samples"
+    sample_payloads: list[dict[str, Any]] = []
     for sample in results:
-        if sample.trajectory:
-            traj_file = trajectories_dir / f"{sample.id}.jsonl"
-            Trajectory.save_jsonl([sample.trajectory], str(traj_file))
+        sample_dict = cast(dict[str, Any], sanitize_api_keys(_sample_result_dict(sample)))
+        sample_payloads.append(sample_dict)
+        sample_html = sample_to_html(trace_id, sample.id, sample_dict)
+        (samples_dir / f"{sample.id}.html").write_text(sample_html)
+
+    report_html = run_to_html(
+        trace_id,
+        report,
+        sample_payloads,
+        sample_link_prefix="samples",
+    )
+    (output_dir / "report.html").write_text(report_html)
 
 
 def sanitize_api_keys(data: JsonValue) -> JsonValue:
@@ -711,17 +746,17 @@ class _AgentRunResult:
     is_provider_error: bool = False
 
 
-async def _cleanup_environment(environment: Environment | None, sample_id: str) -> None:
-    """Cleanup environment if it has a cleanup method."""
+async def _close_environment(environment: Environment | None, sample_id: str) -> None:
+    """Close environment, releasing external resources (sandboxes, containers, etc.)."""
     if environment is None:
         return
-    cleanup_fn = getattr(environment, "cleanup", None)
-    if cleanup_fn is None:
+    close_fn = getattr(environment, "close", None)
+    if close_fn is None:
         return
     try:
-        await cleanup_fn()
+        await close_fn()
     except Exception as e:
-        logger.warning(f"Environment cleanup failed for {sample_id}: {e}")
+        logger.warning(f"Environment close failed for {sample_id}: {e}")
 
 
 async def _run_agent_with_error_handling(
@@ -789,7 +824,7 @@ async def evaluate_sample(
     sample_id: str,
     runtime: EvalRuntime,
     environment: Environment | None = None,
-) -> AttemptRow:
+) -> AttemptResult:
     """Evaluate a single sample - analogous to run_agent_step.
 
     This is the atomic unit of evaluation that can be easily parallelized.
@@ -802,7 +837,7 @@ async def evaluate_sample(
         environment: Fresh Environment instance for this sample (None for tool-free eval)
 
     Returns:
-        AttemptRow with trajectory, score, and computed reward
+        AttemptResult with trajectory and derived evaluation attached
     """
     # Unpack runtime for convenience
     config = runtime.config
@@ -833,7 +868,7 @@ async def evaluate_sample(
                     status=status if status is not None else None,
                 )
 
-        # Emit to JSONL files via logging — overview (INFO+) and per-sample (all levels)
+        # Emit to the canonical events.jsonl stream.
         if isinstance(event, StreamChunk):
             if event.type == "turn_start":
                 turn_num = event.data.get("turn", 0)
@@ -893,7 +928,7 @@ async def evaluate_sample(
             elif event.type == "raw_driver_line":
                 raw_line = event.data.get("raw_line")
                 driver = event.data.get("driver")
-                _event_logger.debug(
+                _event_logger.info(
                     "raw_driver_line",
                     extra={
                         "sample_id": sample_id,
@@ -961,7 +996,7 @@ async def evaluate_sample(
                 },
             )
         elif isinstance(event, TextEnd):
-            # Truncate for events.jsonl (INFO), full content in per-sample (also INFO)
+            # Truncate large assistant messages so events.jsonl stays readable.
             content = event.content
             truncated = len(content) > 2000
             if truncated:
@@ -977,7 +1012,7 @@ async def evaluate_sample(
                 },
             )
 
-        # DEBUG: streaming deltas — per-sample files only (filtered out of events.jsonl)
+        # DEBUG-only deltas are intentionally not persisted.
         elif isinstance(event, TextDelta):
             _event_logger.debug(
                 "text_delta",
@@ -1046,6 +1081,7 @@ async def evaluate_sample(
             run_config=run_config,
         )
         final_trajectory = sample.trajectory
+        assert final_trajectory is not None
         final_env = environment
         env_state = (
             sample.environment_state
@@ -1083,10 +1119,9 @@ async def evaluate_sample(
         if sample.metadata.get("error") is not None:
             exec_metadata["error"] = sample.metadata["error"]
     else:
-        # Inject sample_data into trajectory metadata for score function access
         initial_trajectory = Trajectory(
             messages=initial_messages,
-            metadata={"sample_data": sample_data},  # Ground truth available to score_fn
+            metadata={"sample_data": sample_data},
         )
 
         actor = Actor(
@@ -1124,7 +1159,7 @@ async def evaluate_sample(
                 extra_metadata = runtime_metadata()
                 if isinstance(extra_metadata, dict):
                     combined_metadata.update(extra_metadata)
-        sample = AttemptRow(
+        sample = AttemptResult(
             attempt_id=sample_id,
             problem=problem,
             trajectory=final_trajectory,
@@ -1149,16 +1184,34 @@ async def evaluate_sample(
         else:
             exec_metadata["status"] = "success"
 
+    assert final_trajectory is not None
     sample.metadata = {**sample.metadata, **exec_metadata}
 
-    # Compute score after execution status/error metadata is attached so scorer stages can
-    # short-circuit cleanly on environment/resource failures.
-    score = await _compute_score(
-        config.score_fn,
-        sample,
-        sample_scorer=config.sample_scorer,
-        scoring_context=ScoringContext(environment=final_env),
-    )
+    score: Score | None = None
+    env_score_fn = getattr(final_env, "score", None)
+    try:
+        if config.sample_scorer is not None or config.score_fn is not None:
+            score = await _compute_score(
+                config.score_fn,
+                sample,
+                sample_scorer=config.sample_scorer,
+                scoring_context=ScoringContext(environment=final_env),
+            )
+        elif env_score_fn is not None:
+            try:
+                score = await env_score_fn(final_trajectory)
+            except Exception as e:
+                logger.warning(f"Environment score() failed for {sample_id}: {e}")
+                score = Score(
+                    metrics=(Metric("error", 0.0, weight=1.0, metadata={"error": str(e)}),)
+                )
+        else:
+            raise ValueError(
+                "evaluate_sample requires sample_scorer, score_fn, or environment.score()"
+            )
+    finally:
+        # Close environment after scoring — sandbox/container is no longer needed
+        await _close_environment(final_env, sample_id)
 
     # Compute duration and log completion
     duration_seconds = time.time() - start_time
@@ -1169,12 +1222,8 @@ async def evaluate_sample(
         sample_id, reward, exec_metadata, final_trajectory, score, config.verbose
     )
 
-    # Cleanup environment
-    await _cleanup_environment(environment, sample_id)
-
-    # Update sample with score and reward
-    sample.score = score
-    sample.reward = score.reward if score else 0.0
+    # Attach derived evaluation to the canonical execution result.
+    sample.evaluation = AttemptEvaluation(reward=score.reward if score else 0.0, score=score)
 
     # Emit sample_end event for frontend live streaming
     await run_config.on_chunk(
@@ -1214,165 +1263,200 @@ async def evaluate(
         ... )
         >>> report = await evaluate(dataset, config)
     """
+    import signal as _signal
+
     runtime_owner = config.environment_factory or config.environment
     eval_logging: EvalLoggingContext | None = None
     progress: MultiProgress | None = None
+    results: list[AttemptResult] = []
+    _interrupted = False
+
+    # Cancel scope used by the SIGTERM handler so finally runs cleanly on kill.
+    _outer_scope = trio.CancelScope()
+
+    def _handle_sigterm(signum: int, frame: object) -> None:
+        nonlocal _interrupted
+        _interrupted = True
+        _outer_scope.cancel()
+
+    _old_sigterm = _signal.signal(_signal.SIGTERM, _handle_sigterm)
+
+    report: EvalReport | None = None
     try:
-        if runtime_owner is not None:
-            await _maybe_start_environment_runtime(runtime_owner)
+        with _outer_scope:
+            if runtime_owner is not None:
+                await _maybe_start_environment_runtime(runtime_owner)
 
-        samples_to_eval: list[tuple[str, dict[str, Any]]] = []
-        samples_to_eval_dict: dict[str, dict[str, Any]] = {}
-        for i, sample_data in enumerate(dataset):
-            if config.max_samples and len(samples_to_eval) >= config.max_samples:
-                break
-            sample_id = f"sample_{i:04d}"
-            samples_to_eval.append((sample_id, sample_data))
-            samples_to_eval_dict[sample_id] = sample_data
+            samples_to_eval: list[tuple[str, dict[str, Any]]] = []
+            samples_to_eval_dict: dict[str, dict[str, Any]] = {}
+            for i, sample_data in enumerate(dataset):
+                if config.max_samples and len(samples_to_eval) >= config.max_samples:
+                    break
+                sample_id = f"sample_{i:04d}"
+                samples_to_eval.append((sample_id, sample_data))
+                samples_to_eval_dict[sample_id] = sample_data
 
-        if config.verbose:
-            logger.info(f"starting evaluation: {config.eval_name}")
-            logger.info(f"samples to evaluate: {len(samples_to_eval)}")
-            logger.info(f"max concurrent: {config.max_concurrent}")
-            logger.debug("=" * 50)
+            if config.verbose:
+                logger.info(f"starting evaluation: {config.eval_name}")
+                logger.info(f"samples to evaluate: {len(samples_to_eval)}")
+                logger.info(f"max concurrent: {config.max_concurrent}")
+                logger.debug("=" * 50)
 
-        if config.output_dir:
-            eval_logging = setup_eval_logging(config.output_dir)
-            _event_logger.info(
-                "eval_start",
-                extra={
-                    "eval_name": config.eval_name,
-                    "total": len(samples_to_eval),
-                },
-            )
-
-        if config.show_progress:
-            progress = MultiProgress(
-                total=len(samples_to_eval),
-                desc=config.eval_name,
-                unit="sample",
-                verbose=config.verbose,
-            )
-            progress.__enter__()
-
-        api_limiter = (
-            trio.CapacityLimiter(config.max_api_concurrent)
-            if config.max_api_concurrent is not None
-            else None
-        )
-        tool_limiter = (
-            trio.CapacityLimiter(config.max_tool_concurrent)
-            if config.max_tool_concurrent is not None
-            else None
-        )
-
-        runtime = EvalRuntime(
-            config=config,
-            api_limiter=api_limiter,
-            tool_limiter=tool_limiter,
-            progress=progress,
-        )
-
-        last_report_count = 0
-        resume_from = 0
-
-        def on_sample_complete(sample: AttemptRow, all_results: list[AttemptRow]) -> None:
-            nonlocal last_report_count
-            if not config.output_dir:
-                return
-            if len(all_results) - last_report_count >= config.report_batch_size:
-                _write_partial_report(
-                    config.output_dir,
-                    all_results,
-                    config,
-                    interrupted=False,
-                    resume_from=resume_from,
+            if config.output_dir:
+                eval_logging = setup_eval_logging(config.output_dir)
+                _event_logger.info(
+                    "eval_start",
+                    extra={
+                        "eval_name": config.eval_name,
+                        "total": len(samples_to_eval),
+                    },
                 )
-                last_report_count = len(all_results)
 
-        results = await _evaluate_batch(samples_to_eval, runtime, on_sample_complete)
+            if config.show_progress:
+                progress = MultiProgress(
+                    total=len(samples_to_eval),
+                    desc=config.eval_name,
+                    unit="sample",
+                    verbose=config.verbose,
+                )
+                progress.__enter__()
 
-        if progress:
-            progress.__exit__(None, None, None)
-            progress = None
-
-        for retry_attempt in range(config.max_sample_retries):
-            failed_samples = [
-                (r.id, samples_to_eval_dict[r.id])
-                for r in results
-                if r.metadata.get("status") == "provider_error"
-            ]
-
-            if not failed_samples:
-                break
-
-            wait_seconds = min(30 * (2**retry_attempt), 120)
-            retry_msg = (
-                f"Retrying {len(failed_samples)} failed samples "
-                f"(attempt {retry_attempt + 1}/{config.max_sample_retries}, waiting {wait_seconds}s)"
+            api_limiter = (
+                trio.CapacityLimiter(config.max_api_concurrent)
+                if config.max_api_concurrent is not None
+                else None
             )
-            if progress:
-                progress.log(retry_msg)
-            else:
-                logger.info(retry_msg)
-            await trio.sleep(wait_seconds)
+            tool_limiter = (
+                trio.CapacityLimiter(config.max_tool_concurrent)
+                if config.max_tool_concurrent is not None
+                else None
+            )
 
-            failed_ids = {sid for sid, _ in failed_samples}
-            results = [r for r in results if r.id not in failed_ids]
-            retry_runtime = EvalRuntime(
+            runtime = EvalRuntime(
                 config=config,
                 api_limiter=api_limiter,
                 tool_limiter=tool_limiter,
-                progress=None,
+                progress=progress,
             )
-            retry_results = await _evaluate_batch(failed_samples, retry_runtime)
-            results.extend(retry_results)
 
-            still_failed = sum(
-                1 for r in retry_results if r.metadata.get("status") == "provider_error"
-            )
-            succeeded = len(retry_results) - still_failed
-            retry_result_msg = (
-                f"Retry {retry_attempt + 1}: {succeeded} succeeded, {still_failed} still failing"
-            )
+            last_report_count = 0
+            resume_from = 0
+
+            def on_sample_complete(
+                sample: AttemptResult,
+                all_results: list[AttemptResult],
+            ) -> None:
+                nonlocal last_report_count
+                if not config.output_dir:
+                    return
+                if len(all_results) - last_report_count >= config.report_batch_size:
+                    _write_partial_report(
+                        config.output_dir,
+                        all_results,
+                        config,
+                        interrupted=False,
+                        resume_from=resume_from,
+                    )
+                    last_report_count = len(all_results)
+
+            results = await _evaluate_batch(samples_to_eval, runtime, on_sample_complete)
+
             if progress:
-                progress.log(retry_result_msg)
-            else:
-                logger.info(retry_result_msg)
+                progress.__exit__(None, None, None)
+                progress = None
 
-        summary_metrics = compute_summary_metrics(results)
-        endpoint_config = sanitize_api_keys(asdict(config.endpoint)) if config.endpoint else None
+            for retry_attempt in range(config.max_sample_retries):
+                failed_samples = [
+                    (r.id, samples_to_eval_dict[r.id])
+                    for r in results
+                    if r.metadata.get("status") == "provider_error"
+                ]
 
-        report = EvalReport(
-            eval_name=config.eval_name,
-            dataset_path=config.eval_name,
-            total_samples=len(results),
-            summary_metrics=summary_metrics,
-            sample_results=results,
-            config={
-                "endpoint": endpoint_config,
-                "max_samples": config.max_samples,
-                "max_concurrent": config.max_concurrent,
-                "evaluation_timestamp": datetime.now().isoformat(),
-            },
-            provenance=_build_report_provenance(config, results),
-            config_path=config.config_path,
-        )
+                if not failed_samples:
+                    break
 
-        if config.output_dir:
-            await report.save(config.output_dir)
-
-        if config.verbose:
-            logger.info("")
-            logger.debug("=" * 50)
-            logger.info(f"Evaluation Summary: {config.eval_name}")
-            logger.debug("=" * 50)
-            logger.info(f"Samples evaluated: {len(results)}")
-            for key, value in summary_metrics.items():
-                if isinstance(value, int | float):
-                    logger.info(f"{key}: {value:.3f}")
+                wait_seconds = min(30 * (2**retry_attempt), 120)
+                retry_msg = (
+                    f"Retrying {len(failed_samples)} failed samples "
+                    f"(attempt {retry_attempt + 1}/{config.max_sample_retries}, waiting {wait_seconds}s)"
+                )
+                if progress:
+                    progress.log(retry_msg)
                 else:
-                    logger.info(f"{key}: {value}")
+                    logger.info(retry_msg)
+                await trio.sleep(wait_seconds)
+
+                failed_ids = {sid for sid, _ in failed_samples}
+                results = [r for r in results if r.id not in failed_ids]
+                retry_runtime = EvalRuntime(
+                    config=config,
+                    api_limiter=api_limiter,
+                    tool_limiter=tool_limiter,
+                    progress=None,
+                )
+                retry_results = await _evaluate_batch(failed_samples, retry_runtime)
+                results.extend(retry_results)
+
+                still_failed = sum(
+                    1 for r in retry_results if r.metadata.get("status") == "provider_error"
+                )
+                succeeded = len(retry_results) - still_failed
+                retry_result_msg = f"Retry {retry_attempt + 1}: {succeeded} succeeded, {still_failed} still failing"
+                if progress:
+                    progress.log(retry_result_msg)
+                else:
+                    logger.info(retry_result_msg)
+
+    finally:
+        _signal.signal(_signal.SIGTERM, _old_sigterm)
+        if progress is not None:
+            progress.__exit__(None, None, None)
+
+        # Write report and emit eval_end regardless of how we exited.
+        # results is [] if we were killed before any samples completed.
+        if config.output_dir:
+            summary_metrics = compute_summary_metrics(results)
+            endpoint_config = (
+                sanitize_api_keys(asdict(config.endpoint)) if config.endpoint else None
+            )
+            report = EvalReport(
+                eval_name=config.eval_name,
+                dataset_path=config.eval_name,
+                total_samples=len(results),
+                summary_metrics=summary_metrics,
+                sample_results=results,
+                config={
+                    "endpoint": endpoint_config,
+                    "max_samples": config.max_samples,
+                    "max_concurrent": config.max_concurrent,
+                    "evaluation_timestamp": datetime.now().isoformat(),
+                    "interrupted": _interrupted,
+                },
+                provenance=_build_report_provenance(config, results),
+                config_path=config.config_path,
+            )
+            await report.save(config.output_dir)
+        elif not _interrupted:
+            # output_dir not set — build report in memory for return value only
+            summary_metrics = compute_summary_metrics(results)
+            endpoint_config = (
+                sanitize_api_keys(asdict(config.endpoint)) if config.endpoint else None
+            )
+            report = EvalReport(
+                eval_name=config.eval_name,
+                dataset_path=config.eval_name,
+                total_samples=len(results),
+                summary_metrics=summary_metrics,
+                sample_results=results,
+                config={
+                    "endpoint": endpoint_config,
+                    "max_samples": config.max_samples,
+                    "max_concurrent": config.max_concurrent,
+                    "evaluation_timestamp": datetime.now().isoformat(),
+                },
+                provenance=_build_report_provenance(config, results),
+                config_path=config.config_path,
+            )
 
         if eval_logging:
             _event_logger.info(
@@ -1380,35 +1464,42 @@ async def evaluate(
                 extra={
                     "eval_name": config.eval_name,
                     "total": len(results),
+                    "interrupted": _interrupted,
                 },
             )
-
-        return report
-    finally:
-        if progress is not None:
-            progress.__exit__(None, None, None)
-        if eval_logging is not None:
             eval_logging.teardown()
+
+        if config.verbose and results and report is not None:
+            logger.info("")
+            logger.debug("=" * 50)
+            logger.info(f"Evaluation Summary: {config.eval_name}")
+            logger.debug("=" * 50)
+            logger.info(f"Samples evaluated: {len(results)}")
+            for key, value in report.summary_metrics.items():
+                if isinstance(value, int | float):
+                    logger.info(f"{key}: {value:.3f}")
+                else:
+                    logger.info(f"{key}: {value}")
+
         if runtime_owner is not None:
             await _maybe_stop_environment_runtime(runtime_owner)
 
+    if report is None:
+        raise RuntimeError(
+            f"evaluate() produced no report for {config.eval_name!r} — "
+            "eval was interrupted before any samples completed"
+        )
+    return report
 
-def compute_summary_metrics(results: list[AttemptRow]) -> dict[str, float]:
+
+def compute_summary_metrics(results: list[AttemptResult]) -> dict[str, float]:
     """Compute summary statistics from results using Score.
 
     Aggregates metrics from Score objects across all results.
 
-    TODO: Separate provider_error from failed samples in accuracy calculation
-    Article quote: "As these samples get scored as failure, the scores for the
-    corresponding provider are affected substantially."
-
-    Problem: Currently failed_samples includes both actual failures AND provider errors.
-    This inflates the failure rate when providers have issues (rate limits, timeouts, etc.)
-
-    Fix: Track provider_errors separately and exclude from success_rate calculation:
-        provider_errors = [r for r in results if r.metadata.get("status") == "provider_error"]
-        actual_failures = [r for r in results if r.metadata.get("status") == "failed"]
-        success_rate = (total - len(actual_failures)) / (total - len(provider_errors))
+    Provider errors are tracked separately from actual failed samples and are
+    excluded from `success_rate` so transient infrastructure failures do not
+    count as model/task failures.
     """
     if not results:
         return {}
@@ -1560,9 +1651,9 @@ async def simple_evaluate(
 
 
 def group_by(
-    results: list[AttemptRow],
-    key: Callable[[AttemptRow], str],
-) -> dict[str, list[AttemptRow]]:
+    results: list[AttemptResult],
+    key: Callable[[AttemptResult], str],
+) -> dict[str, list[AttemptResult]]:
     """Group evaluation results by a key function.
 
     Pure function for slicing results by metadata.
@@ -1578,7 +1669,7 @@ def group_by(
     Returns:
         Dict mapping group keys to lists of samples
     """
-    groups: dict[str, list[AttemptRow]] = {}
+    groups: dict[str, list[AttemptResult]] = {}
     for result in results:
         k = key(result)
         if k not in groups:
@@ -1587,7 +1678,7 @@ def group_by(
     return groups
 
 
-def summarize(results: list[AttemptRow]) -> dict[str, float]:
+def summarize(results: list[AttemptResult]) -> dict[str, float]:
     """Compute summary statistics for a list of evaluation results.
 
     Pure function for aggregating metrics.

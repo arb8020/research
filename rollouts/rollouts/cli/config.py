@@ -95,8 +95,6 @@ class CLIConfig:
     trim: int | None = None
     fix: bool = False
 
-    send: tuple[str, str] | None = None
-    send_file: tuple[str, str] | None = None
     attach: str | None = None
     status: str | None = None
     ls: bool = False

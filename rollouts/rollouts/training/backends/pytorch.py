@@ -220,6 +220,8 @@ class PyTorchTrainingBackend:
                 k: self._slice_value(v, start_idx, end_idx)
                 for k, v in datum.objective_inputs.items()
             },
+            precision_policy=datum.precision_policy,
+            trainable_parameter_policy=datum.trainable_parameter_policy,
             metadata=datum.metadata,
         )
 

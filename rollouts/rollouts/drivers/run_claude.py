@@ -21,7 +21,6 @@ from typing import TYPE_CHECKING, Any
 
 import trio
 
-from ..core import SessionStatus
 from ..dtypes import (
     LLMCallEnd,
     LLMCallStart,
@@ -397,9 +396,9 @@ async def run_claude(
         # The caller (runner) handles Cancelled at its own boundary
         _trace(f"Cancelled - returning with session_id={current_state.session_id}")
 
-        # Update session status
+        # Persist aborted stop reason
         if session_store and current_state.session_id:
-            await session_store.update(current_state.session_id, status=SessionStatus.ABORTED)
+            await session_store.update(current_state.session_id, stop_reason=StopReason.ABORTED)
             logger.info(f"Session {current_state.session_id} aborted (Ctrl+C)")
 
         states.append(current_state)
@@ -442,21 +441,14 @@ async def run_claude(
     if parser._session_id:
         current_state = replace(current_state, driver_session_id=parser._session_id)
 
-    # Update session status based on stop reason
+    # Persist the final stop reason
     if session_store and current_state.session_id:
-        if current_state.stop == StopReason.INTERRUPTED:
-            status = SessionStatus.INTERRUPTED
-        elif current_state.stop == StopReason.ABORTED:
-            status = SessionStatus.ABORTED
-        elif current_state.stop == StopReason.ERROR:
-            status = SessionStatus.FAILED
-        elif current_state.stop == StopReason.END_TURN:
-            status = SessionStatus.COMPLETED
-        else:
-            status = SessionStatus.COMPLETED
-
-        await session_store.update(current_state.session_id, status=status)
-        logger.info(f"Updated session {current_state.session_id} status to {status.value}")
+        await session_store.update(current_state.session_id, stop_reason=current_state.stop)
+        logger.info(
+            "Updated session %s stop reason to %s",
+            current_state.session_id,
+            current_state.stop.value if current_state.stop is not None else "pending",
+        )
 
     states.append(current_state)
     return states

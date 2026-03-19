@@ -26,14 +26,13 @@ from ..dtypes import (
     ToolRenderConfig,
     ToolResult,
     Trajectory,
-    TrajectoryAnnotations,
     TrajectoryEnvironment,
     TrajectorySession,
     Usage,
 )
 from ..training.types import AttemptRow, ProblemRow, TrainingSample
 from .eval import EnvironmentFactory, EvalConfig, Metric, PrepareMessagesFn, Score, ScoreFn
-from .session import EnvironmentConfig, PendingInput, SessionHandle, SessionStatus, SessionSummary
+from .session import EnvironmentConfig, SessionSummary
 
 __all__ = [
     "ChatCompletion",
@@ -51,14 +50,11 @@ __all__ = [
     "Logprobs",
     "Message",
     "Metric",
-    "PendingInput",
     "ProblemRow",
     "PrepareMessagesFn",
     "AttemptRow",
     "Score",
     "ScoreFn",
-    "SessionHandle",
-    "SessionStatus",
     "SessionSummary",
     "StopReason",
     "StreamChunk",
@@ -75,7 +71,6 @@ __all__ = [
     "ToolFunctionParameter",
     "ToolResult",
     "Trajectory",
-    "TrajectoryAnnotations",
     "TrajectoryEnvironment",
     "TrajectorySession",
     "Usage",

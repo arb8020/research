@@ -47,7 +47,7 @@ def compact_trajectory(
         keep_system: Whether to preserve initial system message
 
     Returns:
-        Compacted trajectory with same metadata/rewards
+        Compacted trajectory with the same non-message state
     """
     messages = trajectory.messages
 
@@ -202,7 +202,7 @@ def reduce_select_best(
         maximize: If True, pick highest score; else lowest
 
     Example:
-        best = reduce_select_best(trajs, lambda t: t.rewards)
+        best = reduce_select_best(trajs, score_trajectory)
     """
     scored = [(metric(t), t) for t in trajectories]
     scored.sort(key=lambda x: x[0], reverse=maximize)
@@ -342,7 +342,7 @@ async def run_agent_pipeline(
                 environment_factory=lambda: KernelEnvironment(),
                 max_turns=5,
                 n=8,
-                reduce_fn=lambda trajs: reduce_select_best(trajs, lambda t: t.rewards)
+                reduce_fn=lambda trajs: reduce_select_best(trajs, score_trajectory)
             ),
         ]
 

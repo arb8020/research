@@ -38,6 +38,8 @@ if TYPE_CHECKING:
 
 # ──────────────────────── Sub-Configs (re-exported from shared) ───────────────
 
+from ..resource_watchdog import ResourceWatchdog, ResourceWatchdogConfig
+from ..run_logger import RunLogger
 from ..training.configs import (  # noqa: E402
     CheckpointConfig,
     DepsConfig,
@@ -48,10 +50,9 @@ from ..training.configs import (  # noqa: E402
     TrainerConfig,
     deps_config_from_data,
 )
-from ..training.lowering import (
-    ParallelIntent,
-    RealizationPlan,
-    dense_rl_realization,
+from ..training.runtime_factory import (
+    build_megatron_lowering,
+    create_training_backend_runtime,
 )
 from ..training.scoring import FunctionSampleScorer
 from ..training.types import RolloutRuntime
@@ -91,10 +92,19 @@ class GRPOConfig:
     trainer: TrainerConfig = field(default_factory=TrainerConfig)
     rollout: RolloutConfig = field(default_factory=RolloutConfig)
     checkpoint: CheckpointConfig = field(default_factory=CheckpointConfig)
+    runtime_watchdog: ResourceWatchdogConfig = field(default_factory=ResourceWatchdogConfig)
     output: OutputConfig = field(
         default_factory=lambda: OutputConfig(output_dir="results/rl", experiment_name="grpo")
     )
     service_runtime_layout: str = "shared_env"
+
+    def __post_init__(self) -> None:
+        if self.trainer.backend == "megatron" and self.checkpoint.weight_sync_mode != "nccl":
+            raise ValueError(
+                "Megatron training currently supports only checkpoint.weight_sync_mode='nccl'. "
+                "The Megatron backend performs direct weight sync to inference and does not "
+                "implement disk checkpoint sync semantics for per-step sampler updates yet."
+            )
 
     def save(self, path: Path | str) -> None:
         """Save config to JSON."""
@@ -129,6 +139,7 @@ class GRPOConfig:
         trainer = TrainerConfig(**trainer_data)
         rollout = RolloutConfig(**data.get("rollout", {}))
         checkpoint = CheckpointConfig(**data.get("checkpoint", {}))
+        runtime_watchdog = ResourceWatchdogConfig(**data.get("runtime_watchdog", {}))
         output = OutputConfig(**data.get("output", {}))
 
         return GRPOConfig(
@@ -137,6 +148,7 @@ class GRPOConfig:
             trainer=trainer,
             rollout=rollout,
             checkpoint=checkpoint,
+            runtime_watchdog=runtime_watchdog,
             output=output,
             service_runtime_layout=data.get("service_runtime_layout", "shared_env"),
         )
@@ -150,44 +162,8 @@ class GRPOConfig:
         return self.inference.deps
 
 
-def _trainer_realization(
-    local_layouts: tuple[str, ...],
-    collective_transitions: tuple[str, ...],
-    packed_sequences: bool,
-) -> RealizationPlan | None:
-    if not local_layouts and not collective_transitions:
-        return None
-    return RealizationPlan(
-        local_layouts=local_layouts,
-        collective_transitions=collective_transitions,
-        packed_sequences=packed_sequences,
-    )
-
-
 def _megatron_lowering(config: GRPOConfig) -> Any:
-    from ..training.lowering import MegatronLowering
-
-    realization = _trainer_realization(
-        config.trainer.realization_local_layouts,
-        config.trainer.realization_collective_transitions,
-        config.trainer.realization_packed_sequences,
-    ) or dense_rl_realization(
-        tp=config.trainer.tensor_parallel_size,
-        cp=config.trainer.context_parallel_size,
-        pp=config.trainer.pipeline_parallel_size,
-        packed_sequences=config.trainer.realization_packed_sequences,
-    )
-    return MegatronLowering.from_realization(
-        parallel=ParallelIntent(
-            dp=1,
-            tp=config.trainer.tensor_parallel_size,
-            cp=config.trainer.context_parallel_size,
-            pp=config.trainer.pipeline_parallel_size,
-            ep=config.trainer.expert_parallel_size,
-            packed_sequences=config.trainer.realization_packed_sequences,
-        ),
-        realization=realization,
-    )
+    return build_megatron_lowering(config.trainer, training_mode="rl")
 
 
 # ──────────────────────── Training Function ──────────────────────────────────
@@ -306,6 +282,14 @@ def _create_inference_engines(
     Returns:
         List of inference engines (one per GPU or TP group)
     """
+    # Architectural note:
+    # Training backends already lower through `runtime_factory`. Inference
+    # backends do not: this is still an inline selector over concrete engine
+    # classes. As a result, `config.inference.backend` and
+    # `config.checkpoint.pipeline_mode` are not jointly validated/lowered into a
+    # single runtime plan yet. If you add a backend or new pipeline semantics,
+    # prefer moving that work behind an inference runtime factory instead of
+    # extending this branch tree further.
     from ..training.weight_sync import EngineV2Engine, SGLangEngine, VLLMEngine
 
     engines = []
@@ -323,8 +307,17 @@ def _create_inference_engines(
                 output_dir=output_dir,
                 dtype=config.model.dtype,
                 mem_fraction=config.inference.mem_fraction,
+                disable_cuda_graph=config.inference.disable_cuda_graph,
+                max_total_tokens=config.inference.max_total_tokens,
+                max_prefill_tokens=config.inference.max_prefill_tokens,
+                max_running_requests=config.inference.max_running_requests,
+                chunked_prefill_size=config.inference.chunked_prefill_size,
             )
         elif config.inference.backend == "vllm":
+            requested_sync_realization = config.checkpoint.inference_sync_realization
+            available_sync_realizations = (
+                (requested_sync_realization,) if requested_sync_realization else ()
+            )
             engine = VLLMEngine(
                 model_name=config.model.name,
                 port=port,
@@ -332,6 +325,8 @@ def _create_inference_engines(
                 output_dir=output_dir,
                 dtype=config.model.dtype,
                 gpu_memory_utilization=config.inference.mem_fraction,
+                available_sync_realizations=available_sync_realizations,
+                default_sync_realization=requested_sync_realization,
             )
         elif config.inference.backend == "engine_v2":
             # Rollouts native inference engine
@@ -399,6 +394,11 @@ def _create_teacher_engine(
         output_dir=output_dir,
         dtype=config.model.dtype,
         mem_fraction=0.9,  # Teacher doesn't share GPU, can use more VRAM
+        disable_cuda_graph=config.inference.disable_cuda_graph,
+        max_total_tokens=config.inference.max_total_tokens,
+        max_prefill_tokens=config.inference.max_prefill_tokens,
+        max_running_requests=config.inference.max_running_requests,
+        chunked_prefill_size=config.inference.chunked_prefill_size,
     )
 
     return teacher_engine
@@ -452,7 +452,6 @@ def _setup_training_backend(
         Tuple of (backend, tokenizer, endpoint, cleanup).
         cleanup is an optional callable to run at shutdown (e.g., destroy process group).
     """
-    from ..training.backends.pytorch_factory import create_pytorch_backend, parse_dtype
     from ..training.losses import grpo_loss, grpo_loss_clipped, grpo_loss_masked, opd_loss
 
     # Select loss function based on config
@@ -460,213 +459,18 @@ def _setup_training_backend(
         config.trainer, grpo_loss, grpo_loss_clipped, grpo_loss_masked, opd_fn=opd_loss
     )
 
-    cleanup: Callable[[], None] | None = None
-    backend_name = config.trainer.backend
-
-    if backend_name == "pytorch":
-        gpu_rank = config.trainer.cuda_device_ids[0]
-        backend = create_pytorch_backend(
-            model_name=config.model.name,
-            checkpoint_dir=output_dir,
-            device_type="cuda",
-            dtype=config.model.dtype,
-            gpu_rank=gpu_rank,
-            learning_rate=config.trainer.lr,
-            weight_decay=config.trainer.weight_decay,
-            loss_fn=loss_fn,
-            num_minibatches=config.trainer.num_minibatches,
-            max_grad_norm=config.trainer.max_grad_norm,
-            use_lora=config.model.use_lora,
-            lora_rank=config.model.lora_rank,
-            lora_alpha=config.model.lora_alpha,
-        )
-    elif backend_name == "nmoe":
-        from ..training.backends.nmoe_backend import NmoeConfig, NmoeTrainingBackend
-
-        gpu_rank = config.trainer.cuda_device_ids[0]
-        nmoe_cfg = NmoeConfig(
-            dtype=config.model.dtype,
-            lr_dense=config.trainer.lr,
-            lr_router=config.trainer.lr,
-            lr_muon=config.trainer.lr,
-            weight_decay=config.trainer.weight_decay,
-        )
-        backend = NmoeTrainingBackend(
-            model_name=config.model.name,
-            checkpoint_dir=output_dir,
-            loss_fn=loss_fn,
-            config=nmoe_cfg,
-            device_type="cuda",
-            gpu_rank=gpu_rank,
-            num_minibatches=config.trainer.num_minibatches,
-            max_grad_norm=config.trainer.max_grad_norm,
-            use_lora=config.model.use_lora,
-            lora_rank=config.model.lora_rank,
-            lora_alpha=config.model.lora_alpha,
-        )
-    elif backend_name in ("fsdp", "fsdp2"):
-        if backend_name == "fsdp2":
-            logging.getLogger(__name__).warning(
-                "trainer.backend='fsdp2' selected; using FSDPTrainingBackend (fully_shard) "
-                "bring-up path for now."
-            )
-        # Single-process FSDP bring-up path.
-        # Multi-process/multi-node FSDP is orchestrated via rollouts.training.multi_node + fsdp_worker.
-        import os
-        import socket
-
-        import torch
-        import torch.distributed as dist
-        from transformers import AutoModelForCausalLM
-
-        from ..training.backends.fsdp import FSDPConfig, FSDPTrainingBackend
-
-        trainer_gpu = config.trainer.cuda_device_ids[0]
-        torch.cuda.set_device(trainer_gpu)
-
-        if not dist.is_initialized():
-            # Find an available port (avoid conflicts with weight sync ports / stale processes).
-            def find_free_port(start_port: int, max_attempts: int = 100) -> int:
-                for port in range(start_port, start_port + max_attempts):
-                    try:
-                        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-                            s.bind(("", port))
-                            return port
-                    except OSError:
-                        continue
-                raise RuntimeError(
-                    f"No free port found in range {start_port}-{start_port + max_attempts}"
-                )
-
-            master_addr = os.environ.get("MASTER_ADDR", "127.0.0.1")
-            master_port = find_free_port(config.checkpoint.nccl_master_port + 50)
-
-            dist.init_process_group(
-                backend="nccl",
-                init_method=f"tcp://{master_addr}:{master_port}",
-                rank=0,
-                world_size=1,
-            )
-
-            def _cleanup_dist() -> None:
-                if dist.is_initialized():
-                    dist.destroy_process_group()
-
-            cleanup = _cleanup_dist
-
-        # Load model on CPU then let backend move it to the correct CUDA device.
-        torch_dtype = parse_dtype(config.model.dtype)
-        model = AutoModelForCausalLM.from_pretrained(
-            config.model.name,
-            torch_dtype=torch_dtype,
-            trust_remote_code=True,
-        )
-
-        # Optimizer factory (called AFTER FSDP wrapping).
-        def make_optimizer(fsdp_model: torch.nn.Module) -> torch.optim.Optimizer:
-            return torch.optim.AdamW(
-                fsdp_model.parameters(),
-                lr=config.trainer.lr,
-                weight_decay=config.trainer.weight_decay,
-            )
-
-        fsdp_config = FSDPConfig(
-            sharding_strategy="FULL_SHARD",
-            mixed_precision=(torch_dtype in (torch.bfloat16, torch.float16)),
-            gradient_checkpointing=False,
-            clip_grad=config.trainer.max_grad_norm,
-        )
-
-        backend = FSDPTrainingBackend(
-            model=model,
-            optimizer_fn=make_optimizer,
-            loss_fn=loss_fn,
-            checkpoint_dir=output_dir,
-            config=fsdp_config,
-            device=torch.device(f"cuda:{trainer_gpu}"),
-        )
-    elif backend_name == "megatron":
-        # Megatron backend using miniray for multi-process orchestration.
-        # Workers run megatron_worker.py and communicate via miniray IPC.
-        #
-        # IMPORTANT: Workers must be pre-spawned (forked) BEFORE any CUDA context
-        # is created (e.g., before SGLang starts). This is because CUDA contexts
-        # don't survive fork() - the child inherits a broken context.
-        # See: docs/code_style/archive/domain/multiprocessing_heinrich.md
-        from ..training.backends.megatron.remote_backend import (
-            MegatronRemoteBackend,
-            MegatronRemoteConfig,
-        )
-
-        if megatron_workers is None:
-            raise ValueError(
-                "megatron backend requires pre-spawned workers. "
-                "Workers must be forked before CUDA initialization (before SGLang starts). "
-                "Pass megatron_workers parameter from _grpo_train_async."
-            )
-
-        lowering = _megatron_lowering(config)
-
-        megatron_config = MegatronRemoteConfig(
-            model_name=config.model.name,
-            dtype=config.model.dtype,
-            lowering=lowering,
-            sequence_parallel=config.trainer.sequence_parallel,
-            lr=config.trainer.lr,
-            weight_decay=config.trainer.weight_decay,
-            max_grad_norm=config.trainer.max_grad_norm,
-            micro_batch_size=config.trainer.micro_batch_size or 1,
-            global_batch_size=config.rollout.batch_size,
-            seq_length=config.trainer.seq_length,
-            master_port=config.checkpoint.nccl_master_port,
-            inference_endpoints=[f"http://localhost:{config.inference.port}"],
-            cuda_device_ids=config.trainer.cuda_device_ids,
-        )
-
-        backend = MegatronRemoteBackend(
-            workers=megatron_workers,
-            config=megatron_config,
-            checkpoint_dir=output_dir,
-        )
-        backend.initialize()
-
-        def _cleanup_megatron() -> None:
-            backend.shutdown()
-
-        cleanup = _cleanup_megatron
-    elif backend_name == "torchtitan":
-        # TorchTitan backend for GLM and other models with 4D parallelism
-        from ..training.backends import create_torchtitan_backend
-
-        realization = _trainer_realization(
-            config.trainer.realization_local_layouts,
-            config.trainer.realization_collective_transitions,
-            config.trainer.realization_packed_sequences,
-        )
-
-        backend, cleanup = create_torchtitan_backend(
-            checkpoint_dir=output_dir,
-            hf_checkpoint=config.model.name,
-            torchtitan_model=config.trainer.torchtitan_model,
-            torchtitan_model_size=config.trainer.torchtitan_model_size,
-            gpu_rank=config.trainer.cuda_device_ids[0],
-            seq_len=config.rollout.max_seq_len,
-            learning_rate=config.trainer.lr,
-            weight_decay=config.trainer.weight_decay,
-            max_grad_norm=config.trainer.max_grad_norm,
-            tp=config.trainer.torchtitan_tp,
-            cp=config.trainer.torchtitan_cp,
-            pp=config.trainer.torchtitan_pp,
-            packed_sequences=config.trainer.realization_packed_sequences,
-            mode="rl",
-            realization=realization,
-        )
-    else:
-        raise ValueError(
-            f"Unknown trainer backend: {backend_name!r}. "
-            "Use 'pytorch', 'fsdp', 'fsdp2', 'nmoe', 'megatron', or 'torchtitan'."
-        )
+    backend, cleanup = create_training_backend_runtime(
+        model=config.model,
+        trainer=config.trainer,
+        checkpoint=config.checkpoint,
+        output_dir=output_dir,
+        seq_len=config.rollout.max_seq_len,
+        global_batch_size=config.rollout.batch_size,
+        loss_fn=loss_fn,
+        training_mode="rl",
+        megatron_workers=megatron_workers,
+        megatron_inference_endpoints=(f"http://localhost:{config.inference.port}",),
+    )
 
     tokenizer, endpoint = _build_training_client_surface(config, inference_engine)
     return backend, tokenizer, endpoint, cleanup
@@ -813,13 +617,18 @@ def _build_megatron_preflight_batch(config: GRPOConfig) -> dict[str, Any]:
     vocab_size = 1024
 
     input_ids = torch.randint(0, vocab_size, (micro_batch_size, seq_len))
-    return {
+    batch = {
         "input_ids": input_ids,
         "labels": input_ids.clone(),
         "loss_mask": torch.ones(micro_batch_size, seq_len),
         "advantages": torch.ones(micro_batch_size),
         "group_ids": torch.arange(micro_batch_size, dtype=torch.long),
     }
+    if config.trainer.loss_type in {"clipped", "masked"}:
+        batch["old_logprobs"] = torch.zeros(micro_batch_size)
+    if config.trainer.loss_type == "opd":
+        batch["teacher_logprobs"] = torch.zeros(micro_batch_size, seq_len)
+    return batch
 
 
 def _build_training_client_surface(config: GRPOConfig, inference_engine: Any) -> tuple[Any, Any]:
@@ -841,6 +650,117 @@ def _build_training_client_surface(config: GRPOConfig, inference_engine: Any) ->
         extra_params=config.rollout.extra_params or None,
     )
     return tokenizer, endpoint
+
+
+def _megatron_worker_snapshot(backend: Any) -> list[dict[str, Any]]:
+    workers = getattr(backend, "workers", None)
+    if not isinstance(workers, list):
+        return []
+    snapshot: list[dict[str, Any]] = []
+    for worker in workers:
+        pid = getattr(worker, "pid", None)
+        try:
+            alive = bool(worker.is_alive())
+        except Exception as exc:
+            alive = False
+            snapshot.append({
+                "pid": pid,
+                "alive": alive,
+                "state_error": f"{type(exc).__name__}: {exc}",
+            })
+            continue
+        snapshot.append({"pid": pid, "alive": alive})
+    return snapshot
+
+
+async def _abort_failed_megatron_witness_backend(
+    backend: Any,
+    logger: logging.Logger,
+    run_context: dict[str, Any],
+    *,
+    reason: str,
+) -> None:
+    import os
+    import signal
+
+    workers = getattr(backend, "workers", None)
+    if not isinstance(workers, list) or not workers:
+        logger.warning(
+            "training_preflight_weight_sync_witness_abort_skipped",
+            extra={
+                "event": "training_preflight_weight_sync_witness_abort_skipped",
+                **run_context,
+                "reason": reason,
+                "abort_kind": "no_workers",
+            },
+        )
+        return
+
+    before = _megatron_worker_snapshot(backend)
+    logger.warning(
+        "training_preflight_weight_sync_witness_abort_start",
+        extra={
+            "event": "training_preflight_weight_sync_witness_abort_start",
+            **run_context,
+            "reason": reason,
+            "workers_before": before,
+        },
+    )
+
+    try:
+        shutdown = getattr(backend, "shutdown", None)
+        if callable(shutdown):
+            shutdown()
+    except Exception as exc:
+        logger.warning(
+            "training_preflight_weight_sync_witness_abort_shutdown_failed",
+            extra={
+                "event": "training_preflight_weight_sync_witness_abort_shutdown_failed",
+                **run_context,
+                "reason": reason,
+                "error_type": type(exc).__name__,
+                "error": str(exc),
+            },
+        )
+
+    for worker in workers:
+        pid = getattr(worker, "pid", None)
+        if pid is None:
+            continue
+        try:
+            if worker.is_alive():
+                os.kill(pid, signal.SIGTERM)
+        except Exception:
+            pass
+
+    await trio.sleep(0.5)
+
+    for worker in workers:
+        pid = getattr(worker, "pid", None)
+        if pid is None:
+            continue
+        try:
+            if worker.is_alive():
+                os.kill(pid, signal.SIGKILL)
+        except Exception:
+            pass
+        try:
+            worker.close()
+        except Exception:
+            pass
+
+    await trio.sleep(0.1)
+    after = _megatron_worker_snapshot(backend)
+    logger.warning(
+        "training_preflight_weight_sync_witness_abort_complete",
+        extra={
+            "event": "training_preflight_weight_sync_witness_abort_complete",
+            **run_context,
+            "reason": reason,
+            "workers_before": before,
+            "workers_after": after,
+        },
+    )
 
 
 async def _run_training_preflight(
@@ -899,6 +819,21 @@ async def _run_training_preflight(
         )
 
         if config.trainer.backend == "megatron":
+            validate_inference_export = getattr(backend, "validate_inference_export", None)
+            assert callable(validate_inference_export), (
+                "Megatron backend must expose validate_inference_export()"
+            )
+            export_validation = await validate_inference_export().result()
+            logger.info(
+                "training_preflight_inference_export_ok",
+                extra={
+                    "event": "training_preflight_inference_export_ok",
+                    **rc,
+                    "node_id": node_id or rc.get("node_id"),
+                    "backend": config.trainer.backend,
+                    "tensor_count": export_validation.get("tensor_count"),
+                },
+            )
             preflight_step = getattr(backend, "preflight_step", None)
             assert callable(preflight_step), "Megatron backend must expose preflight_step()"
             fb_result = await preflight_step(_build_megatron_preflight_batch(config)).result()
@@ -915,6 +850,10 @@ async def _run_training_preflight(
             fb_result = await fb_future.result()
             optim_future = backend.optim_step()
             optim_result = await optim_future.result()
+            if config.trainer.backend == "torchtitan":
+                reusable_backend = backend
+                reusable_cleanup = cleanup
+                cleanup = None
 
         logger.info(
             "training_preflight_synthetic_step_ok",
@@ -1079,7 +1018,6 @@ async def _process_training_step(
     else:
         advantages = torch.tensor([r - mean_reward for r in rewards], device=device)
 
-    from ..training.contract_witnesses import rl_contract_loss
     from ..training.contracts import StepResult
 
     # Prepare batch tensors
@@ -1089,7 +1027,12 @@ async def _process_training_step(
 
     # Training step - forward/backward
     fb_start = time.perf_counter()
-    fb_future = backend.forward_backward(training_batch, loss_fn=rl_contract_loss)
+    if config.trainer.backend == "megatron":
+        fb_future = backend.forward_backward(training_batch)
+    else:
+        from ..training.contract_witnesses import rl_contract_loss
+
+        fb_future = backend.forward_backward(training_batch, loss_fn=rl_contract_loss)
     fb_result = await fb_future.result()
     fb_ms = (time.perf_counter() - fb_start) * 1000
 
@@ -1291,7 +1234,6 @@ async def _grpo_train_async(
     run_logger: Any | None = None,
 ) -> dict[str, Any]:
     """Async GRPO training implementation."""
-    del run_logger  # TODO: thread outer run events into GRPO once the boundary is designed.
     from .._logging import setup_logging
     from ..training.datasets.data_buffer import DataBuffer
     from ..training.metrics import JSONLLogger
@@ -1411,11 +1353,15 @@ async def _grpo_train_async(
         megatron_config = MegatronRemoteConfig(
             model_name=config.model.name,
             dtype=config.model.dtype,
+            checkpoint_path=config.model.checkpoint_path,
             lowering=lowering,
             sequence_parallel=config.trainer.sequence_parallel,
             lr=config.trainer.lr,
             weight_decay=config.trainer.weight_decay,
             max_grad_norm=config.trainer.max_grad_norm,
+            loss_type=config.trainer.loss_type,
+            mask_ratio_low=config.trainer.mask_ratio_low,
+            mask_ratio_high=config.trainer.mask_ratio_high,
             micro_batch_size=config.trainer.micro_batch_size or 1,
             global_batch_size=config.rollout.batch_size,
             seq_length=config.trainer.seq_length,
@@ -1432,10 +1378,28 @@ async def _grpo_train_async(
 
     preflight_backend: Any | None = None
     preflight_backend_cleanup: Callable[[], None] | None = None
+    runtime_run_logger = (
+        run_logger if isinstance(run_logger, RunLogger) else RunLogger(text_logger=logger)
+    )
+    resource_watchdog = ResourceWatchdog(
+        config=config.runtime_watchdog,
+        run_logger=runtime_run_logger,
+        run_context={
+            "run_name": run_name,
+            "output_dir": str(output_dir),
+            "model_name": config.model.name,
+            "trainer_backend": config.trainer.backend,
+            "inference_backend": config.inference.backend,
+            "node_id": os.environ.get("ROLLOUTS_NODE_ID"),
+            "hostname": socket.gethostname(),
+        },
+    )
+    resource_watchdog.start()
 
     # Training preflight: initialize the backend and run one synthetic step
     # before paying inference startup cost. This is a backend-health check, not
     # a VRAM truth probe.
+    resource_watchdog.set_phase("training_preflight")
     preflight_backend, preflight_backend_cleanup = await _run_training_preflight(
         config,
         output_dir,
@@ -1481,6 +1445,11 @@ async def _grpo_train_async(
             "cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES"),
         },
     )
+    resource_watchdog.set_phase(
+        "inference_startup",
+        num_engines=num_engines,
+        ports=list(config.inference.ports),
+    )
 
     if num_engines == 1:
         gpu_str = ",".join(str(g) for g in config.inference.cuda_device_ids)
@@ -1492,6 +1461,9 @@ async def _grpo_train_async(
             logger.info(f"  Engine {i}: {engine.name} on GPU {gpu_str}, port {engine.port}")
 
     for idx, engine in enumerate(inference_engines):
+        launch_cmd = engine.build_launch_cmd() if hasattr(engine, "build_launch_cmd") else None
+        session_name = getattr(engine, "session_name", None)
+        log_path = str(getattr(engine, "log_path", "")) if hasattr(engine, "log_path") else None
         logger.info(
             "inference engine launch",
             extra={
@@ -1501,6 +1473,11 @@ async def _grpo_train_async(
                 "engine_name": engine.name,
                 "engine_port": engine.port,
                 "engine_cuda_device_ids": list(engine.cuda_device_ids),
+                "engine_launch_cmd": launch_cmd,
+                "engine_session_name": session_name,
+                "engine_log_path": log_path,
+                "engine_mem_fraction": getattr(engine, "mem_fraction", None),
+                "engine_gpu_memory_utilization": getattr(engine, "gpu_memory_utilization", None),
             },
         )
         engine.launch()
@@ -1580,7 +1557,13 @@ async def _grpo_train_async(
         # Load checkpoint if provided (for SFT → RL pipeline)
         if config.model.checkpoint_path:
             ckpt_path = Path(config.model.checkpoint_path)
-            if (ckpt_path / "pytorch_model.bin").exists():
+            megatron_tracker = ckpt_path / "latest_checkpointed_iteration.txt"
+            if config.trainer.backend == "megatron" and megatron_tracker.exists():
+                logger.info(
+                    "Megatron checkpoint restore is owned by backend initialization: %s",
+                    ckpt_path,
+                )
+            elif (ckpt_path / "pytorch_model.bin").exists():
                 # Our checkpoint format
                 logger.info(f"Loading checkpoint from {ckpt_path}")
                 load_result = backend.load_checkpoint(ckpt_path)
@@ -1618,7 +1601,7 @@ async def _grpo_train_async(
             )
             logger.info(f"VRAM preflight check skipped ({reason})")
 
-        # Initialize NCCL weight sync if enabled (PipelineRL-style in-flight updates).
+        # Initialize direct NCCL weight sync if enabled.
         # Skip for true_pipeline mode - NCCLWeightSyncer handles NCCL init separately.
         if (
             config.checkpoint.weight_sync_mode == "nccl"
@@ -1633,14 +1616,92 @@ async def _grpo_train_async(
                 )
             await init_fn(
                 inference_endpoints=[e.base_url for e in inference_engines],
-                master_port=config.checkpoint.nccl_master_port,
+                # Weight sync uses its own rendezvous group. Reusing the Megatron
+                # training port is a real port collision, not a backend quirk.
+                # Start probing above the training port so the second distributed
+                # effect stays disjoint from the main process-group rendezvous.
+                master_port=config.checkpoint.nccl_master_port + 50,
             )
             logger.info("NCCL weight sync initialized")
+            witness_fn = getattr(backend, "sync_weights_nccl_witness", None)
+            if callable(witness_fn):
+                inference_log_paths = [
+                    str(getattr(engine, "log_path", ""))
+                    for engine in inference_engines
+                    if hasattr(engine, "log_path")
+                ]
+                inference_log_tails = {}
+                resource_watchdog.set_phase("weight_sync_witness", tensor_limit=1)
+                logger.info(
+                    "training_preflight_weight_sync_witness_start",
+                    extra={
+                        "event": "training_preflight_weight_sync_witness_start",
+                        **run_context,
+                        "node_id": run_context.get("node_id"),
+                        "backend": config.trainer.backend,
+                        "tensor_limit": 1,
+                        "inference_log_paths": inference_log_paths,
+                    },
+                )
+                try:
+                    await witness_fn(tensor_limit=1)
+                except Exception as exc:
+                    for engine in inference_engines:
+                        log_path = getattr(engine, "log_path", None)
+                        if log_path is None:
+                            continue
+                        try:
+                            path = Path(log_path)
+                            if path.exists():
+                                tail = path.read_text(errors="replace").splitlines()[-20:]
+                                inference_log_tails[str(path)] = (
+                                    "\n".join(tail) if tail else "<log file empty>"
+                                )
+                            else:
+                                inference_log_tails[str(path)] = "<log file not found>"
+                        except Exception as tail_exc:
+                            inference_log_tails[str(log_path)] = (
+                                f"<failed to read log tail: {type(tail_exc).__name__}: {tail_exc}>"
+                            )
+                    if config.trainer.backend == "megatron":
+                        await _abort_failed_megatron_witness_backend(
+                            backend,
+                            logger,
+                            run_context,
+                            reason="weight_sync_witness_failed",
+                        )
+                    logger.exception(
+                        "training_preflight_weight_sync_witness_failed",
+                        extra={
+                            "event": "training_preflight_weight_sync_witness_failed",
+                            **run_context,
+                            "node_id": run_context.get("node_id"),
+                            "backend": config.trainer.backend,
+                            "tensor_limit": 1,
+                            "error_type": type(exc).__name__,
+                            "error": str(exc),
+                            "inference_log_paths": inference_log_paths,
+                            "inference_log_tails": inference_log_tails,
+                        },
+                    )
+                    raise
+                logger.info(
+                    "training_preflight_weight_sync_witness_ok",
+                    extra={
+                        "event": "training_preflight_weight_sync_witness_ok",
+                        **run_context,
+                        "node_id": run_context.get("node_id"),
+                        "backend": config.trainer.backend,
+                        "tensor_limit": 1,
+                        "inference_log_paths": inference_log_paths,
+                    },
+                )
 
         # Setup data and rollout generation
         logger.info(f"Dataset: {len(prompts)} prompts")
+        resource_watchdog.set_phase("dataset_setup", prompt_count=len(prompts))
         data_buffer = DataBuffer(prompts=prompts)
-        generate_fn = _create_generate_fn(
+        _base_generate_fn = _create_generate_fn(
             config,
             endpoint,
             tokenizer,
@@ -1649,6 +1710,13 @@ async def _grpo_train_async(
             metadata_key,
             logger,
         )
+
+        async def generate_fn(*args: Any, **kwargs: Any) -> Any:
+            resource_watchdog.set_phase("rollout_generation")
+            try:
+                return await _base_generate_fn(*args, **kwargs)
+            finally:
+                resource_watchdog.set_phase("rollout_loop")
 
         rollout_config = RolloutConfig(
             batch_size=config.rollout.batch_size,
@@ -1674,6 +1742,13 @@ async def _grpo_train_async(
         )
         from ..training.train import train as _train_loop
 
+        # Architectural note:
+        # This `pipeline_mode` switch is still a GRPO-owned orchestration state
+        # machine. The requested mode is not yet lowered into validated trainer
+        # and inference runtime capabilities the way training backends are.
+        # `true_pipeline` in particular should eventually be realized through an
+        # explicit runtime plan for both sides, not treated as "GRPO does a
+        # different branch and hopes the selected backends can keep up".
         if config.checkpoint.pipeline_mode == "sync":
             staleness_policy = StalenessPolicy.synchronous()
             weight_visibility_policy = WeightVisibilityPolicy.synchronous(
@@ -1744,6 +1819,7 @@ async def _grpo_train_async(
             f"pause_on_sync={admission_policy.pause_on_sync}, "
             f"queue_pressure_threshold={overload_policy.queue_pressure_threshold}"
         )
+        resource_watchdog.set_phase("rollout_loop", pipeline_mode=config.checkpoint.pipeline_mode)
 
         def _add_pipeline_policy_metrics(step_metrics: dict[str, Any]) -> dict[str, Any]:
             step_metrics["staleness_max_version_lag"] = float(staleness_policy.max_version_lag)
@@ -1852,21 +1928,97 @@ async def _grpo_train_async(
             return _add_pipeline_policy_metrics(step_metrics)
 
         # Step-level weight syncer (blocking). True PipelineRL uses non-blocking NCCLWeightSyncer instead.
-        from ..training.weight_sync import BackendNCCLWeightSyncer, FilesystemWeightSyncer
+        from ..training.weight_sync import (
+            BackendNCCLWeightSyncer,
+            FilesystemWeightSyncer,
+            ManagedChannelWeightSyncer,
+            ManagedWeightUpdateChannel,
+        )
+        from ..training.weight_sync_protocol import InferenceWeightUpdate, WeightSyncPolicy
 
         step_weight_syncer = None
         if config.checkpoint.pipeline_mode != "true_pipeline":
+            raw_step_syncer = None
             if config.checkpoint.weight_sync_mode == "nccl":
-                step_weight_syncer = BackendNCCLWeightSyncer(backend=backend, log=logger)
+                raw_step_syncer = BackendNCCLWeightSyncer(backend=backend, log=logger)
             elif config.checkpoint.weight_sync_mode == "disk":
-                step_weight_syncer = FilesystemWeightSyncer(
-                    backend=backend, engines=inference_engines
+                raw_step_syncer = FilesystemWeightSyncer(
+                    backend=backend,
+                    engines=inference_engines,
+                    inference_sync_realization=config.checkpoint.inference_sync_realization,
                 )
             else:
                 raise ValueError(
                     f"Unknown weight_sync_mode: {config.checkpoint.weight_sync_mode!r}. "
                     "Use 'disk' or 'nccl'."
                 )
+            sync_policy = WeightSyncPolicy(
+                blocking=config.checkpoint.pipeline_mode != "true_pipeline",
+                sync_every=config.checkpoint.sync_weights_every,
+                realization=config.checkpoint.inference_sync_realization or "",
+                max_version_lag=0
+                if config.checkpoint.pipeline_mode == "sync"
+                else config.checkpoint.max_lag,
+            )
+
+            async def _publish_blocking_weight_update(
+                _update: InferenceWeightUpdate,
+                *,
+                _raw_step_syncer: Any = raw_step_syncer,
+            ) -> dict[str, Any]:
+                await _raw_step_syncer.sync()
+                return {
+                    "success": True,
+                    "version": _update.version,
+                    "realization": _update.realization,
+                }
+
+            def _build_blocking_weight_update() -> InferenceWeightUpdate:
+                current_version = getattr(backend, "weight_version", None)
+                next_version = current_version + 1 if isinstance(current_version, int) else None
+                return InferenceWeightUpdate(
+                    version=next_version,
+                    realization=config.checkpoint.inference_sync_realization,
+                    metadata={
+                        "pipeline_mode": config.checkpoint.pipeline_mode,
+                        "weight_sync_mode": config.checkpoint.weight_sync_mode,
+                    },
+                )
+
+            step_weight_syncer = ManagedChannelWeightSyncer(
+                channel=ManagedWeightUpdateChannel(
+                    inference=inference_engines[0],
+                    policy=sync_policy,
+                    publish_impl=_publish_blocking_weight_update,
+                ),
+                syncer=raw_step_syncer,
+                update_factory=_build_blocking_weight_update,
+            )
+
+        def _log_update_channel_state(event: str) -> None:
+            if step_weight_syncer is None:
+                return
+            state = getattr(step_weight_syncer, "state", None)
+            if state is None:
+                return
+            logger.info(
+                event,
+                extra={
+                    **run_context,
+                    "event": event,
+                    "channel_ready": state.channel_ready,
+                    "quiescing_for_update": state.quiescing_for_update,
+                    "update_in_progress": state.update_in_progress,
+                    "last_published_version": state.last_published_version,
+                    "serving_resumed": state.serving_resumed,
+                    "pipeline_mode": config.checkpoint.pipeline_mode,
+                    "weight_sync_mode": config.checkpoint.weight_sync_mode,
+                    "inference_sync_realization": config.checkpoint.inference_sync_realization,
+                },
+            )
+
+        if step_weight_syncer is not None:
+            _log_update_channel_state("weight_update_channel_created")
 
         async def _save_checkpoint(step: int, step_metrics: dict[str, Any]) -> Path:
             save_fn = getattr(backend, "save_checkpoint", None)
@@ -1977,7 +2129,7 @@ async def _grpo_train_async(
 
             async def _true_pipeline_batches() -> AsyncIterator[Any]:
                 try:
-                    # Initialize NCCL for non-blocking weight sync
+                    # Initialize NCCL for experimental trainer-side overlap.
                     await weight_sync_manager.init_nccl_group()
 
                     async with pipelined_manager:
@@ -2008,7 +2160,19 @@ async def _grpo_train_async(
                                     weight_version=weight_sync_manager.current_version,
                                 )
 
-                                # Non-blocking weight sync - spawns background task.
+                                # Trainer-side non-blocking publication. Current
+                                # direct receive/load realizations may still pause
+                                # new admissions while sync is in progress.
+                                #
+                                # Architectural note:
+                                # This reaches through the backend abstraction to
+                                # `backend.model`, which means `true_pipeline`
+                                # currently depends on a PyTorch-shaped training
+                                # backend capability that is not represented in
+                                # `TrainingBackend`. A real lowering should ask
+                                # the training backend for an explicit async
+                                # publication capability instead of assuming the
+                                # concrete model object is available here.
                                 should_sync = (step + 1) % config.checkpoint.sync_weights_every == 0
                                 if should_sync:
                                     logger.debug(
@@ -2036,6 +2200,7 @@ async def _grpo_train_async(
             async def _process_batch(step: int, batch: Any, _backend: Any) -> dict[str, Any] | None:
                 if _reject_stale_batch(step, batch):
                     return None
+                resource_watchdog.set_phase("train_step", step=step + 1)
                 _update_pipeline_state(
                     train_version=getattr(
                         _backend, "weight_version", pipeline_state.current_train_version
@@ -2061,6 +2226,7 @@ async def _grpo_train_async(
                 )
                 if step_metrics is None:
                     return None
+                resource_watchdog.set_phase("rollout_loop", step=step + 1)
                 return _annotate_pipeline_metrics(step_metrics)
 
             train_result = await _train_loop(
@@ -2131,6 +2297,7 @@ async def _grpo_train_async(
             async def _process_batch(step: int, batch: Any, _backend: Any) -> dict[str, Any] | None:
                 if _reject_stale_batch(step, batch):
                     return None
+                resource_watchdog.set_phase("train_step", step=step + 1)
                 _update_pipeline_state(
                     train_version=getattr(
                         _backend, "weight_version", pipeline_state.current_train_version
@@ -2159,6 +2326,7 @@ async def _grpo_train_async(
                 return _annotate_pipeline_metrics(step_metrics)
 
             async def _before_async_weight_sync() -> None:
+                _log_update_channel_state("weight_update_channel_before_sync")
                 _update_pipeline_state(
                     train_version=getattr(
                         backend, "weight_version", pipeline_state.current_train_version
@@ -2173,6 +2341,7 @@ async def _grpo_train_async(
                 current_version = getattr(
                     backend, "weight_version", pipeline_state.current_train_version
                 )
+                _log_update_channel_state("weight_update_channel_after_sync")
                 _update_pipeline_state(
                     train_version=current_version,
                     serving_version=current_version,
@@ -2224,6 +2393,7 @@ async def _grpo_train_async(
                         ),
                         inflight_batches=0,
                     )
+                    resource_watchdog.set_phase("rollout_loop", step=step + 1)
                     return None
                 _update_pipeline_state(
                     train_version=getattr(
@@ -2231,9 +2401,11 @@ async def _grpo_train_async(
                     ),
                     inflight_batches=0,
                 )
+                resource_watchdog.set_phase("rollout_loop", step=step + 1)
                 return _annotate_pipeline_metrics(step_metrics)
 
             async def _before_weight_sync() -> None:
+                _log_update_channel_state("weight_update_channel_before_sync")
                 _update_pipeline_state(
                     train_version=getattr(
                         backend, "weight_version", pipeline_state.current_train_version
@@ -2246,6 +2418,7 @@ async def _grpo_train_async(
                 current_version = getattr(
                     backend, "weight_version", pipeline_state.current_train_version
                 )
+                _log_update_channel_state("weight_update_channel_after_sync")
                 _update_pipeline_state(
                     train_version=current_version,
                     serving_version=current_version,
@@ -2297,6 +2470,7 @@ async def _grpo_train_async(
         )
         raise
     finally:
+        resource_watchdog.stop()
         try:
             await _maybe_stop_environment_factory(environment_factory, logger)
         except Exception as e:

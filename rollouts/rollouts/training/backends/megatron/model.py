@@ -17,6 +17,7 @@ Based on SLIME's model.py but simplified to just the factory function.
 
 from __future__ import annotations
 
+import inspect
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -593,7 +594,9 @@ class MegatronModelConfig:
 def setup_megatron_model(
     config: MegatronModelConfig,
     checkpoint_path: Path | None = None,
-) -> tuple[list[Any], Any, Any]:
+    *,
+    save_optimizer_state: bool = True,
+) -> tuple[list[Any], Any, Any, int]:
     """Create Megatron model with optimizer from HuggingFace checkpoint.
 
     Uses mbridge/AutoBridge to convert HF models to Megatron format.
@@ -606,6 +609,7 @@ def setup_megatron_model(
     Args:
         config: Model and training configuration
         checkpoint_path: Optional path to load checkpoint from
+        save_optimizer_state: Whether checkpoints include optimizer/scheduler state
 
     Returns:
         Tuple of (model_chunks, optimizer, scheduler)
@@ -622,7 +626,7 @@ def setup_megatron_model(
         ...     model_name="THUDM/GLM-4.7-Flash",  # Now supported via custom bridge
         ...     lr=1e-6,
         ... )
-        >>> model, optimizer, scheduler = setup_megatron_model(config)
+        >>> model, optimizer, scheduler, checkpoint_iteration = setup_megatron_model(config)
     """
     # Register our custom bridges for GLM models before importing AutoBridge
     try:
@@ -745,10 +749,17 @@ def setup_megatron_model(
     )
 
     # Load checkpoint if provided
+    checkpoint_iteration = 0
     if checkpoint_path is not None:
-        _load_checkpoint(model, optimizer, scheduler, checkpoint_path)
+        checkpoint_iteration = _load_checkpoint(
+            model,
+            optimizer,
+            scheduler,
+            checkpoint_path,
+            save_optimizer_state=save_optimizer_state,
+        )
 
-    return model, optimizer, scheduler
+    return model, optimizer, scheduler, checkpoint_iteration
 
 
 def _populate_gpt_model_defaults(
@@ -840,7 +851,9 @@ def _load_checkpoint(
     optimizer: Any,
     scheduler: Any,
     checkpoint_path: Path,
-) -> None:
+    *,
+    save_optimizer_state: bool,
+) -> int:
     """Load checkpoint into model/optimizer/scheduler.
 
     Args:
@@ -853,15 +866,47 @@ def _load_checkpoint(
         from megatron.training.checkpointing import load_checkpoint
     except ImportError:
         logger.warning("Megatron checkpointing not available, skipping load")
-        return
+        return 0
 
     logger.info("Loading checkpoint from: %s", checkpoint_path)
+    tracker_path = checkpoint_path / "latest_checkpointed_iteration.txt"
+    if not tracker_path.exists():
+        raise FileNotFoundError(
+            "Explicit Megatron checkpoint path must contain "
+            f"latest_checkpointed_iteration.txt: {tracker_path}"
+        )
 
-    load_checkpoint(
-        model=model,
-        optimizer=optimizer,
-        opt_param_scheduler=scheduler,
-        load_dir=str(checkpoint_path),
+    from megatron.training.global_vars import get_args
+
+    from rollouts.training.backends.megatron_backend import _normalize_megatron_checkpoint_args
+
+    args = get_args()
+    _normalize_megatron_checkpoint_args(
+        args,
+        checkpoint_path,
+        save_optimizer_state=save_optimizer_state,
     )
 
+    signature = inspect.signature(load_checkpoint)
+    parameters = signature.parameters
+
+    previous_load = getattr(args, "load", None)
+    try:
+        args.load = str(checkpoint_path)
+        if "load_dir" in parameters:
+            load_result = load_checkpoint(
+                model=model,
+                optimizer=optimizer,
+                opt_param_scheduler=scheduler,
+                load_dir=str(checkpoint_path),
+            )
+        else:
+            load_result = load_checkpoint(model, optimizer, scheduler)
+    finally:
+        args.load = previous_load
+
     logger.info("Checkpoint loaded")
+    tracker_text = tracker_path.read_text(encoding="utf-8").strip()
+    if tracker_text == "release":
+        return 0
+    return int(tracker_text)

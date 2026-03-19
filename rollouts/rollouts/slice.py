@@ -31,7 +31,7 @@ from typing import TYPE_CHECKING, Literal
 if TYPE_CHECKING:
     from .store import SessionStore
 
-from .core import Endpoint, Message, SessionHandle, SessionStatus, Trajectory, TrajectorySession
+from .core import Endpoint, Message, Trajectory, TrajectorySession
 
 
 @dataclass
@@ -39,8 +39,8 @@ class SliceSegment:
     """One segment of a slice operation."""
 
     type: Literal["range", "summarize", "compact", "inject"]
-    start: int | str | None = None  # int, "N%", or None
-    end: int | str | None = None  # int, "N%", or None
+    start: int | float | str | None = None  # int, fraction, "N%", or None
+    end: int | float | str | None = None  # int, fraction, "N%", or None
     content: str | None = None  # For inject
     goal: str | None = None  # For summarize with goal
 
@@ -56,12 +56,14 @@ class SliceSegment:
         else:
             return f"inject({self.content!r})"
 
-    def resolve_index(self, value: int | str | None, total: int) -> int:
+    def resolve_index(self, value: int | float | str | None, total: int) -> int:
         """Resolve an index value (int, percentage string, or None) to an int."""
         if value is None:
             return total
         if isinstance(value, int):
             return value
+        if isinstance(value, float):
+            return int(total * value)
         if isinstance(value, str) and value.endswith("%"):
             pct = int(value[:-1])
             return (total * pct) // 100
@@ -124,12 +126,16 @@ def _split_respecting_quotes(s: str) -> list[str]:
     return parts
 
 
-def _parse_index(s: str | None) -> int | str | None:
-    """Parse an index string to int, percentage string, or None."""
+def _parse_index(s: str | None) -> int | float | str | None:
+    """Parse an index string to int, fraction, percentage string, or None."""
     if not s:
         return None
     if s.endswith("%"):
         return s  # Keep as string like "80%"
+    if "." in s:
+        value = float(s)
+        if 0 <= value <= 1:
+            return value
     return int(s)
 
 
@@ -143,7 +149,10 @@ def _parse_segment(part: str) -> SliceSegment:
 
     # Check for summarize: prefix (with optional goal, end is optional)
     # summarize:4:18 or summarize:4: or summarize:0%:80% or summarize:4:18:'goal text'
-    summarize_match = re.match(r"summarize:\s*(\d+%?):(\d*%?)(?::\s*['\"](.+)['\"])?", part)
+    summarize_match = re.match(
+        r"summarize:\s*(-?(?:\d+(?:\.\d+)?%?)?):(-?(?:\d+(?:\.\d+)?%?)?)(?::\s*['\"](.+)['\"])?",
+        part,
+    )
     if summarize_match:
         return SliceSegment(
             type="summarize",
@@ -154,7 +163,7 @@ def _parse_segment(part: str) -> SliceSegment:
 
     # Check for compact: prefix (end is optional, defaults to all remaining)
     # compact:0:50% or compact:0: or compact:50%:
-    compact_match = re.match(r"compact:\s*(\d+%?):(\d*%?)", part)
+    compact_match = re.match(r"compact:\s*(-?(?:\d+(?:\.\d+)?%?)?):(-?(?:\d+(?:\.\d+)?%?)?)", part)
     if compact_match:
         return SliceSegment(
             type="compact",
@@ -163,7 +172,7 @@ def _parse_segment(part: str) -> SliceSegment:
         )
 
     # Must be a range like "0:4" or "10:" or ":5" or "80%:" or ":50%"
-    range_match = re.match(r"(-?\d*%?):(-?\d*%?)", part)
+    range_match = re.match(r"(-?(?:\d+(?:\.\d+)?%?)?):(-?(?:\d+(?:\.\d+)?%?)?)", part)
     if range_match:
         start_str, end_str = range_match.groups()
         return SliceSegment(
@@ -437,7 +446,7 @@ Summary:"""
 
 
 async def apply_slice(
-    session: SessionHandle,
+    session: Trajectory,
     segments: list[SliceSegment],
     endpoint: Endpoint | None = None,
     summarize_goal: str | None = None,
@@ -513,12 +522,12 @@ async def apply_slice(
 
 
 async def slice_session(
-    session: SessionHandle,
+    session: Trajectory,
     spec: str,
     endpoint: Endpoint,
     session_store: SessionStore,
     summarize_goal: str | None = None,
-) -> SessionHandle:
+) -> Trajectory:
     """Create new session from sliced/summarized messages.
 
     Args:
@@ -541,18 +550,15 @@ async def slice_session(
     if not new_messages:
         raise ValueError("Slice resulted in empty message list")
 
-    source_trajectory = session.to_trajectory()
     child_trajectory = Trajectory(
         messages=new_messages,
-        metadata=dict(source_trajectory.metadata),
-        annotations=source_trajectory.annotations,
-        environment=source_trajectory.environment,
+        metadata=dict(session.metadata),
+        environment=session.environment,
         session=TrajectorySession(
             session_id=None,
             parent_id=session.session_id,
             branch_point=len(new_messages),
             endpoint=session.endpoint,
-            status=SessionStatus.PENDING.value,
             tags={"sliced": "true", "slice_spec": spec},
             vcs=session.vcs,
         ),
@@ -569,12 +575,12 @@ async def slice_session(
 
 
 async def run_slice_command(
-    session: SessionHandle,
+    session: Trajectory,
     spec: str,
     endpoint: Endpoint,
     session_store: SessionStore,
     summarize_goal: str | None = None,
-) -> tuple[SessionHandle | None, str | None]:
+) -> tuple[Trajectory | None, str | None]:
     """Run --slice command.
 
     Args:

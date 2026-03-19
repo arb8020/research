@@ -8,8 +8,10 @@ from typing import Any
 from .adapters import ModelConstructionAdapter
 from .backend_lowering import (
     MegatronModelLowering,
+    NmoeModelLowering,
     TorchTitanModelLowering,
     lower_model_to_megatron,
+    lower_model_to_nmoe,
     lower_model_to_torchtitan,
 )
 from .denotation import (
@@ -39,11 +41,13 @@ __all__ = [
     "ModelDenotation",
     "ModelFamily",
     "MoESemantics",
+    "NmoeModelLowering",
     "NormKind",
     "RotaryKind",
     "RotarySemantics",
     "TorchTitanModelLowering",
     "lower_model_to_megatron",
+    "lower_model_to_nmoe",
     "lower_model_to_torchtitan",
     "normalize_hf_model_denotation",
 ]

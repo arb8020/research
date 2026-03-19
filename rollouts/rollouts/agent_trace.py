@@ -44,14 +44,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from .core import JsonSerializable, Message, SessionHandle, Trajectory
-
-
-def _coerce_session_handle(session: SessionHandle | Trajectory) -> SessionHandle:
-    if isinstance(session, Trajectory):
-        return SessionHandle.from_trajectory(session)
-    return session
-
+from .core import JsonSerializable, Message, Trajectory
 
 # -----------------------------------------------------------------------------
 # agent-trace.dev spec types (v0.1.0)
@@ -318,7 +311,7 @@ def make_path_relative(file_path: str, repo_root: Path | None) -> str:
 
 
 def session_to_trace_record(
-    session: SessionHandle | Trajectory,
+    session: Trajectory,
     *,
     repo_root: Path | None = None,
     tool_name: str = "rollouts",
@@ -334,17 +327,15 @@ def session_to_trace_record(
         tool_name: Name of the tool generating the trace
         tool_version: Version of the tool
     """
-    handle = _coerce_session_handle(session)
-
     # Extract file edits from messages
-    edits = extract_file_edits(handle.messages)
+    edits = extract_file_edits(session.messages)
     if not edits:
         return None
 
     # Build model ID
     model_id = None
-    if handle.endpoint.provider and handle.endpoint.model:
-        model_id = format_model_id(handle.endpoint.provider, handle.endpoint.model)
+    if session.endpoint.provider and session.endpoint.model:
+        model_id = format_model_id(session.endpoint.provider, session.endpoint.model)
 
     contributor = Contributor(type="ai", model_id=model_id)
 
@@ -377,10 +368,10 @@ def session_to_trace_record(
 
     # Get VCS info - prefer session's captured VCS, fallback to current state
     vcs_info = None
-    if handle.vcs is not None:
+    if session.vcs is not None:
         vcs_info = VCSInfo(
-            type=handle.vcs["type"],
-            revision=handle.vcs["revision"],
+            type=session.vcs["type"],
+            revision=session.vcs["revision"],
         )
     elif repo_root is not None:
         vcs_info = get_git_info(repo_root)
@@ -388,11 +379,11 @@ def session_to_trace_record(
     return TraceRecord(
         version="0.1.0",
         id=str(uuid.uuid4()),
-        timestamp=handle.created_at or datetime.now().isoformat(),
+        timestamp=session.created_at or datetime.now().isoformat(),
         files=tuple(file_attributions),
         vcs=vcs_info,
         tool=ToolInfo(name=tool_name, version=tool_version),
-        metadata={"session_id": handle.session_id},
+        metadata={"session_id": session.session_id},
     )
 
 
@@ -405,7 +396,7 @@ def write_trace_record(record: TraceRecord, output_path: Path) -> None:
 
 
 def export_session_trace(
-    session: SessionHandle | Trajectory,
+    session: Trajectory,
     output_path: Path | None = None,
     *,
     tool_name: str = "rollouts",
@@ -424,16 +415,14 @@ def export_session_trace(
         if trace_path:
             print(f"Wrote trace to {trace_path}")
     """
-    handle = _coerce_session_handle(session)
-
     # Determine repo root from session VCS or working directory
     repo_root = None
-    if handle.vcs is not None and "root" in handle.vcs:
-        repo_root = Path(handle.vcs["root"])
+    if session.vcs is not None and "root" in session.vcs:
+        repo_root = Path(session.vcs["root"])
 
     # Convert session to trace record
     record = session_to_trace_record(
-        handle,
+        session,
         repo_root=repo_root,
         tool_name=tool_name,
         tool_version=tool_version,

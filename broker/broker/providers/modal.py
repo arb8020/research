@@ -58,7 +58,12 @@ def _build_image_from_deps(modal: Any, deps: Any) -> Any:
     No guessing — every pip package, system package, and bootstrap command
     comes from the DepsConfig.
     """
-    image = modal.Image.debian_slim(python_version=deps.python_version)
+    source_ref = getattr(deps, "source_ref", None)
+    source_type = getattr(deps, "source_type", "registry")
+    if source_ref and source_type == "registry":
+        image = modal.Image.from_registry(source_ref, add_python=deps.python_version)
+    else:
+        image = modal.Image.debian_slim(python_version=deps.python_version)
 
     if deps.system_packages:
         image = image.apt_install(*deps.system_packages)
@@ -75,6 +80,10 @@ def _build_image_from_deps(modal: Any, deps: Any) -> Any:
 
     for cmd in deps.bootstrap_commands:
         image = image.run_commands(cmd)
+
+    env = getattr(deps, "env", None)
+    if env:
+        image = image.env(dict(env))
 
     return image
 

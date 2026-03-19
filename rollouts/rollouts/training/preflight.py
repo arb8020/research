@@ -972,6 +972,7 @@ def preflight_torchtitan_vram_check(
 
     from .contract_witnesses import supervised_contract_loss
     from .contracts import ModelInput, StepResult, TrainingDatum, TrainableParameterPolicy
+    from .vram_pytorch_like import _build_dummy_batch, _compute_micro_batch_size
 
     gpu_index = int(device.split(":")[-1])
     props = torch.cuda.get_device_properties(gpu_index)

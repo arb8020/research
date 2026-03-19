@@ -31,6 +31,7 @@ Thumbs.db
 # Project specific
 uv.lock
 .env
+.local/
 logs/
 output.txt
 data/
@@ -51,6 +52,8 @@ dev/outlier-features/archive/
 dev/outlier-features/sweep_analysis/
 dev/speedrun/originals/
 references/
+!docs/references/
+!docs/references/**
 
 # Test outputs and logs
 *.log

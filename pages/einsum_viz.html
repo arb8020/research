@@ -1,0 +1,2228 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>einsum viz</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,300;0,400;0,500;0,700;1,400&family=Syne:wght@400;700;800&display=swap');
+
+:root {
+  --bg: #0c0c0c;
+  --surface: #141414;
+  --surface2: #1a1a1a;
+  --border: #222;
+  --border2: #2e2e2e;
+  --text: #e0e0e0;
+  --dim: #555;
+  --mid: #888;
+  --accent: #7ee8a2;
+  --accent2: #5bc8f5;
+  --accent3: #f5a623;
+  --accent4: #c084fc;
+  --accent5: #f87171;
+  --gcd-color: #a8a8a8;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 13px;
+  min-height: 100vh;
+  display: grid;
+  grid-template-rows: auto 1fr;
+}
+
+header {
+  border-bottom: 1px solid var(--border);
+  padding: 14px 28px;
+  display: flex;
+  align-items: center;
+  gap: 20px;
+}
+header h1 {
+  font-family: 'Syne', sans-serif;
+  font-size: 18px;
+  font-weight: 800;
+  color: var(--accent);
+  letter-spacing: -0.3px;
+}
+.header-sub { color: var(--dim); font-size: 11px; letter-spacing: 0.06em; }
+.header-spacer { flex: 1; }
+
+.workspace {
+  display: grid;
+  grid-template-columns: 280px 1fr;
+  height: calc(100vh - 49px);
+  overflow: hidden;
+}
+
+.sidebar {
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.sidebar-section {
+  border-bottom: 1px solid var(--border);
+  padding: 14px 16px;
+}
+
+.section-label {
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--dim);
+  margin-bottom: 10px;
+}
+
+.hf-row { display: flex; gap: 6px; }
+.hf-input {
+  flex: 1;
+  background: var(--surface2);
+  border: 1px solid var(--border2);
+  color: var(--text);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+  padding: 5px 8px;
+  outline: none;
+}
+.hf-input:focus { border-color: var(--accent2); }
+.hf-input::placeholder { color: var(--dim); }
+
+button {
+  background: none;
+  border: 1px solid var(--border2);
+  color: var(--mid);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  padding: 5px 10px;
+  cursor: pointer;
+  transition: all 0.12s;
+  white-space: nowrap;
+}
+button:hover { border-color: var(--accent); color: var(--accent); }
+button.primary { border-color: var(--accent); color: var(--accent); }
+button.primary:hover { background: var(--accent); color: var(--bg); }
+button.danger:hover { border-color: var(--accent5); color: var(--accent5); }
+
+.hf-status {
+  font-size: 10px;
+  color: var(--dim);
+  margin-top: 6px;
+  min-height: 14px;
+}
+.hf-status.ok { color: var(--accent); }
+.hf-status.err { color: var(--accent5); }
+
+.dim-registry {
+  flex: 1;
+  overflow-y: auto;
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.dim-row {
+  display: grid;
+  grid-template-columns: 1fr 70px auto;
+  gap: 6px;
+  align-items: center;
+}
+
+.dim-name {
+  font-size: 12px;
+  color: var(--text);
+  padding: 4px 6px;
+  background: var(--surface2);
+  border: 1px solid var(--border2);
+  font-family: 'JetBrains Mono', monospace;
+  outline: none;
+}
+.dim-name:focus { border-color: var(--accent2); }
+
+.dim-val {
+  font-size: 12px;
+  color: var(--text);
+  padding: 4px 6px;
+  background: var(--surface2);
+  border: 1px solid var(--border2);
+  font-family: 'JetBrains Mono', monospace;
+  outline: none;
+  -moz-appearance: textfield;
+  width: 100%;
+}
+.dim-val::-webkit-outer-spin-button,
+.dim-val::-webkit-inner-spin-button { -webkit-appearance: none; }
+.dim-val:focus { border-color: var(--accent2); }
+
+.dim-ratio {
+  font-size: 10px;
+  color: var(--gcd-color);
+  text-align: right;
+  white-space: nowrap;
+}
+
+.dim-add-row { display: flex; gap: 6px; margin-top: 4px; }
+
+.mesh-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.mesh-axis-label { color: var(--accent4); font-size: 12px; }
+.mesh-val {
+  width: 48px;
+  font-size: 12px;
+  color: var(--text);
+  padding: 4px 6px;
+  background: var(--surface2);
+  border: 1px solid var(--border2);
+  font-family: 'JetBrains Mono', monospace;
+  outline: none;
+  -moz-appearance: textfield;
+}
+.mesh-val::-webkit-outer-spin-button,
+.mesh-val::-webkit-inner-spin-button { -webkit-appearance: none; }
+.mesh-val:focus { border-color: var(--accent4); }
+.mesh-total { color: var(--dim); font-size: 11px; }
+
+/* Render scale */
+.scale-row {
+  display: flex;
+  gap: 0;
+  margin-top: 2px;
+}
+.scale-btn {
+  flex: 1;
+  border: 1px solid var(--border2);
+  color: var(--dim);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  padding: 4px 0;
+  cursor: pointer;
+  text-align: center;
+  margin: 0;
+  border-radius: 0;
+  transition: all 0.12s;
+  letter-spacing: 0.04em;
+}
+.scale-btn + .scale-btn { margin-left: -1px; }
+.scale-btn:hover { border-color: var(--accent2); color: var(--accent2); z-index: 1; }
+.scale-btn.active { border-color: var(--accent2); color: var(--accent2); background: #0d1f2a; z-index: 1; }
+.scale-note { font-size: 9px; color: var(--dim); margin-top: 5px; min-height: 12px; }
+
+/* Canvas */
+.canvas {
+  overflow-y: auto;
+  padding: 24px 28px;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+/* Cell */
+.cell {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  margin-bottom: 0;
+}
+
+.cell.type-collective {
+  border-left: 2px solid var(--accent5);
+}
+.cell.type-einsum {
+  border-left: 2px solid var(--accent2);
+}
+
+.cell-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface2);
+}
+
+.cell-index {
+  font-size: 10px;
+  color: var(--dim);
+  width: 16px;
+  flex-shrink: 0;
+}
+
+.cell-type-badge {
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  padding: 2px 6px;
+  border: 1px solid;
+  flex-shrink: 0;
+  text-transform: uppercase;
+}
+.cell-type-badge.einsum { border-color: #1a3a4a; color: var(--accent2); }
+.cell-type-badge.collective { border-color: #4a1a1a; color: var(--accent5); }
+.cell-type-badge.collective.all_gather { color: #fb923c; border-color: #4a2a00; }
+.cell-type-badge.collective.psum_scatter { color: var(--accent5); border-color: #4a1a1a; }
+.cell-type-badge.collective.psum { color: #e879f9; border-color: #3a1a4a; }
+
+.cell-input-wrap { flex: 1; position: relative; min-width: 0; }
+
+.cell-input {
+  width: 100%;
+  background: none;
+  border: none;
+  color: var(--text);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 13px;
+  outline: none;
+  padding: 2px 0;
+}
+.cell-input::placeholder { color: var(--dim); }
+
+.cell-actions { display: flex; gap: 5px; flex-shrink: 0; }
+
+.cell-body {
+  padding: 14px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.cell-error {
+  color: var(--accent5);
+  font-size: 11px;
+  padding: 7px 12px;
+  border-top: 1px solid var(--border);
+  background: #1a0a0a;
+}
+
+/* Chain connector between cells */
+.chain-connector {
+  display: flex;
+  align-items: stretch;
+  height: 28px;
+  padding: 0 12px;
+  position: relative;
+}
+.chain-wire {
+  width: 1px;
+  background: var(--border2);
+  margin: 0 auto;
+  position: relative;
+}
+.chain-wire::after {
+  content: '';
+  position: absolute;
+  bottom: -4px;
+  left: -3px;
+  width: 7px;
+  height: 7px;
+  border-right: 1px solid var(--border2);
+  border-bottom: 1px solid var(--border2);
+  transform: rotate(45deg);
+}
+.chain-wire.has-mismatch {
+  background: var(--accent5);
+}
+.chain-wire.has-mismatch::after {
+  border-color: var(--accent5);
+}
+.chain-mismatch-note {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%) translateX(12px);
+  font-size: 9px;
+  color: var(--accent5);
+  white-space: nowrap;
+  top: 8px;
+}
+.chain-ok-note {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%) translateX(12px);
+  font-size: 9px;
+  color: var(--dim);
+  white-space: nowrap;
+  top: 8px;
+}
+
+/* Tensor flow */
+.tensor-flow {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+
+.tensor-block { display: flex; flex-direction: column; gap: 5px; }
+
+.tensor-label {
+  font-size: 10px;
+  letter-spacing: 0.05em;
+  color: var(--mid);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.tname { color: var(--accent2); }
+.tname.output { color: var(--accent); }
+.tname.chained { color: var(--accent3); }
+
+.tensor-shape-str { font-size: 10px; color: var(--dim); }
+
+.dim-ann {
+  font-size: 10px;
+  color: var(--dim);
+  line-height: 1.7;
+}
+
+.tensor-render {
+  overflow: visible;
+  line-height: 0;
+  min-height: 8px;
+}
+
+/* Op arrow */
+.op-arrow {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding-top: 28px;
+  gap: 3px;
+  min-width: 20px;
+}
+.op-symbol { font-size: 16px; color: var(--dim); }
+.op-label { font-size: 9px; color: var(--dim); letter-spacing: 0.06em; }
+
+/* Dim badges */
+.dim-badge {
+  font-size: 10px;
+  padding: 2px 6px;
+  border: 1px solid;
+  letter-spacing: 0.03em;
+  display: inline-block;
+}
+.dim-badge.kept { border-color: #1e3a1e; color: var(--accent); }
+.dim-badge.contracted { border-color: #3a2a00; color: var(--accent3); }
+.dim-badge.comm-psum { border-color: #4a1a1a; color: var(--accent5); }
+.dim-badge.comm-gather { border-color: #4a2a00; color: #fb923c; }
+.dim-badge.shard { border-color: #2a1a4a; color: var(--accent4); }
+
+/* Summary row */
+.summary-row {
+  display: flex;
+  gap: 14px;
+  flex-wrap: wrap;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+.summary-group { display: flex; flex-direction: column; gap: 4px; }
+.summary-label { font-size: 9px; color: var(--dim); letter-spacing: 0.1em; text-transform: uppercase; }
+.summary-dims { display: flex; gap: 3px; flex-wrap: wrap; }
+
+/* Collective op display */
+.collective-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.collective-spec {
+  font-size: 12px;
+  color: var(--mid);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.collective-spec .spec-before { color: var(--accent2); }
+.collective-spec .spec-after { color: var(--accent); }
+.collective-spec .spec-arrow { color: var(--dim); }
+.collective-axes {
+  font-size: 11px;
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+.axis-change {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+}
+.axis-change .dim-name-str { color: var(--accent2); }
+.axis-change .shard-before { color: var(--accent4); }
+.axis-change .shard-after { color: var(--accent); }
+.axis-change .arrow { color: var(--dim); }
+
+/* Tensor grid render */
+.tensor-render {
+  overflow: visible;
+  line-height: 0;
+}
+.tensor-render-wrap {
+  display: inline-block;
+  transform-origin: top left;
+}
+.tg {
+  display: inline-grid;
+  gap: 1px;
+  vertical-align: top;
+  background: #2a2a2a; /* shows through gaps as grid lines */
+  padding: 1px;
+  border-radius: 3px;
+}
+.tg-cell {
+  width: 22px;
+  height: 22px;
+  border-radius: 2px;
+  transition: opacity 0.1s;
+}
+/* gap between 3D H-blocks */
+.tg-hstack {
+  display: inline-flex;
+  align-items: stretch;
+  gap: 3px;
+  vertical-align: top;
+}
+.tg-hstack.with-sep {
+  gap: 0;
+}
+.tg-hsep {
+  width: 2px;
+  background: var(--accent4);
+  flex-shrink: 0;
+  margin: 0 3px;
+  opacity: 0.6;
+  border-radius: 1px;
+}
+/* gap between 4D V-blocks */
+.tg-vstack {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 3px;
+  vertical-align: top;
+}
+.tg-vstack.with-sep {
+  gap: 0;
+}
+.tg-vsep {
+  height: 2px;
+  background: var(--border2);
+  flex-shrink: 0;
+  margin: 3px 0;
+  border-radius: 1px;
+}
+
+/* Sharding panel */
+.sharding-panel {
+  border-top: 1px solid var(--border);
+  padding: 8px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.shard-grid { display: flex; gap: 6px; flex-wrap: wrap; }
+.shard-chip {
+  background: var(--surface2);
+  border: 1px solid var(--border2);
+  padding: 5px 9px;
+  font-size: 11px;
+}
+.chip-label { color: var(--accent4); margin-bottom: 3px; font-size: 9px; letter-spacing: 0.08em; }
+.chip-shape { color: var(--mid); font-size: 11px; }
+
+/* Add cell area */
+.add-cell-area {
+  display: flex;
+  gap: 8px;
+  padding: 20px 0 8px;
+}
+.add-cell-btn {
+  border: 1px dashed var(--border2);
+  color: var(--dim);
+  padding: 10px 16px;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  flex: 1;
+}
+.add-cell-btn:hover { border-color: var(--accent); color: var(--accent); border-style: solid; }
+.add-collective-btn {
+  border: 1px dashed var(--border2);
+  color: var(--dim);
+  padding: 10px 16px;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+}
+.add-collective-btn:hover { border-color: var(--accent5); color: var(--accent5); border-style: solid; }
+
+/* Notation syntax highlight overlay */
+.notation-wrap {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+}
+.notation-highlight {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: inherit;
+  white-space: pre;
+  overflow: hidden;
+  padding: 2px 0;
+  color: transparent; /* text hidden, only colored spans show */
+}
+.notation-input-over {
+  position: relative;
+  background: transparent;
+  caret-color: var(--text);
+  color: transparent !important;
+  z-index: 1;
+}
+/* When no highlight layer (plain inputs), just show text normally */
+.no-highlight { color: var(--text) !important; }
+
+/* Tensor mode */
+.tensor-mode-canvas {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+}
+.tensor-input-bar {
+  border-bottom: 1px solid var(--border);
+  padding: 16px 28px;
+  background: var(--surface);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-shrink: 0;
+}
+.tensor-notation-input {
+  flex: 1;
+  background: none;
+  border: none;
+  color: var(--text);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 15px;
+  outline: none;
+  padding: 2px 0;
+}
+.tensor-notation-input::placeholder { color: var(--dim); }
+
+.tensor-mode-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 32px;
+  display: flex;
+  flex-direction: column;
+  gap: 32px;
+}
+
+.tensor-display {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.tensor-big-render {
+  overflow: visible;
+  line-height: 0;
+}
+/* tensor mode uses default 22px cell size */
+.tensor-big-render .tg { gap: 2px; }
+.tensor-big-render .tensor-render-wrap { transform-origin: top left; }
+
+.layout-explanation {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--mid);
+}
+.layout-rule {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+.layout-rule .rule-ndim {
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  color: var(--dim);
+  width: 36px;
+  flex-shrink: 0;
+}
+.layout-rule .rule-desc { color: var(--text); }
+.layout-rule .rule-active {
+  color: var(--accent);
+  font-weight: 500;
+}
+
+.dim-shape-ann {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+  font-size: 11px;
+}
+.dim-shape-token {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+}
+.dim-swatch {
+  width: 8px; height: 8px;
+  border-radius: 1px;
+  flex-shrink: 0;
+}
+
+/* Mode tabs */
+.mode-tabs {
+  display: flex;
+  gap: 0;
+  border: 1px solid var(--border2);
+}
+.mode-tab {
+  padding: 5px 16px;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  color: var(--dim);
+  cursor: pointer;
+  border: none;
+  background: none;
+  font-family: 'JetBrains Mono', monospace;
+  border-right: 1px solid var(--border2);
+  transition: all 0.12s;
+}
+.mode-tab:last-child { border-right: none; }
+.mode-tab:hover { color: var(--text); }
+.mode-tab.active { color: var(--accent); background: #0d1f14; }
+
+/* Single einsum mode canvas */
+.single-canvas {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  height: 100%;
+  overflow-y: auto;
+  padding: 0;
+}
+
+.single-input-bar {
+  border-bottom: 1px solid var(--border);
+  padding: 16px 28px;
+  background: var(--surface);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-shrink: 0;
+}
+.single-input-bar .cell-type-badge {
+  flex-shrink: 0;
+}
+.single-notation-input {
+  flex: 1;
+  background: none;
+  border: none;
+  color: var(--text);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 15px;
+  outline: none;
+  padding: 2px 0;
+}
+.single-notation-input::placeholder { color: var(--dim); }
+
+.single-body {
+  flex: 1;
+  padding: 28px 32px;
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  overflow-y: auto;
+}
+
+.single-error {
+  color: var(--accent5);
+  font-size: 12px;
+  padding: 28px 32px;
+}
+
+/* Larger tensor blocks in single mode */
+.single-body .tensor-block { gap: 8px; }
+.single-body .dim-ann { font-size: 11px; line-height: 2; }
+/* single mode uses default 22px cell size */
+.single-body .tg { gap: 2px; }
+.single-body .tensor-shape-str { font-size: 11px; }
+.single-body .tname { font-size: 12px; }
+
+.single-flow {
+  display: flex;
+  align-items: flex-start;
+  gap: 24px;
+  flex-wrap: wrap;
+}
+
+.single-summary {
+  display: flex;
+  gap: 24px;
+  flex-wrap: wrap;
+  padding-top: 20px;
+  border-top: 1px solid var(--border);
+}
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 4px; height: 4px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border2); }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>einsum viz</h1>
+  <div class="mode-tabs">
+    <button class="mode-tab active" id="tab-tensor" onclick="setMode('tensor')">tensor</button>
+    <button class="mode-tab" id="tab-einsum" onclick="setMode('einsum')">einsum</button>
+    <button class="mode-tab" id="tab-fwd" onclick="setMode('fwd')">forward pass</button>
+  </div>
+  <div class="header-spacer"></div>
+  <div id="fwd-controls" style="display:none;gap:8px;align-items:center;display:none">
+    <button class="primary" onclick="addEinsumCell()">+ einsum</button>
+    <button onclick="addCollectiveCell('all_gather')" style="color:#fb923c;border-color:#4a2a00">+ all_gather</button>
+    <button onclick="addCollectiveCell('psum_scatter')" style="color:var(--accent5);border-color:#4a1a1a">+ psum_scatter</button>
+    <button onclick="addCollectiveCell('psum')" style="color:#e879f9;border-color:#3a1a4a">+ psum</button>
+    <button onclick="clearAll()">clear</button>
+  </div>
+</header>
+
+<div class="workspace">
+  <div class="sidebar">
+    <div class="sidebar-section">
+      <div class="section-label">model (optional)</div>
+      <div class="hf-row">
+        <input class="hf-input" id="hf-input" placeholder="meta-llama/Llama-3.1-8B" />
+        <button onclick="loadHF()">load</button>
+      </div>
+      <div class="hf-status" id="hf-status">enter a HuggingFace model id</div>
+    </div>
+
+    <div class="sidebar-section">
+      <div class="section-label">device mesh</div>
+      <div class="mesh-row">
+        <span class="mesh-axis-label">d=</span>
+        <input class="mesh-val" id="mesh-d" type="number" value="2" min="1" max="64" oninput="updateMesh()"/>
+        <span class="mesh-axis-label">t=</span>
+        <input class="mesh-val" id="mesh-t" type="number" value="2" min="1" max="64" oninput="updateMesh()"/>
+        <span class="mesh-total" id="mesh-total">4 chips</span>
+      </div>
+    </div>
+
+    <div class="sidebar-section">
+      <div class="section-label">render scale</div>
+      <div class="scale-row">
+        <button class="scale-btn" id="scale-log" onclick="setScaleMode('log')">log₂</button>
+        <button class="scale-btn" id="scale-cap" onclick="setScaleMode('cap')">cap</button>
+        <button class="scale-btn active" id="scale-raw" onclick="setScaleMode('raw')">raw</button>
+      </div>
+      <div class="scale-note" id="scale-note"></div>
+    </div>
+
+    <div class="section-label" style="padding: 14px 16px 0;">dim registry</div>
+    <div class="dim-registry" id="dim-registry"></div>
+    <div style="padding: 8px 16px 12px; border-top: 1px solid var(--border);">
+      <div class="dim-add-row">
+        <input class="dim-name" id="new-dim-name" placeholder="name" style="flex:1"/>
+        <input class="dim-val" id="new-dim-val" placeholder="size" style="width:70px" type="number" min="1"/>
+        <button onclick="addDim()">+</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- tensor mode -->
+  <div id="tensor-view" class="tensor-mode-canvas" style="display:none">
+    <div class="tensor-input-bar">
+      <span class="cell-type-badge" style="border-color:#1a3a1a;color:var(--accent)">tensor</span>
+      <input class="tensor-notation-input" id="tensor-input"
+        placeholder="batch seq d_model"
+        oninput="updateTensorMode(this.value)" />
+    </div>
+    <div id="tensor-body" class="tensor-mode-body"></div>
+  </div>
+
+  <!-- single einsum mode -->
+  <div id="single-view" class="single-canvas" style="display:none">
+    <div class="single-input-bar">
+      <span class="cell-type-badge einsum">einsum</span>
+      <input class="single-notation-input" id="single-input"
+        placeholder="batch seq d_model, d_model vocab -> batch seq vocab"
+        oninput="updateSingle(this.value)" />
+    </div>
+    <div id="single-body"></div>
+  </div>
+
+  <!-- forward pass mode -->
+  <div id="fwd-view" style="display:none;overflow-y:auto;padding:24px 28px;display:none;flex-direction:column;gap:0">
+    <div class="canvas" id="canvas" style="padding:0;overflow:visible"></div>
+  </div>
+</div>
+
+<script>
+// ══════════════════════════════════════════════════════════════
+// State
+// ══════════════════════════════════════════════════════════════
+
+let dims = {
+  batch: 2, seq: 4, d_model: 8, d_ff: 16,
+  d_head: 4, n_heads: 2, n_kv: 2, vocab: 32,
+};
+let mesh = { d: 2, t: 2 };
+let scaleMode = 'log'; // 'log' | 'cap' | 'raw'
+let appMode = 'tensor'; // 'tensor' | 'einsum' | 'fwd'
+let singleNotation = 'batch seq d_model, d_model vocab -> batch seq vocab';
+let tensorNotation = 'batch seq d_model';
+
+// ══════════════════════════════════════════════════════════════
+// Dim color palette
+// ══════════════════════════════════════════════════════════════
+
+// Muted, distinct hues — chosen to avoid conflicts with semantic colors
+// (green=output, blue=input, purple=sharding, orange=contracted, red=error)
+// tensorpro's exact partition color palette
+const DIM_PALETTE = [
+  '#7aa2f7', '#f7768e', '#9ece6a', '#e0af68', '#bb9af7',
+  '#7dcfff', '#c0caf5', '#73daca', '#f2cdcd', '#89b4fa',
+  '#94e2d5', '#f9e2af', '#cba6f7', '#a6e3a1', '#74c7ec',
+  '#eba0ac',
+];
+
+// Assign colors in insertion order (stable across re-renders)
+const dimColorMap = new Map(); // name -> color
+let dimColorIdx = 0;
+
+function dimColor(name) {
+  // Shard axis names (d, t, etc.) don't get dim colors — they stay purple
+  if (!dims[name] && !dimColorMap.has(name)) return null;
+  if (!dimColorMap.has(name)) {
+    dimColorMap.set(name, DIM_PALETTE[dimColorIdx % DIM_PALETTE.length]);
+    dimColorIdx++;
+  }
+  return dimColorMap.get(name);
+}
+
+function syncDimColors() {
+  // Ensure all current dims have colors assigned in registry order
+  for (const name of Object.keys(dims)) dimColor(name);
+  // Prune colors for deleted dims
+  for (const name of dimColorMap.keys()) {
+    if (!(name in dims)) dimColorMap.delete(name);
+  }
+}
+
+// Highlight notation string: color dim names, gray shard axes, dim arrow
+function highlightNotation(notation) {
+  // Tokenize: word chars, slashes, commas, arrows, spaces
+  const tokens = notation.split(/(\s+|->|,|\/)/);
+  let result = '';
+  let prevWasDim = false;
+  for (let i = 0; i < tokens.length; i++) {
+    const tok = tokens[i];
+    if (tok === '->') {
+      result += `<span style="color:var(--dim)">-&gt;</span>`;
+      prevWasDim = false;
+    } else if (tok === ',') {
+      result += `<span style="color:var(--dim)">,</span>`;
+      prevWasDim = false;
+    } else if (tok === '/') {
+      result += `<span style="color:var(--accent4)">/</span>`;
+      prevWasDim = false;
+    } else if (/^\s+$/.test(tok)) {
+      result += tok;
+      prevWasDim = false;
+    } else if (/^\w+$/.test(tok)) {
+      // Is it a dim name (in registry) or a shard axis (d/t/etc)?
+      const col = dimColor(tok);
+      if (col) {
+        result += `<span style="color:${col}">${tok}</span>`;
+      } else {
+        // Likely a shard axis name — show in purple
+        result += `<span style="color:var(--accent4)">${tok}</span>`;
+      }
+      prevWasDim = true;
+    } else {
+      result += tok;
+    }
+  }
+  return result;
+}
+// cells: [{id, kind:'einsum'|'collective', notation, collOp?}]
+// kind='einsum': notation is the full einsum spec
+// kind='collective': collOp='all_gather'|'psum_scatter'|'psum', notation is the spec string
+let cells = [];
+let nextId = 0;
+
+// ══════════════════════════════════════════════════════════════
+// GCD / ratio
+// ══════════════════════════════════════════════════════════════
+
+function gcd(a, b) { return b === 0 ? a : gcd(b, a % b); }
+function gcdAll(arr) { return arr.reduce((a, b) => gcd(a, b)); }
+
+function computeGCD() {
+  const vals = Object.values(dims).filter(v => v > 0);
+  if (vals.length === 0) return 1;
+  return gcdAll(vals);
+}
+
+function formatRatio(name) {
+  const v = dims[name];
+  if (!v) return '';
+  const g = computeGCD();
+  const r = v / g;
+  const log2 = Math.log2(r);
+  if (r === 1) return '1';
+  if (Number.isInteger(log2) && log2 > 0) return `2^${log2}`;
+  return String(r);
+}
+
+// ══════════════════════════════════════════════════════════════
+// Dim registry
+// ══════════════════════════════════════════════════════════════
+
+function renderDimRegistry() {
+  syncDimColors();
+  const el = document.getElementById('dim-registry');
+  el.innerHTML = '';
+  for (const [name, val] of Object.entries(dims)) {
+    const col = dimColor(name);
+    const row = document.createElement('div');
+    row.className = 'dim-row';
+    const ratio = formatRatio(name);
+    row.innerHTML = `
+      <div style="display:flex;align-items:center;gap:5px;min-width:0">
+        <div style="width:7px;height:7px;border-radius:1px;flex-shrink:0;background:${col || 'var(--dim)'}"></div>
+        <input class="dim-name" value="${name}" onchange="renameDim('${name}', this.value)"
+          style="color:${col || 'var(--text)'};flex:1;min-width:0" />
+      </div>
+      <input class="dim-val" type="number" value="${val}" min="1"
+             oninput="updateDim('${name}', parseInt(this.value))" />
+      <span class="dim-ratio" title="ratio to GCD">${ratio ? '×'+ratio : ''}</span>
+    `;
+    row.querySelector('.dim-name').addEventListener('contextmenu', e => {
+      e.preventDefault(); deleteDim(name);
+    });
+    el.appendChild(row);
+  }
+}
+
+function updateDim(name, val) {
+  if (!isNaN(val) && val > 0) { dims[name] = val; renderDimRegistry(); updateScaleNote(); renderCurrent(); }
+}
+
+function renameDim(oldName, newName) {
+  newName = newName.trim();
+  if (!newName || newName === oldName || dims[newName] !== undefined) return;
+  const entries = Object.entries(dims);
+  const idx = entries.findIndex(([k]) => k === oldName);
+  entries[idx] = [newName, dims[oldName]];
+  dims = Object.fromEntries(entries);
+  for (const c of cells) {
+    c.notation = c.notation.replace(new RegExp('\\b' + oldName + '\\b', 'g'), newName);
+  }
+  singleNotation = singleNotation.replace(new RegExp('\\b' + oldName + '\\b', 'g'), newName);
+  renderDimRegistry(); renderCurrent();
+}
+
+function deleteDim(name) { delete dims[name]; renderDimRegistry(); renderCurrent(); }
+
+function addDim() {
+  const n = document.getElementById('new-dim-name').value.trim();
+  const v = parseInt(document.getElementById('new-dim-val').value);
+  if (!n || isNaN(v) || v < 1) return;
+  dims[n] = v;
+  document.getElementById('new-dim-name').value = '';
+  document.getElementById('new-dim-val').value = '';
+  renderDimRegistry(); updateScaleNote(); renderCurrent();
+}
+
+// ══════════════════════════════════════════════════════════════
+// Mesh
+// ══════════════════════════════════════════════════════════════
+
+function updateMesh() {
+  mesh.d = parseInt(document.getElementById('mesh-d').value) || 1;
+  mesh.t = parseInt(document.getElementById('mesh-t').value) || 1;
+  document.getElementById('mesh-total').textContent = `${mesh.d * mesh.t} chips`;
+  renderCurrent();
+}
+
+// ══════════════════════════════════════════════════════════════
+// HuggingFace
+// ══════════════════════════════════════════════════════════════
+
+async function loadHF() {
+  const modelId = document.getElementById('hf-input').value.trim();
+  if (!modelId) return;
+  const status = document.getElementById('hf-status');
+  status.className = 'hf-status'; status.textContent = 'loading...';
+  try {
+    const resp = await fetch(`https://huggingface.co/${modelId}/resolve/main/config.json`);
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const config = await resp.json();
+    const extracted = extractDims(config);
+    if (!Object.keys(extracted).length) {
+      status.className = 'hf-status err'; status.textContent = 'no recognized dims'; return;
+    }
+    dims = { ...dims, ...extracted };
+    renderDimRegistry(); updateScaleNote(); renderCurrent();
+    status.className = 'hf-status ok';
+    status.textContent = `✓ ${modelId.split('/').pop()} — ${Object.keys(extracted).length} dims`;
+  } catch(e) {
+    status.className = 'hf-status err'; status.textContent = `error: ${e.message}`;
+  }
+}
+
+function extractDims(cfg) {
+  const result = {};
+  const map = [
+    ['hidden_size','d_model'], ['intermediate_size','d_ff'],
+    ['num_attention_heads','n_heads'], ['num_key_value_heads','n_kv'],
+    ['head_dim','d_head'], ['max_position_embeddings','seq'],
+    ['vocab_size','vocab'], ['num_hidden_layers','layers'],
+  ];
+  for (const [src, dst] of map) {
+    if (typeof cfg[src] === 'number') result[dst] = cfg[src];
+  }
+  if (!result.d_head && result.d_model && result.n_heads)
+    result.d_head = result.d_model / result.n_heads;
+  if (!result.batch) result.batch = 8;
+  return result;
+}
+
+// ══════════════════════════════════════════════════════════════
+// Parsing
+// ══════════════════════════════════════════════════════════════
+
+function parseDimSpec(s) {
+  const parts = s.split('/');
+  return { name: parts[0], shards: parts.slice(1) };
+}
+
+function parseOperand(s) {
+  return s.trim().split(/\s+/).filter(Boolean).map(parseDimSpec);
+}
+
+// Returns {inputs, output, error} for einsum
+// or {before, after, error} for collective
+function parseSpec(notation) {
+  const arrowIdx = notation.indexOf('->');
+  if (arrowIdx === -1) return { error: 'missing ->' };
+  const lhsStr = notation.slice(0, arrowIdx).trim();
+  const rhsStr = notation.slice(arrowIdx + 2).trim();
+  const operandStrs = lhsStr.split(',');
+  if (operandStrs.length > 3) return { error: 'too many operands' };
+  const inputs = operandStrs.map(parseOperand);
+  const output = parseOperand(rhsStr);
+  return { inputs, output, error: null };
+}
+
+function getDimSize(name) {
+  const n = Number(name);
+  if (!isNaN(n) && String(n) === name) return n;
+  return dims[name] ?? null;
+}
+
+function resolveOperandShape(operand) {
+  return operand.map(d => getDimSize(d.name));
+}
+
+// ══════════════════════════════════════════════════════════════
+// Chain: compute output type for each cell
+// Output type = {dimSpecs: [...], shape: [...]}  or null on error
+// ══════════════════════════════════════════════════════════════
+
+function computeOutputType(cell) {
+  if (!cell.notation.trim()) return null;
+  const parsed = parseSpec(cell.notation);
+  if (parsed.error) return null;
+
+  if (cell.kind === 'einsum') {
+    const shape = resolveOperandShape(parsed.output);
+    if (shape.some(s => s === null)) return null;
+    return { dimSpecs: parsed.output, shape };
+  }
+
+  if (cell.kind === 'collective') {
+    // For collectives, inputs has exactly one operand (the before side)
+    // output has the after side
+    if (parsed.inputs.length !== 1) return null;
+    const shape = resolveOperandShape(parsed.output);
+    if (shape.some(s => s === null)) return null;
+    return { dimSpecs: parsed.output, shape };
+  }
+
+  return null;
+}
+
+// Check if prevOutput matches the first input operand of parsed spec
+// Returns {match: bool, note: string}
+function checkChain(prevOutput, parsed) {
+  if (!prevOutput) return { match: false, note: 'no output from previous cell' };
+  const firstInput = parsed.inputs[0];
+  if (firstInput.length !== prevOutput.dimSpecs.length) {
+    return {
+      match: false,
+      note: `rank mismatch: prev output rank ${prevOutput.dimSpecs.length}, this input rank ${firstInput.length}`
+    };
+  }
+  // Check dim names match (ignoring sharding)
+  const mismatches = [];
+  firstInput.forEach((d, i) => {
+    const prev = prevOutput.dimSpecs[i];
+    if (d.name !== prev.name) {
+      mismatches.push(`dim[${i}]: ${prev.name} → ${d.name}`);
+    }
+  });
+  if (mismatches.length > 0) {
+    return { match: false, note: `dim name mismatch: ${mismatches.join(', ')}` };
+  }
+  // Check sharding continuity
+  const shardMismatches = [];
+  firstInput.forEach((d, i) => {
+    const prev = prevOutput.dimSpecs[i];
+    const prevShards = prev.shards.join('/');
+    const thisShards = d.shards.join('/');
+    if (prevShards !== thisShards) {
+      shardMismatches.push(`${d.name}: /${prevShards || '∅'} → /${thisShards || '∅'}`);
+    }
+  });
+  if (shardMismatches.length > 0) {
+    return {
+      match: false,
+      note: `sharding mismatch: ${shardMismatches.join(', ')}`
+    };
+  }
+  return { match: true, note: null };
+}
+
+// ══════════════════════════════════════════════════════════════
+// Einsum analysis
+// ══════════════════════════════════════════════════════════════
+
+function analyzeContraction(parsed) {
+  const outputNames = new Set(parsed.output.map(d => d.name));
+  const allInputNames = new Set(parsed.inputs.flatMap(op => op.map(d => d.name)));
+  const contracted = [], kept = [], batch = [], newDims = [];
+
+  for (const name of allInputNames) {
+    if (outputNames.has(name)) {
+      const count = parsed.inputs.filter(op => op.some(d => d.name === name)).length;
+      if (count === parsed.inputs.length && parsed.inputs.length > 1) batch.push(name);
+      else kept.push(name);
+    } else {
+      contracted.push(name);
+    }
+  }
+  for (const d of parsed.output) {
+    if (!allInputNames.has(d.name)) newDims.push(d.name);
+  }
+  return { contracted, kept, batch, newDims };
+}
+
+function analyzeComms(parsed) {
+  const { contracted } = analyzeContraction(parsed);
+  const contractedSet = new Set(contracted);
+  const comms = [];
+  const seen = new Set();
+
+  for (const op of parsed.inputs) {
+    for (const d of op) {
+      if (contractedSet.has(d.name) && d.shards.length > 0) {
+        const key = `psum:${d.name}:${d.shards.join(',')}`;
+        if (!seen.has(key)) {
+          seen.add(key);
+          comms.push({ type: 'psum', dim: d.name, axes: d.shards,
+            note: `contract sharded ${d.name}/[${d.shards}] → psum over [${d.shards}]` });
+        }
+      }
+    }
+  }
+
+  for (const op of parsed.inputs) {
+    for (const d of op) {
+      if (d.shards.length > 0) {
+        const outDim = parsed.output.find(o => o.name === d.name);
+        if (outDim && outDim.shards.length < d.shards.length) {
+          const axes = d.shards.slice(outDim.shards.length);
+          const key = `gather:${d.name}:${axes.join(',')}`;
+          if (!seen.has(key)) {
+            seen.add(key);
+            comms.push({ type: 'all_gather', dim: d.name, axes,
+              note: `${d.name} sharded in input, not in output → all_gather [${axes}]` });
+          }
+        }
+      }
+    }
+  }
+  return comms;
+}
+
+// ══════════════════════════════════════════════════════════════
+// Collective analysis
+// ══════════════════════════════════════════════════════════════
+
+function analyzeCollective(collOp, parsed) {
+  // Compare before (inputs[0]) and after (output) dim specs
+  // Find which axes changed
+  const before = parsed.inputs[0];
+  const after = parsed.output;
+  const changes = [];
+
+  before.forEach((bDim, i) => {
+    const aDim = after[i];
+    if (!aDim) return;
+    if (bDim.name !== aDim.name) {
+      changes.push({ kind: 'rename', from: bDim, to: aDim });
+      return;
+    }
+    const bShards = bDim.shards.join('/');
+    const aShards = aDim.shards.join('/');
+    if (bShards !== aShards) {
+      changes.push({ kind: 'reshard', dim: bDim.name, fromShards: bDim.shards, toShards: aDim.shards });
+    }
+  });
+
+  // Identify which axes are gathered/scattered
+  const gatheredAxes = [];
+  const scatteredAxes = [];
+  changes.forEach(c => {
+    if (c.kind !== 'reshard') return;
+    if (collOp === 'all_gather') {
+      // shards removed from dim = gathered
+      const removed = c.fromShards.filter(s => !c.toShards.includes(s));
+      gatheredAxes.push(...removed.map(a => ({ dim: c.dim, axis: a })));
+    } else if (collOp === 'psum_scatter') {
+      // shards added to dim = scattered
+      const added = c.toShards.filter(s => !c.fromShards.includes(s));
+      scatteredAxes.push(...added.map(a => ({ dim: c.dim, axis: a })));
+    }
+  });
+
+  return { changes, gatheredAxes, scatteredAxes };
+}
+
+// ══════════════════════════════════════════════════════════════
+// Tensor render (matrix-of-matrices, symbolic)
+// ══════════════════════════════════════════════════════════════
+
+// ══════════════════════════════════════════════════════════════
+// Render scale
+// ══════════════════════════════════════════════════════════════
+
+function setScaleMode(mode) {
+  scaleMode = mode;
+  ['log','cap','raw'].forEach(m => {
+    document.getElementById(`scale-${m}`).classList.toggle('active', m === mode);
+  });
+  updateScaleNote();
+  renderCurrent();
+}
+
+function updateScaleNote() {
+  const el = document.getElementById('scale-note');
+  if (scaleMode === 'log') {
+    el.textContent = '1 dot = 1 bit of size (log₂)';
+  } else if (scaleMode === 'raw') {
+    const g = computeGCD();
+    el.textContent = `1 dot = ${g} (GCD of all dims)`;
+  } else {
+    const { cap } = computeCapScale();
+    el.textContent = `cap=${cap} (smallest distinct mapping)`;
+  }
+}
+
+// Returns the smallest cap C >= 8 such that all dims map to distinct dot counts.
+// dot(s) = max(1, round(s / maxNorm * C))
+function computeCapScale() {
+  const vals = Object.values(dims).filter(v => v > 0);
+  if (vals.length === 0) return { cap: 8, map: {} };
+  const g = gcdAll(vals);
+  const normed = vals.map(v => v / g);
+  const maxNorm = Math.max(...normed);
+
+  let cap = 8;
+  while (cap <= 4096) {
+    const mapped = normed.map(s => Math.max(1, Math.round(s / maxNorm * cap)));
+    const unique = new Set(mapped);
+    if (unique.size === mapped.length) break;
+    cap++;
+  }
+
+  // Build name->dots map
+  const g2 = gcdAll(Object.values(dims).filter(v => v > 0));
+  const map = {};
+  for (const [name, val] of Object.entries(dims)) {
+    const norm = val / g2;
+    map[name] = Math.max(1, Math.round(norm / maxNorm * cap));
+  }
+  return { cap, map };
+}
+
+// Convert a logical dim size to dot count based on current scale mode
+function sizeToDots(size) {
+  if (!size || size <= 0) return 1;
+  if (scaleMode === 'log') {
+    return Math.max(1, Math.floor(Math.log2(size)));
+  }
+  if (scaleMode === 'raw') {
+    const g = computeGCD();
+    return Math.max(1, Math.round(size / g));
+  }
+  // cap
+  const vals = Object.values(dims).filter(v => v > 0);
+  if (vals.length === 0) return 1;
+  const g = gcdAll(vals);
+  const normed = vals.map(v => v / g);
+  const maxNorm = Math.max(...normed);
+  const { cap } = computeCapScale();
+  const norm = size / g;
+  return Math.max(1, Math.round(norm / maxNorm * cap));
+}
+
+// ── CSS grid tensor renderer ──────────────────────────────────
+// shape: [{name, size}, ...]
+// Returns an HTML string of nested inline-grid divs.
+// The matrix-of-matrices layout maps directly:
+//   ndim=1 → single row grid
+//   ndim=2 → rows×cols grid
+//   ndim≥3 → alternate hstack/vstack of sub-grids
+
+// Render matrix-of-matrices as nested CSS grid divs.
+// shape: [{name, size}, ...]
+// baseOpacity: opacity multiplier inherited from outer dim slice (0..1)
+//
+// Color strategy:
+//   - The innermost 2D base (rows×cols) uses the *column* dim's color.
+//   - Each slice along any outer dim gets a distinct opacity band,
+//     so you can visually distinguish slices at every level.
+//   - This means: color = "what's the column dim" (consistent within a block),
+//     brightness = "which slice of the outermost dim wrapping this block".
+// Render matrix-of-matrices as nested CSS grid divs.
+// shape: [{name, size}, ...]
+//
+// Color model (matches tensorpro partition coloring):
+//   - The OUTERMOST dim at each recursion level owns the color.
+//   - Each of its slices is rendered in that dim's color at a distinct opacity.
+//   - Opacity steps evenly from 0.3 (slice 0) to 1.0 (last slice) so you can count slices.
+//   - Sub-blocks recurse with the next dim owning color at that level.
+//   - At the 2D base: rows are colored by the row dim, all cells in a row share the same
+//     color+opacity. This gives a "partition stripe" look identical to tensorpro.
+function renderMatrixOfMatrices(shape) {
+  if (shape.length === 0) {
+    const col = '#7aa2f7';
+    return `<div class="tg" style="grid-template-columns:22px"><div class="tg-cell" style="background:${col}"></div></div>`;
+  }
+
+  const d0 = shape[0];
+  const n0 = sizeToDots(d0.size);
+  const d0col = dimColor(d0.name) || '#7aa2f7';
+
+  if (shape.length === 1) {
+    // Single row: n0 cells, all same color
+    const cells = Array(n0).fill(`<div class="tg-cell" style="background:${d0col}"></div>`).join('');
+    return `<div class="tg" style="grid-template-columns:repeat(${n0},22px)">${cells}</div>`;
+  }
+
+  if (shape.length === 2) {
+    // rows = d0 (colored by d0), cols = d1
+    // Each row is a distinct opacity of d0's color → partition stripe per row group
+    const n1 = sizeToDots(shape[1].size);
+    let cells = '';
+    for (let r = 0; r < n0; r++) {
+      const opacity = n0 === 1 ? 1.0 : (0.35 + 0.65 * (r / (n0 - 1)));
+      const opStr = opacity.toFixed(2);
+      for (let c = 0; c < n1; c++) {
+        cells += `<div class="tg-cell" style="background:${d0col};opacity:${opStr}"></div>`;
+      }
+    }
+    return `<div class="tg" style="grid-template-columns:repeat(${n1},22px)">${cells}</div>`;
+  }
+
+  // ndim ≥ 3: d0 owns the stacking level; each of its n0 slices is a sub-block
+  // rendered with the remaining dims, wrapped in a div at a distinct opacity.
+  const subShape = shape.slice(1);
+  const dimOffset = shape.length - 2;
+  const stackH = (dimOffset % 2 === 1);
+
+  const subs = Array.from({length: n0}, (_, i) => {
+    const opacity = n0 === 1 ? 1.0 : (0.3 + 0.7 * (i / (n0 - 1)));
+    const subHtml = renderMatrixOfMatrices(subShape);
+    // Border on leading edge with d0's color so you can see which dim stacks here
+    const borderSide = stackH ? 'border-left' : 'border-top';
+    return `<div style="${borderSide}:3px solid ${d0col};opacity:${opacity.toFixed(2)};display:inline-flex;vertical-align:top">${subHtml}</div>`;
+  });
+
+  if (stackH) {
+    const useSep = shape.length >= 5;
+    let inner = '';
+    subs.forEach((s, i) => {
+      inner += s;
+      if (useSep && i < subs.length - 1) inner += `<div class="tg-hsep"></div>`;
+    });
+    return `<div class="tg-hstack${useSep ? ' with-sep' : ''}">${inner}</div>`;
+  } else {
+    const useSep = shape.length >= 6;
+    let inner = '';
+    subs.forEach((s, i) => {
+      inner += s;
+      if (useSep && i < subs.length - 1) inner += `<div class="tg-vsep"></div>`;
+    });
+    return `<div class="tg-vstack${useSep ? ' with-sep' : ''}">${inner}</div>`;
+  }
+}
+
+// MAX_RENDER_PX: if the natural render is wider/taller than this,
+// scale it down via transform. Avoids scroll, preserves aspect ratio.
+const MAX_RENDER_PX = 600;
+
+// cellPx: rendered cell size. Defaults to 22 to match .tg-cell CSS.
+function renderTensorGrid(namedShape, cellPx) {
+  const px = cellPx || 22;
+  const inner = renderMatrixOfMatrices(namedShape);
+  const cols = computeGridCols(namedShape);
+  const rows = computeGridRows(namedShape);
+  const gap = 1;
+  const naturalW = cols * px + Math.max(0, cols - 1) * gap + 2; // +2 for tg padding
+  const naturalH = rows * px + Math.max(0, rows - 1) * gap + 2;
+  const scale = Math.min(1, MAX_RENDER_PX / Math.max(naturalW, naturalH, 1));
+  const scaleStr = scale < 1 ? `style="transform:scale(${scale.toFixed(3)});width:${naturalW}px;height:${naturalH}px"` : '';
+  return `<div class="tensor-render-wrap" ${scaleStr}>${inner}</div>`;
+}
+
+// Compute total columns a rendered shape would occupy (for scaling)
+function computeGridCols(shape) {
+  if (shape.length === 0) return 1;
+  if (shape.length === 1) return sizeToDots(shape[0].size);
+  if (shape.length === 2) return sizeToDots(shape[1].size);
+  const dimOffset = shape.length - 2;
+  const stackH = (dimOffset % 2 === 1);
+  const n0 = sizeToDots(shape[0].size);
+  const subCols = computeGridCols(shape.slice(1));
+  const subRows = computeGridRows(shape.slice(1));
+  if (stackH) {
+    // hstack: total cols = n0 * subCols + (n0-1) gaps (gaps are tiny, ignore)
+    return n0 * subCols + (n0 - 1);
+  } else {
+    return subCols;
+  }
+}
+
+function computeGridRows(shape) {
+  if (shape.length === 0) return 1;
+  if (shape.length === 1) return 1;
+  if (shape.length === 2) return sizeToDots(shape[0].size);
+  const dimOffset = shape.length - 2;
+  const stackH = (dimOffset % 2 === 1);
+  const n0 = sizeToDots(shape[0].size);
+  const subRows = computeGridRows(shape.slice(1));
+  if (stackH) {
+    return subRows;
+  } else {
+    return n0 * subRows + (n0 - 1);
+  }
+}
+
+function renderTensorBlock(dimSpecs, shape, label, isOutput, isChained) {
+  const hasUnknown = !shape || shape.some(s => s === null || s <= 0);
+  const nameClass = isChained ? 'chained' : isOutput ? 'output' : '';
+
+  const dimAnn = dimSpecs.map((d, i) => {
+    const sz = shape ? shape[i] : '?';
+    const col = dimColor(d.name) || 'var(--mid)';
+    const shardStr = d.shards.length
+      ? `<span style="color:var(--accent4)">/${d.shards.join('/')}</span>`
+      : '';
+    const ratio = formatRatio(d.name);
+    const ratioStr = ratio ? `<span style="color:var(--dim);font-size:9px">(${ratio})</span>` : '';
+    const dots = (!hasUnknown && sz) ? sizeToDots(sz) : null;
+    const dotsStr = dots !== null ? `<span style="color:var(--dim);font-size:9px">[${dots}]</span>` : '';
+    return `<span style="color:${col}">${d.name}</span>${shardStr} ${ratioStr}<span style="color:var(--text)">${sz ?? '?'}</span>${dotsStr}`;
+  }).join(' <span style="color:var(--dim)">×</span> ');
+
+  const namedShape = hasUnknown ? null : shape.map((sz, i) => ({ name: dimSpecs[i]?.name, size: sz }));
+
+  const gridHtml = hasUnknown
+    ? `<span style="color:var(--accent5);font-size:11px">? (unknown dims)</span>`
+    : renderTensorGrid(namedShape);
+
+  return `<div class="tensor-block">
+    <div class="tensor-label">
+      <span class="tname ${nameClass}">${label}</span>
+      ${shape ? `<span class="tensor-shape-str">[${shape.join('×')}]</span>` : ''}
+    </div>
+    <div class="dim-ann">${dimAnn}</div>
+    <div class="tensor-render">${gridHtml}</div>
+  </div>`;
+}
+
+// ══════════════════════════════════════════════════════════════
+// Render: einsum cell body
+// ══════════════════════════════════════════════════════════════
+
+function renderEinsumBody(cell, parsed, prevOutput) {
+  const inputShapes = parsed.inputs.map(op => resolveOperandShape(op));
+  const outputShape = resolveOperandShape(parsed.output);
+  const errors = [];
+
+  parsed.inputs.forEach((op, oi) => {
+    op.forEach(d => { if (getDimSize(d.name) === null) errors.push(`unknown dim '${d.name}'`); });
+  });
+  parsed.output.forEach(d => { if (getDimSize(d.name) === null) errors.push(`unknown dim '${d.name}' in output`); });
+
+  if (errors.length) {
+    return { body: '', error: errors.join('; ') };
+  }
+
+  const analysis = analyzeContraction(parsed);
+  const comms = analyzeComms(parsed);
+
+  // Tensor flow
+  let flowHtml = '<div class="tensor-flow">';
+  parsed.inputs.forEach((op, i) => {
+    if (i > 0) flowHtml += `<div class="op-arrow"><span class="op-symbol" style="font-size:13px">⊗</span></div>`;
+    const isChained = (i === 0 && prevOutput !== null);
+    const varName = i === 0
+      ? (prevOutput ? `<span style="color:var(--accent3)">x</span>` : `x`)
+      : `w`;
+    flowHtml += renderTensorBlock(op, inputShapes[i], varName, false, isChained);
+  });
+  flowHtml += `<div class="op-arrow">
+    <span class="op-symbol" style="color:var(--accent)">→</span>
+    <span class="op-label">einsum</span>
+  </div>`;
+  flowHtml += renderTensorBlock(parsed.output, outputShape, `y`, true, false);
+  flowHtml += '</div>';
+
+  // Summary
+  let summaryHtml = '<div class="summary-row">';
+  if (analysis.batch.length) summaryHtml += summaryGroup('batch', analysis.batch.map(n => badge(n,'kept')));
+  if (analysis.kept.length) summaryHtml += summaryGroup('kept', analysis.kept.map(n => badge(n,'kept')));
+  if (analysis.contracted.length) summaryHtml += summaryGroup('∑ contracted', analysis.contracted.map(n => badge(n,'contracted')));
+  if (analysis.newDims.length) summaryHtml += summaryGroup('new', analysis.newDims.map(n => badge(n,'kept')));
+  if (comms.length) {
+    const badges = comms.map(c =>
+      `<span class="dim-badge ${c.type === 'psum' ? 'comm-psum' : 'comm-gather'}" title="${c.note}">${c.type}(${c.axes.join(',')})</span>`
+    ).join('');
+    summaryHtml += summaryGroup('comm', badges);
+  }
+  summaryHtml += '</div>';
+
+  // Sharding per-chip if any sharded dims
+  const anySharded = [...parsed.inputs.flat(), ...parsed.output].some(d => d.shards.length > 0);
+  let shardHtml = '';
+  if (anySharded) {
+    shardHtml = '<div class="sharding-panel"><div class="section-label">per-chip shapes</div><div class="shard-grid">';
+    const tensors = [
+      ...parsed.inputs.map((op, i) => ({ op, shape: inputShapes[i], label: `in${i+1}` })),
+      { op: parsed.output, shape: outputShape, label: 'out' }
+    ];
+    for (const { op, shape, label } of tensors) {
+      const chipShapes = op.map((d, i) => {
+        const sz = shape[i];
+        const div = d.shards.reduce((acc, s) => acc * (mesh[s] || 1), 1);
+        const perChip = sz !== null ? sz / div : '?';
+        const shardStr = d.shards.length ? `<span style="color:var(--accent4)">/${d.shards.join('/')}</span>` : '';
+        return `<span style="color:var(--mid)">${d.name}</span>${shardStr}=<span style="color:var(--text)">${perChip}</span>`;
+      }).join(' × ');
+      shardHtml += `<div class="shard-chip"><div class="chip-label">${label}</div><div class="chip-shape">${chipShapes}</div></div>`;
+    }
+    shardHtml += '</div></div>';
+  }
+
+  return {
+    body: `<div class="cell-body">${flowHtml}${summaryHtml}</div>${shardHtml}`,
+    error: null
+  };
+}
+
+// ══════════════════════════════════════════════════════════════
+// Render: collective cell body
+// ══════════════════════════════════════════════════════════════
+
+function renderCollectiveBody(cell, parsed, prevOutput) {
+  if (parsed.inputs.length !== 1) {
+    return { body: '', error: 'collective takes exactly one operand' };
+  }
+
+  const before = parsed.inputs[0];
+  const after = parsed.output;
+
+  if (before.length !== after.length) {
+    return { body: '', error: 'before and after must have same number of dims' };
+  }
+
+  const errors = [];
+  [...before, ...after].forEach(d => {
+    if (getDimSize(d.name) === null) errors.push(`unknown dim '${d.name}'`);
+  });
+  if (errors.length) return { body: '', error: errors.join('; ') };
+
+  const beforeShape = resolveOperandShape(before);
+  const afterShape = resolveOperandShape(after);
+  const analysis = analyzeCollective(cell.collOp, parsed);
+
+  const isChained = prevOutput !== null;
+
+  // Colors per op
+  const opColors = {
+    all_gather: '#fb923c',
+    psum_scatter: 'var(--accent5)',
+    psum: '#e879f9',
+  };
+  const opColor = opColors[cell.collOp] || 'var(--mid)';
+
+  // Show axis changes
+  let axesHtml = '<div class="collective-axes">';
+  if (analysis.changes.length === 0) {
+    axesHtml += `<span style="color:var(--dim)">no sharding change detected</span>`;
+  } else {
+    analysis.changes.forEach(c => {
+      if (c.kind === 'reshard') {
+        const fromStr = c.fromShards.length ? `/${c.fromShards.join('/')}` : '';
+        const toStr = c.toShards.length ? `/${c.toShards.join('/')}` : '';
+        axesHtml += `<div class="axis-change">
+          <span class="dim-name-str">${c.dim}</span>
+          <span class="shard-before">${fromStr || '∅'}</span>
+          <span class="arrow" style="color:${opColor}"> → </span>
+          <span class="shard-after">${toStr || '∅'}</span>
+        </div>`;
+      }
+    });
+  }
+  axesHtml += '</div>';
+
+  // What the collective means
+  let semanticNote = '';
+  if (cell.collOp === 'all_gather') {
+    const axes = analysis.gatheredAxes.map(a => `${a.dim}/${a.axis}`).join(', ');
+    semanticNote = axes
+      ? `gather: each chip collects its shards of <span style="color:#fb923c">${axes}</span> from all peers`
+      : `all_gather: no shard axes removed`;
+  } else if (cell.collOp === 'psum_scatter') {
+    const axes = analysis.scatteredAxes.map(a => `${a.dim}/${a.axis}`).join(', ');
+    semanticNote = axes
+      ? `reduce-scatter: sum partial results, scatter <span style="color:var(--accent5)">${axes}</span> across chips`
+      : `psum_scatter: no new shard axes added`;
+  } else if (cell.collOp === 'psum') {
+    semanticNote = `all-reduce: sum over all chips, every chip gets the full result`;
+  }
+
+  // Per-chip shape change
+  const beforeChip = before.map((d, i) => {
+    const sz = beforeShape[i];
+    const div = d.shards.reduce((acc, s) => acc * (mesh[s] || 1), 1);
+    return sz !== null ? sz / div : '?';
+  });
+  const afterChip = after.map((d, i) => {
+    const sz = afterShape[i];
+    const div = d.shards.reduce((acc, s) => acc * (mesh[s] || 1), 1);
+    return sz !== null ? sz / div : '?';
+  });
+
+  const beforeChipStr = before.map((d, i) => {
+    const shd = d.shards.length ? `<span style="color:var(--accent4)">/${d.shards.join('/')}</span>` : '';
+    return `<span style="color:var(--mid)">${d.name}</span>${shd}=<b style="color:var(--text)">${beforeChip[i]}</b>`;
+  }).join(' × ');
+  const afterChipStr = after.map((d, i) => {
+    const shd = d.shards.length ? `<span style="color:var(--accent4)">/${d.shards.join('/')}</span>` : '';
+    return `<span style="color:var(--mid)">${d.name}</span>${shd}=<b style="color:var(--text)">${afterChip[i]}</b>`;
+  }).join(' × ');
+
+  let flowHtml = '<div class="tensor-flow">';
+  flowHtml += renderTensorBlock(before, beforeShape, 'in', false, isChained);
+  flowHtml += `<div class="op-arrow">
+    <span class="op-symbol" style="color:${opColor}">→</span>
+    <span class="op-label" style="color:${opColor}">${cell.collOp}</span>
+  </div>`;
+  flowHtml += renderTensorBlock(after, afterShape, 'out', true, false);
+  flowHtml += '</div>';
+
+  const chipChangeHtml = `
+    <div class="summary-row" style="border-top:1px solid var(--border);padding-top:8px">
+      <div class="summary-group">
+        <div class="summary-label">per-chip before</div>
+        <div style="font-size:11px">${beforeChipStr}</div>
+      </div>
+      <div style="color:${opColor};padding-top:16px">→</div>
+      <div class="summary-group">
+        <div class="summary-label">per-chip after</div>
+        <div style="font-size:11px">${afterChipStr}</div>
+      </div>
+    </div>`;
+
+  const semanticHtml = semanticNote
+    ? `<div style="font-size:11px;color:var(--dim);padding-top:4px">${semanticNote}</div>`
+    : '';
+
+  return {
+    body: `<div class="cell-body">${flowHtml}${axesHtml}${chipChangeHtml}${semanticHtml}</div>`,
+    error: null
+  };
+}
+
+// ══════════════════════════════════════════════════════════════
+// Badge / summary helpers
+// ══════════════════════════════════════════════════════════════
+
+function badge(name, type) {
+  const sz = getDimSize(name);
+  const ratio = formatRatio(name);
+  return `<span class="dim-badge ${type}" title="${name}=${sz}">${name}${ratio && ratio!=='1' ? `<span style="font-size:8px;color:var(--dim)"> ×${ratio}</span>` : ''}</span>`;
+}
+
+function summaryGroup(label, content) {
+  const inner = typeof content === 'string' ? content : content.join('');
+  return `<div class="summary-group"><div class="summary-label">${label}</div><div class="summary-dims">${inner}</div></div>`;
+}
+
+// ══════════════════════════════════════════════════════════════
+// Full cell render
+// ══════════════════════════════════════════════════════════════
+
+function renderCell(cell, prevOutput) {
+  const notation = cell.notation || '';
+  const isCollective = cell.kind === 'collective';
+  const typeLabel = isCollective ? cell.collOp : 'einsum';
+  const typeClass = isCollective ? `collective ${cell.collOp}` : 'einsum';
+
+  const placeholder = isCollective
+    ? placeholderForOp(cell.collOp)
+    : 'batch seq d_model, d_model vocab -> batch seq vocab';
+
+  let bodyHtml = '';
+  let errorHtml = '';
+
+  if (notation.trim()) {
+    const parsed = parseSpec(notation);
+    if (parsed.error) {
+      errorHtml = `<div class="cell-error">parse error: ${parsed.error}</div>`;
+    } else {
+      const { body, error } = isCollective
+        ? renderCollectiveBody(cell, parsed, prevOutput)
+        : renderEinsumBody(cell, parsed, prevOutput);
+      bodyHtml = body;
+      if (error) errorHtml = `<div class="cell-error">${error}</div>`;
+    }
+  }
+
+  return `<div class="cell type-${cell.kind}" id="cell-${cell.id}">
+    <div class="cell-header">
+      <span class="cell-index">${cells.indexOf(cell)}</span>
+      <span class="cell-type-badge ${typeClass}">${typeLabel}</span>
+      <div class="cell-input-wrap">
+        <input class="cell-input"
+          value="${escapeAttr(notation)}"
+          placeholder="${escapeAttr(placeholder)}"
+          oninput="updateCell(${cell.id}, this.value)"
+          onkeydown="cellKeydown(event, ${cell.id})"
+        />
+      </div>
+      <div class="cell-actions">
+        <button onclick="duplicateCell(${cell.id})">dup</button>
+        <button class="danger" onclick="deleteCell(${cell.id})">×</button>
+      </div>
+    </div>
+    ${bodyHtml}
+    ${errorHtml}
+  </div>`;
+}
+
+function placeholderForOp(op) {
+  if (op === 'all_gather') return 'A/d B/t C -> A/d B C   (gather t axis from B)';
+  if (op === 'psum_scatter') return 'A/d B C -> A/d B C/t   (reduce-scatter C over t)';
+  if (op === 'psum') return 'A/d B -> A B   (all-reduce, remove sharding)';
+  return '';
+}
+
+function escapeAttr(s) {
+  return s.replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+// ══════════════════════════════════════════════════════════════
+// Chain connector render
+// ══════════════════════════════════════════════════════════════
+
+function renderChainConnector(prevOutput, nextCell) {
+  if (!nextCell.notation.trim() || !prevOutput) {
+    return `<div class="chain-connector"><div class="chain-wire"></div></div>`;
+  }
+  const parsed = parseSpec(nextCell.notation);
+  if (parsed.error || !parsed.inputs.length) {
+    return `<div class="chain-connector"><div class="chain-wire"></div></div>`;
+  }
+  const { match, note } = checkChain(prevOutput, parsed);
+  if (match) {
+    return `<div class="chain-connector" style="height:32px">
+      <div class="chain-wire"></div>
+      <span class="chain-ok-note">shape ok</span>
+    </div>`;
+  } else {
+    return `<div class="chain-connector" style="height:32px">
+      <div class="chain-wire has-mismatch"></div>
+      <span class="chain-mismatch-note" title="${note}">⚠ ${note}</span>
+    </div>`;
+  }
+}
+
+// ══════════════════════════════════════════════════════════════
+// Cell management
+// ══════════════════════════════════════════════════════════════
+
+function addEinsumCell(notation) {
+  const id = nextId++;
+  cells.push({ id, kind: 'einsum', notation: notation || '' });
+  renderAllCells();
+  focusCell(id);
+}
+
+function addCollectiveCell(op, notation) {
+  const id = nextId++;
+  cells.push({ id, kind: 'collective', collOp: op, notation: notation || '' });
+  renderAllCells();
+  focusCell(id);
+}
+
+function updateCell(id, notation) {
+  const cell = cells.find(c => c.id === id);
+  if (!cell) return;
+  const caretPos = document.querySelector(`#cell-${id} .cell-input`)?.selectionStart;
+  cell.notation = notation;
+  renderAllCells();
+  // Restore focus + caret
+  const input = document.querySelector(`#cell-${id} .cell-input`);
+  if (input) {
+    input.focus();
+    if (caretPos !== undefined) {
+      try { input.setSelectionRange(caretPos, caretPos); } catch(e) {}
+    }
+  }
+}
+
+function deleteCell(id) {
+  cells = cells.filter(c => c.id !== id);
+  renderAllCells();
+}
+
+function duplicateCell(id) {
+  const cell = cells.find(c => c.id === id);
+  if (!cell) return;
+  const idx = cells.findIndex(c => c.id === id);
+  const newCell = { ...cell, id: nextId++ };
+  cells.splice(idx + 1, 0, newCell);
+  renderAllCells();
+}
+
+function clearAll() { cells = []; renderAllCells(); }
+
+function focusCell(id) {
+  setTimeout(() => {
+    const input = document.querySelector(`#cell-${id} .cell-input`);
+    if (input) input.focus();
+  }, 30);
+}
+
+function cellKeydown(e, id) {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
+    addEinsumCell();
+  }
+}
+
+// ══════════════════════════════════════════════════════════════
+// Mode switching
+// ══════════════════════════════════════════════════════════════
+
+const MODES = ['tensor', 'einsum', 'fwd'];
+
+function setMode(mode) {
+  appMode = mode;
+
+  MODES.forEach(m => {
+    const tab = document.getElementById(`tab-${m}`);
+    if (tab) tab.classList.toggle('active', m === mode);
+  });
+
+  document.getElementById('tensor-view').style.display  = mode === 'tensor'  ? 'flex'  : 'none';
+  document.getElementById('single-view').style.display  = mode === 'einsum'  ? 'flex'  : 'none';
+  document.getElementById('fwd-view').style.display     = mode === 'fwd'     ? 'flex'  : 'none';
+  document.getElementById('fwd-controls').style.display = mode === 'fwd'     ? 'flex'  : 'none';
+
+  renderCurrent();
+}
+
+// ══════════════════════════════════════════════════════════════
+// Tensor mode
+// ══════════════════════════════════════════════════════════════
+
+const LAYOUT_RULES = [
+  { ndim: 1, desc: 'row of cells' },
+  { ndim: 2, desc: 'rows × cols grid' },
+  { ndim: 3, desc: 'horizontal stack of 2D matrices' },
+  { ndim: 4, desc: 'vertical stack of 3D blocks' },
+  { ndim: 5, desc: 'horizontal stack of 4D blocks  (with : separator)' },
+  { ndim: 6, desc: 'vertical stack of 5D blocks  (with ─ separator)' },
+  { ndim: 7, desc: 'horizontal stack of 6D blocks  (with :: separator)' },
+  { ndim: 8, desc: 'vertical stack of 7D blocks  (with ── separator)' },
+];
+
+function updateTensorMode(notation) {
+  tensorNotation = notation;
+  renderTensorMode();
+}
+
+function renderTensorMode() {
+  const inputEl = document.getElementById('tensor-input');
+  if (inputEl && inputEl.value !== tensorNotation) inputEl.value = tensorNotation;
+
+  const bodyEl = document.getElementById('tensor-body');
+  if (!bodyEl) return;
+
+  const notation = tensorNotation.trim();
+  if (!notation) { bodyEl.innerHTML = ''; return; }
+
+  // Parse as a single operand (no arrow needed)
+  const dimSpecs = parseOperand(notation);
+  const errors = [];
+  dimSpecs.forEach(d => {
+    if (getDimSize(d.name) === null) errors.push(`unknown dim '${d.name}'`);
+  });
+  if (errors.length) {
+    bodyEl.innerHTML = `<div style="color:var(--accent5);font-size:12px">${errors.join('; ')}</div>`;
+    return;
+  }
+
+  const shape = dimSpecs.map(d => ({ name: d.name, size: getDimSize(d.name) }));
+  const ndim = shape.length;
+
+  const gridHtml = renderTensorGrid(shape);
+
+  // Dim annotations with color swatches
+  const dimAnnHtml = shape.map(d => {
+    const col = dimColor(d.name) || 'var(--mid)';
+    const shardSpec = dimSpecs.find(s => s.name === d.name);
+    const shardStr = shardSpec?.shards.length
+      ? `<span style="color:var(--accent4)">/${shardSpec.shards.join('/')}</span>` : '';
+    const ratio = formatRatio(d.name);
+    const dots = sizeToDots(d.size);
+    return `<div class="dim-shape-token">
+      <div class="dim-swatch" style="background:${col}"></div>
+      <span style="color:${col}">${d.name}</span>${shardStr}
+      <span style="color:var(--dim)">=${d.size}</span>
+      <span style="color:var(--dim);font-size:9px">[${dots}]</span>
+      ${ratio ? `<span style="color:var(--dim);font-size:9px">(×${ratio})</span>` : ''}
+    </div>`;
+  }).join('<span style="color:var(--dim);padding:0 4px">×</span>');
+
+  // Layout explanation — highlight the active rule
+  const rulesHtml = LAYOUT_RULES.map(r => {
+    const isActive = r.ndim === ndim;
+    return `<div class="layout-rule">
+      <span class="rule-ndim">${r.ndim}D</span>
+      <span class="${isActive ? 'rule-active' : 'rule-desc'}">${r.desc}${isActive ? ' ←' : ''}</span>
+    </div>`;
+  }).join('');
+
+  bodyEl.innerHTML = `
+    <div class="tensor-display">
+      <div class="dim-shape-ann">${dimAnnHtml}</div>
+      <div class="tensor-big-render">${gridHtml}</div>
+    </div>
+    <div class="layout-explanation">
+      <div style="font-size:10px;letter-spacing:0.1em;text-transform:uppercase;color:var(--dim);margin-bottom:4px">matrix-of-matrices layout</div>
+      ${rulesHtml}
+    </div>
+  `;
+}
+
+// ══════════════════════════════════════════════════════════════
+// Single einsum mode
+// ══════════════════════════════════════════════════════════════
+
+function updateSingle(notation) {
+  singleNotation = notation;
+  renderSingle();
+}
+
+function renderSingle() {
+  // Keep input in sync (called from dim/mesh changes too)
+  const inputEl = document.getElementById('single-input');
+  if (inputEl && inputEl.value !== singleNotation) inputEl.value = singleNotation;
+
+  const bodyEl = document.getElementById('single-body');
+  if (!bodyEl) return;
+
+  const notation = singleNotation.trim();
+  if (!notation) {
+    bodyEl.innerHTML = '';
+    return;
+  }
+
+  const parsed = parseSpec(notation);
+  if (parsed.error) {
+    bodyEl.innerHTML = `<div class="single-error">parse error: ${parsed.error}</div>`;
+    return;
+  }
+
+  const inputShapes = parsed.inputs.map(op => resolveOperandShape(op));
+  const outputShape = resolveOperandShape(parsed.output);
+
+  const errors = [];
+  parsed.inputs.forEach(op => op.forEach(d => {
+    if (getDimSize(d.name) === null) errors.push(`unknown dim '${d.name}'`);
+  }));
+  parsed.output.forEach(d => {
+    if (getDimSize(d.name) === null) errors.push(`unknown dim '${d.name}' in output`);
+  });
+  if (errors.length) {
+    bodyEl.innerHTML = `<div class="single-error">${errors.join('; ')}</div>`;
+    return;
+  }
+
+  const analysis = analyzeContraction(parsed);
+  const comms = analyzeComms(parsed);
+
+  // Flow: inputs ⊗ ... → output
+  let flowHtml = '<div class="single-flow">';
+  parsed.inputs.forEach((op, i) => {
+    if (i > 0) {
+      flowHtml += `<div class="op-arrow" style="padding-top:40px">
+        <span class="op-symbol" style="font-size:16px">⊗</span>
+      </div>`;
+    }
+    flowHtml += renderTensorBlock(op, inputShapes[i], i === 0 ? 'x' : 'w', false, false);
+  });
+  flowHtml += `<div class="op-arrow" style="padding-top:40px">
+    <span class="op-symbol" style="color:var(--accent);font-size:16px">→</span>
+    <span class="op-label">einsum</span>
+  </div>`;
+  flowHtml += renderTensorBlock(parsed.output, outputShape, 'y', true, false);
+  flowHtml += '</div>';
+
+  // Summary
+  let summaryHtml = '<div class="single-summary">';
+  if (analysis.batch.length)      summaryHtml += summaryGroup('batch',       analysis.batch.map(n => badge(n, 'kept')));
+  if (analysis.kept.length)       summaryHtml += summaryGroup('kept',        analysis.kept.map(n => badge(n, 'kept')));
+  if (analysis.contracted.length) summaryHtml += summaryGroup('∑ contracted', analysis.contracted.map(n => badge(n, 'contracted')));
+  if (analysis.newDims.length)    summaryHtml += summaryGroup('new',         analysis.newDims.map(n => badge(n, 'kept')));
+  if (comms.length) {
+    const commBadges = comms.map(c =>
+      `<span class="dim-badge ${c.type === 'psum' ? 'comm-psum' : 'comm-gather'}" title="${c.note}">${c.type}(${c.axes.join(',')})</span>`
+    ).join('');
+    summaryHtml += summaryGroup('comm required', commBadges);
+  }
+  summaryHtml += '</div>';
+
+  // Per-chip sharding if sharded dims present
+  const anySharded = [...parsed.inputs.flat(), ...parsed.output].some(d => d.shards.length > 0);
+  let shardHtml = '';
+  if (anySharded) {
+    shardHtml = '<div class="sharding-panel" style="border-top:1px solid var(--border);padding:12px 0"><div class="section-label">per-chip shapes</div><div class="shard-grid">';
+    const tensors = [
+      ...parsed.inputs.map((op, i) => ({ op, shape: inputShapes[i], label: `in${i + 1}` })),
+      { op: parsed.output, shape: outputShape, label: 'out' },
+    ];
+    for (const { op, shape, label } of tensors) {
+      const chipShapes = op.map((d, i) => {
+        const sz = shape[i];
+        const div = d.shards.reduce((acc, s) => acc * (mesh[s] || 1), 1);
+        const perChip = sz !== null ? sz / div : '?';
+        const shardStr = d.shards.length ? `<span style="color:var(--accent4)">/${d.shards.join('/')}</span>` : '';
+        return `<span style="color:var(--mid)">${d.name}</span>${shardStr}=<span style="color:var(--text)">${perChip}</span>`;
+      }).join(' × ');
+      shardHtml += `<div class="shard-chip"><div class="chip-label">${label}</div><div class="chip-shape">${chipShapes}</div></div>`;
+    }
+    shardHtml += '</div></div>';
+  }
+
+  bodyEl.innerHTML = `<div class="single-body">${flowHtml}${summaryHtml}${shardHtml}</div>`;
+}
+
+// ══════════════════════════════════════════════════════════════
+// Main render — threads chain output through
+// ══════════════════════════════════════════════════════════════
+
+function renderCurrent() {
+  if (appMode === 'tensor') renderTensorMode();
+  else if (appMode === 'einsum') renderSingle();
+  else renderAllCells();
+}
+
+function renderAllCells() {
+  const canvas = document.getElementById('canvas');
+  let html = '';
+
+  let prevOutput = null;
+
+  cells.forEach((cell, idx) => {
+    if (idx > 0) {
+      html += renderChainConnector(prevOutput, cell);
+    }
+    html += renderCell(cell, prevOutput);
+    // Compute this cell's output for chaining
+    prevOutput = computeOutputType(cell);
+  });
+
+  html += `<div class="add-cell-area">
+    <button class="add-cell-btn" onclick="addEinsumCell()">+ einsum</button>
+    <button class="add-collective-btn" onclick="addCollectiveCell('all_gather')">+ all_gather</button>
+    <button class="add-collective-btn" onclick="addCollectiveCell('psum_scatter')">+ psum_scatter</button>
+    <button class="add-collective-btn" onclick="addCollectiveCell('psum')">+ psum</button>
+  </div>`;
+
+  canvas.innerHTML = html;
+}
+
+// ══════════════════════════════════════════════════════════════
+// Init
+// ══════════════════════════════════════════════════════════════
+
+document.addEventListener('DOMContentLoaded', () => {
+  document.getElementById('new-dim-name').addEventListener('keydown', e => { if(e.key==='Enter') addDim(); });
+  document.getElementById('new-dim-val').addEventListener('keydown', e => { if(e.key==='Enter') addDim(); });
+  document.getElementById('hf-input').addEventListener('keydown', e => { if(e.key==='Enter') loadHF(); });
+});
+
+function init() {
+  renderDimRegistry();
+  updateMesh();
+  updateScaleNote();
+
+  // Seed forward pass cells (hidden until user switches to that mode)
+  cells = [];
+  const fwdSeeds = [
+    { kind: 'einsum', notation: 'batch/d seq d_model/t, d_model/d n_heads/t d_head -> batch/d seq n_heads/t d_head' },
+    { kind: 'collective', collOp: 'all_gather', notation: 'batch/d seq n_heads/t d_head -> batch/d seq n_heads d_head' },
+    { kind: 'einsum', notation: 'batch/d seq n_heads d_head, batch/d seq n_heads d_head -> batch/d seq n_heads' },
+    { kind: 'collective', collOp: 'psum_scatter', notation: 'batch/d seq n_heads -> batch/d seq/t n_heads' },
+  ];
+  fwdSeeds.forEach(s => cells.push({ ...s, id: nextId++ }));
+
+  // Start in tensor mode
+  setMode('tensor');
+  document.getElementById('tensor-input').value = tensorNotation;
+}
+
+init();
+</script>
+</body>
+</html>

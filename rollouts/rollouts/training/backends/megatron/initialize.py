@@ -107,6 +107,10 @@ def _build_megatron_args(
     args.global_batch_size = global_batch_size
     args.seq_length = seq_length
     args.max_position_embeddings = seq_length
+    args.rampup_batch_size = getattr(args, "rampup_batch_size", None)
+    args.decrease_batch_size_if_needed = getattr(args, "decrease_batch_size_if_needed", False)
+    args.consumed_train_samples = getattr(args, "consumed_train_samples", 0)
+    args.consumed_valid_samples = getattr(args, "consumed_valid_samples", 0)
 
     args.fp16 = getattr(args, "fp16", False)
     args.bf16 = getattr(args, "bf16", True)
@@ -136,6 +140,9 @@ def init_megatron(
     *,
     master_addr: str | None = None,
     master_port: int | None = None,
+    global_batch_size: int = 1,
+    micro_batch_size: int = 1,
+    seq_length: int = 4096,
 ) -> None:
     """Initialize Megatron distributed process groups.
 
@@ -148,6 +155,9 @@ def init_megatron(
         config: Parallelism configuration
         master_addr: Master address (defaults to env MASTER_ADDR)
         master_port: Master port (defaults to env MASTER_PORT)
+        global_batch_size: Global batch size for Megatron runtime state
+        micro_batch_size: Micro batch size for Megatron runtime state
+        seq_length: Maximum sequence length for Megatron runtime state
 
     Raises:
         ImportError: If Megatron-Core is not installed
@@ -180,6 +190,7 @@ def init_megatron(
     try:
         import torch.distributed as dist
         from megatron.core import mpu
+        from megatron.core.num_microbatches_calculator import init_num_microbatches_calculator
         from megatron.training.global_vars import set_args
     except ImportError as e:
         raise ImportError(
@@ -205,11 +216,19 @@ def init_megatron(
         config=config,
         master_addr=master_addr,
         master_port=master_port,
-        global_batch_size=max(1, world_size),
-        micro_batch_size=1,
-        seq_length=4096,
+        global_batch_size=global_batch_size,
+        micro_batch_size=micro_batch_size,
+        seq_length=seq_length,
     )
     set_args(megatron_args)
+    init_num_microbatches_calculator(
+        rank,
+        getattr(megatron_args, "rampup_batch_size", None),
+        megatron_args.global_batch_size,
+        megatron_args.micro_batch_size,
+        megatron_args.data_parallel_size,
+        getattr(megatron_args, "decrease_batch_size_if_needed", False),
+    )
 
     # Initialize torch.distributed first
     if not dist.is_initialized():

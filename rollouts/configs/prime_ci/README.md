@@ -16,6 +16,7 @@ Current real configs:
 - `reverse_text/eval_api.py`
 - `reverse_text/rl_sync.py`
 - `reverse_text/rl_async.py`
+- `reverse_text/rl_megatron.py`
 - `alphabet_sort/rl.py`
 
 Current stubs:

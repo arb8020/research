@@ -32,9 +32,12 @@ from ..training.contracts import (
 )
 from ..training.lowering import (
     MegatronLowering,
-    ParallelIntent,
+    MegatronProvisioning,
+    NmoeLowering,
+    NmoeProvisioning,
     RealizationPlan,
     TorchTitanLowering,
+    TorchTitanProvisioning,
 )
 from ..training.types import (
     AttemptRow,
@@ -157,6 +160,8 @@ def __getattr__(name: str) -> object:
 
         return getattr(losses, name)
     if name in (
+        "pretrain_batch_to_datum",
+        "pretrain_contract_loss",
         "distillation_contract_loss",
         "legacy_supervised_batch_to_training_datum",
         "moe_supervised_contract_loss",
@@ -169,6 +174,23 @@ def __getattr__(name: str) -> object:
         from ..training import contract_witnesses
 
         return getattr(contract_witnesses, name)
+
+    if name == "PretrainConfig":
+        from ..training.pretrain import PretrainConfig
+
+        return PretrainConfig
+    if name == "PretrainDataConfig":
+        from ..training.pretrain import PretrainDataConfig
+
+        return PretrainDataConfig
+    if name == "PretrainSourceConfig":
+        from ..training.pretrain import PretrainSourceConfig
+
+        return PretrainSourceConfig
+    if name == "run_pretrain":
+        from ..training.pretrain import run_pretrain
+
+        return run_pretrain
 
     # GRPO training
     if name == "GRPOConfig":
@@ -201,6 +223,10 @@ __all__ = [
     # Metrics
     "MetricsLogger",
     "JSONLLogger",
+    "PretrainConfig",
+    "PretrainDataConfig",
+    "PretrainSourceConfig",
+    "run_pretrain",
     # Types
     "ProblemRow",
     "AttemptRow",
@@ -252,10 +278,15 @@ __all__ = [
     "WeightVersion",
     "VersionedRolloutBatch",
     "MegatronLowering",
-    "ParallelIntent",
+    "MegatronProvisioning",
+    "NmoeLowering",
+    "NmoeProvisioning",
     "RealizationPlan",
+    "TorchTitanProvisioning",
     "TorchTitanLowering",
     # Contract witness helpers
+    "pretrain_batch_to_datum",
+    "pretrain_contract_loss",
     "distillation_contract_loss",
     "legacy_supervised_batch_to_training_datum",
     "moe_supervised_contract_loss",

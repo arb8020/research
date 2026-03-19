@@ -25,7 +25,6 @@ from ..commands import (
     cmd_list_templates,
     cmd_ls,
     cmd_oauth,
-    cmd_send,
     cmd_set_default_profile,
     cmd_slice,
     cmd_status,
@@ -227,10 +226,12 @@ async def run_agent(config: CLIConfig) -> int:
                         type(config.environment).__name__ if config.environment else "none"
                     )
                     parent_env_type = (
-                        parent_session.environment.type if parent_session.environment else "none"
+                        parent_session.environment_config().type
+                        if parent_session.environment
+                        else "none"
                     )
                     parent_confirm_tools = (
-                        parent_session.environment.config.get("confirm_tools", False)
+                        parent_session.environment_config().config.get("confirm_tools", False)
                         if parent_session.environment
                         else False
                     )
@@ -325,6 +326,19 @@ def main() -> int:
     if len(sys.argv) > 1 and sys.argv[1] == "auth":
         return auth_main(sys.argv[2:])
 
+    if len(sys.argv) > 1 and sys.argv[1] == "webui":
+        if "--dev" in sys.argv[2:]:
+            from ..frontend.dev import main as frontend_dev_main
+
+            forwarded = [arg for arg in sys.argv[2:] if arg != "--dev"]
+            return frontend_dev_main(forwarded)
+
+        from ..frontend.server import main as frontend_server_main
+
+        sys.argv = [f"{sys.argv[0]} webui", *sys.argv[2:]]
+        frontend_server_main()
+        return 0
+
     if len(sys.argv) > 1 and sys.argv[1] == "agent":
         print("The 'agent' subcommand has been replaced with --driver:", file=sys.stderr)
         print("  rollouts --driver claude    # Start with Claude Code", file=sys.stderr)
@@ -418,8 +432,6 @@ def main() -> int:
         doctor=args.doctor,
         trim=args.trim,
         fix=args.fix,
-        send=tuple(args.send) if args.send else None,
-        send_file=tuple(args.send_file) if args.send_file else None,
         attach=args.attach,
         status=args.status,
         ls=args.ls,
@@ -467,21 +479,6 @@ def main() -> int:
         if config.status == "":
             return cmd_ls(FileSessionStore(), include_all=False)
         return cmd_status(FileSessionStore(), config.status)
-    if config.send:
-        session_id, message = config.send
-        result = cmd_send(config, FileSessionStore(), session_id, message)
-        if result != -1:
-            return result
-    if config.send_file:
-        session_id, file_path = config.send_file
-        try:
-            message = Path(file_path).read_text()
-        except Exception as e:
-            print(f"Error reading file: {e}", file=sys.stderr)
-            return 1
-        result = cmd_send(config, FileSessionStore(), session_id, message)
-        if result != -1:
-            return result
     if config.attach:
         result = cmd_attach(config, config.attach)
         if result != -1:

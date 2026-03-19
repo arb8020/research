@@ -1,0 +1,611 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>tensor render</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;700&family=Syne:wght@400;700;800&display=swap');
+
+  :root {
+    --bg: #0a0a0a;
+    --surface: #111111;
+    --border: #1e1e1e;
+    --border-bright: #2a2a2a;
+    --text: #e8e8e8;
+    --text-dim: #555;
+    --text-mid: #888;
+    --accent: #c8f542;
+    --accent-dim: #8aab28;
+    --sep-color: #2d4a00;
+    --error: #ff4444;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 13px;
+    min-height: 100vh;
+    display: grid;
+    grid-template-rows: auto 1fr;
+  }
+
+  header {
+    border-bottom: 1px solid var(--border);
+    padding: 18px 32px;
+    display: flex;
+    align-items: baseline;
+    gap: 16px;
+  }
+
+  header h1 {
+    font-family: 'Syne', sans-serif;
+    font-size: 20px;
+    font-weight: 800;
+    letter-spacing: -0.5px;
+    color: var(--accent);
+  }
+
+  header span {
+    color: var(--text-dim);
+    font-size: 11px;
+    letter-spacing: 0.05em;
+  }
+
+  .main {
+    display: grid;
+    grid-template-columns: 320px 1fr;
+    height: calc(100vh - 57px);
+  }
+
+  .controls {
+    border-right: 1px solid var(--border);
+    padding: 24px;
+    display: flex;
+    flex-direction: column;
+    gap: 24px;
+    overflow-y: auto;
+  }
+
+  .section-label {
+    font-size: 10px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--text-dim);
+    margin-bottom: 10px;
+  }
+
+  .shape-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+
+  .dim-badge {
+    font-size: 10px;
+    color: var(--text-dim);
+    width: 18px;
+    text-align: right;
+    flex-shrink: 0;
+  }
+
+  .dim-input {
+    width: 52px;
+    background: var(--surface);
+    border: 1px solid var(--border-bright);
+    color: var(--text);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 13px;
+    padding: 5px 8px;
+    outline: none;
+    transition: border-color 0.15s;
+    -moz-appearance: textfield;
+  }
+  .dim-input::-webkit-outer-spin-button,
+  .dim-input::-webkit-inner-spin-button { -webkit-appearance: none; }
+  .dim-input:focus { border-color: var(--accent); }
+
+  .dim-sep {
+    color: var(--text-dim);
+    font-size: 15px;
+  }
+
+  .btn-row {
+    display: flex;
+    gap: 8px;
+  }
+
+  button {
+    background: none;
+    border: 1px solid var(--border-bright);
+    color: var(--text-mid);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    padding: 5px 12px;
+    cursor: pointer;
+    letter-spacing: 0.05em;
+    transition: all 0.15s;
+  }
+  button:hover { border-color: var(--accent); color: var(--accent); }
+  button.primary {
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+  button.primary:hover {
+    background: var(--accent);
+    color: var(--bg);
+  }
+
+  .fill-select {
+    background: var(--surface);
+    border: 1px solid var(--border-bright);
+    color: var(--text);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px;
+    padding: 5px 8px;
+    outline: none;
+    cursor: pointer;
+    width: 100%;
+  }
+  .fill-select:focus { border-color: var(--accent); }
+
+  .presets {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .preset-btn {
+    text-align: left;
+    border: 1px solid var(--border);
+    color: var(--text-dim);
+    padding: 6px 10px;
+    font-size: 11px;
+    width: 100%;
+  }
+  .preset-btn:hover { border-color: var(--border-bright); color: var(--text-mid); }
+  .preset-btn .shape { color: var(--accent-dim); }
+
+  .info-box {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    padding: 12px;
+    font-size: 11px;
+    line-height: 1.7;
+    color: var(--text-mid);
+  }
+
+  .info-box .rule { color: var(--text); }
+  .info-box .accent { color: var(--accent); }
+
+  .output-pane {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .output-toolbar {
+    border-bottom: 1px solid var(--border);
+    padding: 10px 24px;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    background: var(--surface);
+  }
+
+  .shape-display {
+    font-size: 12px;
+    color: var(--text-mid);
+  }
+  .shape-display .val { color: var(--accent); }
+
+  .ndim-pill {
+    font-size: 10px;
+    letter-spacing: 0.08em;
+    padding: 2px 8px;
+    border: 1px solid var(--sep-color);
+    color: var(--accent-dim);
+  }
+
+  .output-scroll {
+    flex: 1;
+    overflow: auto;
+    padding: 28px 32px;
+  }
+
+  #tensor-output {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 13px;
+    line-height: 1.45;
+    white-space: pre;
+    color: var(--text);
+  }
+
+  /* color layers by dimension depth */
+  #tensor-output .val { color: #c8f542; }
+  #tensor-output .sep-h { color: #1e3a00; }
+  #tensor-output .sep-v { color: #1e3a00; }
+
+  .legend {
+    display: flex;
+    gap: 16px;
+    flex-wrap: wrap;
+    font-size: 10px;
+    color: var(--text-dim);
+    letter-spacing: 0.06em;
+  }
+  .legend-item { display: flex; align-items: center; gap: 5px; }
+  .legend-dot {
+    width: 8px; height: 8px;
+    border: 1px solid;
+  }
+
+  .error-msg {
+    color: var(--error);
+    font-size: 11px;
+    padding: 8px 0;
+  }
+
+  /* scrollbar */
+  ::-webkit-scrollbar { width: 4px; height: 4px; }
+  ::-webkit-scrollbar-track { background: var(--bg); }
+  ::-webkit-scrollbar-thumb { background: var(--border-bright); }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>tensor render</h1>
+  <span>matrix-of-matrices algorithm · up to 8D</span>
+</header>
+
+<div class="main">
+  <div class="controls">
+
+    <div>
+      <div class="section-label">shape</div>
+      <div class="shape-row" id="shape-inputs">
+        <!-- filled by JS -->
+      </div>
+      <div class="btn-row" style="margin-top:12px">
+        <button onclick="addDim()">+ dim</button>
+        <button onclick="removeDim()">− dim</button>
+        <button class="primary" onclick="render()">render</button>
+      </div>
+      <div id="shape-error" class="error-msg"></div>
+    </div>
+
+    <div>
+      <div class="section-label">fill values</div>
+      <select class="fill-select" id="fill-mode">
+        <option value="index">flat index (0, 1, 2, ...)</option>
+        <option value="coords">coord product (dim × index)</option>
+        <option value="randn">random integers [0–99]</option>
+        <option value="ones">all ones</option>
+        <option value="zeros">all zeros</option>
+      </select>
+    </div>
+
+    <div>
+      <div class="section-label">presets</div>
+      <div class="presets">
+        <button class="preset-btn" onclick="loadPreset([4])"><span class="shape">[4]</span> — 1D vector</button>
+        <button class="preset-btn" onclick="loadPreset([3,4])"><span class="shape">[3,4]</span> — 2D matrix</button>
+        <button class="preset-btn" onclick="loadPreset([2,3,4])"><span class="shape">[2,3,4]</span> — 3D tensor (H-stack)</button>
+        <button class="preset-btn" onclick="loadPreset([2,2,3,4])"><span class="shape">[2,2,3,4]</span> — 4D (V-stack of 3D)</button>
+        <button class="preset-btn" onclick="loadPreset([2,2,2,3,4])"><span class="shape">[2,2,2,3,4]</span> — 5D (H-stack w/ ":")</button>
+        <button class="preset-btn" onclick="loadPreset([2,2,2,2,3,4])"><span class="shape">[2,2,2,2,3,4]</span> — 6D (V-stack w/ "---")</button>
+      </div>
+    </div>
+
+    <div>
+      <div class="section-label">algorithm rules</div>
+      <div class="info-box">
+        <div class="rule">ndim = 0</div> scalar → single value<br>
+        <div class="rule">ndim = 1</div> row of values<br>
+        <div class="rule">ndim = 2</div> grid of values<br>
+        <div class="rule accent">ndim = 3, 5, 7...</div> <span class="accent">horizontal stack</span><br>
+        <div class="rule accent">ndim = 4, 6, 8...</div> <span class="accent">vertical stack</span><br><br>
+        5D+ adds <span class="accent">":"</span> between h-blocks<br>
+        6D+ adds <span class="accent">"-"</span> lines between v-blocks
+      </div>
+    </div>
+
+  </div>
+
+  <div class="output-pane">
+    <div class="output-toolbar">
+      <div class="shape-display">shape: <span class="val" id="shape-label">—</span></div>
+      <div class="ndim-pill" id="ndim-label">—</div>
+      <div style="flex:1"></div>
+      <div class="legend">
+        <div class="legend-item"><div class="legend-dot" style="border-color:#c8f542"></div>values</div>
+        <div class="legend-item"><div class="legend-dot" style="border-color:#2d4a00"></div>separators</div>
+      </div>
+    </div>
+    <div class="output-scroll">
+      <div id="tensor-output">← configure shape and press render</div>
+    </div>
+  </div>
+</div>
+
+<script>
+// ── State ──────────────────────────────────────────────────────────────────
+
+let dims = [2, 3, 4];  // default shape
+
+// ── Shape UI ──────────────────────────────────────────────────────────────
+
+function rebuildInputs() {
+  const container = document.getElementById('shape-inputs');
+  container.innerHTML = '';
+  dims.forEach((d, i) => {
+    if (i > 0) {
+      const sep = document.createElement('span');
+      sep.className = 'dim-sep';
+      sep.textContent = '×';
+      container.appendChild(sep);
+    }
+    const badge = document.createElement('span');
+    badge.className = 'dim-badge';
+    badge.textContent = `d${i}`;
+    container.appendChild(badge);
+
+    const inp = document.createElement('input');
+    inp.type = 'number';
+    inp.className = 'dim-input';
+    inp.value = d;
+    inp.min = 1;
+    inp.max = 16;
+    inp.dataset.idx = i;
+    inp.addEventListener('change', e => {
+      const v = parseInt(e.target.value);
+      if (v >= 1 && v <= 16) dims[i] = v;
+      else e.target.value = dims[i];
+    });
+    inp.addEventListener('keydown', e => { if (e.key === 'Enter') render(); });
+    container.appendChild(inp);
+  });
+}
+
+function addDim() {
+  if (dims.length >= 8) return;
+  dims.push(2);
+  rebuildInputs();
+}
+
+function removeDim() {
+  if (dims.length <= 1) return;
+  dims.pop();
+  rebuildInputs();
+}
+
+function loadPreset(shape) {
+  dims = [...shape];
+  rebuildInputs();
+  render();
+}
+
+// ── Tensor construction ───────────────────────────────────────────────────
+
+function buildTensor(shape, fillMode) {
+  // Returns a nested JS array
+  const total = shape.reduce((a, b) => a * b, 1);
+
+  let flat;
+  if (fillMode === 'index') {
+    flat = Array.from({length: total}, (_, i) => i);
+  } else if (fillMode === 'coords') {
+    // value = sum of (dim_index * stride) — makes coordinates visible
+    flat = Array.from({length: total}, (_, i) => {
+      let val = 0;
+      let rem = i;
+      for (let d = shape.length - 1; d >= 0; d--) {
+        val += (rem % shape[d]) * (d + 1);
+        rem = Math.floor(rem / shape[d]);
+      }
+      return val;
+    });
+  } else if (fillMode === 'randn') {
+    flat = Array.from({length: total}, () => Math.floor(Math.random() * 100));
+  } else if (fillMode === 'ones') {
+    flat = Array.from({length: total}, () => 1);
+  } else {
+    flat = Array.from({length: total}, () => 0);
+  }
+
+  function nest(shape, offset) {
+    if (shape.length === 0) return flat[offset];
+    const size = shape.slice(1).reduce((a, b) => a * b, 1);
+    return Array.from({length: shape[0]}, (_, i) => nest(shape.slice(1), offset + i * size));
+  }
+
+  return nest(shape, 0);
+}
+
+// ── Render algorithm ──────────────────────────────────────────────────────
+
+function calculateCellWidth(tensor) {
+  function flatten(t) {
+    if (!Array.isArray(t)) return [t];
+    return t.flatMap(flatten);
+  }
+  const vals = flatten(tensor);
+  return Math.max(...vals.map(v => String(v).length));
+}
+
+function renderTensor(tensor, cellWidth, ndim) {
+  if (!Array.isArray(tensor)) {
+    // scalar
+    return String(tensor).padStart(cellWidth);
+  }
+
+  const depth = ndim - getDepth(tensor);  // current ndim
+
+  if (!Array.isArray(tensor[0])) {
+    // 1D: row
+    return tensor.map(v => String(v).padStart(cellWidth)).join(' ');
+  }
+
+  if (!Array.isArray(tensor[0][0])) {
+    // 2D: matrix
+    return tensor.map(row =>
+      row.map(v => String(v).padStart(cellWidth)).join(' ')
+    ).join('\n');
+  }
+
+  // Higher: recurse
+  const subBlocks = tensor.map(sub => renderTensor(sub, cellWidth, ndim));
+  const curNdim = getDepth(tensor) + 1;  // +1 for this level
+  const dimOffset = curNdim - 2;
+  const stackH = (dimOffset % 2 === 1);
+
+  if (stackH) {
+    if (curNdim >= 5) {
+      const numColons = Math.floor((curNdim - 3) / 2);
+      return joinHorizontalWithSep(subBlocks, ':'.repeat(numColons));
+    }
+    return joinHorizontal(subBlocks);
+  } else {
+    if (curNdim >= 6) {
+      const numSepLines = Math.floor((curNdim - 4) / 2);
+      return joinVertical(subBlocks, numSepLines);
+    }
+    return joinVertical(subBlocks, 0);
+  }
+}
+
+function getDepth(t) {
+  if (!Array.isArray(t)) return 0;
+  return 1 + getDepth(t[0]);
+}
+
+function joinHorizontal(blocks) {
+  const blockLines = blocks.map(b => b.split('\n'));
+  const maxH = Math.max(...blockLines.map(l => l.length));
+  const widths = blockLines.map(lines => Math.max(...lines.map(l => l.length)));
+
+  const padded = blockLines.map((lines, bi) => {
+    const w = widths[bi];
+    const result = [];
+    for (let i = 0; i < maxH; i++) {
+      result.push(i < lines.length ? lines[i].padEnd(w) : ' '.repeat(w));
+    }
+    return result;
+  });
+
+  const rows = [];
+  for (let i = 0; i < maxH; i++) {
+    rows.push(padded.map(b => b[i]).join('    '));
+  }
+  return rows.join('\n');
+}
+
+function joinHorizontalWithSep(blocks, sep) {
+  const blockLines = blocks.map(b => b.split('\n'));
+  const maxH = Math.max(...blockLines.map(l => l.length));
+  const widths = blockLines.map(lines => Math.max(...lines.map(l => l.length)));
+
+  const padded = blockLines.map((lines, bi) => {
+    const w = widths[bi];
+    const result = [];
+    for (let i = 0; i < maxH; i++) {
+      result.push(i < lines.length ? lines[i].padEnd(w) : ' '.repeat(w));
+    }
+    return result;
+  });
+
+  const rows = [];
+  const midRow = Math.floor(maxH / 2);
+  for (let i = 0; i < maxH; i++) {
+    const parts = [];
+    for (let j = 0; j < padded.length; j++) {
+      parts.push(padded[j][i]);
+      if (j < padded.length - 1) {
+        parts.push(i === midRow ? sep : ' '.repeat(sep.length));
+      }
+    }
+    rows.push(parts.join('  '));
+  }
+  return rows.join('\n');
+}
+
+function joinVertical(blocks, numSepLines) {
+  if (numSepLines === 0) {
+    return blocks.join('\n\n');
+  }
+
+  const allLines = blocks.flatMap(b => b.split('\n'));
+  const maxW = Math.max(...allLines.map(l => l.length));
+  const sepLine = '-'.repeat(maxW);
+  const separator = Array(numSepLines).fill(sepLine).join('\n');
+
+  return blocks.join('\n' + separator + '\n');
+}
+
+// ── Syntax highlighting ───────────────────────────────────────────────────
+
+function highlight(text, shape) {
+  // Escape HTML
+  const escaped = text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+
+  // Color dashes (separators)
+  const withSeps = escaped.replace(/(-{2,})/g, '<span class="sep-h">$1</span>');
+
+  // Color colons
+  const withColons = withSeps.replace(/(:{1,})/g, '<span class="sep-v">$1</span>');
+
+  // Color numbers — match digit sequences
+  const withVals = withColons.replace(/(\b\d+\b)/g, '<span class="val">$1</span>');
+
+  return withVals;
+}
+
+// ── Main render ───────────────────────────────────────────────────────────
+
+function render() {
+  const errEl = document.getElementById('shape-error');
+  errEl.textContent = '';
+
+  // Read current dim inputs (in case user typed without triggering change)
+  document.querySelectorAll('.dim-input').forEach(inp => {
+    const v = parseInt(inp.value);
+    const i = parseInt(inp.dataset.idx);
+    if (v >= 1 && v <= 16) dims[i] = v;
+  });
+
+  const shape = [...dims];
+  const total = shape.reduce((a, b) => a * b, 1);
+
+  if (total > 10000) {
+    errEl.textContent = `total elements ${total} > 10000, reduce shape`;
+    return;
+  }
+
+  const fillMode = document.getElementById('fill-mode').value;
+  const tensor = buildTensor(shape, fillMode);
+  const cellWidth = calculateCellWidth(tensor);
+  const ndim = shape.length;
+
+  const output = renderTensor(tensor, cellWidth, ndim);
+
+  document.getElementById('tensor-output').innerHTML = highlight(output, shape);
+  document.getElementById('shape-label').textContent = '[' + shape.join(', ') + ']';
+
+  const ndimNames = {1:'1D vector', 2:'2D matrix', 3:'3D', 4:'4D', 5:'5D', 6:'6D', 7:'7D', 8:'8D'};
+  document.getElementById('ndim-label').textContent = `${ndim}D · ${ndimNames[ndim] || ndim+'D'}`;
+}
+
+// ── Init ──────────────────────────────────────────────────────────────────
+
+rebuildInputs();
+render();
+</script>
+</body>
+</html>

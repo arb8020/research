@@ -17,8 +17,9 @@ First run will:
 Subsequent runs use cached pruned model directly.
 """
 
+from examples.rl.base_config import default_remote_megatron_training_deps
 from examples.rl.glm.base_config import train as _base_train
-from rollouts.training.configs import DepsConfig, HardwareConfig
+from rollouts.training.configs import HardwareConfig
 from rollouts.training.grpo import (
     CheckpointConfig,
     GRPOConfig,
@@ -33,53 +34,11 @@ from rollouts.training.grpo import (
 # Hardware Configuration for Modal
 # =============================================================================
 
-GLM_DEPS = DepsConfig(
-    python_version="3.12",
-    system_packages=(
-        "bash",
-        "curl",
-        "git",
-        "build-essential",
-        "libnuma1",
-        "tmux",
-    ),
-    pip_packages=(
-        # PyTorch with CUDA 12.4
-        "torch>=2.4.0",
-        "torchvision",
-        "torchaudio",
-        "flashinfer-python",
-        # HF stack
-        "hf-transfer",
-        "datasets>=4.4.1",
-        "accelerate>=0.20.0",
-        "peft>=0.7.0",
-        # Utils
-        "openai",
-        "anthropic",
-        "dacite",
-        "aiohttp",
-        "trio",
-        "httpx",
-        "markdownify",
-    ),
-    pip_index_url="https://download.pytorch.org/whl/cu124",
-    pip_extra_index_url="https://pypi.org/simple",
-    bootstrap_commands=(
-        "curl -LsSf https://astral.sh/uv/install.sh | sh && . ~/.local/bin/env",
-        "~/.local/bin/uv pip install --system 'sglang[all] @ git+https://github.com/sgl-project/sglang.git@main#subdirectory=python'",
-        "~/.local/bin/uv pip install --system --upgrade 'transformers>=5.0.0' 'huggingface-hub>=1.4.0'",
-        # mbridge for Megatron HF->Megatron weight conversion
-        "~/.local/bin/uv pip install --system 'mbridge @ git+https://github.com/ISEEKYAN/mbridge.git'",
-        "git clone --depth 1 https://github.com/NVIDIA/Megatron-LM.git /root/Megatron-LM",
-    ),
-)
-
 hardware = HardwareConfig(
     gpu_type="H100",
     gpu_count=8,
     provider="modal",
-    deps=GLM_DEPS,
+    deps=default_remote_megatron_training_deps(),
     use_torchrun=False,  # Megatron handles multi-GPU internally
 )
 

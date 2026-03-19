@@ -12,7 +12,6 @@ Semantic note:
     FSDP, and model-specific parallelization hooks.
 
 Limitations:
-    - NCCL weight sync not supported. Use weight_sync_mode="disk" in config.
     - Currently only FSDP parallelism is implemented. TP/CP/PP are stubbed.
 
 Usage:
@@ -34,7 +33,11 @@ Usage:
 
 from __future__ import annotations
 
+import json
 import logging
+import math
+import os
+import shutil
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -51,8 +54,37 @@ from ..contracts import (
 )
 from ..lowering import TorchTitanLowering
 from ..types import ImmediateTrainFuture, TrainFuture
+from ..weight_sync_protocol import (
+    InitWeightUpdateGroupRequest,
+    InitWeightUpdateGroupResponse,
+    ReceiveWeightUpdateRequest,
+    WeightUpdatePayload,
+    WeightWireTensor,
+)
 
 logger = logging.getLogger(__name__)
+
+
+def _parse_torch_dtype(name: str) -> torch.dtype:
+    normalized = name.replace("torch.", "").lower()
+    if normalized in {"bf16", "bfloat16"}:
+        return torch.bfloat16
+    if normalized in {"fp16", "float16", "half"}:
+        return torch.float16
+    if normalized in {"fp32", "float32", "float"}:
+        return torch.float32
+    raise ValueError(f"Unsupported torch dtype name for TorchTitan sync: {name!r}")
+
+
+def _tensor_alias_signature(tensor: torch.Tensor) -> tuple[object, ...]:
+    return (
+        str(tensor.device),
+        str(tensor.dtype),
+        tuple(tensor.shape),
+        tuple(tensor.stride()),
+        int(tensor.storage_offset()),
+        int(tensor.data_ptr()),
+    )
 
 
 @dataclass
@@ -68,6 +100,8 @@ class TorchTitanConfig:
     # Training
     seq_len: int = 4096
     batch_size: int = 1
+    micro_batch_size: int | None = None
+    num_minibatches: int = 1
     mixed_precision_param: str = "bfloat16"
     mixed_precision_reduce: str = "float32"
 
@@ -78,6 +112,14 @@ class TorchTitanConfig:
 
     # Activation checkpointing
     activation_checkpoint_mode: str = "none"
+    selective_ac_option: str = "op"
+    per_op_sac_force_recompute_mm_shapes_by_fqns: tuple[str, ...] = ()
+    early_stop: bool = False
+    memory_budget: float = 0.5
+    visualize_memory_budget_pareto: bool = False
+    preserve_rng_state: bool = True
+    determinism_check: str = "default"
+    debug: bool = False
 
     # Compile
     compile_enabled: bool = False
@@ -112,6 +154,9 @@ class TorchTitanBackend:
     _active_trainable_policy: TrainableParameterPolicy | None = field(
         default=None, init=False, repr=False
     )
+    _hf_assets_path: str | None = field(default=None, init=False, repr=False)
+    _nccl_weight_sender: Any = field(default=None, init=False, repr=False)
+    _nccl_inference_endpoints: list[str] = field(default_factory=list, init=False, repr=False)
 
     def __post_init__(self) -> None:
         """Initialize TorchTitan backend."""
@@ -203,6 +248,7 @@ class TorchTitanBackend:
             local_path = snapshot_download(checkpoint_path)
         else:
             local_path = checkpoint_path
+        self._hf_assets_path = local_path
 
         # Load state dict from safetensors
         hf_state_dict: dict[str, Any] = {}
@@ -246,17 +292,17 @@ class TorchTitanBackend:
         from torchtitan.distributed import ParallelDims
 
         logger.info(f"[Rank {self.rank}] Applying parallelization")
-        parallel = self.lowering.parallel
+        provisioning = self.lowering.provisioning
 
         # Build parallel dims
         self._parallel_dims = ParallelDims(
             dp_replicate=1,
             dp_shard=-1,
-            ep=parallel.ep,
+            ep=provisioning.ep,
             etp=1,
-            tp=parallel.tp,
-            cp=parallel.cp,
-            pp=parallel.pp,
+            tp=provisioning.tp,
+            cp=provisioning.cp,
+            pp=provisioning.pp,
             world_size=self.world_size,
         )
 
@@ -276,7 +322,7 @@ class TorchTitanBackend:
 
         Creates a minimal object that mimics torchtitan's JobConfig structure.
         """
-        parallel = self.lowering.parallel
+        provisioning = self.lowering.provisioning
 
         # Use SimpleNamespace-style object that allows arbitrary attributes
         class _Cfg:
@@ -292,9 +338,9 @@ class TorchTitanBackend:
                 enable_cpu_offload=False,
             ),
             parallelism=_Cfg(
-                context_parallel_degree=parallel.cp,
+                context_parallel_degree=provisioning.cp,
                 enable_async_tensor_parallel=False,
-                disable_loss_parallel=not parallel.enable_loss_parallel,
+                disable_loss_parallel=not provisioning.enable_loss_parallel,
                 fsdp_reshard_after_forward="default",
             ),
             compile=_Cfg(
@@ -303,6 +349,16 @@ class TorchTitanBackend:
             ),
             activation_checkpoint=_Cfg(
                 mode=self.config.activation_checkpoint_mode,
+                selective_ac_option=self.config.selective_ac_option,
+                per_op_sac_force_recompute_mm_shapes_by_fqns=list(
+                    self.config.per_op_sac_force_recompute_mm_shapes_by_fqns
+                ),
+                early_stop=self.config.early_stop,
+                memory_budget=self.config.memory_budget,
+                visualize_memory_budget_pareto=self.config.visualize_memory_budget_pareto,
+                preserve_rng_state=self.config.preserve_rng_state,
+                determinism_check=self.config.determinism_check,
+                debug=self.config.debug,
             ),
             job=_Cfg(
                 dump_folder=str(self.checkpoint_dir),
@@ -431,8 +487,13 @@ class TorchTitanBackend:
         )
 
         batch_size = datum.model_input.tokens.shape[0]
-        num_minibatches = 1
-        micro_batch_size = batch_size
+        if self.config.micro_batch_size is not None:
+            micro_batch_size = min(self.config.micro_batch_size, batch_size)
+            num_minibatches = max(1, math.ceil(batch_size / micro_batch_size))
+        else:
+            configured_num_minibatches = max(1, self.config.num_minibatches)
+            micro_batch_size = max(1, math.ceil(batch_size / configured_num_minibatches))
+            num_minibatches = max(1, math.ceil(batch_size / micro_batch_size))
 
         total_primary_loss = 0.0
         accumulated_losses: dict[str, float] = {}
@@ -441,7 +502,9 @@ class TorchTitanBackend:
 
         for i in range(num_minibatches):
             start_idx = i * micro_batch_size
-            end_idx = start_idx + micro_batch_size
+            if start_idx >= batch_size:
+                break
+            end_idx = min(start_idx + micro_batch_size, batch_size)
             micro_datum = self._slice_datum(datum, start_idx, end_idx)
 
             model_kwargs: dict[str, Any] = {}
@@ -573,6 +636,466 @@ class TorchTitanBackend:
         assert self._model is not None, "Model not initialized"
         self._model.load_state_dict(weights)
         return ImmediateTrainFuture(None)
+
+    async def save_weights_for_sampler(self, path: Path | str) -> Path:
+        """Export inference-ready HuggingFace weights for sampler sync.
+
+        Current TorchTitan realization only supports filesystem sync for
+        single-rank adapter-based models. Build the complete HF checkpoint
+        explicitly at the backend boundary instead of leaking partial TorchTitan
+        state into weight_sync.py.
+        """
+        import torch.distributed as dist
+        import trio
+        from huggingface_hub import snapshot_download
+        from safetensors.torch import save_file
+
+        assert self._model is not None, "Model not initialized"
+        assert self._train_spec is not None, "Train spec not initialized"
+        assert self.hf_checkpoint, "TorchTitan sampler export requires hf_checkpoint"
+        assert self._train_spec.state_dict_adapter is not None, (
+            "TorchTitan sampler export requires a state_dict_adapter"
+        )
+
+        output_path = Path(path)
+        temp_path = output_path.parent / f"{output_path.name}_tmp_{self.weight_version}"
+        rank = dist.get_rank() if dist.is_initialized() else 0
+
+        source_assets_path = self.hf_checkpoint
+        if "/" in self.hf_checkpoint and not os.path.exists(self.hf_checkpoint):
+            source_assets_path = await trio.to_thread.run_sync(
+                lambda: snapshot_download(self.hf_checkpoint)
+            )
+
+        if rank == 0:
+            if temp_path.exists():
+                shutil.rmtree(temp_path)
+            temp_path.mkdir(parents=True, exist_ok=True)
+
+            adapter = self._train_spec.state_dict_adapter(self._model_args, source_assets_path)
+            native_state_dict = self._model.state_dict()
+            hf_state_dict = adapter.to_hf(native_state_dict)
+
+            cpu_state_dict: dict[str, torch.Tensor] = {}
+            for key, value in hf_state_dict.items():
+                if hasattr(value, "full_tensor"):
+                    value = value.full_tensor()
+                if isinstance(value, torch.Tensor):
+                    cpu_state_dict[key] = value.detach().cpu().contiguous()
+
+            await trio.to_thread.run_sync(
+                lambda: save_file(cpu_state_dict, str(temp_path / "model.safetensors"))
+            )
+
+            source_path = Path(source_assets_path)
+            for asset in source_path.iterdir():
+                if not asset.is_file():
+                    continue
+                if asset.name.endswith((".safetensors", ".bin", ".pt", ".pth")):
+                    continue
+                if asset.name == "model.safetensors.index.json":
+                    continue
+                shutil.copy2(asset, temp_path / asset.name)
+
+            config_path = temp_path / "config.json"
+            assert config_path.exists(), f"HF asset copy must produce config.json at {config_path}"
+
+            if output_path.exists():
+                shutil.rmtree(output_path)
+            temp_path.rename(output_path)
+
+        if dist.is_initialized():
+            dist.barrier()
+
+        self.weight_version += 1
+        return output_path
+
+    def _build_inference_weight_update_payload(self) -> WeightUpdatePayload:
+        import torch
+
+        assert self._model is not None, "Model not initialized"
+        assert self._train_spec is not None, "Train spec not initialized"
+        assert self._train_spec.state_dict_adapter is not None, (
+            "TorchTitan NCCL sync requires a state_dict_adapter"
+        )
+
+        source_assets_path = self._hf_assets_path or self.hf_checkpoint
+        assert source_assets_path, "TorchTitan NCCL sync requires hf_checkpoint assets"
+
+        adapter = self._train_spec.state_dict_adapter(self._model_args, source_assets_path)
+        native_state_dict = self._model.state_dict()
+        target_dtype = _parse_torch_dtype(self.config.mixed_precision_param)
+
+        tensors: list[WeightWireTensor] = []
+        embed_alias_signature: tuple[object, ...] | None = None
+        for key, value in native_state_dict.items():
+            if hasattr(value, "full_tensor"):
+                value = value.full_tensor()
+            if isinstance(value, torch.Tensor):
+                mapped = adapter.to_hf({key: value})
+                if not mapped:
+                    continue
+                if len(mapped) != 1:
+                    raise RuntimeError(
+                        "TorchTitan trainer-parameter sync requires a 1:1 native->HF mapping; "
+                        f"native key {key!r} mapped to {list(mapped.keys())!r}"
+                    )
+                load_name, mapped_value = next(iter(mapped.items()))
+                if hasattr(mapped_value, "full_tensor"):
+                    mapped_value = mapped_value.full_tensor()
+                if not isinstance(mapped_value, torch.Tensor):
+                    raise RuntimeError(
+                        "TorchTitan trainer-parameter sync requires tensor-valued adapter outputs; "
+                        f"native key {key!r} produced {type(mapped_value)!r}"
+                    )
+                if tuple(mapped_value.shape) != tuple(value.shape):
+                    raise RuntimeError(
+                        "TorchTitan trainer-parameter sync requires shape-preserving adapter mapping; "
+                        f"native key {key!r} shape {tuple(value.shape)!r} mapped to "
+                        f"{load_name!r} shape {tuple(mapped_value.shape)!r}"
+                    )
+                alias_signature = _tensor_alias_signature(mapped_value)
+                if load_name == "model.embed_tokens.weight":
+                    embed_alias_signature = alias_signature
+                elif (
+                    load_name == "lm_head.weight"
+                    and embed_alias_signature is not None
+                    and alias_signature == embed_alias_signature
+                ):
+                    logger.info(
+                        "[Rank %s] torchtitan_nccl_sync_skip_tied_lm_head native_key=%s load_name=%s",
+                        self.rank,
+                        key,
+                        load_name,
+                    )
+                    continue
+                prepared = value.detach().to(device=self._device, dtype=target_dtype).contiguous()
+                tensors.append(
+                    WeightWireTensor(
+                        wire_name=key,
+                        load_name=load_name,
+                        shape=tuple(prepared.shape),
+                        dtype=str(prepared.dtype).replace("torch.", ""),
+                        tensor=prepared,
+                        payload_kind="trainer_parameter",
+                        metadata={
+                            "source": "torchtitan_native_state_dict",
+                            "adapter_load_name": load_name,
+                        },
+                    )
+                )
+
+        assert tensors, "TorchTitan NCCL sync produced no trainer-parameter tensors"
+        return WeightUpdatePayload(
+            tensors=tuple(tensors),
+            payload_kind="trainer_parameter",
+            version=self.weight_version + 1,
+            metadata={
+                "source_contract": "trainer_parameter",
+                "adapter": "torchtitan_state_dict_adapter.to_hf",
+            },
+        )
+
+    async def init_nccl_weight_sync(
+        self,
+        inference_endpoints: list[str],
+        master_addr: str | None = None,
+        master_port: int = 29500,
+    ) -> None:
+        import os
+        import socket
+
+        import httpx
+        import trio
+
+        from ...inference.weight_sync import WeightSyncSender
+
+        if self._nccl_weight_sender is not None:
+            return
+        if not inference_endpoints:
+            logger.info("TorchTitan NCCL sync skipped (no inference endpoints)")
+            return
+
+        if master_addr is None:
+            master_addr = "127.0.0.1"
+
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.bind(("", master_port))
+            master_port = int(sock.getsockname()[1])
+
+        world_size = 1 + len(inference_endpoints)
+        # TODO: Move this one-time NCCL group initialization under the managed
+        # WeightUpdateChannel.initialize() lifecycle so GRPO/channel semantics own
+        # it once per run, QED-style, instead of treating init like a retryable RPC.
+        group_name = f"weight_sync_{master_port}"
+        sender = WeightSyncSender(
+            master_addr=master_addr,
+            master_port=master_port,
+            inference_world_size=len(inference_endpoints),
+            group_name=group_name,
+            device=self._device,
+        )
+
+        async def register_inference_endpoint(endpoint: str, rank: int) -> None:
+            timeout = httpx.Timeout(connect=5.0, read=300.0, write=300.0, pool=5.0)
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                init_request = InitWeightUpdateGroupRequest(
+                    master_address=master_addr,
+                    master_port=master_port,
+                    rank_offset=rank,
+                    world_size=world_size,
+                    group_name=group_name,
+                )
+                logger.info(
+                    "[Rank %s] init_weights_update_group request start endpoint=%s rank=%s mode=blocking_once",
+                    self.rank,
+                    endpoint,
+                    rank,
+                )
+                done = trio.Event()
+
+                async def poll_weight_sync_trace() -> None:
+                    last_signature: tuple[str, ...] = ()
+                    while not done.is_set():
+                        await trio.sleep(5)
+                        if done.is_set():
+                            break
+                        try:
+                            trace_response = await client.get(
+                                f"{endpoint}/weight_sync_trace", params={"limit": 20}
+                            )
+                            trace_response.raise_for_status()
+                            trace_entries = trace_response.json().get("entries", [])
+                            tail_events = tuple(
+                                str(entry.get("event", "<missing>"))
+                                for entry in trace_entries[-10:]
+                            )
+                            if tail_events and tail_events != last_signature:
+                                last_signature = tail_events
+                                logger.info(
+                                    "[Rank %s] init_weights_update_group trace_poll endpoint=%s rank=%s events=%s tail=%s",
+                                    self.rank,
+                                    endpoint,
+                                    rank,
+                                    list(tail_events),
+                                    trace_entries[-3:],
+                                )
+                        except Exception as trace_exc:
+                            logger.info(
+                                "[Rank %s] init_weights_update_group trace_poll_failed endpoint=%s rank=%s error_type=%s error=%r",
+                                self.rank,
+                                endpoint,
+                                rank,
+                                type(trace_exc).__name__,
+                                trace_exc,
+                            )
+
+                try:
+                    async with trio.open_nursery() as nursery:
+                        nursery.start_soon(poll_weight_sync_trace)
+                        try:
+                            response = await client.post(
+                                f"{endpoint}/init_weights_update_group",
+                                json=init_request.to_dict(),
+                            )
+                            logger.info(
+                                "[Rank %s] init_weights_update_group response endpoint=%s rank=%s mode=blocking_once status=%s",
+                                self.rank,
+                                endpoint,
+                                rank,
+                                response.status_code,
+                            )
+                            response.raise_for_status()
+                            InitWeightUpdateGroupResponse.from_dict(response.json())
+                        finally:
+                            done.set()
+                            nursery.cancel_scope.cancel()
+                except Exception as exc:
+                    trace_summary = "trace_unavailable"
+                    try:
+                        trace_response = await client.get(
+                            f"{endpoint}/weight_sync_trace", params={"limit": 20}
+                        )
+                        trace_response.raise_for_status()
+                        trace_entries = trace_response.json().get("entries", [])
+                        tail_events = [
+                            entry.get("event", "<missing>") for entry in trace_entries[-10:]
+                        ]
+                        trace_summary = json.dumps(
+                            {
+                                "entry_count": len(trace_entries),
+                                "tail_events": tail_events,
+                                "tail_entries": trace_entries[-5:],
+                            },
+                            sort_keys=True,
+                        )
+                    except Exception as trace_exc:
+                        trace_summary = (
+                            f"trace_fetch_failed={type(trace_exc).__name__}: {trace_exc!r}"
+                        )
+                    logger.exception(
+                        "[Rank %s] init_weights_update_group failed endpoint=%s rank=%s mode=blocking_once error_type=%s error=%r trace=%s",
+                        self.rank,
+                        endpoint,
+                        rank,
+                        type(exc).__name__,
+                        exc,
+                        trace_summary,
+                    )
+                    raise RuntimeError(
+                        "init_weights_update_group failed "
+                        f"endpoint={endpoint} rank={rank} error={type(exc).__name__}: {exc!r} trace={trace_summary}"
+                    ) from exc
+
+        def trainer_join() -> None:
+            os.environ.setdefault("NCCL_CUMEM_ENABLE", "0")
+            os.environ.setdefault("NCCL_ASYNC_ERROR_HANDLING", "1")
+            os.environ.setdefault("NCCL_P2P_DISABLE", "1")
+            os.environ.setdefault("TORCH_DISABLE_SHARE_RDZV_TCP_STORE", "1")
+            sender.init_group()
+
+        async def trainer_join_task() -> None:
+            logger.info(
+                "[Rank %s] init_weights_update_group sender_init_start group=%s master=%s:%s world_size=%s",
+                self.rank,
+                group_name,
+                master_addr,
+                master_port,
+                world_size,
+            )
+            await trio.to_thread.run_sync(trainer_join, abandon_on_cancel=True)
+            logger.info(
+                "[Rank %s] init_weights_update_group sender_init_ok group=%s master=%s:%s world_size=%s",
+                self.rank,
+                group_name,
+                master_addr,
+                master_port,
+                world_size,
+            )
+
+        with trio.fail_after(330):
+            async with trio.open_nursery() as nursery:
+                for i, endpoint in enumerate(inference_endpoints):
+                    nursery.start_soon(register_inference_endpoint, endpoint, i + 1)
+                nursery.start_soon(trainer_join_task)
+
+        self._nccl_weight_sender = sender
+        self._nccl_inference_endpoints = list(inference_endpoints)
+        logger.info(
+            "[Rank %s] TorchTitan NCCL weight sync initialized for %d endpoint(s)",
+            self.rank,
+            len(inference_endpoints),
+        )
+
+    async def sync_weights_nccl(self) -> None:
+        import httpx
+        import torch
+        import trio
+
+        sender = self._nccl_weight_sender
+        assert sender is not None, "Call init_nccl_weight_sync() first"
+        if not self._nccl_inference_endpoints:
+            return
+
+        payload = self._build_inference_weight_update_payload()
+        param_info = [
+            {
+                "name": item.wire_name,
+                "load_name": item.load_name,
+                "shape": list(item.shape),
+                "dtype": item.dtype,
+            }
+            for item in payload.tensors
+        ]
+        total_bytes = sum(
+            int(item.tensor.numel() * item.tensor.element_size()) for item in payload.tensors
+        )
+        first_tensors = [
+            {
+                "wire_name": item.wire_name,
+                "load_name": item.load_name,
+                "shape": list(item.shape),
+                "dtype": item.dtype,
+                "device": str(item.tensor.device),
+                "numel": int(item.tensor.numel()),
+                "is_contiguous": bool(item.tensor.is_contiguous()),
+                "stride": list(item.tensor.stride()),
+                "payload_kind": item.payload_kind,
+            }
+            for item in list(payload.tensors[:3])
+        ]
+        responses: list[dict[str, Any]] = []
+
+        logger.info(
+            "[Rank %s] torchtitan_nccl_sync_start payload_kind=%s tensors=%s total_bytes=%s endpoints=%s first_tensors=%s",
+            self.rank,
+            payload.payload_kind,
+            len(param_info),
+            total_bytes,
+            self._nccl_inference_endpoints,
+            first_tensors,
+        )
+
+        async with httpx.AsyncClient(timeout=300.0) as client:
+            async with trio.open_nursery() as nursery:
+
+                async def request_receive(
+                    endpoint: str,
+                    *,
+                    task_status: trio.TaskStatus[None] = trio.TASK_STATUS_IGNORED,
+                ) -> None:
+                    receive_request = ReceiveWeightUpdateRequest(
+                        names=tuple(item["name"] for item in param_info),
+                        load_names=tuple(item["load_name"] for item in param_info),
+                        shapes=tuple(tuple(item["shape"]) for item in param_info),
+                        dtypes=tuple(item["dtype"] for item in param_info),
+                    )
+                    task_status.started()
+                    response = await client.post(
+                        f"{endpoint}/receive_weight_update",
+                        json=receive_request.to_dict(),
+                    )
+                    response.raise_for_status()
+                    responses.append(response.json())
+
+                for endpoint in self._nccl_inference_endpoints:
+                    await nursery.start(request_receive, endpoint)
+
+                await trio.to_thread.run_sync(sender.broadcast_payload, payload)
+
+        logger.info(
+            "[Rank %s] torchtitan_nccl_sync_receive_acks responses=%s",
+            self.rank,
+            responses,
+        )
+
+        self.weight_version += 1
+        torch.cuda.empty_cache()
+        logger.info(
+            "[Rank %s] TorchTitan NCCL synced %d tensors to %d endpoint(s)",
+            self.rank,
+            len(param_info),
+            len(self._nccl_inference_endpoints),
+        )
+
+    async def cleanup_nccl_weight_sync(self) -> None:
+        import httpx
+
+        sender = self._nccl_weight_sender
+        if sender is None:
+            return
+
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            for endpoint in self._nccl_inference_endpoints:
+                try:
+                    response = await client.post(f"{endpoint}/destroy_weights_update_group")
+                    response.raise_for_status()
+                except Exception:
+                    pass
+
+        sender.cleanup()
+        self._nccl_weight_sender = None
+        self._nccl_inference_endpoints = []
 
     async def save_checkpoint(self, step: int, metrics: dict[str, float]) -> Path:
         """Save checkpoint."""

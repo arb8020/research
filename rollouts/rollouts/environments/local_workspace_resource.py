@@ -1,0 +1,174 @@
+"""Local tempdir-backed workspace resource.
+
+Satisfies both CodingWorkspaceResource and CommandRunner, so CodingEnvironment
+can take it directly as workspace= and command_runner=.
+
+Usage pattern (following the Environment.deserialize convention):
+
+    def row_to_state(row: dict) -> dict:
+        return {
+            "source_dir": row["challenge_root"],
+            "working_dir": "/workspace",  # relative path inside copy
+        }
+
+    class MyEnvironment:
+        @staticmethod
+        async def deserialize(state: dict) -> MyEnvironment:
+            resource = await LocalWorkspaceResource.create(
+                source_dir=Path(state["source_dir"]),
+            )
+            return MyEnvironment(resource=resource)
+
+        async def close(self) -> None:
+            await self.resource.close()  # removes tempdir
+"""
+
+from __future__ import annotations
+
+import shutil
+import subprocess
+import tempfile
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+import trio
+
+from .resources import CommandExecutionResult
+
+
+@dataclass
+class LocalWorkspaceResource:
+    """Workspace resource backed by a local tempdir copy of a source directory.
+
+    The source directory is copied into a fresh tempdir on start(). The agent
+    operates against the copy — the original source is never modified.
+
+    Satisfies CodingWorkspaceResource and CommandRunner, so it can be passed
+    directly to CodingEnvironment as both workspace= and command_runner=.
+    """
+
+    source_dir: Path
+    _working_dir: str = field(default="", repr=False)
+    _tempdir: str | None = field(default=None, repr=False)
+
+    @classmethod
+    async def create(cls, source_dir: Path) -> LocalWorkspaceResource:
+        """Create and start a workspace from source_dir."""
+        resource = cls(source_dir=source_dir)
+        await resource.start()
+        return resource
+
+    async def start(self) -> None:
+        assert self._tempdir is None, "LocalWorkspaceResource already started"
+        assert self.source_dir.is_dir(), f"source_dir does not exist: {self.source_dir}"
+
+        def _copy() -> str:
+            tmp = tempfile.mkdtemp(prefix="rollouts-workspace-")
+            shutil.copytree(
+                self.source_dir,
+                tmp,
+                dirs_exist_ok=True,
+                ignore=shutil.ignore_patterns(".git", "__pycache__", "*.pyc"),
+            )
+            return tmp
+
+        self._tempdir = await trio.to_thread.run_sync(_copy)
+        self._working_dir = self._tempdir
+
+    async def close(self) -> None:
+        if self._tempdir is None:
+            return
+
+        def _rm() -> None:
+            shutil.rmtree(self._tempdir, ignore_errors=True)
+
+        await trio.to_thread.run_sync(_rm)
+        self._tempdir = None
+        self._working_dir = ""
+
+    # ── CodingWorkspaceResource ───────────────────────────────────────────────
+
+    @property
+    def working_dir(self) -> str:
+        assert self._tempdir is not None, "LocalWorkspaceResource not started"
+        return self._working_dir
+
+    def resolve_path(self, current_working_dir: str, path: str) -> str:
+        if not path:
+            return current_working_dir
+        p = Path(path)
+        if p.is_absolute():
+            return str(p)
+        return str(Path(current_working_dir) / p)
+
+    async def read_file(self, path: str) -> bytes:
+        resolved = self.resolve_path(self.working_dir, path)
+        return await trio.to_thread.run_sync(lambda: Path(resolved).read_bytes())
+
+    async def write_file(self, path: str, content: bytes) -> None:
+        resolved = self.resolve_path(self.working_dir, path)
+
+        def _write() -> None:
+            p = Path(resolved)
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_bytes(content)
+
+        await trio.to_thread.run_sync(_write)
+
+    # ── CommandRunner ─────────────────────────────────────────────────────────
+
+    async def run(
+        self,
+        command: str,
+        *,
+        cwd: str,
+        timeout: float,
+        session_id: str | None = None,
+        cancel_scope: Any | None = None,
+    ) -> CommandExecutionResult:
+        del session_id, cancel_scope
+
+        def _run() -> tuple[str, str, int]:
+            result = subprocess.run(
+                ["bash", "-lc", command],
+                cwd=cwd,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+            )
+            return result.stdout, result.stderr, result.returncode
+
+        try:
+            stdout, stderr, returncode = await trio.to_thread.run_sync(_run)
+        except subprocess.TimeoutExpired:
+            return CommandExecutionResult(
+                returncode=124,
+                stdout="",
+                stderr=f"command timed out after {timeout}s",
+                cwd=cwd,
+            )
+
+        return CommandExecutionResult(
+            returncode=returncode,
+            stdout=stdout,
+            stderr=stderr,
+            cwd=cwd,
+        )
+
+    # ── Optional introspection ────────────────────────────────────────────────
+
+    def stats(self) -> dict[str, Any]:
+        return {
+            "kind": "local_workspace",
+            "source_dir": str(self.source_dir),
+            "working_dir": self._working_dir,
+            "started": self._tempdir is not None,
+        }
+
+    def describe_runtime(self) -> dict[str, Any]:
+        return {
+            "kind": "local",
+            "source_dir": str(self.source_dir),
+            "working_dir": self._working_dir,
+        }

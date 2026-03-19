@@ -13,9 +13,9 @@ import torch.distributed as dist
 
 from ...training.contract_witnesses import rl_contract_loss, supervised_contract_loss
 from ...training.lowering import (
-    ParallelIntent,
     RealizationPlan,
     TorchTitanLowering,
+    TorchTitanProvisioning,
     dense_rl_realization,
     dense_supervised_realization,
 )
@@ -28,6 +28,52 @@ from ...training.preflight import require_torchtitan_runtime
 from .torchtitan_backend import TorchTitanBackend, TorchTitanConfig
 
 logger = logging.getLogger(__name__)
+
+
+def _build_torchtitan_runtime_config(
+    *,
+    seq_len: int,
+    micro_batch_size: int | None,
+    num_minibatches: int,
+    learning_rate: float,
+    weight_decay: float,
+    max_grad_norm: float,
+    tp: int,
+    cp: int,
+    pp: int,
+    activation_checkpointing: bool,
+) -> TorchTitanConfig:
+    """Normalize Rollouts trainer semantics into an explicit TorchTitan config.
+
+    This is the adapter boundary for TorchTitan-specific runtime options.
+    Keep library defaults out of the GRPO call site and make the mapping
+    explicit here so missing fields fail close to the boundary.
+    """
+    assert seq_len >= 1
+    assert num_minibatches >= 1
+    assert tp >= 1
+    assert cp >= 1
+    assert pp >= 1
+    if micro_batch_size is not None:
+        assert micro_batch_size >= 1
+
+    activation_checkpoint_mode = "selective" if activation_checkpointing else "none"
+
+    config = TorchTitanConfig(
+        tp_degree=tp,
+        cp_degree=cp,
+        pp_degree=pp,
+        seq_len=seq_len,
+        micro_batch_size=micro_batch_size,
+        num_minibatches=num_minibatches,
+        lr=learning_rate,
+        weight_decay=weight_decay,
+        max_grad_norm=max_grad_norm,
+        activation_checkpoint_mode=activation_checkpoint_mode,
+    )
+
+    assert config.activation_checkpoint_mode in {"none", "selective"}
+    return config
 
 
 def _find_free_port(start_port: int, max_attempts: int = 100) -> int:
@@ -78,6 +124,8 @@ def create_torchtitan_backend(
     torchtitan_model_size: str,
     gpu_rank: int = 0,
     seq_len: int = 4096,
+    micro_batch_size: int | None = None,
+    num_minibatches: int = 1,
     learning_rate: float = 1e-5,
     weight_decay: float = 0.01,
     max_grad_norm: float = 1.0,
@@ -86,6 +134,7 @@ def create_torchtitan_backend(
     pp: int = 1,
     enable_loss_parallel: bool = True,
     packed_sequences: bool = True,
+    activation_checkpointing: bool = False,
     mode: str = "supervised",
     realization: RealizationPlan | None = None,
     lowering: TorchTitanLowering | None = None,
@@ -116,14 +165,17 @@ def create_torchtitan_backend(
 
     cleanup = ensure_single_rank_torchtitan_dist(gpu_rank=gpu_rank)
 
-    config = TorchTitanConfig(
-        tp_degree=tp,
-        cp_degree=cp,
-        pp_degree=pp,
+    config = _build_torchtitan_runtime_config(
         seq_len=seq_len,
-        lr=learning_rate,
+        micro_batch_size=micro_batch_size,
+        num_minibatches=num_minibatches,
+        learning_rate=learning_rate,
         weight_decay=weight_decay,
         max_grad_norm=max_grad_norm,
+        tp=tp,
+        cp=cp,
+        pp=pp,
+        activation_checkpointing=activation_checkpointing,
     )
 
     if mode == "supervised":
@@ -147,8 +199,7 @@ def create_torchtitan_backend(
 
     if lowering is None:
         lowering = TorchTitanLowering.from_realization(
-            parallel=ParallelIntent(
-                dp=1,
+            provisioning=TorchTitanProvisioning(
                 tp=tp,
                 cp=cp,
                 pp=pp,

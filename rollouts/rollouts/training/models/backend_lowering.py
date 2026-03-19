@@ -14,6 +14,8 @@ from .denotation import ModelDenotation
 
 MegatronAdapterKind = Literal["provider", "raw_gpt", "custom_spec"]
 MegatronLoaderKind = Literal["bridge_hf", "megatron_dist"]
+NmoeCheckpointKind = Literal["nmoe_native", "hf_import_only"]
+NmoeLoaderKind = Literal["nmoe_native", "hf_bridge_provisional"]
 TorchTitanLoaderKind = Literal["hf_state_dict_adapter", "direct_state_dict"]
 
 
@@ -36,6 +38,17 @@ class TorchTitanModelLowering:
     train_spec_name: str
     model_size: str
     loader_kind: TorchTitanLoaderKind
+    validation_notes: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class NmoeModelLowering:
+    """Reserved backend-native `nmoe` construction intent."""
+
+    denotation: ModelDenotation
+    loader_kind: NmoeLoaderKind
+    checkpoint_kind: NmoeCheckpointKind
+    runtime_family: str
     validation_notes: tuple[str, ...] = ()
 
 
@@ -132,5 +145,37 @@ def lower_model_to_torchtitan(
         train_spec_name=train_spec_name,
         model_size=model_size,
         loader_kind="hf_state_dict_adapter",
+        validation_notes=tuple(notes),
+    )
+
+
+def lower_model_to_nmoe(
+    denotation: ModelDenotation,
+) -> NmoeModelLowering:
+    """Reserve an honest model-lowering shape for a future native `nmoe` path."""
+    family = denotation.architecture.family
+    runtime_family_map = {
+        "glm4": "glm4",
+        "glm4_moe": "glm4_moe",
+        "qwen3": "qwen3",
+        "qwen3_moe": "qwen3_moe",
+        "qwen3_5": "qwen3_5",
+        "qwen3_5_moe": "qwen3_5_moe",
+        "qwen3_next": "qwen3_next",
+    }
+    if family not in runtime_family_map:
+        raise ValueError(
+            f"Nmoe model lowering does not know how to derive native runtime intent for {family!r}"
+        )
+
+    notes = [
+        "placeholder lowering only; no runnable nmoe backend exists yet",
+        "HF import remains provisional until we map native nmoe checkpoints and Transformer(cfg)",
+    ]
+    return NmoeModelLowering(
+        denotation=denotation,
+        loader_kind="hf_bridge_provisional",
+        checkpoint_kind="nmoe_native",
+        runtime_family=runtime_family_map[family],
         validation_notes=tuple(notes),
     )

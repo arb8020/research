@@ -17,16 +17,40 @@ import argparse
 import json
 import logging
 import os
-import signal
 import subprocess
-import threading
 import time
 import webbrowser
 from datetime import datetime
-from http.server import HTTPServer, SimpleHTTPRequestHandler
+from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
+
+from ..export_html import run_to_html, sample_to_html
+from .artifacts import (
+    find_trace_dir,
+    load_sample_payload,
+    load_trace_payload,
+)
+from .live_runs import (
+    acquire_run_slot,
+    active_run_ids,
+    append_output_line,
+    delete_run,
+    discover_watching_runs,
+    get_run,
+    has_run,
+    kill_run,
+    list_registered_runs,
+    load_external_messages,
+    mark_run_complete,
+    max_concurrent_runs,
+    next_run_id,
+    parse_external_run_id,
+    register_run,
+    release_run_slot,
+)
+from .workspace_views import load_workspace_response
 
 # Configure logging
 logging.basicConfig(
@@ -34,14 +58,29 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Global process registry for tracking running agent evaluations
-_active_runs = {}  # run_id -> {process, config_name, start_time, status, output_lines, exit_code}
-_run_counter = 0
-_run_lock = threading.Lock()
 
-# Semaphore for limiting concurrent runs (default: 2 concurrent runs)
-_max_concurrent_runs = 2
-_run_semaphore = threading.Semaphore(_max_concurrent_runs)
+def _message_text(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for block in content:
+            if isinstance(block, dict):
+                text = block.get("text")
+                thinking = block.get("thinking")
+                if isinstance(text, str) and text:
+                    parts.append(text)
+                elif isinstance(thinking, str) and thinking:
+                    parts.append(thinking)
+            else:
+                text = getattr(block, "text", None)
+                thinking = getattr(block, "thinking", None)
+                if isinstance(text, str) and text:
+                    parts.append(text)
+                elif isinstance(thinking, str) and thinking:
+                    parts.append(thinking)
+        return "\n".join(parts)
+    return str(content) if content is not None else ""
 
 
 class DevLoopServer(SimpleHTTPRequestHandler):
@@ -53,8 +92,10 @@ class DevLoopServer(SimpleHTTPRequestHandler):
     - /api/generate - Generate new config files
     """
 
-    # Class variable to store project root (set by main())
+    # Class variables (set by main())
     project_root: Path = Path.cwd()
+    results_dir: Path = Path.cwd() / "results"
+    known_results_dirs: list[Path] = []
 
     def log_message(self, format: str, *args: object) -> None:
         """Override to use our logger instead of stderr."""
@@ -62,15 +103,48 @@ class DevLoopServer(SimpleHTTPRequestHandler):
 
     def do_GET(self) -> None:
         """Handle GET requests."""
+        try:
+            self._do_GET_inner()
+        except Exception:
+            logger.exception(f"Unhandled error in GET {self.path}")
+            try:
+                self.send_error(500, "Internal server error")
+            except Exception:
+                pass
+
+    def _do_GET_inner(self) -> None:
         parsed = urlparse(self.path)
         path = parsed.path
 
         if path == "/" or path == "/index.html":
-            self._serve_index()
+            self._serve_ui_index()
+        elif path.startswith("/assets/"):
+            self._serve_ui_static(path)
         elif path == "/api/configs":
             self._list_configs()
         elif path == "/api/traces":
             self._list_traces()
+        elif path.startswith("/api/trace/") and "/sample/" in path and path.endswith("/workspace"):
+            # /api/trace/{id}/sample/{sampleId}/workspace — environment state snapshots
+            rest = path.split("/api/trace/")[1]
+            trace_id, _, rest2 = rest.partition("/sample/")
+            sample_id = rest2.removesuffix("/workspace")
+            self._get_workspace(trace_id, sample_id)
+        elif (
+            path.startswith("/api/trace/") and "/sample/" in path and path.endswith("/export.html")
+        ):
+            rest = path.split("/api/trace/")[1]
+            trace_id, _, rest2 = rest.partition("/sample/")
+            sample_id = rest2.removesuffix("/export.html")
+            self._export_sample_html(trace_id, sample_id)
+        elif path.startswith("/api/trace/") and "/sample/" in path:
+            # Extract trace ID and sample ID from /api/trace/{id}/sample/{sampleId}
+            rest = path.split("/api/trace/")[1]
+            trace_id, _, sample_id = rest.partition("/sample/")
+            self._get_sample(trace_id, sample_id)
+        elif path.startswith("/api/trace/") and path.endswith("/export.html"):
+            trace_id = path.split("/api/trace/")[1].removesuffix("/export.html")
+            self._export_trace_html(trace_id)
         elif path.startswith("/api/trace/"):
             # Extract trace ID from path like /api/trace/02_agent_multiturn_20231114_143022
             trace_id = path.split("/api/trace/")[1]
@@ -105,16 +179,32 @@ class DevLoopServer(SimpleHTTPRequestHandler):
             self._list_datasets()
         elif path == "/api/runs":
             self._list_active_runs()
+        elif path == "/api/results-dirs":
+            self._list_results_dirs()
         elif path.startswith("/api/stream/"):
             # Extract run_id from path like /api/stream/run_1_1234567890
             run_id = path.split("/api/stream/")[1]
             self._stream_run_output(run_id)
+        elif path.startswith("/api/watch/"):
+            # Attach to an externally-launched run by results dir name
+            run_id = path.split("/api/watch/")[1]
+            self._watch_run(run_id)
         else:
             # Default behavior for other files
             super().do_GET()
 
     def do_POST(self) -> None:
         """Handle POST requests."""
+        try:
+            self._do_POST_inner()
+        except Exception:
+            logger.exception(f"Unhandled error in POST {self.path}")
+            try:
+                self.send_error(500, "Internal server error")
+            except Exception:
+                pass
+
+    def _do_POST_inner(self) -> None:
         parsed = urlparse(self.path)
         path = parsed.path
 
@@ -126,6 +216,8 @@ class DevLoopServer(SimpleHTTPRequestHandler):
             self._log_from_frontend()
         elif path == "/api/preview-dataset":
             self._preview_dataset_direct()
+        elif path == "/api/set-results-dir":
+            self._set_results_dir()
         elif path.startswith("/api/kill/"):
             # Extract run_id from path like /api/kill/run_1_1234567890
             run_id = path.split("/api/kill/")[1]
@@ -137,8 +229,45 @@ class DevLoopServer(SimpleHTTPRequestHandler):
         else:
             self.send_error(404, "Not found")
 
+    def _serve_ui_index(self) -> None:
+        """Serve the React UI from ui/dist/index.html (falls back to legacy index.html)."""
+        ui_dist = Path(__file__).parent / "ui" / "dist" / "index.html"
+        legacy = Path(__file__).parent / "index.html"
+
+        index_path = ui_dist if ui_dist.exists() else legacy
+
+        if not index_path.exists():
+            self.send_error(404, "index.html not found")
+            return
+
+        content = index_path.read_bytes()
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html")
+        self.send_header("Content-Length", str(len(content)))
+        self.end_headers()
+        self.wfile.write(content)
+
+    def _serve_ui_static(self, path: str) -> None:
+        """Serve static assets from ui/dist/assets/."""
+        import mimetypes
+
+        asset_path = Path(__file__).parent / "ui" / "dist" / path.lstrip("/")
+
+        if not asset_path.exists() or not asset_path.is_file():
+            self.send_error(404, f"Asset not found: {path}")
+            return
+
+        content = asset_path.read_bytes()
+        mime_type, _ = mimetypes.guess_type(str(asset_path))
+        self.send_response(200)
+        self.send_header("Content-Type", mime_type or "application/octet-stream")
+        self.send_header("Content-Length", str(len(content)))
+        self.send_header("Cache-Control", "public, max-age=31536000, immutable")
+        self.end_headers()
+        self.wfile.write(content)
+
     def _serve_index(self) -> None:
-        """Serve the main HTML file."""
+        """Serve the main HTML file (legacy config builder)."""
         index_path = Path(__file__).parent / "index.html"
 
         if not index_path.exists():
@@ -176,8 +305,8 @@ class DevLoopServer(SimpleHTTPRequestHandler):
         self._json_response(configs)
 
     def _list_traces(self) -> None:
-        """List available evaluation traces in results/."""
-        results_dir = self.project_root / "results"
+        """List available evaluation traces in results_dir."""
+        results_dir = self.results_dir
 
         if not results_dir.exists():
             self._json_response([])
@@ -208,7 +337,7 @@ class DevLoopServer(SimpleHTTPRequestHandler):
 
     def _get_trace(self, trace_id: str) -> None:
         """Load a specific evaluation trace."""
-        trace_dir = self.project_root / "results" / trace_id
+        trace_dir = self.results_dir / trace_id
 
         if not trace_dir.exists():
             self.send_error(404, f"Trace not found: {trace_id}")
@@ -219,57 +348,92 @@ class DevLoopServer(SimpleHTTPRequestHandler):
             self.send_error(404, f"No report.json in trace: {trace_id}")
             return
 
-        # Load report
-        report = json.loads(report_path.read_text())
+        self._json_response(load_trace_payload(trace_dir, trace_id))
 
-        # Load trajectories (if they exist) - these are JSONL files with one event per line
-        trajectories_dir = trace_dir / "trajectories"
-        samples = []
+    def _get_sample(self, trace_id: str, sample_id: str) -> None:
+        """Load a sample JSON and normalize it for the frontend."""
+        sample_path = self.results_dir / trace_id / "samples" / f"{sample_id}.json"
+        if not sample_path.exists():
+            self.send_error(404, f"Sample not found: {trace_id}/{sample_id}")
+            return
+        sample = load_sample_payload(self.results_dir, trace_id, sample_id)
 
-        if trajectories_dir.exists():
-            for traj_file in sorted(trajectories_dir.glob("*.jsonl")):
-                # Parse JSONL - each line is a JSON object representing one turn/event
-                messages = []
-                rewards = []
-                metadata = {}
+        content = json.dumps(sample).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(content)))
+        self.end_headers()
+        self.wfile.write(content)
 
-                for line in traj_file.read_text().splitlines():
-                    if not line.strip():
-                        continue
+    def _get_workspace(self, trace_id: str, sample_id: str) -> None:
+        """Return workspace snapshots and line history for a sample.
 
-                    event = json.loads(line)
+        Attempts to read live workspace_snapshot events from events.jsonl.
+        Falls back to reconstructing from trajectory tool calls when none exist.
+        """
+        run_dir = find_trace_dir(
+            self.results_dir,
+            list(self.__class__.known_results_dirs),
+            trace_id,
+        )
+        if run_dir is None:
+            self.send_error(404, f"Trace not found: {trace_id}")
+            return
 
-                    # Extract messages from completions
-                    if "messages" in event:
-                        messages = event["messages"]
+        if not (run_dir / "samples" / f"{sample_id}.json").exists():
+            self.send_error(404, f"Sample not found: {sample_id}")
+            return
+        response = load_workspace_response(run_dir, sample_id)
+        content = json.dumps(response).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(content)))
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        self.wfile.write(content)
 
-                    # Extract reward
-                    if "rewards" in event:
-                        rewards.append(event["rewards"])
-                    elif "reward" in event:
-                        rewards.append(event["reward"])
+    def _export_sample_html(self, trace_id: str, sample_id: str) -> None:
+        run_dir = find_trace_dir(
+            self.results_dir,
+            list(self.__class__.known_results_dirs),
+            trace_id,
+        )
+        if run_dir is None:
+            self.send_error(404, f"Trace not found: {trace_id}")
+            return
 
-                    # Extract metadata
-                    if "metadata" in event:
-                        metadata = event["metadata"]
+        sample_path = run_dir / "samples" / f"{sample_id}.json"
+        if not sample_path.exists():
+            self.send_error(404, f"Sample not found: {trace_id}/{sample_id}")
+            return
 
-                samples.append({
-                    "name": traj_file.stem,
-                    "messages": messages,
-                    "rewards": rewards[-1] if rewards else 0,
-                    "metadata": metadata,
-                })
+        sample = load_sample_payload(run_dir.parent, run_dir.name, sample_id)
+        html_doc = sample_to_html(trace_id, sample_id, sample)
+        self._html_response(html_doc, filename=f"{trace_id}_{sample_id}.html")
 
-        trace_data = {
-            "id": trace_id,
-            "name": report.get("config_name", trace_id),
-            "total_samples": report.get("total_samples", len(samples)),
-            "mean_reward": report.get("summary_metrics", {}).get("mean_reward", 0),
-            "samples": samples,
-            "report": report,
-        }
+    def _export_trace_html(self, trace_id: str) -> None:
+        trace_dir = find_trace_dir(
+            self.results_dir,
+            list(self.__class__.known_results_dirs),
+            trace_id,
+        )
+        if trace_dir is None:
+            self.send_error(404, f"Trace not found: {trace_id}")
+            return
 
-        self._json_response(trace_data)
+        report_path = trace_dir / "report.json"
+        if not report_path.exists():
+            self.send_error(404, f"No report.json in trace: {trace_id}")
+            return
+
+        trace_payload = load_trace_payload(trace_dir, trace_id)
+        samples_dir = trace_dir / "samples"
+        samples = [
+            load_sample_payload(trace_dir.parent, trace_id, sample_path.stem)
+            for sample_path in sorted(samples_dir.glob("*.json"))
+        ]
+        html_doc = run_to_html(trace_id, trace_payload["report"], samples)
+        self._html_response(html_doc, filename=f"{trace_id}.html")
 
     def _load_config(self, config_name: str) -> None:
         """Load and parse an existing config file."""
@@ -549,18 +713,14 @@ class DevLoopServer(SimpleHTTPRequestHandler):
             # Handle different content formats
             if content_expr.startswith('f"""') or content_expr.startswith("f'''"):
                 # f-string with triple quotes
-                content = (
-                    re.search(r'f["\']{{3}}(.*?)["\']{{3}}', content_expr, re.DOTALL)
-                    .group(1)
-                    .strip()
-                )
+                triple_match = re.search(r'f["\']{{3}}(.*?)["\']{{3}}', content_expr, re.DOTALL)
+                assert triple_match is not None
+                content = triple_match.group(1).strip()
             elif content_expr.startswith('"""') or content_expr.startswith("'''"):
                 # Regular triple-quoted string
-                content = (
-                    re.search(r'["\']{{3}}(.*?)["\']{{3}}', content_expr, re.DOTALL)
-                    .group(1)
-                    .strip()
-                )
+                triple_match = re.search(r'["\']{{3}}(.*?)["\']{{3}}', content_expr, re.DOTALL)
+                assert triple_match is not None
+                content = triple_match.group(1).strip()
             elif content_expr.startswith('f"') or content_expr.startswith("f'"):
                 # f-string with single quotes
                 quote_char = content_expr[1]
@@ -1097,7 +1257,7 @@ class DevLoopServer(SimpleHTTPRequestHandler):
         if "messages" in data and data["messages"]:
             # Detect if prepare_messages is standalone or a method
             existing_match = re.search(r"def prepare_messages\((.*?)\)", config_source)
-            is_standalone = existing_match and "self" not in existing_match.group(1)
+            is_standalone = bool(existing_match and "self" not in existing_match.group(1))
 
             messages_code = self._generate_prepare_messages_method(
                 data["messages"], is_standalone=is_standalone
@@ -1416,8 +1576,6 @@ def prepare_messages(sample_data: Dict[str, Any]) -> List[Message]:
 
     def _launch_config(self) -> None:
         """Launch a config in the background with live streaming support."""
-        global _run_counter, _active_runs
-
         content_length = int(self.headers.get("Content-Length", 0))
         body = self.rfile.read(content_length)
 
@@ -1515,18 +1673,16 @@ def prepare_messages(sample_data: Dict[str, Any]) -> List[Message]:
                     pass
 
             # Acquire semaphore (blocks if max concurrent runs reached)
-            if not _run_semaphore.acquire(blocking=False):
+            if not acquire_run_slot():
                 self._json_response({
                     "success": False,
-                    "error": f"Maximum concurrent runs ({_max_concurrent_runs}) reached. Please wait for a run to complete.",
+                    "error": f"Maximum concurrent runs ({max_concurrent_runs()}) reached. Please wait for a run to complete.",
                     "queue_full": True,
                 })
                 return
 
             # Generate unique run ID
-            with _run_lock:
-                _run_counter += 1
-                run_id = f"run_{_run_counter}_{int(time.time())}"
+            run_id = next_run_id()
 
             logger.debug(f"Generated run_id: {run_id}")
 
@@ -1553,7 +1709,7 @@ def prepare_messages(sample_data: Dict[str, Any]) -> List[Message]:
                 logger.debug(f"Process started with PID: {process.pid}")
             except Exception as e:
                 logger.exception(f"Failed to start process: {str(e)}")
-                _run_semaphore.release()  # Release semaphore on failure
+                release_run_slot()
                 self._json_response({
                     "success": False,
                     "error": f"Failed to start process: {str(e)}",
@@ -1561,8 +1717,9 @@ def prepare_messages(sample_data: Dict[str, Any]) -> List[Message]:
                 return
 
             # Store in registry
-            with _run_lock:
-                _active_runs[run_id] = {
+            register_run(
+                run_id,
+                {
                     "process": process,
                     "config_name": config_name,
                     "start_time": time.time(),
@@ -1570,9 +1727,10 @@ def prepare_messages(sample_data: Dict[str, Any]) -> List[Message]:
                     "output_lines": [],
                     "exit_code": None,
                     "cuda_device_ids": cuda_device_ids,
-                }
+                },
+            )
 
-            logger.debug(f"Run registered in _active_runs. Total active: {len(_active_runs)}")
+            logger.debug(f"Run registered in active runs. Total active: {len(active_run_ids())}")
 
             self._json_response({
                 "success": True,
@@ -1598,17 +1756,16 @@ def prepare_messages(sample_data: Dict[str, Any]) -> List[Message]:
         See ~/research/docs/code_style/ryolu_design_frontend.md for compression strategies.
         Current approach sends every token/turn event separately - could batch or delta-encode.
         """
-        global _active_runs
-
         logger.debug(f"📡 Stream connection opened for run_id: {run_id}")
 
-        if run_id not in _active_runs:
+        if not has_run(run_id):
             logger.error(f"Stream failed: Run not found: {run_id}")
-            logger.debug(f"Available run_ids: {list(_active_runs.keys())}")
+            logger.debug(f"Available run_ids: {active_run_ids()}")
             self.send_error(404, f"Run not found: {run_id}")
             return
 
-        run_data = _active_runs[run_id]
+        run_data = get_run(run_id)
+        assert run_data is not None
         process = run_data["process"]
         logger.debug(f"Streaming from PID: {process.pid}, status: {run_data['status']}")
 
@@ -1659,8 +1816,7 @@ def prepare_messages(sample_data: Dict[str, Any]) -> List[Message]:
                             logger.debug(f"📄 Will tail events from: {events_file}")
 
                     # Send stdout line as log event (for debugging)
-                    with _run_lock:
-                        run_data["output_lines"].append(line)
+                    append_output_line(run_id, line)
 
                     event_data = json.dumps({"line": line, "type": "stdout"})
                     self.wfile.write(f"data: {event_data}\n\n".encode())
@@ -1718,7 +1874,7 @@ def prepare_messages(sample_data: Dict[str, Any]) -> List[Message]:
             exit_code = process.wait()
 
             # Release semaphore
-            _run_semaphore.release()
+            release_run_slot()
 
             # Send completion event
             completion_data = json.dumps({
@@ -1730,21 +1886,246 @@ def prepare_messages(sample_data: Dict[str, Any]) -> List[Message]:
             self.wfile.flush()
 
             # Update registry
-            with _run_lock:
-                run_data["status"] = "completed" if exit_code == 0 else "failed"
-                run_data["exit_code"] = exit_code
+            mark_run_complete(
+                run_id,
+                status="completed" if exit_code == 0 else "failed",
+                exit_code=exit_code,
+            )
 
         except Exception as e:
             # Release semaphore on error
-            _run_semaphore.release()
+            release_run_slot()
 
             error_data = json.dumps({"type": "error", "message": str(e)})
             self.wfile.write(f"data: {error_data}\n\n".encode())
             self.wfile.flush()
 
             # Update status
-            with _run_lock:
-                run_data["status"] = "failed"
+            mark_run_complete(run_id, status="failed", exit_code=run_data.get("exit_code"))
+
+    def _watch_run(self, run_id: str) -> None:
+        """Stream events.jsonl from a results dir not launched by this server.
+
+        Discovers the results dir by scanning known_results_dirs for a subdir
+        named run_id that contains events.jsonl.  Tails the file, normalises
+        field names to match the StreamEvent schema the frontend expects, and
+        emits each record as an SSE event.  Stops when eval_end is seen or the
+        file stops growing (eval finished while we were connecting).
+
+        Field normalisation (events.jsonl → StreamEvent):
+          message      → type
+          sample_id    → id
+          sample_name  → name   (sample_start only)
+          eval_name    → name   (eval_start / eval_end only)
+        """
+        parsed_external = parse_external_run_id(run_id)
+        if parsed_external is not None:
+            runtime, session_id = parsed_external
+            self._watch_external_session(run_id, runtime, session_id)
+            return
+
+        from pathlib import Path
+
+        # Find the results dir across all known dirs
+        events_file: Path | None = None
+        for search_dir in [self.__class__.results_dir] + list(self.__class__.known_results_dirs):
+            candidate = search_dir / run_id / "events.jsonl"
+            if candidate.exists():
+                events_file = candidate
+                break
+
+        if events_file is None:
+            self.send_error(404, f"No events.jsonl found for run: {run_id}")
+            return
+
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection", "keep-alive")
+        self.send_header("X-Accel-Buffering", "no")
+        self.end_headers()
+
+        def _normalise(raw: dict) -> dict:
+            """Map events.jsonl fields to StreamEvent shape."""
+            event_type = raw.get("message", "")
+            out: dict = {"type": event_type, "timestamp": raw.get("timestamp", "")}
+
+            if event_type == "eval_start":
+                out["name"] = raw.get("eval_name", "")
+                out["total"] = raw.get("total", 0)
+            elif event_type == "sample_start":
+                out["id"] = raw.get("sample_id", "")
+                out["name"] = raw.get("sample_name", "")
+            elif event_type == "turn":
+                out["id"] = raw.get("sample_id", "")
+                out["turn"] = raw.get("turn", 0)
+                out["status"] = raw.get("status", "")
+            elif event_type == "sample_end":
+                out["id"] = raw.get("sample_id", "")
+                out["score"] = raw.get("score", 0)
+            elif event_type == "eval_end":
+                out["name"] = raw.get("eval_name", "")
+                out["total"] = raw.get("total", 0)
+            else:
+                # Forward unknown events with all fields, type already set
+                out.update({k: v for k, v in raw.items() if k not in ("message", "timestamp")})
+
+            return out
+
+        try:
+            import time
+
+            poll_interval = 0.25  # seconds between reads when no new data
+            max_idle = 300  # stop after 5 min of no new data post eval_end
+            idle_since: float | None = None
+            done = False
+
+            with open(events_file) as fh:
+                # Replay existing content from the beginning so the UI gets
+                # the full picture even when attaching mid-run.
+                while True:
+                    line = fh.readline()
+                    if not line:
+                        # Caught up — switch to tail mode
+                        break
+                    line = line.strip()
+                    if not line:
+                        continue
+                    raw = json.loads(line)
+                    normalised = _normalise(raw)
+                    self.wfile.write(f"data: {json.dumps(normalised)}\n\n".encode())
+                    self.wfile.flush()
+                    if raw.get("message") == "eval_end":
+                        done = True
+                        break
+
+                # Tail mode: poll for new lines
+                while not done:
+                    line = fh.readline()
+                    if line:
+                        line = line.strip()
+                        if line:
+                            raw = json.loads(line)
+                            normalised = _normalise(raw)
+                            self.wfile.write(f"data: {json.dumps(normalised)}\n\n".encode())
+                            self.wfile.flush()
+                            if raw.get("message") == "eval_end":
+                                done = True
+                        idle_since = None
+                    else:
+                        # No new data
+                        if idle_since is None:
+                            idle_since = time.monotonic()
+                        elif time.monotonic() - idle_since > max_idle:
+                            break
+                        time.sleep(poll_interval)
+
+            # Emit complete so frontend transitions out of running state
+            self.wfile.write(
+                f"data: {json.dumps({'type': 'complete', 'exit_code': 0, 'status': 'success'})}\n\n".encode()
+            )
+            self.wfile.flush()
+
+        except Exception as e:
+            logger.exception(f"Error watching run {run_id}: {e}")
+
+    def _watch_external_session(self, run_id: str, runtime: str, session_id: str) -> None:
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection", "keep-alive")
+        self.send_header("X-Accel-Buffering", "no")
+        self.end_headers()
+
+        sample_id = session_id[:8]
+        poll_interval = 1.0
+        max_idle = 300.0
+        idle_since: float | None = None
+        last_assistant_count = 0
+        sample_started = False
+        run_name = f"{runtime} interactive"
+
+        try:
+            self.wfile.write(
+                f"data: {json.dumps({'type': 'eval_start', 'name': run_name, 'total': 1, 'timestamp': datetime.now().isoformat()})}\n\n".encode()
+            )
+            self.wfile.flush()
+
+            while True:
+                loaded = load_external_messages(runtime, session_id)
+                if loaded is None:
+                    if idle_since is None:
+                        idle_since = time.monotonic()
+                    elif time.monotonic() - idle_since > max_idle:
+                        break
+                    time.sleep(poll_interval)
+                    continue
+
+                messages, session_path = loaded
+                try:
+                    mtime = session_path.stat().st_mtime
+                except OSError:
+                    mtime = time.time()
+
+                if not sample_started:
+                    self.wfile.write(
+                        f"data: {json.dumps({'type': 'sample_start', 'id': sample_id, 'name': f'{runtime}:{sample_id}', 'timestamp': datetime.fromtimestamp(mtime).isoformat()})}\n\n".encode()
+                    )
+                    self.wfile.flush()
+                    sample_started = True
+
+                assistant_messages = [
+                    msg for msg in messages if getattr(msg, "role", None) == "assistant"
+                ]
+                if len(assistant_messages) > last_assistant_count:
+                    for turn_index, msg in enumerate(
+                        assistant_messages[last_assistant_count:], start=last_assistant_count + 1
+                    ):
+                        text = _message_text(getattr(msg, "content", None))
+                        if not text.strip():
+                            continue
+                        turn_event = {
+                            "type": "turn",
+                            "id": sample_id,
+                            "turn": turn_index,
+                            "status": "running",
+                            "timestamp": getattr(msg, "timestamp", None)
+                            or datetime.fromtimestamp(mtime).isoformat(),
+                        }
+                        message_event = {
+                            "type": "assistant_message",
+                            "sample_id": sample_id,
+                            "turn": turn_index,
+                            "content": text,
+                            "timestamp": getattr(msg, "timestamp", None)
+                            or datetime.fromtimestamp(mtime).isoformat(),
+                        }
+                        self.wfile.write(f"data: {json.dumps(turn_event)}\n\n".encode())
+                        self.wfile.write(f"data: {json.dumps(message_event)}\n\n".encode())
+                    self.wfile.flush()
+                    last_assistant_count = len(assistant_messages)
+                    idle_since = None
+                else:
+                    if idle_since is None:
+                        idle_since = time.monotonic()
+                    elif time.monotonic() - idle_since > max_idle:
+                        break
+
+                time.sleep(poll_interval)
+
+            if sample_started:
+                self.wfile.write(
+                    f"data: {json.dumps({'type': 'sample_end', 'id': sample_id, 'score': 0.0, 'timestamp': datetime.now().isoformat()})}\n\n".encode()
+                )
+            self.wfile.write(
+                f"data: {json.dumps({'type': 'eval_end', 'name': run_name, 'total': 1, 'timestamp': datetime.now().isoformat()})}\n\n".encode()
+            )
+            self.wfile.write(
+                f"data: {json.dumps({'type': 'complete', 'exit_code': 0, 'status': 'success'})}\n\n".encode()
+            )
+            self.wfile.flush()
+        except Exception as e:
+            logger.exception("Error watching external session %s: %s", run_id, e)
 
     def _log_from_frontend(self) -> None:
         """Receive log messages from frontend."""
@@ -1775,105 +2156,69 @@ def prepare_messages(sample_data: Dict[str, Any]) -> List[Message]:
             logger.exception(f"Failed to process frontend log: {e}")
             self.send_error(400, str(e))
 
+    def _discover_watching_runs(self) -> list[dict]:
+        """Scan results dirs for runs with events.jsonl but no report.json.
+
+        These are externally-launched evals that are either in progress or
+        finished without writing a report.  Excludes run_ids already tracked
+        in _active_runs (launched by this server).
+        """
+        return discover_watching_runs(
+            self.__class__.results_dir,
+            list(self.__class__.known_results_dirs),
+        )
+
     def _list_active_runs(self) -> None:
-        """List all active and recent runs."""
-        global _active_runs
-
-        runs = []
-        with _run_lock:
-            for run_id, data in _active_runs.items():
-                runs.append({
-                    "run_id": run_id,
-                    "config_name": data["config_name"],
-                    "start_time": data["start_time"],
-                    "status": data["status"],
-                    "exit_code": data.get("exit_code"),
-                    "output_length": len(data.get("output_lines", [])),
-                })
-
+        """List all active and recent runs, including externally-launched ones."""
+        runs = list_registered_runs()
+        runs.extend(self._discover_watching_runs())
         self._json_response({"runs": runs})
+
+    def _list_results_dirs(self) -> None:
+        """Return all known results directories and the currently active one."""
+        dirs = []
+        for d in self.__class__.known_results_dirs:
+            label = f"{d.parent.name}/{d.name}" if d.name == "results" else d.name
+            dirs.append({"path": str(d), "label": label, "exists": d.exists()})
+        self._json_response({
+            "current": str(self.__class__.results_dir),
+            "dirs": dirs,
+        })
+
+    def _set_results_dir(self) -> None:
+        """Hot-swap the results directory. Body: {"path": "/abs/path/to/results"}"""
+        length = int(self.headers.get("Content-Length", 0))
+        body = json.loads(self.rfile.read(length))
+        new_path = Path(body["path"]).expanduser().resolve()
+        if not new_path.exists():
+            self.send_error(400, f"Directory does not exist: {new_path}")
+            return
+        self.__class__.results_dir = new_path
+        logger.info(f"Results dir switched to: {new_path}")
+        self._json_response({"ok": True, "path": str(new_path)})
 
     def _kill_run(self, run_id: str) -> None:
         """Kill a running process."""
-        global _active_runs
-
         logger.debug(f"🛑 Kill request received for run_id: {run_id}")
-
-        if run_id not in _active_runs:
-            logger.error(f"Kill failed: Run not found: {run_id}")
-            logger.debug(f"Available run_ids: {list(_active_runs.keys())}")
-            self.send_error(404, f"Run not found: {run_id}")
+        success, message = kill_run(run_id)
+        if not success and message.startswith("Run not found:"):
+            logger.error("Kill failed: %s", message)
+            logger.debug(f"Available run_ids: {active_run_ids()}")
+            self.send_error(404, message)
             return
-
-        run_data = _active_runs[run_id]
-        process = run_data["process"]
-
-        logger.debug(f"Run status: {run_data['status']}, PID: {process.pid}")
-
-        if run_data["status"] != "running":
-            logger.warning(f"Cannot kill: Run is not running (status: {run_data['status']})")
-            self._json_response({
-                "success": False,
-                "message": f"Run is not running (status: {run_data['status']})",
-            })
-            return
-
-        try:
-            # Kill entire process group (includes child processes)
-            if process.poll() is None:  # Process is still running
-                pgid = os.getpgid(process.pid)
-                logger.debug(f"Killing process group {pgid} (SIGTERM)")
-                os.killpg(pgid, signal.SIGTERM)
-
-                # Wait a bit, then force kill if still alive
-                time.sleep(0.5)
-                if process.poll() is None:
-                    logger.debug("Process still alive, force killing (SIGKILL)")
-                    os.killpg(pgid, signal.SIGKILL)
-                else:
-                    logger.debug("Process terminated successfully")
-            else:
-                logger.debug(f"Process already terminated (exit code: {process.poll()})")
-
-            # Release semaphore
-            _run_semaphore.release()
-            logger.debug("Released semaphore")
-
-            # Update status
-            with _run_lock:
-                run_data["status"] = "killed"
-                run_data["exit_code"] = -1
-
-            logger.info(f"successfully killed run {run_id}")
-            self._json_response({"success": True, "message": f"Killed run {run_id}"})
-
-        except Exception as e:
-            logger.error(f"❌ Failed to kill run: {str(e)}", exc_info=True)
-            self._json_response({"success": False, "message": f"Failed to kill run: {str(e)}"})
+        if success:
+            logger.info("successfully killed run %s", run_id)
+        else:
+            logger.warning(message)
+        self._json_response({"success": success, "message": message})
 
     def _delete_run(self, run_id: str) -> None:
         """Delete a completed/failed run from registry."""
-        global _active_runs
-
-        if run_id not in _active_runs:
-            self.send_error(404, f"Run not found: {run_id}")
+        success, message = delete_run(run_id)
+        if not success and message.startswith("Run not found:"):
+            self.send_error(404, message)
             return
-
-        run_data = _active_runs[run_id]
-
-        # Don't delete running processes
-        if run_data["status"] == "running":
-            self._json_response({
-                "success": False,
-                "message": "Cannot delete running process. Kill it first.",
-            })
-            return
-
-        # Remove from registry
-        with _run_lock:
-            del _active_runs[run_id]
-
-        self._json_response({"success": True, "message": f"Deleted run {run_id}"})
+        self._json_response({"success": success, "message": message})
 
     def _json_response(self, data: Any) -> None:
         """Send JSON response."""
@@ -1884,6 +2229,15 @@ def prepare_messages(sample_data: Dict[str, Any]) -> List[Message]:
         self.send_header("Content-Length", str(len(json_data)))
         self.end_headers()
         self.wfile.write(json_data.encode("utf-8"))
+
+    def _html_response(self, document: str, *, filename: str) -> None:
+        content = document.encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(content)))
+        self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+        self.end_headers()
+        self.wfile.write(content)
 
 
 def main() -> None:
@@ -1903,14 +2257,33 @@ def main() -> None:
     parser.add_argument(
         "--no-browser", action="store_true", help="Don't automatically open browser"
     )
+    parser.add_argument(
+        "--results-dirs",
+        nargs="*",
+        type=Path,
+        default=[],
+        help="Additional results directories to offer in the UI (space-separated paths)",
+    )
 
     args = parser.parse_args()
 
     # Set project root on server class
     DevLoopServer.project_root = args.project.resolve()
 
+    # Build known results dirs: project's own results/ first, then any extras
+    primary = args.project.resolve() / "results"
+    extras = [Path(p).expanduser().resolve() for p in (args.results_dirs or [])]
+    all_dirs: list[Path] = []
+    seen: set[Path] = set()
+    for d in [primary] + extras:
+        if d not in seen:
+            all_dirs.append(d)
+            seen.add(d)
+    DevLoopServer.results_dir = all_dirs[0] if all_dirs else primary
+    DevLoopServer.known_results_dirs = all_dirs
+
     # Create server
-    server = HTTPServer(("localhost", args.port), DevLoopServer)
+    server = ThreadingHTTPServer(("localhost", args.port), DevLoopServer)
 
     url = f"http://localhost:{args.port}"
     print(f"\n{'=' * 60}")

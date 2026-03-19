@@ -47,7 +47,8 @@ from ...agents import AgentState, RunConfig, handle_stop_max_turns
 from ...core import Endpoint, EvalConfig, Message, Score, StopReason
 from ...dtypes import StreamEvent
 from ...eval.native import EvalRuntime, _resolve_environment, evaluate_sample
-from ...training.types import AttemptRow
+from ...training.scoring import FunctionSampleScorer
+from ...training.types import AttemptResult, AttemptRow
 from ..types import Candidate, EvaluationBatch
 
 logger = logging.getLogger(__name__)
@@ -79,7 +80,7 @@ class SystemUserPromptConfig:
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
 
-def extract_output(sample: AttemptRow) -> str:
+def extract_output(sample: AttemptResult) -> str:
     """Extract output text from an attempt row's trajectory."""
     if not sample.trajectory or not sample.trajectory.messages:
         return ""
@@ -212,7 +213,7 @@ async def evaluate_system_user_prompt(
 
     eval_config = EvalConfig(
         endpoint=config.endpoint,
-        score_fn=config.score_fn,
+        sample_scorer=FunctionSampleScorer(config.score_fn),
         prepare_messages=make_prepare_messages(system_prompt, user_template, config.wildcards),
         environment_factory=config.environment_factory,
         run_config=run_config,
@@ -222,7 +223,7 @@ async def evaluate_system_user_prompt(
     # Create runtime context for evaluate_sample calls
     runtime = EvalRuntime(config=eval_config)
 
-    async def eval_one(idx: int, sample_data: dict) -> AttemptRow:
+    async def eval_one(idx: int, sample_data: dict) -> AttemptResult:
         env = (
             await _resolve_environment(config.environment_factory, sample_data)
             if config.environment_factory
@@ -238,7 +239,7 @@ async def evaluate_system_user_prompt(
     # Run with concurrency limit
     async with trio.open_nursery() as nursery:
         limiter = trio.CapacityLimiter(config.max_concurrent)
-        results: list[AttemptRow | None] = [None] * len(batch)
+        results: list[AttemptResult | None] = [None] * len(batch)
 
         async def eval_with_limit(idx: int, sample_data: dict) -> None:
             async with limiter:

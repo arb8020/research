@@ -1,4 +1,6 @@
 from dataclasses import dataclass
+from pathlib import Path
+from typing import NoReturn
 
 import trio
 
@@ -19,13 +21,13 @@ class StubFrontend:
     async def stop(self) -> None:
         return None
 
-    async def handle_event(self, event) -> None:
+    async def handle_event(self, event: object) -> None:
         return None
 
-    async def get_input(self, prompt: str = ""):
+    async def get_input(self, prompt: str = "") -> NoReturn:
         raise RuntimeError("get_input should not be called in this test")
 
-    async def confirm_tool(self, tool_call) -> bool:
+    async def confirm_tool(self, tool_call: object) -> bool:
         return True
 
     def show_loader(self, text: str) -> None:
@@ -38,7 +40,7 @@ class StubFrontend:
         self.messages.append(text)
 
 
-def test_interactive_runner_switch_session_updates_active_handle(tmp_path) -> None:
+def test_interactive_runner_switch_session_updates_active_handle(tmp_path: Path) -> None:
     async def _test() -> None:
         session_store = FileSessionStore(base_dir=tmp_path / "sessions")
         parent_endpoint = Endpoint.from_legacy(
@@ -78,7 +80,6 @@ def test_interactive_runner_switch_session_updates_active_handle(tmp_path) -> No
 
         switched = await runner.switch_session(child.session_id)
         assert switched
-        assert runner.session_handle is not None
         assert runner.session_id == child.session_id
         assert runner.parent_session_id == parent.session_id
         assert runner.endpoint.provider == child.endpoint.provider
@@ -88,7 +89,7 @@ def test_interactive_runner_switch_session_updates_active_handle(tmp_path) -> No
     trio.run(_test)
 
 
-def test_model_slash_command_forks_child_session(tmp_path) -> None:
+def test_model_slash_command_forks_child_session(tmp_path: Path) -> None:
     async def _test() -> None:
         session_store = FileSessionStore(base_dir=tmp_path / "sessions")
         parent_endpoint = Endpoint.from_legacy(
@@ -106,7 +107,7 @@ def test_model_slash_command_forks_child_session(tmp_path) -> None:
 
         frontend = StubFrontend(messages=[])
         runner = InteractiveRunner(
-            trajectory=parent.to_trajectory(),
+            trajectory=parent,
             endpoint=parent.endpoint,
             frontend=frontend,
             config=RunnerConfig(
@@ -117,7 +118,7 @@ def test_model_slash_command_forks_child_session(tmp_path) -> None:
 
         state = AgentState(
             actor=Actor(
-                trajectory=parent.to_trajectory(),
+                trajectory=parent,
                 endpoint=parent.endpoint,
                 tools=[],
             ),

@@ -15,7 +15,6 @@ from ..core import (
     Endpoint,
     Environment,
     Message,
-    SessionStatus,
 )
 from ..dtypes import (
     LLMCallEnd,
@@ -403,11 +402,15 @@ async def run_agent_step(
     # Let environment respond to assistant message (e.g., execute code, provide feedback)
     # This happens AFTER updating state but BEFORE tool processing
     # Only call if we actually have an assistant message
-    if state.environment and last_message and last_message.role == "assistant":
+    on_assistant_message = getattr(state.environment, "on_assistant_message", None)
+    if (
+        state.environment
+        and last_message
+        and last_message.role == "assistant"
+        and callable(on_assistant_message)
+    ):
         try:
-            current_state = await state.environment.on_assistant_message(
-                last_message, current_state
-            )
+            current_state = await on_assistant_message(last_message, current_state)
         except Exception as e:
             logger.exception(f"❌ ENVIRONMENT RESPONSE FAILED: {e}")
             logger.exception(f"   Environment type: {type(state.environment).__name__}")
@@ -949,7 +952,7 @@ async def run_agent(
             if session_store and current_state.session_id:
                 await session_store.update(
                     current_state.session_id,
-                    status=SessionStatus.ABORTED,
+                    stop_reason=StopReason.ABORTED,
                 )
 
         # Return states instead of re-raising - caller can check stop reason
@@ -958,26 +961,15 @@ async def run_agent(
     # Save final state
     await handle_checkpoint_event(current_state, "final", run_config, current_state.session_id)
 
-    # Save final session status and environment state
+    # Save final stop reason and environment state
     if session_store and current_state.session_id:
-        if current_state.stop == StopReason.TASK_COMPLETED:
-            status = SessionStatus.COMPLETED
-        elif current_state.stop == StopReason.ABORTED:
-            status = SessionStatus.ABORTED
-        elif current_state.stop == StopReason.NEEDS_INPUT:
-            status = SessionStatus.WAITING
-        elif current_state.stop in (StopReason.MAX_TURNS,):
-            status = SessionStatus.TRUNCATED
-        else:
-            status = SessionStatus.PENDING
-
         env_state = None
         if current_state.environment is not None:
             env_state = await current_state.environment.serialize()
 
         await session_store.update(
             current_state.session_id,
-            status=status,
+            stop_reason=current_state.stop,
             environment_state=env_state,
         )
 

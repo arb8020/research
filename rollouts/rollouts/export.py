@@ -18,13 +18,7 @@ import html
 import json
 from typing import TYPE_CHECKING, Any
 
-from .core import SessionHandle, Trajectory
-
-
-def _coerce_session_handle(session: SessionHandle | Trajectory) -> SessionHandle:
-    if isinstance(session, Trajectory):
-        return SessionHandle.from_trajectory(session)
-    return session
+from .core import Trajectory
 
 
 def format_content_block(block: dict[str, Any] | Any) -> str:
@@ -87,7 +81,7 @@ def format_message_content(content: str | list[dict[str, Any]]) -> str:
     return "\n\n".join(parts)
 
 
-def session_to_markdown(session: SessionHandle | Trajectory, include_metadata: bool = True) -> str:
+def session_to_markdown(session: Trajectory, include_metadata: bool = True) -> str:
     """Convert session to markdown.
 
     Args:
@@ -97,24 +91,23 @@ def session_to_markdown(session: SessionHandle | Trajectory, include_metadata: b
     Returns:
         Markdown string
     """
-    handle = _coerce_session_handle(session)
     lines: list[str] = []
 
     if include_metadata:
-        lines.append(f"# Session {handle.session_id}")
+        lines.append(f"# Session {session.session_id}")
         lines.append("")
-        lines.append(f"- **Created**: {handle.created_at}")
-        lines.append(f"- **Model**: {handle.endpoint.provider}/{handle.endpoint.model}")
-        lines.append(f"- **Status**: {handle.status.value}")
-        if handle.parent_id:
+        lines.append(f"- **Created**: {session.created_at}")
+        lines.append(f"- **Model**: {session.endpoint.provider}/{session.endpoint.model}")
+        lines.append(f"- **Status**: {session.status}")
+        if session.parent_id:
             lines.append(
-                f"- **Branched from**: {handle.parent_id} (at message {handle.branch_point})"
+                f"- **Branched from**: {session.parent_id} (at message {session.branch_point})"
             )
         lines.append("")
         lines.append("---")
         lines.append("")
 
-    for msg in handle.messages:
+    for msg in session.messages:
         role = msg.role.upper()
         content = format_message_content(msg.content)
 
@@ -138,7 +131,7 @@ def session_to_markdown(session: SessionHandle | Trajectory, include_metadata: b
     return "\n".join(lines)
 
 
-def session_to_html(session: SessionHandle | Trajectory) -> str:
+def session_to_html(session: Trajectory) -> str:
     """Convert session to standalone HTML.
 
     Args:
@@ -147,8 +140,6 @@ def session_to_html(session: SessionHandle | Trajectory) -> str:
     Returns:
         HTML string (complete document)
     """
-    handle = _coerce_session_handle(session)
-
     # Get markdown first, then wrap in HTML with styling
     # For now, just escape and wrap - could use a proper md->html converter later
 
@@ -239,19 +230,19 @@ def session_to_html(session: SessionHandle | Trajectory) -> str:
     </div>
     <hr>
 """.format(
-            session_id=html.escape(handle.session_id),
-            created_at=html.escape(handle.created_at),
-            provider=html.escape(handle.endpoint.provider),
-            model=html.escape(handle.endpoint.model),
-            status=html.escape(handle.status.value),
-            parent_info=f"<div>Branched from: {html.escape(handle.parent_id or '')} (at message {handle.branch_point})</div>"
-            if handle.parent_id
+            session_id=html.escape(session.session_id),
+            created_at=html.escape(session.created_at),
+            provider=html.escape(session.endpoint.provider),
+            model=html.escape(session.endpoint.model),
+            status=html.escape(session.status),
+            parent_info=f"<div>Branched from: {html.escape(session.parent_id or '')} (at message {session.branch_point})</div>"
+            if session.parent_id
             else "",
         )
     )
 
     # Messages
-    for msg in handle.messages:
+    for msg in session.messages:
         role_class = msg.role
         role_label = msg.role.upper()
 
@@ -318,7 +309,7 @@ def format_content_html(content: str | list[dict[str, Any]]) -> str:
 
 
 async def run_handoff_command(
-    session: SessionHandle | Trajectory,
+    session: Trajectory,
     endpoint: Endpoint,
     goal: str,
 ) -> tuple[str, None] | tuple[None, str]:

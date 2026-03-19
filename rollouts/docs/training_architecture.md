@@ -1,14 +1,29 @@
 # Training Architecture
 
+## Status
+
+This doc still contains historical `nmoe` examples, but `backend="nmoe"` is
+currently a reserved name that fails loudly.
+
+The old `NmoeTrainingBackend` was removed because it was only a Hugging Face
+wrapper with an optimizer recipe inspired by `nmoe`, not a real `nmoe` runtime
+adapter.
+
+The real future path is:
+
+- `NmoeLowering` for RDEP/expert-ownership semantics
+- `NmoeModelLowering` for native model/checkpoint construction intent
+- a native runtime adapter for lockstep eval/generation and `nmoe` checkpointing
+
 ## Done When
 
 We're done when we can run this:
 
 ```python
-# GRPO training with nmoe backend on GLM-5 (700B-A40B)
+# Historical target shape for a future nmoe backend on GLM-5 (700B-A40B)
 config = GRPOConfig(
     model=ModelConfig(name="glm-5-700b"),
-    trainer=TrainerConfig(backend="nmoe"),  # <-- pluggable backend
+    trainer=TrainerConfig(backend="nmoe"),  # reserved backend name, currently fail-loud
     inference=InferenceConfig(backend="sglang", tensor_parallel_size=8),
 )
 
@@ -18,7 +33,7 @@ result = grpo_train(config, prompts, score_fn, environment_cls)
 **Concrete tests:**
 
 1. **FSDP backend + dense model (Qwen-0.6B):** Verify refactor didn't break anything
-2. **NMOE backend + MoE model (zai-org/GLM-4.7-Flash):** Verify pluggable backends work with MoE
+2. **Future NMOE backend + MoE model (zai-org/GLM-4.7-Flash):** currently not implemented
 3. **Weight sync to SGLang:** Verify weight sync works with both backends
 
 Run 10 steps each. No memory leak. Checkpoints save. Metrics log correctly.
@@ -35,9 +50,9 @@ Run (from `rollouts/`):
 
 ```bash
 python -m argus run --config examples/training_architecture/test1_fsdp_dense_qwen_0_6b.py
-python -m argus run --config examples/training_architecture/test2_nmoe_moe_glm_4_7_flash.py
+python -m argus run --config examples/training_architecture/test2_nmoe_moe_glm_4_7_flash.py  # expected to fail loudly for now
 python -m argus run --config examples/training_architecture/test3_weight_sync_fsdp_nccl_qwen_0_6b.py
-python -m argus run --config examples/training_architecture/test3_weight_sync_nmoe_nccl_qwen_0_6b.py
+python -m argus run --config examples/training_architecture/test3_weight_sync_nmoe_nccl_qwen_0_6b.py  # expected to fail loudly for now
 ```
 
 ## Making a Backend Work
@@ -51,28 +66,30 @@ A backend is "working" when it can:
 ### Testing a Backend
 
 ```bash
-# 1. Unit test: does it load and run forward?
+# 1. Unit test: reserved backend currently fails loudly
 python -c "
 from rollouts.training.backends.nmoe_backend import NmoeTrainingBackend, NmoeConfig
 backend = NmoeTrainingBackend(model_name='zai-org/GLM-4.7-Flash', config=NmoeConfig())
-# ... test forward_backward with dummy batch
 "
 
-# 2. Integration test: does it work with train()?
+# 2. Historical integration config: currently expected to fail until native backend lands
 python -m argus run --config examples/training_architecture/test2_nmoe_moe_glm_4_7_flash.py
 
-# 3. Weight sync test: can inference load the weights?
-# Check that SGLang can load weights from backend.get_weights()
+# 3. Real backend TODO: native weight publication semantics
 ```
 
 ### NMOE Backend Integration
 
-The `nmoe_backend.py` exists but needs:
+The old runnable `nmoe_backend.py` implementation no longer exists. The
+reserved symbol remains only to fail loudly.
+
+The real path needs:
 
 1. **Model loading**: Use nmoe's `Transformer(cfg).cuda()` instead of HuggingFace
 2. **Optimizer**: Use nmoe's `build_optimizer()` (Muon + AdamW)
 3. **Forward/backward**: Call nmoe's chunked cross-entropy, not HF's
 4. **Weight format**: nmoe uses different state_dict keys than HF
+5. **Distributed semantics**: Preserve lockstep eval/generation and expert-owner-local checkpoints
 
 Reference: `/tmp/nmoe/nmoe/train.py` lines 263-310 for model/optimizer setup.
 
@@ -93,8 +110,7 @@ class TrainerConfig:
 if config.trainer.backend == "fsdp":
     backend = create_pytorch_backend(...)
 elif config.trainer.backend == "nmoe":
-    from ..training.backends.nmoe_backend import NmoeTrainingBackend
-    backend = NmoeTrainingBackend(...)
+    raise NotImplementedError("backend='nmoe' is reserved but not implemented")
 elif config.trainer.backend == "megatron":
     ...
 ```
@@ -125,6 +141,75 @@ The core training loop handles:
 
 Loss functions are passed to the backend. Data source and weight sync are injected.
 
+## Weight sync semantics
+
+The old mental model is:
+
+```python
+if weight_syncer and should_sync(step, config):
+    weight_syncer.sync()
+```
+
+That is acceptable for a checkpoint copy or other simple publish step, but it
+is not honest enough for live train/infer systems like:
+
+- TorchTitan -> patched vLLM over a custom NCCL channel
+- FSDP/Megatron -> SGLang over a runtime update path
+
+In those systems, "sync weights" is not one backend method. It is a service
+transition:
+
+1. inference is serving a specific version
+2. trainer decides a new version should become visible
+3. inference quiesces for update
+4. an update channel publishes the new weights
+5. inference finishes the update and resumes serving
+
+So the new semantic model should be:
+
+```python
+policy = WeightSyncPolicy(...)
+plan = lower_sync_policy(trainer_backend, inference_backend, policy)
+channel = WeightUpdateChannel(plan)
+
+await channel.initialize()
+
+for step in range(config.num_steps):
+    ...
+    if should_sync(step, policy):
+        await channel.publish(version=step)
+
+await channel.close()
+```
+
+Where `publish()` means something explicit:
+
+```python
+async def publish(version: int) -> None:
+    await inference.quiesce_for_update()
+    await inference.begin_update(metadata)
+    await trainer.send_update(payload)
+    await inference.finish_update(version)
+    await inference.resume_after_update(version)
+```
+
+The important change is:
+
+- old: `backend.sync_weights_nccl()` implicitly coordinates everyone
+- new: policy is lowered into an explicit update-channel realization owned by a
+  runtime object with real lifecycle
+
+This matters because the failure boundaries are different:
+
+- topology mismatches
+- dtype/schema mismatches
+- quiesce/resume ordering bugs
+- stale-version visibility bugs
+- startup/init bugs in the live update path
+
+If the model is only `weight_syncer.sync()`, those boundaries disappear into ad
+hoc control flow.
+
 ## File Structure
 
 ```
@@ -137,7 +222,7 @@ rollouts/training/
 ├── backends/
 │   ├── protocol.py       # TrainingBackend protocol (exists)
 │   ├── fsdp.py           # FSDP backend (exists)
-│   ├── nmoe_backend.py   # NMOE backend (exists)
+│   ├── nmoe_backend.py   # Fail-loud placeholder for future native NMOE backend
 │   └── ...
 └── types.py              # Batch, TrainFuture, etc. (exists)
 ```
@@ -219,7 +304,7 @@ class TrainingBackend(Protocol):
         ...
 ```
 
-### WeightSyncer Protocol
+### Weight sync runtime boundary
 
 ```python
 # rollouts/training/weight_sync.py
@@ -286,6 +371,51 @@ class FilesystemWeightSyncer:
         self.inference.load_weights(path)
         self.version += 1
 ```
+
+The existing `WeightSyncer` protocol is still useful as a compatibility
+surface, but it is too thin to be the final semantic boundary for live update
+systems.
+
+The stronger boundary is:
+
+1. semantic policy
+   - blocking vs in-flight publication
+   - staleness tolerance
+   - visibility rules
+2. lowering
+   - trainer backend + inference backend + chosen sync realization
+3. long-lived update channel
+   - initialize
+   - publish
+   - close
+
+For example:
+
+```python
+@dataclass(frozen=True)
+class WeightSyncPolicy:
+    blocking: bool
+    sync_every: int
+    realization: str
+
+
+@dataclass(frozen=True)
+class WeightUpdatePlan:
+    parameter_schema: tuple[ParamSpec, ...]
+    channel_config: UpdateChannelConfig
+
+
+class WeightUpdateChannel:
+    async def initialize(self) -> None: ...
+    async def publish(self, version: int) -> None: ...
+    async def close(self) -> None: ...
+```
+
+This is the level where train/infer ownership becomes honest:
+
+- `TrainingBackend` owns how to prepare and send an update payload
+- `InferenceBackend` owns how to quiesce, receive, finish, and resume
+- the update channel owns the long-lived runtime resources between them
 
 ### Loss Functions (in losses.py)
 

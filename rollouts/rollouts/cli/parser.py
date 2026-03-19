@@ -316,20 +316,6 @@ def create_parser() -> argparse.ArgumentParser:
         "--fix", action="store_true", help="Auto-fix detected issues (duplicate tool results, etc.)"
     )
     parser.add_argument(
-        "--send",
-        type=str,
-        nargs=2,
-        metavar=("SESSION_ID", "MESSAGE"),
-        help="Send message to waiting session and resume",
-    )
-    parser.add_argument(
-        "--send-file",
-        type=str,
-        nargs=2,
-        metavar=("SESSION_ID", "FILE"),
-        help="Send file contents to waiting session and resume",
-    )
-    parser.add_argument(
         "--attach", type=str, metavar="SESSION_ID", help="Attach TUI to existing session"
     )
     parser.add_argument(
@@ -340,7 +326,7 @@ def create_parser() -> argparse.ArgumentParser:
         metavar="SESSION_ID",
         help="Show session status (list active if no ID)",
     )
-    parser.add_argument("--ls", action="store_true", help="List active sessions (running/waiting)")
+    parser.add_argument("--ls", action="store_true", help="List active resumable sessions")
     parser.add_argument(
         "--ls-all", action="store_true", help="List all sessions including completed/failed"
     )

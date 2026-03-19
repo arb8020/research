@@ -6,7 +6,8 @@ Prefer explicit imports from the focused packages:
 - ``rollouts.eval`` for evaluation utilities
 """
 
-from . import agents, core, eval
+from importlib import import_module
+from typing import Any
 
 __all__ = [
     "agents",
@@ -15,3 +16,9 @@ __all__ = [
 ]
 
 __version__ = "0.4.0"
+
+
+def __getattr__(name: str) -> Any:
+    if name in __all__:
+        return import_module(f"{__name__}.{name}")
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

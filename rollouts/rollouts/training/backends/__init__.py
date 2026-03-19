@@ -4,12 +4,13 @@ Available implementations:
 - PyTorchTrainingBackend: Standard PyTorch (OOP, stateful) - IMPLEMENTED
 - FSDP2TrainingBackend: PyTorch FSDP2 distributed - IMPLEMENTED
 - MegatronTrainingBackend: Megatron-Core (TP/PP/EP) - IMPLEMENTED
-- NmoeTrainingBackend: nmoe Zero2 + Muon for MoE - IMPLEMENTED
+- NmoeTrainingBackend: reserved name for future native nmoe adapter - STUB / FAIL-LOUD
 - TorchFuncTrainingBackend: torch.func + torchopt (functional) - STUB
 - JAXTrainingBackend: Raw JAX (pure functional, TPU) - STUB
 - TorchaxTrainingBackend: torchax (PyTorch on JAX) - STUB
 
-All backends implement the TrainingBackend protocol.
+Implemented backends implement the TrainingBackend protocol. Reserved stubs fail
+loud rather than pretending to implement runtime semantics they do not have.
 """
 
 from ...training.backends.fsdp2_backend import FSDP2Config, FSDP2TrainingBackend

@@ -7,7 +7,6 @@ from ..chat_runtime import (
     finalize_tbench_run,
     get_tbench_agent_timeout_sec,
 )
-from ..commands import cmd_send
 from ..store import FileSessionStore
 from .config import (
     PARSER_DEFAULTS,
@@ -36,7 +35,6 @@ __all__ = [
     "apply_preset",
     "apply_session_config",
     "apply_template",
-    "cmd_send",
     "create_endpoint",
     "create_environment",
     "create_parser",

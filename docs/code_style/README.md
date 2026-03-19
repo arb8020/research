@@ -7,6 +7,7 @@
 - **[earned_compression.md](earned_compression.md)** - When abstraction is earned: semantic compression vs dishonest compression
 - **[keeping_llm_code_honest.md](keeping_llm_code_honest.md)** - LLM workflow: compression over working code, verification loops
 - **[llm_coding_workflow.md](llm_coding_workflow.md)** - LLM workflow notes
+- **[debugging_draft.md](debugging_draft.md)** - Draft debugging workflow: violated invariants, boundary normalization, honest failure
 - **[code_philosophy_essay.md](code_philosophy_essay.md)** - Full philosophy writeup
 - **[code_philosophy_reference.md](code_philosophy_reference.md)** - Reference quotes and citations
 

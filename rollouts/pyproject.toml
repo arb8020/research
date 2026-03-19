@@ -25,6 +25,7 @@ dependencies = [
 
 [project.scripts]
 rollouts = "rollouts.cli:main"
+rollouts-doctor = "rollouts.tools.doctor:main"
 
 [project.optional-dependencies]
 # Dataset evaluation

@@ -89,12 +89,333 @@ UV_BIN = "/root/.local/bin/uv"
 IMAGE_VENV_DIR = "/opt/venvs/rollouts"
 IMAGE_VENV_PYTHON = f"{IMAGE_VENV_DIR}/bin/python"
 WORKLOAD_ENTRYPOINT_SENTINEL = "__ARGUS_WORKLOAD_ENTRYPOINT_STARTED__"
+ARGUS_DIAG_EVENT_SENTINEL = "__ARGUS_DIAG__"
 MODAL_IMAGE_BUILD_HEARTBEAT_S = 15.0
 MODAL_IMAGE_BUILD_LOG_LINE_LIMIT = 200
 MODAL_IMAGE_BUILD_LOG_CHAR_LIMIT = 1000
 MODAL_IMAGE_BUILD_LOG_FETCH_TIMEOUT_S = 30.0
 MODAL_FAILURE_DIAGNOSTICS_TIMEOUT_S = 30
 MODAL_FAILURE_DIAGNOSTICS_OUTPUT_CHAR_LIMIT = 4000
+MODAL_CLEANUP_SCOPES = ("app", "tag", "run", "none")
+
+
+def _sandbox_runtime_diag_python() -> str:
+    """Return a small sibling-process monitor for hard-kill debugging.
+
+    This intentionally runs outside the main workload process. Threads inside
+    the workload die with SIGKILL; a sibling process can still emit the last
+    cgroup/host/GPU state if the main process alone is killed first.
+    """
+    return r"""
+import json
+import os
+import pathlib
+import subprocess
+import sys
+import time
+
+SENTINEL = "__ARGUS_DIAG__"
+
+
+def emit(event: str, **data: object) -> None:
+    payload = {"event": event, **data}
+    sys.stderr.write(f"{SENTINEL}{json.dumps(payload, sort_keys=True)}\n")
+    sys.stderr.flush()
+
+
+def pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+
+def read_text(path: str) -> str | None:
+    try:
+        return pathlib.Path(path).read_text(encoding="utf-8").strip()
+    except Exception:
+        return None
+
+
+def read_meminfo() -> dict[str, int]:
+    values: dict[str, int] = {}
+    text = read_text("/proc/meminfo")
+    if not text:
+        return values
+    for line in text.splitlines():
+        key, _, rest = line.partition(":")
+        parts = rest.split()
+        if parts:
+            try:
+                values[key] = int(parts[0])
+            except ValueError:
+                pass
+    return values
+
+
+def read_proc_status(pid: int) -> dict[str, str]:
+    wanted = {"VmRSS", "VmHWM", "VmSize", "Threads", "State"}
+    text = read_text(f"/proc/{pid}/status")
+    if not text:
+        return {}
+    values: dict[str, str] = {}
+    for line in text.splitlines():
+        key, _, value = line.partition(":")
+        if key in wanted:
+            values[key] = value.strip()
+    return values
+
+
+def parse_cgroup_events(text: str | None) -> dict[str, int] | None:
+    if not text:
+        return None
+    values: dict[str, int] = {}
+    for line in text.splitlines():
+        key, _, raw = line.partition(" ")
+        try:
+            values[key] = int(raw.strip())
+        except ValueError:
+            continue
+    return values
+
+
+def query_nvidia_smi() -> list[dict[str, object]]:
+    try:
+        gpu_result = subprocess.run(
+            [
+                "nvidia-smi",
+                "--query-gpu=index,name,memory.total,memory.used,memory.free",
+                "--format=csv,noheader,nounits",
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except Exception as exc:
+        return [{"error": f"{type(exc).__name__}: {exc}"}]
+
+    rows: list[dict[str, object]] = []
+    for raw_line in gpu_result.stdout.splitlines():
+        parts = [part.strip() for part in raw_line.split(",")]
+        if len(parts) != 5:
+            continue
+        index, name, total_mb, used_mb, free_mb = parts
+        try:
+            total = int(total_mb)
+            used = int(used_mb)
+            free = int(free_mb)
+        except ValueError:
+            continue
+        rows.append(
+            {
+                "device": int(index),
+                "name": name,
+                "total_gb": round(total / 1024, 3),
+                "used_gb": round(used / 1024, 3),
+                "free_gb": round(free / 1024, 3),
+                "used_frac": round(used / total, 4) if total else 0.0,
+            }
+        )
+    return rows
+
+
+def build_sample(main_pid: int, seq: int) -> dict[str, object]:
+    meminfo = read_meminfo()
+    mem_total_kb = meminfo.get("MemTotal", 0)
+    mem_available_kb = meminfo.get("MemAvailable", 0)
+    host_mem_used_frac = None
+    if mem_total_kb and mem_available_kb:
+        host_mem_used_frac = round(1.0 - (mem_available_kb / mem_total_kb), 4)
+
+    return {
+        "sample_seq": seq,
+        "time_unix_s": round(time.time(), 3),
+        "main_pid": main_pid,
+        "main_alive": pid_alive(main_pid),
+        "main_proc_status": read_proc_status(main_pid),
+        "host_mem_total_gb": round(mem_total_kb / (1024**2), 3) if mem_total_kb else None,
+        "host_mem_available_gb": round(mem_available_kb / (1024**2), 3) if mem_available_kb else None,
+        "host_mem_used_frac": host_mem_used_frac,
+        "cgroup_memory_current": read_text("/sys/fs/cgroup/memory.current"),
+        "cgroup_memory_max": read_text("/sys/fs/cgroup/memory.max"),
+        "cgroup_memory_events": parse_cgroup_events(read_text("/sys/fs/cgroup/memory.events")),
+        "nvidia_smi": query_nvidia_smi(),
+    }
+
+
+def main() -> int:
+    main_pid = int(sys.argv[1])
+    interval_s = float(sys.argv[2])
+    emit(
+        "remote_runtime_diag_started",
+        main_pid=main_pid,
+        monitor_pid=os.getpid(),
+        interval_s=interval_s,
+    )
+    seq = 0
+    while True:
+        emit("remote_runtime_diag_sample", **build_sample(main_pid, seq))
+        if not pid_alive(main_pid):
+            emit("remote_runtime_diag_target_gone", **build_sample(main_pid, seq + 1))
+            return 0
+        seq += 1
+        time.sleep(interval_s)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+"""
+
+
+def _sandbox_runtime_supervisor_python() -> str:
+    """Return a small supervisor for the remote workload process tree.
+
+    This is the top-level process for `sandbox.exec(...)`. It launches the real
+    workload child plus the sibling diagnostics sampler, then emits an explicit
+    child-exit event if the child dies before the container does.
+    """
+    return r"""
+import json
+import os
+import signal
+import subprocess
+import sys
+import time
+
+ARGUS_DIAG_EVENT_SENTINEL = "__ARGUS_DIAG__"
+
+
+def emit(event: str, **data: object) -> None:
+    payload = {"event": event, **data}
+    sys.stderr.write(f"{ARGUS_DIAG_EVENT_SENTINEL}{json.dumps(payload, sort_keys=True)}\n")
+    sys.stderr.flush()
+
+
+def read_proc_status(pid: int) -> dict[str, str]:
+    wanted = {"Name", "State", "VmRSS", "VmHWM", "VmSize", "Threads"}
+    path = f"/proc/{pid}/status"
+    try:
+        text = open(path, encoding="utf-8").read()
+    except Exception:
+        return {}
+    values: dict[str, str] = {}
+    for line in text.splitlines():
+        key, _, value = line.partition(":")
+        if key in wanted:
+            values[key] = value.strip()
+    return values
+
+
+def read_children(pid: int) -> list[int]:
+    path = f"/proc/{pid}/task/{pid}/children"
+    try:
+        raw = open(path, encoding="utf-8").read().strip()
+    except Exception:
+        return []
+    if not raw:
+        return []
+    out: list[int] = []
+    for item in raw.split():
+        try:
+            out.append(int(item))
+        except ValueError:
+            continue
+    return out
+
+
+def snapshot_tree(root_pid: int) -> list[dict[str, object]]:
+    seen: set[int] = set()
+    queue = [root_pid]
+    rows: list[dict[str, object]] = []
+    while queue:
+        pid = queue.pop(0)
+        if pid in seen:
+            continue
+        seen.add(pid)
+        status = read_proc_status(pid)
+        if not status:
+            continue
+        children = read_children(pid)
+        rows.append({"pid": pid, "status": status, "children": children})
+        queue.extend(children)
+    return rows
+
+
+def terminate_process(proc: subprocess.Popen[bytes] | None) -> None:
+    if proc is None or proc.poll() is not None:
+        return
+    try:
+        proc.terminate()
+    except Exception:
+        pass
+
+
+def main() -> int:
+    workspace = sys.argv[1]
+    image_python = sys.argv[2]
+    diag_python = sys.argv[3]
+    config_rel = sys.argv[4]
+    child = None
+    diag = None
+    started_at = time.monotonic()
+    env = os.environ.copy()
+
+    def _handle_signal(signum, _frame):
+        emit("remote_supervisor_signal", signum=signum)
+        terminate_process(child)
+        terminate_process(diag)
+        raise SystemExit(128 + signum)
+
+    signal.signal(signal.SIGTERM, _handle_signal)
+    signal.signal(signal.SIGINT, _handle_signal)
+
+    try:
+        child = subprocess.Popen(
+            [image_python, "-m", "argus.run", "--local", "--config", config_rel],
+            cwd=workspace,
+            env=env,
+        )
+        emit(
+            "remote_supervisor_child_started",
+            child_pid=child.pid,
+            process_tree=snapshot_tree(child.pid),
+        )
+        diag = subprocess.Popen(
+            [image_python, "-u", "-c", diag_python, str(child.pid), "1.0"],
+            cwd=workspace,
+            env=env,
+        )
+        emit(
+            "remote_supervisor_diag_started",
+            child_pid=child.pid,
+            diag_pid=diag.pid,
+        )
+        rc = child.wait()
+        emit(
+            "remote_supervisor_child_exit",
+            child_pid=child.pid,
+            child_returncode=rc,
+            child_was_signaled=(rc < 0),
+            child_signal=(-rc if rc < 0 else None),
+            elapsed_sec=round(time.monotonic() - started_at, 3),
+            process_tree=snapshot_tree(child.pid),
+        )
+        if diag.poll() is None:
+            try:
+                diag.wait(timeout=3.0)
+            except subprocess.TimeoutExpired:
+                terminate_process(diag)
+        if rc < 0:
+            return 128 + (-rc)
+        return rc
+    finally:
+        terminate_process(diag)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+"""
 
 
 @dataclass
@@ -112,6 +433,7 @@ class ModalRunConfig:
     timeout_hours: int = 4
     sandbox_id: str | None = None
     keep_alive: bool = False
+    cleanup_scope: str = "run"
     run_name: str | None = None
     run_logger: RunLogger | None = None
     model_name: str | None = None  # Model name for weight caching (e.g., "zai-org/GLM-4.7-Flash")
@@ -124,6 +446,11 @@ class ModalRunConfig:
         if self.runtime is None:
             raise ValueError(
                 "ModalRunConfig requires a RuntimeContract. Build it from HardwareConfig."
+            )
+        if self.cleanup_scope not in MODAL_CLEANUP_SCOPES:
+            raise ValueError(
+                f"Unknown Modal cleanup_scope={self.cleanup_scope!r}. "
+                f"Use one of {MODAL_CLEANUP_SCOPES!r}."
             )
 
     @property
@@ -168,12 +495,21 @@ def _build_modal_image(modal: Any, deps: DepsConfig, gpu_type: str) -> Any:
             image = modal.Image.from_registry(spec.source_ref, add_python=spec.python_version)
     elif spec.source_type == "dockerfile_path":
         dockerfile_path = Path(spec.source_ref)
-        image = modal.Image.from_dockerfile(
-            dockerfile_path,
-            context_dir=spec.context_dir or str(dockerfile_path.parent),
-            add_python=spec.python_version,
-            build_args=spec.build_args,
-        )
+        dockerfile_kwargs = {
+            "context_dir": spec.context_dir or str(dockerfile_path.parent),
+            "build_args": spec.build_args,
+        }
+        if spec.python_runtime == "image_owned":
+            image = modal.Image.from_dockerfile(
+                dockerfile_path,
+                **dockerfile_kwargs,
+            )
+        else:
+            image = modal.Image.from_dockerfile(
+                dockerfile_path,
+                add_python=spec.python_version,
+                **dockerfile_kwargs,
+            )
     else:
         raise ValueError(
             f"Modal runner does not know how to build image source_type={spec.source_type!r}"
@@ -468,7 +804,11 @@ async def _emit_private_modal_image_logs(
     stub = getattr(client, "stub", None)
     join_stream = getattr(stub, "ImageJoinStreaming", None)
     if client is None or join_stream is None:
-        emit("modal_image_build_logs_unavailable", image_id=image_id, reason="missing_image_join_stream")
+        emit(
+            "modal_image_build_logs_unavailable",
+            image_id=image_id,
+            reason="missing_image_join_stream",
+        )
         return
 
     emit("modal_image_build_logs_fetch_start", image_id=image_id)
@@ -503,7 +843,9 @@ async def _emit_private_modal_image_logs(
                 if response.entry_id:
                     last_entry_id = response.entry_id
                 if response.result.status:
-                    terminal_status = api_pb2.GenericResult.GenericStatus.Name(response.result.status)
+                    terminal_status = api_pb2.GenericResult.GenericStatus.Name(
+                        response.result.status
+                    )
                 for task_log in response.task_logs:
                     progress = task_log.task_progress
                     if progress.pos or progress.len:
@@ -531,7 +873,12 @@ async def _emit_private_modal_image_logs(
             return lines_emitted, truncated, progress_updates, terminal_status
 
         with trio.move_on_after(MODAL_IMAGE_BUILD_LOG_FETCH_TIMEOUT_S) as scope:
-            lines_emitted, truncated, progress_updates, terminal_status = await trio_asyncio.aio_as_trio(_consume_stream())
+            (
+                lines_emitted,
+                truncated,
+                progress_updates,
+                terminal_status,
+            ) = await trio_asyncio.aio_as_trio(_consume_stream())
         if scope.cancelled_caught:
             emit(
                 "modal_image_build_logs_fetch_timeout",
@@ -1093,16 +1440,64 @@ async def _create_sandbox(
         modal.App.lookup.aio(MODAL_APP_NAME, create_if_missing=True)
     )
 
-    # Clean up any existing sandboxes from this app to avoid hitting limits
-    existing = list(modal.Sandbox.list(app_id=app.app_id))
-    if existing:
-        logger.info(f"Cleaning up {len(existing)} existing sandbox(es)...")
-        for sb in existing:
-            try:
-                sb.terminate()
-                logger.info(f"  Terminated {sb.object_id}")
-            except Exception as e:
-                logger.warning(f"  Failed to terminate {sb.object_id}: {e}")
+    owner_tags = {
+        key: value for key in ("control_plane", "launcher_id") if (value := config.tags.get(key))
+    }
+    group_tags = {
+        key: value
+        for key in ("control_plane", "config_basename", "provider")
+        if (value := config.tags.get(key))
+    }
+
+    def _list_owned_sandboxes() -> list[Any]:
+        if config.cleanup_scope == "none":
+            return []
+        if config.cleanup_scope == "app":
+            return list(modal.Sandbox.list(app_id=app.app_id))
+        if config.cleanup_scope == "tag":
+            return list(modal.Sandbox.list(app_id=app.app_id, tags=group_tags))
+        assert config.cleanup_scope == "run"
+        return list(modal.Sandbox.list(app_id=app.app_id, tags=owner_tags))
+
+    cleanup_event: tuple[str, dict[str, Any]]
+
+    # TODO(chiraag): Modal sandbox ownership/lifecycle should move out of
+    # rollouts and into a real execution substrate layer. For now, keep the
+    # cleanup policy explicit and honest.
+    if config.keep_alive:
+        logger.info("Skipping pre-create sandbox cleanup because keep_alive=True")
+        cleanup_event = ("modal_sandbox_cleanup_skipped", {"reason": "keep_alive_enabled"})
+    elif config.cleanup_scope == "none":
+        logger.info("Skipping pre-create sandbox cleanup because cleanup_scope=none")
+        cleanup_event = ("modal_sandbox_cleanup_skipped", {"reason": "cleanup_scope_none"})
+    elif config.cleanup_scope == "run" and not owner_tags:
+        logger.info("Skipping pre-create sandbox cleanup because run owner tags are missing")
+        cleanup_event = ("modal_sandbox_cleanup_skipped", {"reason": "missing_run_tags"})
+    elif config.cleanup_scope == "tag" and not group_tags:
+        logger.info("Skipping pre-create sandbox cleanup because tag scope tags are missing")
+        cleanup_event = ("modal_sandbox_cleanup_skipped", {"reason": "missing_tag_tags"})
+    else:
+        if config.cleanup_scope == "run":
+            cleanup_event = ("modal_sandbox_cleanup_scope", {"scope": "run", "tags": owner_tags})
+        elif config.cleanup_scope == "tag":
+            cleanup_event = ("modal_sandbox_cleanup_scope", {"scope": "tag", "tags": group_tags})
+        else:
+            cleanup_event = ("modal_sandbox_cleanup_scope", {"scope": "app"})
+        existing = await trio.to_thread.run_sync(_list_owned_sandboxes)
+        if existing:
+            logger.info(
+                "Cleaning up %s existing sandbox(es) for cleanup_scope=%s...",
+                len(existing),
+                config.cleanup_scope,
+            )
+            for sb in existing:
+                try:
+                    await trio_asyncio.aio_as_trio(sb.terminate.aio())
+                    logger.info("  Terminated %s", sb.object_id)
+                except Exception as e:
+                    logger.warning("  Failed to terminate %s: %s", sb.object_id, e)
+        else:
+            logger.info("No existing sandboxes found for cleanup_scope=%s", config.cleanup_scope)
 
     # GPU spec
     gpu_count = config.gpu_count
@@ -1140,6 +1535,9 @@ async def _create_sandbox(
                 gpu_count=config.gpu_count,
                 **data,
             )
+
+    cleanup_event_name, cleanup_event_data = cleanup_event
+    emit(cleanup_event_name, **cleanup_event_data)
 
     logger.info("Constructing Modal image...")
     assert config.deps is not None  # Validated in __post_init__
@@ -1395,7 +1793,12 @@ def _exec_sync(
     return "".join(stdout_lines), "".join(stderr_lines), proc.returncode
 
 
-async def _sync_code_to_sandbox(sandbox: Any, local_root: Path) -> str:
+async def _sync_code_to_sandbox(
+    sandbox: Any,
+    local_root: Path,
+    *,
+    emit: Callable[[str], None] | None = None,
+) -> str:
     """Sync local code to sandbox via sandbox.open() file API.
 
     Uses git bundle + sandbox.open() for efficient file transfer.
@@ -1406,6 +1809,10 @@ async def _sync_code_to_sandbox(sandbox: Any, local_root: Path) -> str:
     # The rollouts code is at /workspace/research/rollouts
     clone_dir = "/workspace/research"
     workspace = "/workspace/research/rollouts"
+
+    def _emit_progress(stage: str, **data: Any) -> None:
+        if emit is not None:
+            emit("modal_repo_sync_progress", stage=stage, **data)
 
     def _sync() -> None:
         # Create git bundle of current HEAD (fast, includes all needed objects)
@@ -1423,6 +1830,7 @@ async def _sync_code_to_sandbox(sandbox: Any, local_root: Path) -> str:
             )
             commit = result.stdout.strip()
             logger.info(f"Bundling commit {commit[:8]}...")
+            _emit_progress("bundle_create_start", commit=commit)
 
             # Create bundle
             subprocess.run(
@@ -1434,31 +1842,67 @@ async def _sync_code_to_sandbox(sandbox: Any, local_root: Path) -> str:
 
             bundle_size = os.path.getsize(bundle_path)
             logger.info(f"Bundle size: {bundle_size / 1024 / 1024:.1f} MB")
+            _emit_progress(
+                "bundle_create_finished",
+                commit=commit,
+                bundle_size_mb=round(bundle_size / 1024 / 1024, 3),
+            )
 
             # Read bundle data
             with open(bundle_path, "rb") as f:
                 bundle_data = f.read()
 
             # Create workspace directory
+            _emit_progress("workspace_prepare_start", path="/workspace")
             _exec_sync(sandbox, "mkdir -p /workspace", timeout=30)
+            _emit_progress("workspace_prepare_finished", path="/workspace")
 
             # Use sandbox.open() for proper file transfer (Alpha API)
             logger.info("Uploading bundle via sandbox.open()...")
+            _emit_progress(
+                "bundle_upload_start",
+                remote_path="/tmp/repo.bundle",
+                bundle_size_mb=round(len(bundle_data) / 1024 / 1024, 3),
+            )
             remote_file = sandbox.open("/tmp/repo.bundle", "wb")
             remote_file.write(bundle_data)
             remote_file.close()
             logger.info(f"Uploaded {len(bundle_data) / 1024 / 1024:.1f} MB")
+            _emit_progress(
+                "bundle_upload_finished",
+                remote_path="/tmp/repo.bundle",
+                bundle_size_mb=round(len(bundle_data) / 1024 / 1024, 3),
+            )
 
             logger.info("Extracting bundle...")
+            _emit_progress("clone_start", clone_dir=clone_dir, workspace=workspace)
+
+            def _on_clone_stderr_line(line: str) -> None:
+                stripped = line.rstrip()
+                if not stripped:
+                    return
+                if "Cloning into" in stripped:
+                    _emit_progress("clone_progress", message=stripped)
+                    return
+                if "switching to" in stripped:
+                    _emit_progress("checkout_progress", message=stripped)
+                    return
+                if "Updating files:" in stripped:
+                    _emit_progress("checkout_progress", message=stripped)
+                    return
+
             # Clone from bundle - clones parent repo (research) to /workspace/research
             _exec_sync(
                 sandbox,
                 "cd /workspace && git clone /tmp/repo.bundle research && "
                 "cd research && git checkout HEAD",
                 timeout=120,
+                on_stderr_line=_on_clone_stderr_line,
             )
+            _emit_progress("clone_finished", clone_dir=clone_dir, workspace=workspace)
 
             logger.info(f"Code synced to {workspace}")
+            _emit_progress("sync_finished", workspace=workspace, commit=commit)
 
         finally:
             os.unlink(bundle_path)
@@ -1524,11 +1968,24 @@ async def _run_training_in_sandbox(
 
     # TODO: If we need true multi-process Modal training later, route that through an
     # explicit remote execution/session layer instead of reviving `torchrun config.py`.
-    cmd = f"cd {workspace} && {env_vars} {image_python} -m argus.run --local --config {config_rel}"
+    diag_python = shlex.quote(_sandbox_runtime_diag_python())
+    supervisor_python = shlex.quote(_sandbox_runtime_supervisor_python())
+    cmd = (
+        f"cd {workspace} && {env_vars} "
+        f"{image_python} -u -c {supervisor_python} "
+        f"{shlex.quote(workspace)} "
+        f"{shlex.quote(image_python)} "
+        f"{diag_python} "
+        f"{shlex.quote(str(config_rel))}"
+    )
 
     startup_seen = threading.Event()
     done = threading.Event()
     results: dict[str, Any] = {}
+    from collections import deque
+
+    stdout_tail: deque[str] = deque(maxlen=20)
+    stderr_tail: deque[str] = deque(maxlen=40)
     process_state: dict[str, Any] = {
         "stdout_line_count": 0,
         "stderr_line_count": 0,
@@ -1547,6 +2004,17 @@ async def _run_training_in_sandbox(
     def _elapsed() -> float:
         return time.monotonic() - process_started_ts
 
+    def _emit_stream_line(event: str, line_count: int, text: str) -> None:
+        max_chars = 4000
+        truncated = len(text) > max_chars
+        emit(
+            event,
+            line_no=line_count,
+            elapsed_sec=round(_elapsed(), 3),
+            text=text[:max_chars],
+            truncated=truncated,
+        )
+
     def _on_started() -> None:
         emit("remote_entrypoint_invoked")
         emit("remote_stdout_stream_open")
@@ -1559,7 +2027,7 @@ async def _run_training_in_sandbox(
             return
         stripped = line.rstrip()
         if stripped.startswith(ARGUS_RUN_EVENT_SENTINEL):
-            payload = stripped[len(ARGUS_RUN_EVENT_SENTINEL):]
+            payload = stripped[len(ARGUS_RUN_EVENT_SENTINEL) :]
             try:
                 import json
 
@@ -1573,14 +2041,57 @@ async def _run_training_in_sandbox(
         process_state["stdout_line_count"] += 1
         process_state["last_stdout_line"] = stripped
         process_state["last_stdout_elapsed_sec"] = round(_elapsed(), 3)
+        stdout_tail.append(stripped)
+        _emit_stream_line("remote_stdout_line", process_state["stdout_line_count"], stripped)
         if WORKLOAD_ENTRYPOINT_SENTINEL in stripped and not startup_seen.is_set():
             startup_seen.set()
             emit("workload_entrypoint_started")
 
     def _on_stderr_line(line: str) -> None:
+        stripped = line.rstrip()
+        if ARGUS_DIAG_EVENT_SENTINEL in stripped:
+            try:
+                import json
+
+                decoder = json.JSONDecoder()
+                remaining = stripped
+                while ARGUS_DIAG_EVENT_SENTINEL in remaining:
+                    prefix, payload = remaining.split(ARGUS_DIAG_EVENT_SENTINEL, 1)
+                    prefix = prefix.rstrip()
+                    if prefix:
+                        process_state["stderr_line_count"] += 1
+                        process_state["last_stderr_line"] = prefix
+                        process_state["last_stderr_elapsed_sec"] = round(_elapsed(), 3)
+                        stderr_tail.append(prefix)
+                        _emit_stream_line(
+                            "remote_stderr_line",
+                            process_state["stderr_line_count"],
+                            prefix,
+                        )
+                    payload = payload.lstrip()
+                    event_data, end_idx = decoder.raw_decode(payload)
+                    event_name = event_data.pop("event", None)
+                    if event_name:
+                        emit(event_name, **event_data)
+                    remaining = payload[end_idx:].lstrip()
+                if remaining:
+                    process_state["stderr_line_count"] += 1
+                    process_state["last_stderr_line"] = remaining
+                    process_state["last_stderr_elapsed_sec"] = round(_elapsed(), 3)
+                    stderr_tail.append(remaining)
+                    _emit_stream_line(
+                        "remote_stderr_line",
+                        process_state["stderr_line_count"],
+                        remaining,
+                    )
+            except Exception as exc:
+                emit("remote_diag_stream_parse_failed", error=f"{type(exc).__name__}: {exc}")
+            return
         process_state["stderr_line_count"] += 1
-        process_state["last_stderr_line"] = line.rstrip()
+        process_state["last_stderr_line"] = stripped
         process_state["last_stderr_elapsed_sec"] = round(_elapsed(), 3)
+        stderr_tail.append(stripped)
+        _emit_stream_line("remote_stderr_line", process_state["stderr_line_count"], stripped)
 
     def _on_heartbeat(elapsed_sec: float, silence_sec: float) -> None:
         emit(
@@ -1648,6 +2159,8 @@ async def _run_training_in_sandbox(
         last_stderr_line=process_state["last_stderr_line"],
         last_stdout_elapsed_sec=process_state["last_stdout_elapsed_sec"],
         last_stderr_elapsed_sec=process_state["last_stderr_elapsed_sec"],
+        stdout_tail=list(stdout_tail),
+        stderr_tail=list(stderr_tail),
     )
 
     if exit_code != 0:
@@ -1722,20 +2235,62 @@ async def run_modal(config: ModalRunConfig) -> dict[str, Any]:
                 # 3. Modal has per-app sandbox limits that cause exec() to block
                 logger.info("Verifying GPU access...")
                 emit("modal_gpu_verify_start", sandbox_id=sandbox_id)
-                start = trio.current_time()
-                proc = await trio_asyncio.aio_as_trio(sandbox.exec.aio("nvidia-smi", timeout=30))
-                stdout = await trio_asyncio.aio_as_trio(proc.stdout.read.aio())
-                elapsed = trio.current_time() - start
-                if elapsed > 10:
-                    logger.warning(
-                        f"GPU verification took {elapsed:.1f}s (expected <5s). "
-                        "If this persists, check for pending sandboxes in Modal dashboard."
+                gpu_verify_attempts = 3
+                gpu_verify_retry_delay_s = 3.0
+                verified = False
+                for attempt in range(1, gpu_verify_attempts + 1):
+                    emit(
+                        "modal_gpu_verify_attempt_start",
+                        sandbox_id=sandbox_id,
+                        attempt=attempt,
+                        timeout_sec=30,
                     )
-                logger.info(f"[sandbox] {stdout}")
-                exit_code = await trio_asyncio.aio_as_trio(proc.wait.aio())
-                assert exit_code == 0, f"nvidia-smi failed with exit code {exit_code}"
-                logger.info("GPU access verified")
-                emit("modal_gpu_verified", sandbox_id=sandbox_id, elapsed_sec=round(elapsed, 3))
+                    start = trio.current_time()
+                    proc = await trio_asyncio.aio_as_trio(
+                        sandbox.exec.aio("nvidia-smi", timeout=30)
+                    )
+                    stdout = await trio_asyncio.aio_as_trio(proc.stdout.read.aio())
+                    stderr = await trio_asyncio.aio_as_trio(proc.stderr.read.aio())
+                    exit_code = await trio_asyncio.aio_as_trio(proc.wait.aio())
+                    elapsed = trio.current_time() - start
+                    if elapsed > 10:
+                        logger.warning(
+                            f"GPU verification took {elapsed:.1f}s (expected <5s). "
+                            "If this persists, check for pending sandboxes in Modal dashboard."
+                        )
+                    if stdout:
+                        logger.info(f"[sandbox] {stdout}")
+                    if stderr:
+                        logger.warning(f"[sandbox stderr] {stderr}")
+                    if exit_code == 0:
+                        logger.info("GPU access verified")
+                        emit(
+                            "modal_gpu_verified",
+                            sandbox_id=sandbox_id,
+                            elapsed_sec=round(elapsed, 3),
+                            attempt=attempt,
+                        )
+                        verified = True
+                        break
+                    emit(
+                        "modal_gpu_verify_attempt_failed",
+                        sandbox_id=sandbox_id,
+                        attempt=attempt,
+                        exit_code=exit_code,
+                        elapsed_sec=round(elapsed, 3),
+                        stdout_tail=stdout[-1000:],
+                        stderr_tail=stderr[-1000:],
+                    )
+                    if attempt < gpu_verify_attempts:
+                        emit(
+                            "modal_gpu_verify_retrying",
+                            sandbox_id=sandbox_id,
+                            attempt=attempt,
+                            retry_delay_sec=gpu_verify_retry_delay_s,
+                        )
+                        await trio.sleep(gpu_verify_retry_delay_s)
+                if not verified:
+                    raise RuntimeError(f"nvidia-smi failed after {gpu_verify_attempts} attempts")
 
                 # Model weight caching: check for cached snapshot or download and cache
                 # If pruning_recipe is set, the cache key includes a hash of the recipe
@@ -1780,7 +2335,7 @@ async def run_modal(config: ModalRunConfig) -> dict[str, Any]:
                 # Sync code (always uses local git bundle)
                 logger.info("Syncing code to sandbox...")
                 emit("modal_repo_sync_start", sandbox_id=sandbox_id)
-                workspace = await _sync_code_to_sandbox(sandbox, REPO_ROOT)
+                workspace = await _sync_code_to_sandbox(sandbox, REPO_ROOT, emit=emit)
                 logger.info(f"Code synced to {workspace}")
                 emit("modal_repo_synced", sandbox_id=sandbox_id, workspace=workspace)
 
@@ -1882,6 +2437,12 @@ def main() -> None:
         help="Keep sandbox running after completion",
     )
     parser.add_argument(
+        "--cleanup-scope",
+        choices=list(MODAL_CLEANUP_SCOPES),
+        default="run",
+        help="Pre-create sandbox cleanup scope (default: run)",
+    )
+    parser.add_argument(
         "--force-deploy-committed",
         action="store_true",
         help="Proceed despite uncommitted changes (only committed code is deployed)",
@@ -1976,6 +2537,7 @@ def main() -> None:
         timeout_hours=args.timeout_hours,
         sandbox_id=args.sandbox_id,
         keep_alive=args.keep_alive,
+        cleanup_scope=args.cleanup_scope,
         model_name=model_name,
         pruning_recipe=pruning_recipe,
     )

@@ -7,12 +7,12 @@ import pytest
 
 from rollouts.core import Message, Metric, Score, Trajectory
 from rollouts.eval.native import EvalReport
-from rollouts.training.types import AttemptRow, ProblemRow
+from rollouts.training.types import AttemptEvaluation, AttemptResult, ProblemRow
 
 
 @pytest.mark.trio
-async def test_eval_report_saves_compact_sample_and_separate_trajectory(tmp_path: Path) -> None:
-    sample = AttemptRow(
+async def test_eval_report_saves_full_canonical_sample_artifact(tmp_path: Path) -> None:
+    sample = AttemptResult(
         attempt_id="sample_0000",
         problem=ProblemRow(
             problem_id="sample_0000",
@@ -30,8 +30,10 @@ async def test_eval_report_saves_compact_sample_and_separate_trajectory(tmp_path
             "sample_data": {"messages": [{"role": "user", "content": "hi"}]},
             "turn_history": [{"turn": 1, "has_code": False}],
         },
-        reward=1.0,
-        score=Score(metrics=(Metric("reward", 1.0, weight=1.0),)),
+        evaluation=AttemptEvaluation(
+            reward=1.0,
+            score=Score(metrics=(Metric("reward", 1.0, weight=1.0),)),
+        ),
     )
 
     report = EvalReport(
@@ -46,11 +48,13 @@ async def test_eval_report_saves_compact_sample_and_separate_trajectory(tmp_path
     await report.save(tmp_path)
 
     sample_json = json.loads((tmp_path / "samples" / "sample_0000.json").read_text())
-    assert "trajectory" not in sample_json
-    assert sample_json["trajectory_path"] == "trajectories/sample_0000.jsonl"
+    report_html = (tmp_path / "report.html").read_text()
+    sample_html = (tmp_path / "samples" / "sample_0000.html").read_text()
+    assert sample_json["trajectory"]["messages"][1]["content"] == "hello"
     assert "sample_data" not in sample_json["metadata"]
-
-    trajectory_file = tmp_path / "trajectories" / "sample_0000.jsonl"
-    assert trajectory_file.exists()
-    trajectory_lines = trajectory_file.read_text().strip().splitlines()
-    assert len(trajectory_lines) == 1
+    assert sample_json["evaluation"]["reward"] == 1.0
+    assert sample_json["evaluation"]["score"]["metrics"][0]["name"] == "reward"
+    assert not (tmp_path / "trajectories").exists()
+    assert "sample_0000" in report_html
+    assert 'href="samples/sample_0000.html"' in report_html
+    assert "hello" in sample_html

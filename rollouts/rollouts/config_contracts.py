@@ -56,5 +56,16 @@ def validate_eval_config_module(config_module: Any, config_path: Path) -> None:
 
     score_fn = getattr(config_module, "score_fn", None)
     sample_scorer = getattr(config_module, "sample_scorer", None)
-    if score_fn is None and sample_scorer is None:
-        raise ValueError(f"Eval config {config_path} must define 'score_fn' or 'sample_scorer'")
+    make_environment = getattr(config_module, "make_environment", None)
+    has_scoring_path = callable(score_fn) or sample_scorer is not None
+    if run_spec is not None:
+        has_scoring_path = has_scoring_path or (
+            run_spec.environment is not None or run_spec.environment_factory is not None
+        )
+    else:
+        has_scoring_path = has_scoring_path or callable(make_environment)
+
+    if not has_scoring_path:
+        raise ValueError(
+            f"Eval config {config_path} must define score_fn, sample_scorer, or an environment path that can own scoring"
+        )

@@ -86,6 +86,218 @@ class TrainingSample:
         return TrainingSample(**data)
 
 
+def _score_to_dict(score: "Score | None") -> dict[str, Any] | None:
+    if score is None:
+        return None
+    return {
+        "metrics": [
+            {
+                "name": m.name,
+                "value": m.value,
+                "weight": m.weight,
+                "metadata": m.metadata,
+            }
+            for m in score.metrics
+        ]
+    }
+
+
+def _score_from_dict(data: dict[str, Any] | None) -> "Score | None":
+    if data is None:
+        return None
+
+    from ..core import Metric, Score
+
+    return Score(
+        metrics=tuple(
+            Metric(
+                name=m["name"],
+                value=m["value"],
+                weight=m.get("weight", 1.0),
+                metadata=m.get("metadata", {}),
+            )
+            for m in data["metrics"]
+        )
+    )
+
+
+def _extract_response_text(trajectory: "Trajectory | None") -> str:
+    if not trajectory or not trajectory.messages:
+        return ""
+    for msg in reversed(trajectory.messages):
+        role = msg.role if hasattr(msg, "role") else msg.get("role")
+        content = msg.content if hasattr(msg, "content") else msg.get("content")
+
+        if role != "assistant":
+            continue
+        if isinstance(content, str):
+            return content
+        if content is None:
+            continue
+
+        from ..core import TextContent, ThinkingContent
+
+        parts = []
+        for block in content:
+            if isinstance(block, TextContent):
+                parts.append(block.text)
+            elif isinstance(block, ThinkingContent):
+                parts.append(block.thinking)
+            elif isinstance(block, dict):
+                if block.get("type") == "text":
+                    parts.append(block.get("text", ""))
+                elif block.get("type") == "thinking":
+                    parts.append(block.get("thinking", ""))
+        return "".join(parts)
+    return ""
+
+
+def _derive_prompt_preview(
+    problem: ProblemRow | None,
+    trajectory: "Trajectory | None",
+) -> str | list[dict[str, str]]:
+    if problem is not None:
+        payload = problem.payload
+        if "messages" in payload:
+            return payload["messages"]
+        if "prompt" in payload:
+            return payload["prompt"]
+    if trajectory is None:
+        return ""
+
+    prompt_messages = []
+    for msg in trajectory.messages:
+        if getattr(msg, "role", None) == "assistant":
+            break
+        to_dict = getattr(msg, "to_dict", None)
+        if callable(to_dict):
+            prompt_messages.append(to_dict())
+        else:
+            prompt_messages.append({"role": msg.role, "content": msg.content})
+    if len(prompt_messages) == 1 and prompt_messages[0]["role"] == "user":
+        return prompt_messages[0]["content"]
+    return prompt_messages
+
+
+@dataclass
+class AttemptEvaluation:
+    """Derived evaluation data attached to an execution result."""
+
+    reward: float = 0.0
+    score: "Score | None" = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "reward": self.reward,
+            "score": _score_to_dict(self.score),
+            "metadata": self.metadata,
+        }
+
+    @staticmethod
+    def from_dict(data: dict[str, Any]) -> "AttemptEvaluation":
+        payload = data.copy()
+        payload["score"] = _score_from_dict(payload.get("score"))
+        return AttemptEvaluation(**payload)
+
+
+@dataclass
+class AttemptResult:
+    """Canonical result of one execution attempt."""
+
+    # TODO: Rename AttemptResult / AttemptRow to reflect stage semantics more
+    # honestly. Current intent: AttemptResult is the raw execution result, while
+    # AttemptRow is the richer scored/training-oriented record.
+
+    attempt_id: str = ""
+    problem: ProblemRow | None = None
+    trajectory: "Trajectory | None" = None
+    environment_state: dict[str, Any] | None = None
+    status: Status = Status.PENDING
+    metadata: dict[str, Any] = field(default_factory=dict)
+    evaluation: AttemptEvaluation | None = None
+
+    @property
+    def id(self) -> str:
+        return self.attempt_id
+
+    @property
+    def input(self) -> dict[str, Any]:
+        return self.problem.payload if self.problem is not None else {}
+
+    @property
+    def ground_truth(self) -> Any | None:
+        return self.problem.ground_truth if self.problem is not None else None
+
+    @property
+    def response(self) -> str:
+        return _extract_response_text(self.trajectory)
+
+    @property
+    def prompt(self) -> str | list[dict[str, str]]:
+        return _derive_prompt_preview(self.problem, self.trajectory)
+
+    @property
+    def score(self) -> "Score | None":
+        if self.evaluation is None:
+            return None
+        return self.evaluation.score
+
+    @score.setter
+    def score(self, value: "Score | None") -> None:
+        if self.evaluation is None:
+            self.evaluation = AttemptEvaluation(score=value)
+            return
+        self.evaluation.score = value
+
+    @property
+    def reward(self) -> float:
+        if self.evaluation is None:
+            return 0.0
+        return self.evaluation.reward
+
+    @reward.setter
+    def reward(self, value: float) -> None:
+        if self.evaluation is None:
+            self.evaluation = AttemptEvaluation(reward=value)
+            return
+        self.evaluation.reward = value
+
+    def to_dict(self) -> dict[str, Any]:
+        import json
+
+        from ..core import Trajectory
+
+        result: dict[str, Any] = {
+            "attempt_id": self.attempt_id,
+            "problem": self.problem.to_dict() if self.problem is not None else None,
+            "environment_state": self.environment_state,
+            "status": self.status.value,
+            "metadata": self.metadata,
+            "evaluation": self.evaluation.to_dict() if self.evaluation is not None else None,
+        }
+        if isinstance(self.trajectory, Trajectory):
+            result["trajectory"] = json.loads(self.trajectory.to_json())
+        else:
+            result["trajectory"] = self.trajectory
+        return result
+
+    @staticmethod
+    def from_dict(data: dict[str, Any]) -> "AttemptResult":
+        from ..core import Trajectory
+
+        payload = data.copy()
+        if payload.get("problem") is not None:
+            payload["problem"] = ProblemRow.from_dict(payload["problem"])
+        if payload.get("trajectory") is not None:
+            payload["trajectory"] = Trajectory.from_dict(payload["trajectory"])
+        if payload.get("status") is not None:
+            payload["status"] = Status(payload["status"])
+        if payload.get("evaluation") is not None:
+            payload["evaluation"] = AttemptEvaluation.from_dict(payload["evaluation"])
+        return AttemptResult(**payload)
+
+
 @dataclass
 class AttemptRow:
     """One execution attempt plus scoring and provenance."""
@@ -117,34 +329,7 @@ class AttemptRow:
     @property
     def response(self) -> str:
         """Extract final assistant response from trajectory."""
-        if not self.trajectory or not self.trajectory.messages:
-            return ""
-        for msg in reversed(self.trajectory.messages):
-            role = msg.role if hasattr(msg, "role") else msg.get("role")
-            content = msg.content if hasattr(msg, "content") else msg.get("content")
-
-            if role != "assistant":
-                continue
-            if isinstance(content, str):
-                return content
-            if content is None:
-                continue
-
-            from ..core import TextContent, ThinkingContent
-
-            parts = []
-            for block in content:
-                if isinstance(block, TextContent):
-                    parts.append(block.text)
-                elif isinstance(block, ThinkingContent):
-                    parts.append(block.thinking)
-                elif isinstance(block, dict):
-                    if block.get("type") == "text":
-                        parts.append(block.get("text", ""))
-                    elif block.get("type") == "thinking":
-                        parts.append(block.get("thinking", ""))
-            return "".join(parts)
-        return ""
+        return _extract_response_text(self.trajectory)
 
     @property
     def prompt(self) -> str | list[dict[str, str]]:
@@ -153,26 +338,7 @@ class AttemptRow:
         This is derived, not a core field. Prefer problem payload or request data
         in new code.
         """
-        if self.problem is not None:
-            payload = self.problem.payload
-            if "messages" in payload:
-                return payload["messages"]
-            if "prompt" in payload:
-                return payload["prompt"]
-        if self.trajectory is None:
-            return ""
-
-        prompt_messages = []
-        for msg in self.trajectory.messages:
-            if getattr(msg, "role", None) == "assistant":
-                break
-            if hasattr(msg, "to_dict"):
-                prompt_messages.append(msg.to_dict())
-            else:
-                prompt_messages.append({"role": msg.role, "content": msg.content})
-        if len(prompt_messages) == 1 and prompt_messages[0]["role"] == "user":
-            return prompt_messages[0]["content"]
-        return prompt_messages
+        return _derive_prompt_preview(self.problem, self.trajectory)
 
     @property
     def tokens(self) -> list[int]:
@@ -234,25 +400,12 @@ class AttemptRow:
             d["trajectory"] = json.loads(self.trajectory.to_json())
         else:
             d["trajectory"] = self.trajectory
-        if self.score is not None:
-            d["score"] = {
-                "metrics": [
-                    {
-                        "name": m.name,
-                        "value": m.value,
-                        "weight": m.weight,
-                        "metadata": m.metadata,
-                    }
-                    for m in self.score.metrics
-                ]
-            }
-        else:
-            d["score"] = None
+        d["score"] = _score_to_dict(self.score)
         return d
 
     @staticmethod
     def from_dict(data: dict[str, Any]) -> "AttemptRow":
-        from ..core import Metric, Score, Trajectory
+        from ..core import Trajectory
 
         payload = data.copy()
         if payload.get("problem") is not None:
@@ -264,19 +417,44 @@ class AttemptRow:
         if payload.get("trajectory") is not None:
             payload["trajectory"] = Trajectory.from_dict(payload["trajectory"])
         if payload.get("score") is not None:
-            score_data = payload["score"]
-            payload["score"] = Score(
-                metrics=tuple(
-                    Metric(
-                        name=m["name"],
-                        value=m["value"],
-                        weight=m.get("weight", 1.0),
-                        metadata=m.get("metadata", {}),
-                    )
-                    for m in score_data["metrics"]
-                )
-            )
+            payload["score"] = _score_from_dict(payload["score"])
         return AttemptRow(**payload)
+
+    def to_result(self) -> AttemptResult:
+        evaluation = None
+        if self.score is not None or self.reward != 0.0:
+            evaluation = AttemptEvaluation(reward=self.reward, score=self.score)
+        return AttemptResult(
+            attempt_id=self.attempt_id,
+            problem=self.problem,
+            trajectory=self.trajectory,
+            environment_state=self.environment_state,
+            status=self.status,
+            metadata=dict(self.metadata),
+            evaluation=evaluation,
+        )
+
+    @staticmethod
+    def from_result(
+        result: AttemptResult,
+        *,
+        training_sample: TrainingSample | None = None,
+        group_index: int | None = None,
+        weight_version: int = 0,
+    ) -> "AttemptRow":
+        return AttemptRow(
+            attempt_id=result.attempt_id,
+            problem=result.problem,
+            group_index=group_index,
+            trajectory=result.trajectory,
+            training_sample=training_sample,
+            reward=result.reward,
+            score=result.score,
+            environment_state=result.environment_state,
+            status=result.status,
+            metadata=dict(result.metadata),
+            weight_version=weight_version,
+        )
 
 
 @dataclass

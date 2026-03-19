@@ -60,6 +60,7 @@ from ..dtypes import (
     ToolCallStart,
     ToolResultReceived,
 )
+from .runner import _FlushAssistantMessage
 
 logger = logging.getLogger(__name__)
 
@@ -122,6 +123,7 @@ class ClaudeDriver:
             "--verbose",
             "--output-format",
             "stream-json",
+            "--dangerously-skip-permissions",
             "--model",
             self.model,
         ]
@@ -365,7 +367,13 @@ class _ClaudeEventParser:
 
             case "assistant":
                 # Complete assistant message
-                # Skip if we already streamed via stream_event (avoid duplicates)
+                # Skip if we already streamed via stream_event (avoid duplicates).
+                #
+                # Important trust boundary: Claude's streamed tool_use events can be
+                # lossy for arguments, while the persisted session JSONL often contains
+                # the complete tool input payloads. For completed runs, prefer the
+                # session file as the authoritative source of truth and treat the live
+                # stream as provisional UI/debug data.
                 if self._streamed_content:
                     pass  # Already handled via streaming
                 else:
@@ -434,7 +442,11 @@ class _ClaudeEventParser:
                             tool_name=tool_name,
                         )
                     )
-                    self._active_tools[tool_id] = {"name": tool_name, "args_json": ""}
+                    self._active_tools[tool_id] = {
+                        "name": tool_name,
+                        "args_json": "",
+                        "index": index,
+                    }
 
             case "content_block_delta":
                 delta = event.get("delta", {})
@@ -453,13 +465,12 @@ class _ClaudeEventParser:
                         self._active_thinking[index] += text
 
                 elif delta_type == "input_json_delta":
-                    # Tool call argument streaming
+                    # Tool call argument streaming — route by content_index
                     partial = delta.get("partial_json", "")
-                    # Find the active tool for this index
-                    # Note: Claude streams tool args, we accumulate them
-                    for tool_id, tool in self._active_tools.items():
-                        tool["args_json"] += partial
-                        break  # Assume one tool at a time per index
+                    for tool in self._active_tools.values():
+                        if tool["index"] == index:
+                            tool["args_json"] += partial
+                            break
 
             case "content_block_stop":
                 # Emit end events for completed blocks
@@ -479,7 +490,9 @@ class _ClaudeEventParser:
                     )
 
             case "message_stop":
-                # Message complete - emit any pending tool calls
+                # Message complete - emit any pending tool calls then flush the turn.
+                # _FlushAssistantMessage tells _EventAccumulator to finalize the current
+                # assistant message so each LLM response becomes a separate Message object.
                 for tool_id, tool in list(self._active_tools.items()):
                     try:
                         args = json.loads(tool["args_json"]) if tool["args_json"] else {}
@@ -496,6 +509,7 @@ class _ClaudeEventParser:
                         )
                     )
                 self._active_tools.clear()
+                events.append(_FlushAssistantMessage())
 
         return events
 

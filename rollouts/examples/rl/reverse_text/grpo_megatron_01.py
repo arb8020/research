@@ -31,8 +31,9 @@ Key optimizations from SLIME:
 
 from dataclasses import dataclass
 
+from examples.rl.base_config import default_remote_megatron_training_deps
 from examples.rl.reverse_text.base_config import train as _base_train
-from rollouts.training.configs import DepsConfig, HardwareConfig
+from rollouts.training.configs import HardwareConfig
 from rollouts.training.grpo import (
     CheckpointConfig,
     GRPOConfig,
@@ -211,10 +212,7 @@ hardware = HardwareConfig(
     gpu_type="H100",  # or A100-80GB
     gpu_count=8,  # Single node, colocated inference+training
     provider="runpod",
-    deps=DepsConfig(
-        pip_index_url="https://download.pytorch.org/whl/cu124",
-        pip_extra_index_url="https://pypi.org/simple",
-    ),
+    deps=default_remote_megatron_training_deps(),
 )
 
 # GRPO config

@@ -51,7 +51,7 @@ Current status:
 - TorchTitan does not currently expose enough explicit control to directly
   execute the realization language we want.
 - For now, treat TorchTitan as a lowering target that can validate and realize a
-  derived `ParallelIntent`, not as the interpreter of the full seqax-style IR.
+  derived `TorchTitanProvisioning`, not as the interpreter of the full seqax-style IR.
 - Keep pushing the core model through dense witness paths first; only deepen the
   realization language once the end-to-end TorchTitan run is clean.
 
@@ -75,13 +75,15 @@ It should not answer:
 
 Status:
 
-- Added backend-neutral [ParallelIntent](/Users/chiraagbalu/research/rollouts/rollouts/training/lowering.py).
+- Added backend-specific [TorchTitanProvisioning](/Users/chiraagbalu/research/rollouts/rollouts/training/lowering.py).
+- Added backend-specific [MegatronProvisioning](/Users/chiraagbalu/research/rollouts/rollouts/training/lowering.py).
 - Added seqax-inspired [RealizationPlan](/Users/chiraagbalu/research/rollouts/rollouts/training/lowering.py).
 - Added TorchTitan-specific [TorchTitanLowering](/Users/chiraagbalu/research/rollouts/rollouts/training/lowering.py).
+- Added Megatron-specific [MegatronLowering](/Users/chiraagbalu/research/rollouts/rollouts/training/lowering.py).
 - The TorchTitan backend now reads parallel provisioning from that lowering
   object instead of treating backend config as the primary source of truth.
-- `TrainerConfig` can now optionally carry explicit TorchTitan realization
-  strings; the SFT and RL TorchTitan entry points convert those into a
+- `TrainerConfig` can now optionally carry backend-neutral realization intent;
+  the SFT and RL entry points convert that into a
   `RealizationPlan` and pass them into the factory.
 
 ## Likely shape
@@ -97,8 +99,7 @@ class RealizationPlan:
 
 
 @dataclass(frozen=True)
-class ParallelIntent:
-    dp: int = 1
+class TorchTitanProvisioning:
     tp: int = 1
     cp: int = 1
     pp: int = 1
@@ -109,7 +110,7 @@ class ParallelIntent:
 
 @dataclass(frozen=True)
 class TorchTitanLowering:
-    parallel: ParallelIntent
+    provisioning: TorchTitanProvisioning
     realization: RealizationPlan
 ```
 
@@ -129,13 +130,12 @@ realization = RealizationPlan(
     packed_sequences=True,
 )
 
-parallel = ParallelIntent(
-    dp=2,
+provisioning = TorchTitanProvisioning(
     tp=4,
     ep=1,
 )
 
-lowering = TorchTitanLowering.from_realization(parallel, realization)
+lowering = TorchTitanLowering.from_realization(provisioning, realization)
 ```
 
 The important ordering is:
@@ -148,7 +148,7 @@ The important ordering is:
 ## What to do next
 
 1. Keep `RealizationPlan` as the semantic source for layout/collective intent.
-2. Keep `ParallelIntent` backend-neutral and derived from realization semantics.
+2. Keep backend provisioning objects derived from realization semantics.
 3. Lower that into TorchTitan `ParallelDims`.
 4. Keep sequence packing / loss-parallel choices explicit in the
    lowering object rather than scattering them through backend code.
@@ -160,6 +160,6 @@ TorchTitan is a good first lowering if:
 
 - the witness loops stay core-shaped
 - the backend code gets uglier, not the core model
-- parallelism and precision live in a small lowering object
+- parallelism and precision live in a small backend-specific lowering object
 - the next backend (Megatron) would have to implement the same lowering
   interface rather than invent a new ontology

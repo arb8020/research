@@ -4,7 +4,7 @@ Tiger Style: Explicit configuration, bounded resources, fail-fast.
 
 Two main functions:
 - setup_logging(): General app-level logging (console + optional file)
-- setup_eval_logging(): Eval-specific logging (events.jsonl + per-sample files)
+- setup_eval_logging(): Eval-specific logging (events.jsonl)
 """
 
 import atexit
@@ -17,7 +17,6 @@ from pathlib import Path
 from typing import Any
 
 from .json_formatter import JSONFormatter
-from .sample_handler import SampleRoutingHandler
 
 
 def setup_logging(
@@ -75,6 +74,7 @@ def setup_logging(
     use_rich = use_rich if use_rich is not None else False
     use_color = use_color if use_color is not None else False
     logger_levels = logger_levels or {}
+    package_name = __package__ or "rollouts._logging"
 
     # JSON mode and color mode override rich mode
     if use_json or use_color:
@@ -87,11 +87,11 @@ def setup_logging(
         },
         "minimal": {"format": "%(message)s"},
         "color": {
-            "()": f"{__package__.rsplit('.', 1)[0]}._logging.color_formatter.ColorFormatter",
+            "()": f"{package_name.rsplit('.', 1)[0]}._logging.color_formatter.ColorFormatter",
             "show_timestamp": True,
         },
         "json": {
-            "()": f"{__package__.rsplit('.', 1)[0]}._logging.json_formatter.JSONFormatter",
+            "()": f"{package_name.rsplit('.', 1)[0]}._logging.json_formatter.JSONFormatter",
             "fmt_keys": {
                 "level": "levelname",
                 "logger": "name",
@@ -183,11 +183,15 @@ def setup_logging(
     # mCoding pattern: Start QueueListener and register cleanup
     # Python 3.12+ creates the listener automatically, we just need to start it
     if use_queue_handler:
-        queue_handler = logging.getHandlerByName("queue_handler")
-        if queue_handler is not None and hasattr(queue_handler, "listener"):
-            queue_handler.listener.start()
+        get_handler_by_name = getattr(logging, "getHandlerByName", None)
+        queue_handler = (
+            get_handler_by_name("queue_handler") if callable(get_handler_by_name) else None
+        )
+        listener = getattr(queue_handler, "listener", None)
+        if listener is not None:
+            listener.start()
             # Register cleanup on exit (mCoding pattern)
-            atexit.register(queue_handler.listener.stop)
+            atexit.register(listener.stop)
 
 
 # ── Eval-specific logging ──────────────────────────────────────────────────────
@@ -213,18 +217,15 @@ class EvalLoggingContext:
         logger: logging.Logger,
         queue_handler: logging.handlers.QueueHandler,
         listener: logging.handlers.QueueListener,
-        sample_handler: SampleRoutingHandler,
     ) -> None:
         self.logger = logger
         self.queue_handler = queue_handler
         self.listener = listener
-        self.sample_handler = sample_handler
 
     def teardown(self) -> None:
         """Stop listener, remove handler, close files."""
         self.listener.stop()
         self.logger.removeHandler(self.queue_handler)
-        self.sample_handler.close()
 
 
 def setup_eval_logging(
@@ -233,16 +234,14 @@ def setup_eval_logging(
     max_log_bytes: int = 100_000_000,
     backup_count: int = 5,
 ) -> EvalLoggingContext:
-    """Configure eval-specific logging: overview JSONL + per-sample JSONL.
+    """Configure eval-specific logging: rotating events.jsonl only.
 
     Adds handlers to the named logger (not root) for the duration of an
     eval run. Returns an EvalLoggingContext — call .teardown() when done.
 
-    Handlers:
-      1. RotatingFileHandler -> {output_dir}/events.jsonl (INFO+ overview)
-      2. SampleRoutingHandler -> {output_dir}/samples/{sample_id}.jsonl (all levels)
-
-    Both are wrapped in a QueueHandler for non-blocking writes.
+    The events stream is the only canonical operational log. Per-sample JSONL
+    logs were removed to avoid duplicating the same attempt across multiple
+    overlapping artifact formats.
 
     This implements the "wide events" pattern from logging_sucks.md:
     - One comprehensive event per significant action
@@ -278,8 +277,7 @@ def setup_eval_logging(
 
     formatter = JSONFormatter()
 
-    # 1. Overview: events.jsonl (INFO+ only)
-    # This is the "canonical log line" — one place to see all eval events
+    # events.jsonl is the canonical operational event stream.
     events_handler = logging.handlers.RotatingFileHandler(
         str(output_dir / "events.jsonl"),
         mode="a",
@@ -289,20 +287,12 @@ def setup_eval_logging(
     events_handler.setFormatter(formatter)
     events_handler.setLevel(logging.INFO)
 
-    # 2. Per-sample: samples/{sample_id}.jsonl (all levels including DEBUG)
-    # Detailed traces for debugging individual samples
-    sample_handler = SampleRoutingHandler(output_dir)
-    sample_handler.setFormatter(formatter)
-    sample_handler.setLevel(logging.DEBUG)
-
-    # Wrap both in QueueHandler for non-blocking writes.
+    # Wrap the file writer in QueueHandler for non-blocking writes.
     # QueueHandler puts records onto a queue; QueueListener consumes
-    # from that queue and dispatches to the real handlers in a background thread.
+    # from that queue and dispatches to the real handler in a background thread.
     q: queue_mod.Queue[logging.LogRecord] = queue_mod.Queue()
     queue_handler = logging.handlers.QueueHandler(q)
-    listener = logging.handlers.QueueListener(
-        q, events_handler, sample_handler, respect_handler_level=True
-    )
+    listener = logging.handlers.QueueListener(q, events_handler, respect_handler_level=True)
     listener.start()
 
     logger = logging.getLogger(logger_name)
@@ -314,5 +304,4 @@ def setup_eval_logging(
         logger=logger,
         queue_handler=queue_handler,
         listener=listener,
-        sample_handler=sample_handler,
     )

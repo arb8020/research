@@ -1,0 +1,110 @@
+ARG SGLANG_IMAGE_TAG=v0.5.7
+FROM lmsysorg/sglang:${SGLANG_IMAGE_TAG} AS sglang
+
+ARG PATCH_VERSION=v0.5.7
+ARG MEGATRON_COMMIT=3714d81d418c9f1bca4594fc35f9e8289f652862
+ARG MILES_COMMIT=bfa264385cf9864014b07a985909a20ccc594c13
+ARG MILES_REPO=https://github.com/radixark/miles.git
+ARG ENABLE_CUDA_13=0
+ARG ENABLE_SGLANG_PATCH=1
+
+WORKDIR /root/
+
+RUN apt update
+RUN apt install -y nvtop rsync dnsutils ethtool
+
+RUN git clone "${MILES_REPO}" /root/miles && \
+    cd /root/miles && \
+    git checkout "${MILES_COMMIT}"
+
+RUN git clone https://github.com/NVIDIA/nccl-tests.git /tmp/nccl-tests && \
+    cd /tmp/nccl-tests && \
+    git checkout ae98985f5599617be94042f4aa3637d10014ce89 && \
+    make -j"$(nproc)" CUDA_HOME=/usr/local/cuda && \
+    cp /tmp/nccl-tests/build/*_perf /usr/local/bin/ && \
+    rm -rf /tmp/nccl-tests
+
+RUN MAX_JOBS=64 pip -v install flash-attn==2.7.4.post1 --no-build-isolation
+
+RUN git clone https://github.com/Dao-AILab/flash-attention.git && \
+    cd flash-attention/ && \
+    git checkout fbf24f67cf7f6442c5cfb2c1057f4bfc57e72d89 && \
+    git submodule update --init && \
+    cd hopper/ && \
+    MAX_JOBS=96 python setup.py install && \
+    export python_path="$(python -c 'import site; print(site.getsitepackages()[0])')" && \
+    mkdir -p "$python_path/flash_attn_3" && \
+    cp flash_attn_interface.py "$python_path/flash_attn_3/flash_attn_interface.py" && \
+    rm -rf /root/flash-attention
+
+RUN pip install git+https://github.com/ISEEKYAN/mbridge.git@89eb10887887bc74853f89a4de258c0702932a1c --no-deps
+RUN pip install flash-linear-attention==0.4.0
+RUN pip install tilelang -f https://tile-ai.github.io/whl/nightly/cu128/
+
+RUN if [ "${ENABLE_CUDA_13}" = "1" ]; then \
+      pip install nvidia-mathdx==26.6.0 && \
+      pip -v install --no-build-isolation git+https://github.com/NVIDIA/TransformerEngine.git@release_v2.10; \
+    else \
+      pip -v install --no-build-isolation "transformer_engine[pytorch]==2.10.0"; \
+    fi
+
+RUN NVCC_APPEND_FLAGS="--threads 4" \
+    pip -v install --disable-pip-version-check --no-cache-dir \
+    --no-build-isolation \
+    --config-settings "--build-option=--cpp_ext --cuda_ext --parallel 8" \
+    git+https://github.com/NVIDIA/apex.git@10417aceddd7d5d05d7cbf7b0fc2daad1105f8b4
+
+RUN git clone https://github.com/NVIDIA/Megatron-LM.git --recursive && \
+    cd Megatron-LM && \
+    git checkout "${MEGATRON_COMMIT}" && \
+    pip install -e .
+
+RUN pip install git+https://github.com/fzyzcjy/torch_memory_saver.git@dc6876905830430b5054325fa4211ff302169c6b --no-cache-dir --force-reinstall
+RUN pip install git+https://github.com/fzyzcjy/Megatron-Bridge.git@dev_rl --no-build-isolation
+RUN pip install nvidia-modelopt[torch]>=0.37.0 --no-build-isolation
+
+RUN if [ "${ENABLE_CUDA_13}" = "1" ]; then \
+      cd /root && \
+      git clone -b feat/v350_plus_8045 https://github.com/fzyzcjy/triton.git && \
+      cd triton && \
+      pip install -r python/requirements.txt && \
+      pip install --verbose -e .; \
+    fi
+
+RUN pip install -r /root/miles/requirements.txt
+
+RUN if [ "${ENABLE_CUDA_13}" = "1" ]; then \
+      SGL_KERNEL_VERSION=0.3.17.post2 && \
+      python3 -m pip install https://github.com/sgl-project/whl/releases/download/v${SGL_KERNEL_VERSION}/sgl_kernel-${SGL_KERNEL_VERSION}+cu130-cp310-abi3-manylinux2014_$(uname -m).whl --force-reinstall --no-deps; \
+    fi
+
+RUN pip install nvidia-cudnn-cu12==9.16.0.29
+RUN pip install "numpy<2"
+
+RUN rm -f /root/.tmux.conf
+RUN rm -rf /root/.cache/pip /root/flash-attention
+
+RUN cp "/root/miles/docker/patch/${PATCH_VERSION}/megatron.patch" /root/Megatron-LM/megatron.patch && \
+    cd /root/Megatron-LM && \
+    git update-index --refresh && \
+    git apply megatron.patch --3way && \
+    if grep -R -n '^<<<<<<< ' .; then \
+      echo "Megatron patch failed to apply cleanly." && \
+      exit 1; \
+    fi && \
+    rm megatron.patch
+
+RUN if [ "${ENABLE_SGLANG_PATCH}" = "1" ]; then \
+      cp "/root/miles/docker/patch/${PATCH_VERSION}/sglang.patch" /sgl-workspace/sglang/sglang.patch && \
+      cd /sgl-workspace/sglang && \
+      git update-index --refresh && \
+      git apply sglang.patch --3way && \
+      if grep -R -n '^<<<<<<< ' .; then \
+        echo "SGLang patch failed to apply cleanly." && \
+        exit 1; \
+      fi && \
+      rm sglang.patch; \
+    fi
+
+RUN cd /root/miles && \
+    pip install -e . --no-deps

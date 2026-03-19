@@ -14,12 +14,15 @@ if TYPE_CHECKING:
     import torch
 
 from .deepseekv3 import convert_deepseekv3_to_hf
+from .qwen2 import convert_qwen2_to_hf
 
 # Model name to converter mapping
 _CONVERTERS = {
     "glm4moelite": convert_deepseekv3_to_hf,
     "deepseekv3": convert_deepseekv3_to_hf,
     "glm-4.7": convert_deepseekv3_to_hf,  # GLM-4.7-Flash uses deepseekv3 arch
+    "qwen2": convert_qwen2_to_hf,
+    "qwen3": convert_qwen2_to_hf,
 }
 
 
@@ -101,7 +104,12 @@ def remove_padding(name: str, param: torch.Tensor, vocab_size: int) -> torch.Ten
     Returns:
         Tensor with padding removed (if applicable)
     """
-    if "word_embeddings" in name or "output_layer" in name:
+    if (
+        "word_embeddings" in name
+        or "output_layer" in name
+        or name == "model.embed_tokens.weight"
+        or name == "lm_head.weight"
+    ):
         if param.shape[0] > vocab_size:
             return param[:vocab_size]
     return param

@@ -378,7 +378,9 @@ class TrainerConfig:
     When DistributedConfig is provided, it takes precedence.
     """
 
-    # Training backend implementation (pluggable, see docs/training_architecture.md)
+    # Training backend implementation.
+    # `nmoe` is a reserved backend name that currently fails loudly until a
+    # native runtime adapter lands.
     backend: Literal["pytorch", "fsdp", "fsdp2", "nmoe", "megatron", "torchtitan"] = "pytorch"
     # Service-scoped runtime deps for the trainer process.
     # Current launchers do not realize per-service environments yet, so configs
@@ -458,6 +460,15 @@ class InferenceConfig:
     Supports multiple inference engines for higher throughput (PipelineRL-style).
     Each GPU in cuda_device_ids gets its own inference server on a separate port.
 
+    Architectural note:
+    Training backends already go through an explicit factory/lowering path.
+    Inference backends are not there yet: `backend` is still a stringly selector
+    that gets interpreted directly in `grpo._create_inference_engines()`.
+    That means pipeline semantics like `checkpoint.pipeline_mode="true_pipeline"`
+    are not yet lowered jointly against trainer and inference capabilities.
+    Keep this config honest about concrete engine settings; do not treat it as a
+    full runtime-capability contract yet.
+
     Example:
         # Single inference engine on GPU 0
         InferenceConfig(cuda_device_ids=(0,), port=30000)
@@ -479,6 +490,11 @@ class InferenceConfig:
     port: int = 30000  # Base port (engines use port, port+1, ...)
     cuda_device_ids: tuple[int, ...] = (0,)
     mem_fraction: float = 0.7
+    disable_cuda_graph: bool = False
+    max_total_tokens: int | None = None
+    max_prefill_tokens: int | None = None
+    max_running_requests: int | None = None
+    chunked_prefill_size: int | None = None
     tensor_parallel_size: int = 1  # GPUs per engine (1 = each GPU is its own engine)
     expert_parallel_size: int = 1  # For MoE models (SGLang --ep-size)
     startup_timeout: float = (
@@ -537,17 +553,33 @@ class CheckpointConfig:
     num_steps: int = 100
     log_every: int = 1
     checkpoint_every: int = 20  # Save to disk (for recovery/resuming)
+    # Whether checkpoints should include optimizer/scheduler state.
+    # Disable this when a backend's optimizer serializer is known-broken and
+    # the run only needs model-weight recovery.
+    save_optimizer_state: bool = True
     sync_weights_every: int = 1  # Sync to inference engine (for on-policy vs off-policy)
-    # Weight sync mode: "disk" (save to /dev/shm, reload) or "nccl" (GPU-to-GPU broadcast)
-    # "nccl" enables PipelineRL-style in-flight updates (faster, non-blocking)
+    # Weight sync mode: "disk" (save to /dev/shm, reload) or "nccl" (direct tensor broadcast).
+    # "nccl" chooses the transport only. Whether updates are blocking or inflight
+    # still depends on pipeline_mode and the concrete inference realization.
     weight_sync_mode: str = "disk"
+    # Concrete inference-side sync adapter. This is the realized engine/backend
+    # contract, not the high-level semantic policy.
+    inference_sync_realization: str | None = None
     # NCCL master port for weight sync (only used if weight_sync_mode="nccl")
     nccl_master_port: int = 29500
     # Pipeline mode:
     #   "sync" - generate batch, train, sync weights, repeat (stop-and-go, default)
     #   "async" - background sampling, blocking weight sync (training waits for sync)
-    #   "true_pipeline" - PipelineRL-style: both sampling AND weight sync non-blocking
-    #                     (inference never stops, accepts slightly stale weights)
+    #   "true_pipeline" - experimental trainer/sampler overlap with versioned stale-sample
+    #                     filtering. Current direct-receive realizations still block at the
+    #                     inference weight-application boundary, so new admissions should be
+    #                     treated as paused while sync is in progress.
+    #
+    # Architectural note:
+    # This flag is still interpreted mostly by GRPO orchestration code. It is
+    # not yet an honestly lowered cross-backend capability: training and
+    # inference backends are not both validating/realizing it through a shared
+    # runtime plan today.
     pipeline_mode: str = "sync"
     # Maximum weight version lag for async pipeline (samples older than this are discarded)
     # Only used if pipeline_mode="async". Set to 0 for strict on-policy.
