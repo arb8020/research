@@ -6,8 +6,15 @@ from types import SimpleNamespace
 import pytest
 
 from rollouts.config_contracts import validate_eval_config_module
+from rollouts.core import Metric, Score
 from rollouts.eval import AgentRunSpec, EndpointConfig
 from rollouts.training.types import AttemptResult
+
+
+class _NoopScorer:
+    async def score(self, result: AttemptResult, context: object) -> Score:
+        del result, context
+        return Score(metrics=(Metric("reward", 0.0, weight=1.0),))
 
 
 def test_validate_eval_config_accepts_run_spec_without_prepare_messages() -> None:
@@ -18,7 +25,7 @@ def test_validate_eval_config_accepts_run_spec_without_prepare_messages() -> Non
     module = SimpleNamespace(
         tasks=[{"messages": []}],
         run_spec=run_spec,
-        score_fn=lambda attempt: None,
+        scorer=_NoopScorer(),
     )
 
     validate_eval_config_module(module, Path("configs/trusted/example.py"))
@@ -28,7 +35,7 @@ def test_validate_eval_config_rejects_non_agent_run_spec() -> None:
     module = SimpleNamespace(
         tasks=[{"messages": []}],
         run_spec=object(),
-        score_fn=lambda attempt: None,
+        scorer=_NoopScorer(),
     )
 
     with pytest.raises(ValueError, match="run_spec: AgentRunSpec"):
@@ -45,7 +52,7 @@ def test_validate_eval_config_accepts_direct_attempt_executor() -> None:
     module = SimpleNamespace(
         tasks=[{"messages": []}],
         run_spec=run_spec,
-        score_fn=lambda attempt: None,
+        scorer=_NoopScorer(),
     )
 
     validate_eval_config_module(module, Path("configs/trusted/example.py"))
@@ -61,7 +68,5 @@ def test_validate_eval_config_rejects_missing_scoring_path() -> None:
         run_spec=run_spec,
     )
 
-    with pytest.raises(
-        ValueError, match="must define score_fn, sample_scorer, or an environment path"
-    ):
+    with pytest.raises(ValueError, match="must define an explicit scorer"):
         validate_eval_config_module(module, Path("configs/trusted/example.py"))

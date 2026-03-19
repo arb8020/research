@@ -13,7 +13,6 @@ SLIME: Dynamic sampling strategy, quality filtering.
 """
 
 import logging
-from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -29,14 +28,14 @@ from ...training.group_assembly import (
 )
 from ...training.rollout_gen.rollout_generation import convert_to_batch
 from ...training.runtime import resolve_rollout_runtime
-from ...training.scoring import resolve_sample_scorer
+from ...training.scoring import resolve_scorer, score_rows
 from ...training.types import (
     AttemptRow,
     IncompleteGroupPolicy,
     RolloutBatch,
     RolloutConfig,
     RolloutRuntime,
-    SampleScorer,
+    Scorer,
 )
 
 
@@ -105,8 +104,7 @@ class AsyncRolloutManager:
 
     async def generate_batch(
         self,
-        sample_scorer: SampleScorer | None = None,
-        score_fn: Callable[[AttemptRow], Any] | None = None,
+        scorer: Scorer | None = None,
     ) -> RolloutBatch:
         """Generate one batch with dynamic over-sampling.
 
@@ -117,11 +115,6 @@ class AsyncRolloutManager:
         4. Apply filter function to groups
         5. Select best samples up to target
         6. Cache remaining samples for next batch
-
-        Args:
-            sample_scorer: Explicit scoring stage owned by the buffer/data side.
-            score_fn: Legacy score function (AttemptRow -> Score), adapted into a
-                sample_scorer when provided.
 
         Returns:
             RolloutBatch ready for training
@@ -218,14 +211,13 @@ class AsyncRolloutManager:
             )
 
         # Step 4: Score samples via the explicit scoring stage if configured.
-        scorer = resolve_sample_scorer(
+        scorer = resolve_scorer(
             config=self.config,
             runtime=self.runtime,
-            sample_scorer=sample_scorer,
-            score_fn=score_fn,
+            scorer=scorer,
         )
         if scorer is not None:
-            await scorer.score_samples(collected_samples)
+            await score_rows(scorer, collected_samples)
 
         # Step 5: Convert the explicitly assembled groups into a training batch.
         batch = convert_to_batch(
@@ -454,8 +446,7 @@ async def generate_rollout_batch(
     buffer: DataBuffer,
     config: RolloutConfig,
     runtime: RolloutRuntime | None = None,
-    sample_scorer: SampleScorer | None = None,
-    score_fn: Callable[[AttemptRow], Any] | None = None,
+    scorer: Scorer | None = None,
     **rollout_kwargs: Any,
 ) -> RolloutBatch:
     """Generate a single batch with dynamic sampling (convenience function).
@@ -464,9 +455,7 @@ async def generate_rollout_batch(
         buffer: DataBuffer for prompts
         config: RolloutConfig with generation settings
         runtime: Optional explicit rollout runtime wiring.
-        sample_scorer: Explicit scoring stage owned by the buffer/data side.
-        score_fn: Legacy score function (AttemptRow -> Score), adapted into a
-            sample_scorer when provided.
+        scorer: Explicit scoring stage over raw attempt results.
         **rollout_kwargs: Kwargs passed to generate_fn
 
     Returns:
@@ -477,7 +466,7 @@ async def generate_rollout_batch(
         >>> batch = await generate_rollout_batch(
         ...     buffer=buffer,
         ...     config=config,
-        ...     score_fn=lambda s: Score(metrics=(Metric("correct", 1.0 if "correct" in s.response else 0.0, weight=1.0),)),
+        ...     scorer=my_scorer,
         ...     tokenizer=tokenizer,
         ... )
     """
@@ -489,7 +478,4 @@ async def generate_rollout_batch(
     )
 
     async with manager:
-        return await manager.generate_batch(
-            sample_scorer=sample_scorer,
-            score_fn=score_fn,
-        )
+        return await manager.generate_batch(scorer=scorer)

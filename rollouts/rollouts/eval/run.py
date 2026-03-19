@@ -28,7 +28,7 @@ Config files should export:
     - tasks: list[dict] OR tasks_path: Path (one required)
     - prepare_messages: Callable[[dict], list[Message]]
     - attempt_executor: Callable[[dict, str, Environment | None, RunConfig], AttemptResult] (optional)
-    - score_fn: Callable[[AttemptResult], Score] or sample_scorer
+    - scorer: explicit scoring stage over AttemptResult
     - make_environment: Callable[[], Environment] (optional)
 """
 
@@ -252,8 +252,7 @@ async def run_with_api(
         if run_spec is not None
         else getattr(config_module, "attempt_executor", None)
     )
-    score_fn = getattr(config_module, "score_fn", None)
-    sample_scorer = getattr(config_module, "sample_scorer", None)
+    scorer = getattr(config_module, "scorer", None)
 
     # Environment (optional)
     environment: Environment | None = run_spec.environment if run_spec is not None else None
@@ -268,15 +267,8 @@ async def run_with_api(
         else:
             environment = make_env()
 
-    if (
-        score_fn is None
-        and sample_scorer is None
-        and environment is None
-        and environment_factory is None
-    ):
-        raise ValueError(
-            "Eval configs must define score_fn, sample_scorer, or an environment path that can own scoring"
-        )
+    if scorer is None:
+        raise ValueError("Eval configs must define an explicit scorer")
 
     # Build agent run config
     async def silent_on_chunk(_: object) -> None:
@@ -309,8 +301,7 @@ async def run_with_api(
     # Build EvalConfig
     eval_config = EvalConfig(
         endpoint=endpoint,
-        score_fn=score_fn,
-        sample_scorer=sample_scorer,
+        scorer=scorer,
         prepare_messages=prepare_messages,
         environment=environment,
         environment_factory=environment_factory,

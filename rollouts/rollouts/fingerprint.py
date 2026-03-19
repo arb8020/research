@@ -138,6 +138,14 @@ def callable_name(fn: Callable[..., Any], *, allow_lambda: bool = False) -> str:
     return name
 
 
+def scorer_name(scorer: object) -> str:
+    """Get a stable identity string for an explicit scorer object."""
+    scorer_type = type(scorer)
+    module = getattr(scorer_type, "__module__", "")
+    qualname = getattr(scorer_type, "__qualname__", scorer_type.__name__)
+    return f"{module}.{qualname}" if module else qualname
+
+
 def file_checksum(path: Path, max_bytes: int = 1024 * 1024) -> str:
     """Fast checksum of file contents.
 
@@ -176,14 +184,14 @@ def fingerprint_eval(
     """Compute fingerprint for an evaluation run.
 
     Args:
-        config: EvalConfig with endpoint, score_fn, etc.
+        config: EvalConfig with endpoint, scorer, etc.
         tools: Actual tool names from environment (introspected at runtime)
         dataset_path: Path to dataset file for checksum
         allow_dirty: If False (default), error on uncommitted git changes
 
     Includes in hash:
         - endpoint (provider, model, params - minus api_key)
-        - score_fn name
+        - scorer type
         - prepare_messages name
         - environment_factory name (if present)
         - handle_stop name (if present)
@@ -207,7 +215,7 @@ def fingerprint_eval(
     cfg["endpoint"] = endpoint_dict
 
     # Function identities (names only - git SHA tracks code)
-    cfg["score_fn"] = callable_name(config.score_fn)
+    cfg["scorer"] = scorer_name(config.scorer)
     cfg["prepare_messages"] = callable_name(config.prepare_messages)
 
     if config.environment_factory:

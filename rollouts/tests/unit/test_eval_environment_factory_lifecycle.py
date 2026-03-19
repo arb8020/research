@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from rollouts.core import Endpoint, EvalConfig
+from rollouts.core import Endpoint, EvalConfig, Metric, Score
 from rollouts.eval.native import evaluate
 
 
@@ -27,8 +27,10 @@ def _prepare_messages(sample: dict[str, object]) -> list[object]:
     return []
 
 
-def _score_fn(sample: object) -> object:
-    return sample
+class _StaticScorer:
+    async def score(self, result: object, context: object) -> Score:
+        del result, context
+        return Score(metrics=(Metric("reward", 0.0, weight=1.0),))
 
 
 @pytest.mark.trio
@@ -41,7 +43,7 @@ async def test_eval_environment_factory_lifecycle_hooks() -> None:
             api_format="anthropic-messages",
         ),
         prepare_messages=_prepare_messages,
-        score_fn=_score_fn,
+        scorer=_StaticScorer(),
         environment_factory=factory,
         verbose=False,
         show_progress=False,

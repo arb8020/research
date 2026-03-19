@@ -51,14 +51,14 @@ from ...training.group_assembly import (
 )
 from ...training.rollout_gen.rollout_generation import convert_to_batch
 from ...training.runtime import resolve_rollout_runtime
-from ...training.scoring import resolve_sample_scorer
+from ...training.scoring import resolve_scorer, score_rows
 from ...training.types import (
     AttemptRow,
     IncompleteGroupPolicy,
     RolloutBatch,
     RolloutConfig,
     RolloutRuntime,
-    SampleScorer,
+    Scorer,
 )
 
 logger = logging.getLogger(__name__)
@@ -216,8 +216,7 @@ class PipelinedRolloutManager:
     async def get_batch(
         self,
         current_weight_version: int,
-        sample_scorer: SampleScorer | None = None,
-        score_fn: Callable[[AttemptRow], Any] | None = None,
+        scorer: Scorer | None = None,
         timeout: float = 60.0,
     ) -> RolloutBatch:
         """Get a batch of samples, filtering stale ones.
@@ -226,9 +225,7 @@ class PipelinedRolloutManager:
 
         Args:
             current_weight_version: Current training weight version
-            sample_scorer: Explicit scoring stage owned by the buffer/data side.
-            score_fn: Legacy score function (AttemptRow -> Score), adapted into a
-                sample_scorer when provided.
+            scorer: Explicit scoring stage over raw attempt results.
             timeout: Max seconds to wait for batch
 
         Returns:
@@ -341,14 +338,13 @@ class PipelinedRolloutManager:
                 await trio.sleep(0.1)
 
         # Score samples via the explicit scoring stage if configured.
-        scorer = resolve_sample_scorer(
+        scorer = resolve_scorer(
             config=self.config,
             runtime=self.runtime,
-            sample_scorer=sample_scorer,
-            score_fn=score_fn,
+            scorer=scorer,
         )
         if scorer is not None:
-            await scorer.score_samples(collected)
+            await score_rows(scorer, collected)
 
         # Convert to batch
         batch = convert_to_batch(

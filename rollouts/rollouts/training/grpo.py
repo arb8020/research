@@ -1,7 +1,7 @@
 """GRPO Training Loop.
 
 Shared training infrastructure for GRPO (Group Relative Policy Optimization).
-Each task provides prompts, score_fn, and environment_cls - this module handles
+Each task provides prompts, a scorer, and environment_cls - this module handles
 the rest: SGLang server, training backend, rollout generation, gradient updates.
 
 Usage:
@@ -10,13 +10,14 @@ Usage:
     config = GRPOConfig(model_name="Qwen/Qwen3-0.6B", num_steps=100)
     prompts = [{"messages": [...], "answer": "42"}, ...]
 
-    def my_score_fn(sample):
-        return Score(metrics=(Metric("correct", 1.0 if correct else 0.0, weight=1.0),))
+    class MyScorer:
+        async def score(self, result, context):
+            return Score(metrics=(Metric("correct", 1.0 if correct else 0.0, weight=1.0),))
 
     results = grpo_train(
         config=config,
         prompts=prompts,
-        score_fn=my_score_fn,
+        scorer=MyScorer(),
         environment_cls=BasicEnvironment,
     )
 """
@@ -33,8 +34,8 @@ from typing import TYPE_CHECKING, Any
 import trio
 
 if TYPE_CHECKING:
-    from ..core import Environment, Score
-    from ..training.types import AttemptRow, SampleScorer
+    from ..core import Environment
+    from ..training.types import Scorer
 
 # ──────────────────────── Sub-Configs (re-exported from shared) ───────────────
 
@@ -54,7 +55,6 @@ from ..training.runtime_factory import (
     build_megatron_lowering,
     create_training_backend_runtime,
 )
-from ..training.scoring import FunctionSampleScorer
 from ..training.types import RolloutRuntime
 
 
@@ -172,11 +172,10 @@ def _megatron_lowering(config: GRPOConfig) -> Any:
 def grpo_train(
     config: GRPOConfig,
     prompts: list[dict[str, Any]],
-    score_fn: Callable[[AttemptRow], Score] | None = None,
+    scorer: Scorer | None = None,
     environment_cls: Callable[[], Environment] | type[Environment] | None = None,
     metadata_key: str | None = None,
     environment_factory: Callable[[dict[str, Any]], Any] | None = None,
-    sample_scorer: SampleScorer | None = None,
     run_logger: Any | None = None,
 ) -> dict[str, Any]:
     """Run GRPO training.
@@ -185,14 +184,12 @@ def grpo_train(
         config: Training configuration
         prompts: List of prompt dicts, each containing:
             - "messages": List of chat messages [{"role": "...", "content": "..."}]
-            - Any metadata needed by score_fn (e.g., "answer", "expected_sorted")
-        score_fn: Legacy function (AttemptRow) -> Score that computes reward.
+            - Any metadata needed by the scorer (e.g., "answer", "expected_sorted")
+        scorer: Explicit scoring stage over raw attempt results.
         environment_cls: Zero-arg environment constructor for simple cases
             (BasicEnvironment, CalculatorEnvironment, factory function, etc.).
         environment_factory: Optional per-sample environment factory. Receives the
             original prompt/sample dict and may be sync or async.
-        sample_scorer: Explicit scoring stage. Prefer this over score_fn for
-            resourceful scorers with their own dependencies and observability.
         run_logger: Optional structured run logger from the outer runner. GRPO
             does not consume it yet directly; this exists so config wrappers can
             forward runner kwargs without lying about the call boundary.
@@ -210,19 +207,18 @@ def grpo_train(
         >>> prompts = [
         ...     {"messages": [{"role": "user", "content": "2+2=?"}], "answer": "4"},
         ... ]
-        >>> results = grpo_train(config, prompts, my_score_fn, BasicEnvironment)
+        >>> results = grpo_train(config, prompts, MyScorer(), BasicEnvironment)
     """
-    if score_fn is None and sample_scorer is None:
-        raise ValueError("grpo_train requires either score_fn or sample_scorer")
+    if scorer is None:
+        raise ValueError("grpo_train requires an explicit scorer")
     return trio.run(
         _grpo_train_async,
         config,
         prompts,
-        score_fn,
+        scorer,
         environment_cls,
         metadata_key,
         environment_factory,
-        sample_scorer,
         run_logger,
     )
 
@@ -881,14 +877,14 @@ async def _run_training_preflight(
 def _attach_runtime_observability(
     batch: Any,
     rollout_manager: Any,
-    sample_scorer: Any,
+    scorer: Any,
     environment_factory: Any = None,
 ) -> None:
     """Attach explicit runtime stats to batch metadata for downstream logging."""
     if hasattr(rollout_manager, "stats"):
         batch.metadata["rollout_stats"] = rollout_manager.stats()
-    if sample_scorer is not None and hasattr(sample_scorer, "stats"):
-        batch.metadata["scorer_stats"] = sample_scorer.stats()
+    if scorer is not None and hasattr(scorer, "stats"):
+        batch.metadata["scorer_stats"] = scorer.stats()
     if environment_factory is not None and hasattr(environment_factory, "stats"):
         batch.metadata["environment_stats"] = environment_factory.stats()
 
@@ -1226,11 +1222,10 @@ def _prepare_training_batch(
 async def _grpo_train_async(
     config: GRPOConfig,
     prompts: list[dict[str, Any]],
-    score_fn: Callable[[AttemptRow], Score] | None,
+    scorer: Scorer,
     environment_cls: Callable[[], Environment] | type[Environment] | None,
     metadata_key: str | None = None,
     environment_factory: Callable[[dict[str, Any]], Any] | None = None,
-    sample_scorer: SampleScorer | None = None,
     run_logger: Any | None = None,
 ) -> dict[str, Any]:
     """Async GRPO training implementation."""
@@ -1725,11 +1720,9 @@ async def _grpo_train_async(
         )
         rollout_runtime = RolloutRuntime(
             generate_fn=generate_fn,
-            sample_scorer=sample_scorer
-            if sample_scorer is not None
-            else (FunctionSampleScorer(score_fn) if score_fn is not None else None),
+            scorer=scorer,
         )
-        assert rollout_runtime.sample_scorer is not None, "sample scorer must be resolved"
+        assert rollout_runtime.scorer is not None, "scorer must be resolved"
 
         # Training loop (delegated to rollouts.training.train.train)
         from ..training.contracts import (
@@ -2047,13 +2040,11 @@ async def _grpo_train_async(
                 runtime=rollout_runtime,
             ) as rollout_manager:
                 for _step in range(config.checkpoint.num_steps):
-                    batch = await rollout_manager.generate_batch(
-                        sample_scorer=rollout_runtime.sample_scorer
-                    )
+                    batch = await rollout_manager.generate_batch(scorer=rollout_runtime.scorer)
                     _attach_runtime_observability(
                         batch,
                         rollout_manager,
-                        rollout_runtime.sample_scorer,
+                        rollout_runtime.scorer,
                         environment_factory,
                     )
 
@@ -2143,12 +2134,12 @@ async def _grpo_train_async(
                             for step in range(config.checkpoint.num_steps):
                                 batch = await pipelined_manager.get_batch(
                                     current_weight_version=weight_sync_manager.current_version,
-                                    sample_scorer=rollout_runtime.sample_scorer,
+                                    scorer=rollout_runtime.scorer,
                                 )
                                 _attach_runtime_observability(
                                     batch,
                                     pipelined_manager,
-                                    rollout_runtime.sample_scorer,
+                                    rollout_runtime.scorer,
                                     environment_factory,
                                 )
                                 _update_pipeline_state(
@@ -2268,12 +2259,12 @@ async def _grpo_train_async(
                         for _step in range(config.checkpoint.num_steps):
                             batch = await pipelined_manager.get_batch(
                                 current_weight_version=backend.weight_version,
-                                sample_scorer=rollout_runtime.sample_scorer,
+                                scorer=rollout_runtime.scorer,
                             )
                             _attach_runtime_observability(
                                 batch,
                                 pipelined_manager,
-                                rollout_runtime.sample_scorer,
+                                rollout_runtime.scorer,
                                 environment_factory,
                             )
                             _update_pipeline_state(
