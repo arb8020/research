@@ -17,7 +17,8 @@ from rollouts.environments.ttt.code_challenge import (
     run_code_with_tests,
 )
 from rollouts.training.grpo import GRPOConfig, grpo_train
-from rollouts.training.types import AttemptRow
+from rollouts.training.scoring import FunctionScorer
+from rollouts.training.types import AttemptResult
 
 # ──────────────────────── Environment Factory ─────────────────────────────────
 
@@ -57,7 +58,7 @@ def load_fibonacci_prompts(n_prompts: int = 8) -> list[dict[str, Any]]:
 # ──────────────────────── Score Function ──────────────────────────────────────
 
 
-async def fibonacci_score_fn(sample: AttemptRow) -> Score:
+async def fibonacci_score_fn(sample: AttemptResult, _context: object) -> Score:
     """Score function for Fibonacci task.
 
     Extracts code from response, runs it, grades correctness + speed.
@@ -150,6 +151,6 @@ def train(
     return grpo_train(
         config=config,
         prompts=prompts,
-        score_fn=fibonacci_score_fn,
+        scorer=FunctionScorer(fibonacci_score_fn),
         environment_cls=FibonacciEnvFactory,  # Pass the class, not instance
     )

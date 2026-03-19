@@ -24,6 +24,8 @@ import re
 from pathlib import Path
 from typing import Any
 
+from rollouts.training.scoring import FunctionScorer
+
 logger = logging.getLogger(__name__)
 
 EVAL_DIR = Path(__file__).parent
@@ -82,7 +84,7 @@ and ablate until you can name the specific components."""
     ]
 
 
-def score_sample(sample: Any) -> Any:
+def score_sample(sample: Any, _context: object) -> Any:
     """Score a completed sample.
 
     Checks hypothesis.json for circuit components and compares against ground truth.
@@ -156,7 +158,7 @@ from rollouts.eval_runner import EvalSpec
 spec = EvalSpec(
     name="interp_agent",
     prepare_messages=prepare_messages,
-    score_fn=score_sample,
+    scorer=FunctionScorer(score_sample),
     make_environment=None,  # TODO: add Python sandbox with TransformerLens + model
     default_tasks_path=TASKS_PATH,
     per_sample_environment=False,

@@ -13,13 +13,14 @@ from typing import Any
 
 from rollouts.config.tiers import EndpointConfig, OutputConfig, RunConfig
 from rollouts.core import Message, Metric, Score
-from rollouts.training.types import AttemptRow
+from rollouts.training.scoring import FunctionScorer
+from rollouts.training.types import AttemptResult
 from rollouts.eval_runner import EvalSpec, run_eval_from_spec
 
 # ── Score function ──
 
 
-def score_addition(sample: AttemptRow) -> Score:
+def score_addition(sample: AttemptResult, _context: object) -> Score:
     """Check if the model's response contains the correct sum."""
     sample_data = sample.trajectory.metadata.get("sample_data", {}) if sample.trajectory else {}
     expected = sample_data.get("expected", "")
@@ -55,7 +56,7 @@ tasks = [
 spec = EvalSpec(
     name="smoke_addition",
     prepare_messages=prepare_messages,
-    score_fn=score_addition,
+    scorer=FunctionScorer(score_addition),
 )
 
 if __name__ == "__main__":

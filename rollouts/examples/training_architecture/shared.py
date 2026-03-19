@@ -11,7 +11,7 @@ from typing import Any
 from examples.rl.reverse_text.base_config import SYSTEM_PROMPT, reverse_text_score_fn
 from rollouts.environments.no_tools import BasicEnvironment
 from rollouts.training.grpo import GRPOConfig, grpo_train
-from rollouts.training.scoring import FunctionSampleScorer
+from rollouts.training.scoring import FunctionScorer
 
 
 def make_synthetic_reverse_text_prompts(max_samples: int = 128) -> list[dict[str, Any]]:
@@ -52,6 +52,6 @@ def train(config: GRPOConfig, max_samples: int = 128) -> dict[str, Any]:
     return grpo_train(
         config=config,
         prompts=prompts,
-        sample_scorer=FunctionSampleScorer(reverse_text_score_fn),
+        scorer=FunctionScorer(reverse_text_score_fn),
         environment_cls=BasicEnvironment,
     )

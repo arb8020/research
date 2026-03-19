@@ -23,6 +23,8 @@ import re
 from pathlib import Path
 from typing import Any
 
+from rollouts.training.scoring import FunctionScorer
+
 logger = logging.getLogger(__name__)
 
 EVAL_DIR = Path(__file__).parent
@@ -78,7 +80,7 @@ you can. Start by profiling the reference to understand where time is spent."""
     ]
 
 
-def score_sample(sample: Any) -> Any:
+def score_sample(sample: Any, _context: object) -> Any:
     """Score a completed sample.
 
     Looks for correctness and speedup signals in the trajectory.
@@ -149,7 +151,7 @@ from rollouts.eval_runner import EvalSpec
 spec = EvalSpec(
     name="megakernel",
     prepare_messages=prepare_messages,
-    score_fn=score_sample,
+    scorer=FunctionScorer(score_sample),
     make_environment=None,  # TODO: add GPU sandbox (Modal or sandboxed worktree)
     default_tasks_path=TASKS_PATH,
     per_sample_environment=False,

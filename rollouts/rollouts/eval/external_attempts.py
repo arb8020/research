@@ -5,10 +5,12 @@ import logging
 import os
 import re
 import shutil
+import subprocess
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
+from functools import partial
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import trio
 
@@ -20,6 +22,7 @@ from ..training.types import AttemptResult, ProblemRow, Status
 _event_logger = logging.getLogger("rollouts.eval.events")
 
 PromptBuilder = Callable[[dict[str, Any]], str]
+ExternalRuntime = Literal["claude_code", "codex", "openhands"]
 
 
 def _make_eval_on_event(
@@ -139,16 +142,10 @@ async def execute_external_attempt(
     prompt_builder: PromptBuilder,
     trajectory_adapter: TrajectoryAdapter,
 ) -> AttemptResult:
-    # TODO(external-runtime-helper): configs still build this path manually with
-    # nested partials over `execute_external_attempt(...)` and
-    # `trajectory_from_{runtime}(...)`. Add one honest helper/factory for the
-    # autonomous external-runtime path instead of continuing to duplicate that
-    # wiring in eval configs.
-    #
     # TODO(external-agent-args): once that helper exists, decide whether
     # `AgentRunSpec.external_agent_args` should lower into this path too, or
-    # remain explicitly launcher-only. Right now the older attempt-executor path
-    # still passes runtime-specific kwargs via Python partials.
+    # remain explicitly launcher-only. The built-in helper now exists, but
+    # benchmark-specific wrappers still pass runtime-specific kwargs manually.
     del environment
     prompt = prompt_builder(sample_data)
     if _trajectory_adapter_accepts_run_config(trajectory_adapter):
@@ -175,6 +172,40 @@ async def execute_external_attempt(
         )
 
     return _result_from_artifact(sample_data=sample_data, sample_id=sample_id, artifact=artifact)
+
+
+def _trajectory_adapter_for_runtime(runtime: ExternalRuntime) -> TrajectoryAdapter:
+    if runtime == "claude_code":
+        return trajectory_from_claude_code
+    if runtime == "codex":
+        return trajectory_from_codex
+    if runtime == "openhands":
+        return trajectory_from_openhands
+    raise ValueError(f"Unsupported external runtime: {runtime}")
+
+
+def make_external_attempt_executor(
+    runtime: ExternalRuntime,
+    *,
+    prompt_builder: PromptBuilder,
+    **trajectory_kwargs: Any,
+) -> Callable[[dict[str, Any], str, Any | None, Any], Awaitable[AttemptResult]]:
+    """Build the standard autonomous external-runtime attempt executor.
+
+    Config authors supply the prompt builder, choose a built-in runtime, and
+    pass runtime-specific kwargs directly. The shared lowering from prompt ->
+    external runtime -> AttemptResult stays inside rollouts.
+    """
+
+    trajectory_adapter = partial(
+        _trajectory_adapter_for_runtime(runtime),
+        **trajectory_kwargs,
+    )
+    return partial(
+        execute_external_attempt,
+        prompt_builder=prompt_builder,
+        trajectory_adapter=trajectory_adapter,
+    )
 
 
 async def trajectory_from_claude_code(
@@ -312,10 +343,14 @@ async def trajectory_from_openhands(
     max_iterations: int | None = None,
     allowed_tools: list[str] | None = None,
     agent_cls: str | None = None,
+    api_key_env_var: str | None = None,
     runtime: str = "docker",
     environment: str | None = None,
 ) -> ExternalAttemptArtifact:
     del sample_data, run_config
+
+    if api_key_env_var is not None and not os.environ.get(api_key_env_var):
+        raise RuntimeError(f"Required environment variable {api_key_env_var} is not set")
 
     cli = shutil.which("openhands")
     if cli is None:
@@ -349,11 +384,11 @@ async def trajectory_from_openhands(
     if max_iterations is not None:
         cmd.extend(["--max-iterations", str(max_iterations)])
 
-    proc = await trio.open_process(
+    proc = await trio.lowlevel.open_process(
         cmd,
         cwd=str(workdir),
-        stdout=trio.subprocess.PIPE,
-        stderr=trio.subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
     )
 
     stdout_buffer = bytearray()
@@ -409,6 +444,8 @@ async def trajectory_from_openhands(
     }
     if model:
         metadata["model"] = model
+    if api_key_env_var is not None:
+        metadata["api_key_env_var"] = api_key_env_var
     if max_iterations is not None:
         metadata["max_iterations"] = max_iterations
     if agent_cls:
@@ -418,7 +455,7 @@ async def trajectory_from_openhands(
     if proc.returncode is not None:
         metadata["returncode"] = proc.returncode
 
-    status = Status.COMPLETED if proc.returncode in (None, 0) else Status.FAILED
+    status = Status.COMPLETED if proc.returncode in (None, 0) else Status.ABORTED
     if combined_output:
         metadata["openhands_output"] = combined_output[-8000:]
 

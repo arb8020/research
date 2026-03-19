@@ -16,7 +16,7 @@ from rollouts.training.grpo import (
     TrainerConfig,
     grpo_train,
 )
-from rollouts.training.scoring import FunctionSampleScorer
+from rollouts.training.scoring import FunctionScorer
 
 config_status = import_tested(
     "70bce1bf",
@@ -62,7 +62,7 @@ def train(config: GRPOConfig = config, max_samples: int = 128, **kwargs: object)
     return grpo_train(
         config=config,
         prompts=prompts,
-        sample_scorer=FunctionSampleScorer(reverse_text_score_fn),
+        scorer=FunctionScorer(reverse_text_score_fn),
         environment_cls=BasicEnvironment,
         **kwargs,
     )

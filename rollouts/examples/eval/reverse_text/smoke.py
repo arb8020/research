@@ -10,8 +10,8 @@ Run:
 
 from rollouts.core import Message, Metric, Score
 from rollouts.eval import EndpointConfig, EvalOutputConfig, EvalRunConfig
-from rollouts.training.scoring import FunctionSampleScorer
-from rollouts.training.types import AttemptRow
+from rollouts.training.scoring import FunctionScorer
+from rollouts.training.types import AttemptResult
 
 # =============================================================================
 # Endpoint Configuration
@@ -76,7 +76,7 @@ def prepare_messages(sample: dict) -> list[Message]:
     ]
 
 
-def score_fn(sample: AttemptRow) -> Score:
+def score_fn(sample: AttemptResult, _context: object) -> Score:
     """Score the response by checking if reversal is correct."""
     import re
 
@@ -121,4 +121,4 @@ def score_fn(sample: AttemptRow) -> Score:
     )
 
 
-sample_scorer = FunctionSampleScorer(score_fn)
+scorer = FunctionScorer(score_fn)

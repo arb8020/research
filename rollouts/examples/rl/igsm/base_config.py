@@ -25,6 +25,7 @@ from typing import Any, Literal
 
 from rollouts.core import Metric, Score
 from rollouts.environments.no_tools import BasicEnvironment
+from rollouts.training.scoring import FunctionScorer
 from rollouts.synthetic import RETRY_TOKEN as _RETRY_TOKEN
 from rollouts.synthetic import build_igsm_loader
 from rollouts.synthetic.igsm import get_tokenizer
@@ -163,7 +164,7 @@ def normalize_answer(answer: str) -> int | None:
         return None
 
 
-def igsm_score_fn(sample: Any) -> Score:
+def igsm_score_fn(sample: Any, _context: object) -> Score:
     """Binary score function for iGSM.
 
     Returns 1.0 if correct, 0.0 otherwise.
@@ -276,7 +277,7 @@ def train_grpo(
     return grpo_train(
         config=config,
         prompts=prompts,
-        score_fn=igsm_score_fn,
+        scorer=FunctionScorer(igsm_score_fn),
         environment_cls=BasicEnvironment,
     )
 

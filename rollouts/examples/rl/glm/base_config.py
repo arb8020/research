@@ -13,6 +13,7 @@ from typing import Any
 from rollouts.core import Metric, Score
 from rollouts.environments.no_tools import BasicEnvironment
 from rollouts.training.grpo import GRPOConfig, grpo_train
+from rollouts.training.scoring import FunctionScorer
 
 # ──────────────────────── System Prompt ─────────────────────────────────────
 
@@ -71,7 +72,7 @@ def parse_reversed_text(response: str) -> str | None:
 # ──────────────────────── Score Function ────────────────────────────────────
 
 
-def reverse_text_score_fn(sample: Any) -> Score:
+def reverse_text_score_fn(sample: Any, _context: object) -> Score:
     """Score function for reverse text."""
     expected = sample.metadata.get("reversed", "")
     response = sample.response if hasattr(sample, "response") else ""
@@ -141,6 +142,6 @@ def train(
     return grpo_train(
         config=config,
         prompts=prompts,
-        score_fn=reverse_text_score_fn,
+        scorer=FunctionScorer(reverse_text_score_fn),
         environment_cls=BasicEnvironment,
     )

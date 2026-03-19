@@ -144,7 +144,7 @@ def train(
     return grpo_train(
         config=config,
         prompts=prompts,
-        score_fn=igsm_score_fn,
+        scorer=FunctionScorer(igsm_score_fn),
         environment_cls=BasicEnvironment,
     )
 

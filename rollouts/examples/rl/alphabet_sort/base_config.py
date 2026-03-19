@@ -14,7 +14,7 @@ from typing import Any
 from rollouts.core import Metric, Score
 from rollouts.environments.no_tools import BasicEnvironment
 from rollouts.training.grpo import GRPOConfig, grpo_train
-from rollouts.training.scoring import FunctionSampleScorer
+from rollouts.training.scoring import FunctionScorer
 
 # ──────────────────────── Name Generation ───────────────────────────────────
 
@@ -188,7 +188,7 @@ def _compute_list_similarity(predicted: list[str], expected: list[str]) -> float
     return SequenceMatcher(None, pred_str, exp_str).ratio()
 
 
-def alphabet_sort_score_fn(sample: Any) -> Score:
+def alphabet_sort_score_fn(sample: Any, _context: object) -> Score:
     """Score function for alphabet sort.
 
     Uses power-scaled similarity (similarity^8) like Prime-RL.
@@ -253,6 +253,6 @@ def train(
     return grpo_train(
         config=config,
         prompts=prompts,
-        sample_scorer=FunctionSampleScorer(alphabet_sort_score_fn),
+        scorer=FunctionScorer(alphabet_sort_score_fn),
         environment_cls=BasicEnvironment,
     )

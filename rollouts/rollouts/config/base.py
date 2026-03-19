@@ -22,6 +22,7 @@ from typing import Any
 
 from ..agents import RunConfig
 from ..core import Endpoint, EvalConfig, Message, PrepareMessagesFn
+from ..training.types import Scorer
 
 logger = logging.getLogger(__name__)
 
@@ -251,7 +252,7 @@ class BaseEvaluationConfig:
         messages = eval_cfg.environment.prepare_messages(sample_data)
 
         # Convert to EvalConfig
-        eval_config = eval_cfg.to_eval_config(score_fn=my_score_fn)
+        eval_config = eval_cfg.to_eval_config(scorer=my_scorer)
     """
 
     # Environment injection (domain-specific task setup)
@@ -279,14 +280,14 @@ class BaseEvaluationConfig:
         self,
         endpoint: Endpoint,
         prepare_messages: PrepareMessagesFn,
-        score_fn: Callable,
+        scorer: Scorer,
     ) -> EvalConfig:
         """Convert to rollouts EvalConfig.
 
         Args:
             endpoint: Endpoint configuration for LLM calls
             prepare_messages: Function to prepare messages from sample
-            score_fn: Score function (Trajectory, Sample) -> Score
+            scorer: Explicit scoring stage over attempt results
 
         Returns:
             EvalConfig ready for rollouts.evaluate()
@@ -294,7 +295,7 @@ class BaseEvaluationConfig:
         return EvalConfig(
             endpoint=endpoint,
             prepare_messages=prepare_messages,
-            score_fn=score_fn,
+            scorer=scorer,
             max_samples=self.num_samples,
             max_concurrent=self.max_concurrent,
             output_dir=self.output_dir,

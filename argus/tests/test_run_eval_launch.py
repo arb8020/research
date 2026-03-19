@@ -10,7 +10,7 @@ def test_classify_config_module_detects_evaluation() -> None:
     module = SimpleNamespace(
         tasks=[{"id": "sample-1"}],
         prepare_messages=lambda row: [],
-        score_fn=lambda sample: 0.0,
+        scorer=object(),
     )
 
     kind = argus_run._classify_config_module(module, Path("configs/eval.py"))
@@ -27,7 +27,7 @@ def test_run_main_launches_eval_via_detached_subprocess(
             "from rollouts.eval import AgentRunSpec, EndpointConfig",
             "tasks = [{'id': 'sample-1'}]",
             "run_spec = AgentRunSpec(endpoint=EndpointConfig(), prepare_messages=lambda row: [])",
-            "score_fn = lambda sample: 0.0",
+            "scorer = object()",
         ])
     )
 
@@ -63,7 +63,7 @@ def test_run_main_eval_tui_hands_off_to_monitor(monkeypatch: object, tmp_path: P
             "from rollouts.eval import AgentRunSpec, EndpointConfig",
             "tasks = [{'id': 'sample-1'}]",
             "run_spec = AgentRunSpec(endpoint=EndpointConfig(), prepare_messages=lambda row: [])",
-            "score_fn = lambda sample: 0.0",
+            "scorer = object()",
         ])
     )
 

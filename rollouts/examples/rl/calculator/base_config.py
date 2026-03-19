@@ -14,6 +14,7 @@ from typing import Any
 from rollouts.core import Metric, Score
 from rollouts.environments.calculator import CalculatorEnvironment
 from rollouts.training.grpo import GRPOConfig, grpo_train
+from rollouts.training.scoring import FunctionScorer
 
 # ──────────────────────── Dataset ───────────────────────────────────────────
 
@@ -57,7 +58,7 @@ def load_calculator_prompts(max_samples: int | None = None) -> list[dict[str, An
 # ──────────────────────── Score Function ────────────────────────────────────
 
 
-def calculator_score_fn(sample: Any) -> Score:
+def calculator_score_fn(sample: Any, _context: object) -> Score:
     """Score function for calculator tasks.
 
     Compares final_result from complete_task tool to ground_truth.
@@ -136,6 +137,6 @@ def train(
     return grpo_train(
         config=config,
         prompts=prompts,
-        score_fn=calculator_score_fn,
+        scorer=FunctionScorer(calculator_score_fn),
         environment_cls=CalculatorEnvironment,
     )

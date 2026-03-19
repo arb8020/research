@@ -26,6 +26,8 @@ import re
 from pathlib import Path
 from typing import Any
 
+from rollouts.training.scoring import FunctionScorer
+
 logger = logging.getLogger(__name__)
 
 # Paths
@@ -174,7 +176,7 @@ Then implement the {device_name} backend. Good luck!"""
     ]
 
 
-def score_sample(sample: Any):
+def score_sample(sample: Any, _context: object):
     """Score a completed sample.
 
     Looks for test output patterns in the trajectory.
@@ -410,7 +412,7 @@ def get_spec(backend: str = "METAL") -> EvalSpec:
     return EvalSpec(
         name=f"tinygrad_{backend.lower()}_restore",
         prepare_messages=prepare_messages,
-        score_fn=score_sample,
+        scorer=FunctionScorer(score_sample),
         make_environment=make_environment,
         default_tasks_path=tasks_path if tasks_path.exists() else None,
         per_sample_environment=True,

@@ -24,6 +24,7 @@ from typing import Any
 from rollouts.dtypes import Endpoint, Message, Metric, Score
 from rollouts.environments.dialogue import DialogueEnvironment, keyword_concession_detector
 from rollouts.eval_runner import EvalSpec
+from rollouts.training.scoring import FunctionScorer
 
 logger = logging.getLogger(__name__)
 
@@ -87,7 +88,7 @@ LOSE CONDITION: You lose if you concede or agree with your opponent.
 Do NOT concede unless you are genuinely convinced. Argue your position strongly."""
 
 
-def score_sample(sample: Any) -> Score:
+def score_sample(sample: Any, _context: object) -> Score:
     """Score the debate based on who conceded.
 
     Looks at environment_state for concession_winner.
@@ -165,7 +166,7 @@ async def make_environment(sample_data: dict[str, Any]) -> DialogueEnvironment:
 spec = EvalSpec(
     name="debate",
     prepare_messages=prepare_messages,
-    score_fn=score_sample,
+    scorer=FunctionScorer(score_sample),
     make_environment=make_environment,
     default_tasks_path=TASKS_PATH,
     per_sample_environment=True,

@@ -15,7 +15,7 @@ def test_validate_eval_config_accepts_eval_task() -> None:
                 endpoint=EndpointConfig(provider="anthropic", model="claude-sonnet-4-20250514"),
                 prepare_messages=lambda sample: sample["messages"],
             ),
-            score_fn=lambda attempt: None,
+            scorer=object(),
         )
     )
 
@@ -27,7 +27,7 @@ def test_resolve_eval_task_spec_normalizes_legacy_exports() -> None:
         tasks=[{"messages": []}],
         endpoint=EndpointConfig(provider="anthropic", model="claude-sonnet-4-20250514"),
         prepare_messages=lambda sample: sample["messages"],
-        score_fn=lambda attempt: None,
+        scorer=object(),
     )
 
     eval_task = resolve_eval_task_spec(module)
@@ -36,4 +36,4 @@ def test_resolve_eval_task_spec_normalizes_legacy_exports() -> None:
     assert eval_task.run_spec.endpoint is not None
     assert eval_task.run_spec.endpoint.provider == "anthropic"
     assert eval_task.run_spec.prepare_messages is not None
-    assert eval_task.score_fn is not None
+    assert eval_task.scorer is not None

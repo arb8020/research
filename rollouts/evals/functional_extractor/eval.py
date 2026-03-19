@@ -332,12 +332,13 @@ def load_tasks(tasks_path: Path | str | None = None) -> list[dict[str, Any]]:
 # ── EvalSpec Definition ───────────────────────────────────────────────────────
 
 from rollouts.eval_runner import EvalSpec
+from rollouts.training.scoring import FunctionScorer
 
 # Export spec directly for run_eval.py pattern
 spec = EvalSpec(
     name="functional_extractor",
     prepare_messages=prepare_messages,
-    score_fn=score_sample,
+    scorer=FunctionScorer(score_sample),
     make_environment=make_environment,
     default_tasks_path=TASKS_PATH,
     per_sample_environment=True,

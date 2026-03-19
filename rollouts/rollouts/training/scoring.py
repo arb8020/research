@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from dataclasses import replace
 from typing import TYPE_CHECKING
 
@@ -7,6 +9,25 @@ from .types import AttemptResult, AttemptRow, RolloutConfig, RolloutRuntime, Sco
 
 if TYPE_CHECKING:
     from ..core import Score
+
+
+@dataclass(frozen=True)
+class FunctionScorer:
+    """Explicit scorer wrapper for function-authored configs and examples."""
+
+    fn: Callable[[AttemptResult, ScoringContext], Score | Awaitable[Score]]
+
+    async def score(
+        self,
+        result: AttemptResult,
+        context: ScoringContext,
+    ) -> Score:
+        scored = self.fn(result, context)
+        if hasattr(scored, "__await__"):
+            scored = await scored
+        if not isinstance(scored, Score):
+            raise TypeError(f"FunctionScorer must return Score, got {type(scored).__name__}")
+        return scored
 
 
 async def score_result(

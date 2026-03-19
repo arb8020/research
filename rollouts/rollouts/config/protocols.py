@@ -7,13 +7,13 @@ These protocols define what configs SHOULD provide, but don't enforce how.
 Projects can implement their own configs that satisfy these protocols.
 """
 
-from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
 # Import types from ..dtypes
 # These are already defined and used across projects
 from ..core import Endpoint, EvalConfig, Message
+from ..training.types import Scorer
 
 
 @runtime_checkable
@@ -92,18 +92,18 @@ class HasEvaluationConfig(Protocol):
         class MyEvalConfig:
             num_samples: int = 100
 
-            def to_eval_config(self, score_fn: Callable) -> EvalConfig:
+            def to_eval_config(self, scorer: Scorer) -> EvalConfig:
                 return EvalConfig(
-                    score_fn=score_fn,
+                    scorer=scorer,
                     max_samples=self.num_samples,
                 )
     """
 
-    def to_eval_config(self, score_fn: Callable) -> EvalConfig:
+    def to_eval_config(self, scorer: Scorer) -> EvalConfig:
         """Convert to rollouts EvalConfig.
 
         Args:
-            score_fn: Score function (Trajectory, Sample) -> Score
+            scorer: Explicit scoring stage over attempt results
 
         Returns:
             EvalConfig ready for evaluation

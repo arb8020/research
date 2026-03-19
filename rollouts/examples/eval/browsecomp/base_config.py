@@ -278,7 +278,7 @@ def create_browsecomp_score_fn(grader_endpoint: Endpoint) -> Callable[[Any], Awa
     The attempt row carries the execution trajectory via ``sample.trajectory``.
     """
 
-    async def browsecomp_score_fn(sample: Any) -> Score:
+    async def browsecomp_score_fn(sample: Any, _context: object) -> Score:
         """Score function for BrowseComp.
 
         Uses LLM-as-judge to grade the response.
@@ -371,6 +371,7 @@ async def _run_eval(config: BrowseCompConfig) -> dict[str, Any]:
     from rollouts.core import EvalConfig
     from rollouts.environments import BrowsingEnvironment
     from rollouts.eval import evaluate
+    from rollouts.training.scoring import FunctionScorer
 
     setup_logging(level="INFO", use_color=True)
 
@@ -417,7 +418,7 @@ async def _run_eval(config: BrowseCompConfig) -> dict[str, Any]:
     # Use new simplified API with prepare_messages (custom formatting)
     eval_config = EvalConfig(
         endpoint=endpoint,
-        score_fn=score_fn,
+        scorer=FunctionScorer(score_fn),
         prepare_messages=prepare_messages,  # Custom formatting with QUERY_TEMPLATE
         environment_factory=environment_factory,
         max_samples=config.dataset.max_samples,

@@ -220,7 +220,7 @@ def run_grpo(config: PipelineConfig, sft_checkpoint: Path | str) -> dict[str, An
     logger.info(f"Loaded {len(prompts)} prompts")
 
     # Score function (LCS similarity)
-    def score_fn(sample: Any) -> Score:
+    def score_fn(sample: Any, _context: object) -> Score:
         expected = sample.metadata.get("reversed", "")
         response = sample.response if hasattr(sample, "response") else ""
 
@@ -249,6 +249,7 @@ def run_grpo(config: PipelineConfig, sft_checkpoint: Path | str) -> dict[str, An
         RolloutConfig,
         TrainerConfig,
     )
+    from rollouts.training.scoring import FunctionScorer
 
     grpo_config = GRPOConfig(
         output=GRPOOutputConfig(
@@ -274,7 +275,7 @@ def run_grpo(config: PipelineConfig, sft_checkpoint: Path | str) -> dict[str, An
     results = grpo_train(
         config=grpo_config,
         prompts=prompts,
-        score_fn=score_fn,
+        scorer=FunctionScorer(score_fn),
         environment_cls=BasicEnvironment,
     )
 

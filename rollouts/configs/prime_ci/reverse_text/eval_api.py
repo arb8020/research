@@ -15,8 +15,8 @@ from rollouts.eval import (
     EvalRunConfig,
     EvalTaskSpec,
 )
-from rollouts.training.scoring import FunctionSampleScorer
-from rollouts.training.types import AttemptRow
+from rollouts.training.scoring import FunctionScorer
+from rollouts.training.types import AttemptResult
 
 config_status = import_tested(
     "70bce1bf",
@@ -39,7 +39,7 @@ def prepare_messages(sample: dict[str, str]) -> list[Message]:
     ]
 
 
-def reverse_text_eval_score_fn(sample: AttemptRow) -> Score:
+def reverse_text_eval_score_fn(sample: AttemptResult, _context: object) -> Score:
     expected = sample.input["text"][::-1]
     response = sample.response
     parsed = parse_reversed_text(response)
@@ -63,7 +63,7 @@ def reverse_text_eval_score_fn(sample: AttemptRow) -> Score:
     )
 
 
-sample_scorer = FunctionSampleScorer(reverse_text_eval_score_fn)
+scorer = FunctionScorer(reverse_text_eval_score_fn)
 
 run_spec = AgentRunSpec(
     endpoint=EndpointConfig(
@@ -95,5 +95,5 @@ eval_task = EvalTaskSpec(
         experiment_name="prime_ci_reverse_text_eval_api",
     ),
     run_spec=run_spec,
-    sample_scorer=sample_scorer,
+    scorer=scorer,
 )

@@ -13,7 +13,7 @@ Usage:
     spec = EvalSpec(
         name="my_eval",
         prepare_messages=my_prep,
-        score_fn=my_score,
+        scorer=my_scorer,
         make_environment=lambda: CodingEnvironment(tools=["read", "write"]),
     )
 
@@ -39,7 +39,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from .core import Environment, Message, Score
+    from .core import Environment, Message
+    from .training.types import Scorer
 
 logger = logging.getLogger(__name__)
 
@@ -57,7 +58,7 @@ class EvalSpec:
     Attributes:
         name: Eval name (used for output dir, logging)
         prepare_messages: Turn a dataset row into initial messages
-        score_fn: Score a completed sample
+        scorer: Score a completed result
         make_environment: Factory for the tool environment (or None for no tools)
         default_tasks_path: Where tasks live by default (JSON file)
         per_sample_environment: If True, make_environment receives sample_data dict
@@ -65,7 +66,7 @@ class EvalSpec:
 
     name: str
     prepare_messages: Callable[[dict[str, Any]], list[Message]]
-    score_fn: Callable[..., Score]
+    scorer: Scorer
 
     # Environment factory — can be nullary or take sample_data
     make_environment: Callable[[], Environment] | Callable[[dict[str, Any]], Environment] | None = (
@@ -246,7 +247,7 @@ def run_eval_from_spec(  # noqa: PLR0913
     # ── Build EvalConfig ──
     eval_config = EvalConfig(
         endpoint=eval_endpoint,
-        score_fn=spec.score_fn,
+        scorer=spec.scorer,
         prepare_messages=spec.prepare_messages,
         environment=environment,
         environment_factory=environment_factory,

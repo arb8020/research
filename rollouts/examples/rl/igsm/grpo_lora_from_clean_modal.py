@@ -146,6 +146,7 @@ def train(
 
     from rollouts.environments.no_tools import BasicEnvironment
     from rollouts.training.grpo import grpo_train
+    from rollouts.training.scoring import FunctionScorer
 
     # Load prompts
     prompts = load_igsm_prompts(
@@ -161,7 +162,7 @@ def train(
     return grpo_train(
         config=config,
         prompts=prompts,
-        score_fn=igsm_score_fn,
+        scorer=FunctionScorer(igsm_score_fn),
         environment_cls=BasicEnvironment,
     )
 

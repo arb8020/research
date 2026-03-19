@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import re
 from difflib import SequenceMatcher
-from functools import partial
 from pathlib import Path
 
 from examples.rl.reverse_text.base_config import SYSTEM_PROMPT, parse_reversed_text
@@ -15,11 +14,10 @@ from rollouts.eval import (
     EvalOutputConfig,
     EvalRunConfig,
     MaxTurnsStop,
-    execute_external_attempt,
-    trajectory_from_openhands,
+    make_external_attempt_executor,
 )
-from rollouts.training.scoring import FunctionSampleScorer
-from rollouts.training.types import AttemptRow
+from rollouts.training.scoring import FunctionScorer
+from rollouts.training.types import AttemptResult
 
 tasks = [
     {"text": "hello world"},
@@ -44,7 +42,7 @@ def build_prompt(sample: dict[str, str]) -> str:
     )
 
 
-def reverse_text_eval_score_fn(sample: AttemptRow) -> Score:
+def reverse_text_eval_score_fn(sample: AttemptResult, _context: object) -> Score:
     expected = sample.input["text"][::-1]
     response = sample.response
     parsed = parse_reversed_text(response)
@@ -68,7 +66,7 @@ def reverse_text_eval_score_fn(sample: AttemptRow) -> Score:
     )
 
 
-sample_scorer = FunctionSampleScorer(reverse_text_eval_score_fn)
+scorer = FunctionScorer(reverse_text_eval_score_fn)
 
 config_status = import_tested(
     "uncommitted",
@@ -76,17 +74,14 @@ config_status = import_tested(
 )
 
 run_spec = AgentRunSpec(
-    attempt_executor=partial(
-        execute_external_attempt,
+    attempt_executor=make_external_attempt_executor(
+        "openhands",
         prompt_builder=build_prompt,
-        trajectory_adapter=partial(
-            trajectory_from_openhands,
-            cwd=Path.cwd(),
-            model="gpt-5.1-codex-mini",
-            api_key_env_var="OPENAI_API_KEY",
-            timeout_seconds=300.0,
-        ),
-    )
+        cwd=Path.cwd(),
+        model="gpt-5.1-codex-mini",
+        api_key_env_var="OPENAI_API_KEY",
+        timeout_seconds=300.0,
+    ),
 )
 
 output = EvalOutputConfig(experiment_name="prime_ci_reverse_text_eval_openhands")

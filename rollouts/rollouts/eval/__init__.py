@@ -27,6 +27,7 @@ from .configs import (
 from .external_attempts import (
     ExternalAttemptArtifact,
     execute_external_attempt,
+    make_external_attempt_executor,
     trajectory_from_claude_code,
     trajectory_from_codex,
     trajectory_from_openhands,
@@ -63,6 +64,7 @@ __all__ = [
     "evaluate_sample",
     "execute_external_attempt",
     "group_by",
+    "make_external_attempt_executor",
     "run_lm_eval",
     "simple_evaluate",
     "summarize",

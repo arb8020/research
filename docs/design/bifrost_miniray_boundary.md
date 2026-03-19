@@ -230,6 +230,36 @@ receive capabilities like:
 - launch experiment
 - fetch artifacts
 
+## Resource Intent And Capacity Policy
+
+One design item still needs to be made explicit in config:
+
+- exact pool size
+- elastic/autoscaled pool
+- fully on-demand allocation
+
+The config should own this resource intent directly rather than smuggling it
+through launcher flags or hidden provider defaults.
+
+A likely honest shape is a small sum type such as:
+
+```python
+FixedPool(count=4, profile="inference_h100")
+ElasticPool(min=1, max=8, profile="inference_h100", policy=...)
+OnDemand(profile="train_h100")
+```
+
+The key point is semantic, not syntactic:
+
+- `rollouts` should describe the capacity intent of the workload
+- `broker` should realize that intent against providers
+- `argus` should supervise the realized pool/job lifecycle
+- `bifrost` should operate on the live resources once they exist
+
+This is not fully specified or implemented yet, but it should be treated as an
+explicit open design item rather than left implicit in ad hoc provisioning
+logic.
+
 ## Why This Is Not "Rebuilding Ray"
 
 The non-goal is important.

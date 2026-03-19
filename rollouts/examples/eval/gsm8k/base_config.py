@@ -26,7 +26,7 @@ import trio
 if TYPE_CHECKING:
     from rollouts.core import Endpoint, Score
     from rollouts.training.datasets.data_buffer import DataBuffer
-    from rollouts.training.types import AttemptRow
+    from rollouts.training.types import AttemptResult
 
 # ──────────────────────── Config Dataclasses ────────────────────────────────
 
@@ -341,7 +341,7 @@ def normalize_answer(answer: str) -> float | None:
         return None
 
 
-def gsm8k_score_fn(sample: AttemptRow) -> Score:
+def gsm8k_score_fn(sample: AttemptResult, _context: object) -> Score:
     """Score function for GSM8K (single-turn mode).
 
     Extracts answer from \\boxed{} and compares to ground truth.
@@ -388,7 +388,7 @@ def gsm8k_score_fn(sample: AttemptRow) -> Score:
     )
 
 
-def gsm8k_tool_score_fn(sample: AttemptRow) -> Score:
+def gsm8k_tool_score_fn(sample: AttemptResult, _context: object) -> Score:
     """Score function for GSM8K with calculator tools (multi-turn mode).
 
     Extracts answer from complete_task tool call or tool results.
@@ -512,7 +512,7 @@ def _get_endpoint(config: GSM8KConfig) -> Endpoint:
     )
 
 
-def _single_turn_score_fn(sample: AttemptRow) -> Score:
+def _single_turn_score_fn(sample: AttemptResult, _context: object) -> Score:
     """Score function for single-turn GSM8K using rollouts evaluation types."""
     from rollouts.core import Metric, Score
 
@@ -571,6 +571,7 @@ async def _eval_single_turn(config: GSM8KConfig) -> dict[str, Any]:
     from rollouts.agents import RunConfig, handle_stop_max_turns
     from rollouts.core import EvalConfig, Message
     from rollouts.eval import evaluate
+    from rollouts.training.scoring import FunctionScorer
 
     log_level = "INFO" if config.run.verbose else "WARNING"
     setup_logging(level=log_level, use_color=True)
@@ -606,7 +607,7 @@ async def _eval_single_turn(config: GSM8KConfig) -> dict[str, Any]:
     # Use rollouts evaluation framework with new simplified API
     eval_config = EvalConfig(
         endpoint=_get_endpoint(config),
-        score_fn=_single_turn_score_fn,
+        scorer=FunctionScorer(_single_turn_score_fn),
         prepare_messages=prepare_messages,
         max_samples=config.dataset.max_samples,
         max_concurrent=config.run.max_concurrent,
@@ -639,6 +640,7 @@ async def _eval_multi_turn(config: GSM8KConfig) -> dict[str, Any]:
     from rollouts.core import EvalConfig, Message
     from rollouts.environments.calculator import CalculatorEnvironment
     from rollouts.eval import evaluate
+    from rollouts.training.scoring import FunctionScorer
 
     log_level = "INFO" if config.run.verbose else "WARNING"
     setup_logging(level=log_level, use_color=True)
@@ -675,7 +677,7 @@ async def _eval_multi_turn(config: GSM8KConfig) -> dict[str, Any]:
     # Use rollouts evaluation framework with new simplified API
     eval_config = EvalConfig(
         endpoint=_get_endpoint(config),
-        score_fn=gsm8k_tool_score_fn,
+        scorer=FunctionScorer(gsm8k_tool_score_fn),
         prepare_messages=prepare_messages,
         environment_factory=environment_factory,
         max_samples=config.dataset.max_samples,

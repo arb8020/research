@@ -16,6 +16,7 @@ from typing import Any
 from rollouts.core import Metric, Score
 from rollouts.environments.no_tools import BasicEnvironment
 from rollouts.training.grpo import GRPOConfig, grpo_train
+from rollouts.training.scoring import FunctionScorer
 
 # ──────────────────────── Dataset Loading ───────────────────────────────────
 
@@ -91,7 +92,7 @@ def normalize_answer(answer: str) -> float | None:
         return None
 
 
-def gsm8k_score_fn(sample: Any) -> Score:
+def gsm8k_score_fn(sample: Any, _context: object) -> Score:
     """Score function for GSM8K.
 
     Returns Score with reward=1.0 if correct, 0.0 otherwise.
@@ -163,6 +164,6 @@ def train(
     return grpo_train(
         config=config,
         prompts=prompts,
-        score_fn=gsm8k_score_fn,
+        scorer=FunctionScorer(gsm8k_score_fn),
         environment_cls=BasicEnvironment,
     )
