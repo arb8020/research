@@ -7,7 +7,7 @@ Each adapter provides:
 Usage with run_gepa:
     from functools import partial
 
-    config = SystemPromptConfig(endpoint=endpoint, user_template="{query}", score_fn=score)
+    config = SystemPromptConfig(endpoint=endpoint, user_template="{query}", scorer=scorer)
 
     result = await run_gepa(
         seed_candidate={"system": "You are helpful."},

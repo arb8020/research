@@ -12,9 +12,10 @@ from typing import Any
 import trio
 
 from ..agents import Actor, RunConfig, rollout
-from ..core import Endpoint, Environment, EnvironmentFactory, ScoreFn, Trajectory
+from ..core import Endpoint, Environment, EnvironmentFactory, Trajectory
 from ..dtypes import StreamEvent
-from ..training.types import AttemptRow, ProblemRow
+from ..training.scoring import score_result
+from ..training.types import AttemptResult, ProblemRow, Scorer, ScoringContext, Status
 from .formatting import format_prompt
 from .types import PromptTemplate
 
@@ -31,7 +32,7 @@ async def evaluate_single_sample(
     sample: dict[str, Any],
     seed: int,
     endpoint: Endpoint,
-    score_fn: ScoreFn,
+    scorer: Scorer,
     environment: Environment | None = None,
     run_config: RunConfig | None = None,
 ) -> float:
@@ -42,7 +43,7 @@ async def evaluate_single_sample(
         sample: Problem row payload dict
         seed: Sample index (for logging)
         endpoint: LLM endpoint configuration
-        score_fn: Function to compute score from an attempt row
+        scorer: Explicit scorer over the raw execution result
         environment: Optional environment for tool-using agents
         run_config: Optional run configuration
 
@@ -73,10 +74,9 @@ async def evaluate_single_sample(
         logger.warning(f"Sample {seed} failed: {e}")
         return 0.0
 
-    # Build attempt row for scoring
-    # Try common ground truth field names
+    # Build raw execution result for scoring.
     ground_truth = sample.get("ground_truth") or sample.get("answer") or sample.get("label")
-    eval_sample = AttemptRow(
+    result = AttemptResult(
         attempt_id=f"seed_{seed}",
         problem=ProblemRow(
             problem_id=f"seed_{seed}",
@@ -84,21 +84,11 @@ async def evaluate_single_sample(
             ground_truth=ground_truth,
         ),
         trajectory=final_trajectory,
+        status=Status.COMPLETED,
     )
 
-    # Compute score (support both sync and async)
-    import inspect
-
-    score_result = score_fn(eval_sample)
-    if inspect.iscoroutine(score_result):
-        score = await score_result
-    else:
-        score = score_result
-
-    # Handle both Score objects and raw floats
-    if hasattr(score, "reward"):
-        return score.reward
-    return float(score)
+    score = await score_result(scorer, result, ScoringContext(environment=environment))
+    return score.reward
 
 
 async def evaluate_template(
@@ -106,7 +96,7 @@ async def evaluate_template(
     seeds: Sequence[int],
     dataset: Sequence[dict[str, Any]],
     endpoint: Endpoint,
-    score_fn: ScoreFn,
+    scorer: Scorer,
     environment_factory: EnvironmentFactory | None = None,
     max_concurrent: int = 10,
 ) -> PromptTemplate:
@@ -119,7 +109,7 @@ async def evaluate_template(
         seeds: Indices into dataset to evaluate on
         dataset: Full dataset (list of sample dicts)
         endpoint: LLM endpoint configuration
-        score_fn: Function to compute score from an attempt row
+        scorer: Explicit scorer over raw execution results
         environment_factory: Optional factory for per-sample environments
         max_concurrent: Maximum parallel evaluations
 
@@ -132,7 +122,7 @@ async def evaluate_template(
         ...     seeds=(0, 1, 2, 3, 4),
         ...     dataset=my_dataset,
         ...     endpoint=my_endpoint,
-        ...     score_fn=my_score_fn,
+        ...     scorer=my_scorer,
         ... )
         >>> print(f"Score: {scored_template.score}")
     """
@@ -150,7 +140,7 @@ async def evaluate_template(
             sample=sample,
             seed=seed,
             endpoint=endpoint,
-            score_fn=score_fn,
+            scorer=scorer,
             environment=env,
         )
 

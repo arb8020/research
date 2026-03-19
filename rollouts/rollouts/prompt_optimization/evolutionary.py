@@ -11,7 +11,8 @@ from typing import Any
 
 import trio
 
-from ..core import Endpoint, EnvironmentFactory, Message, ScoreFn
+from ..core import Endpoint, EnvironmentFactory, Message
+from ..training.types import Scorer
 from .evaluation import evaluate_template
 from .types import EvolutionaryConfig, GenerationStats, OptimizationResult, PromptTemplate
 
@@ -216,7 +217,7 @@ async def run_evolutionary_gepa(
     dataset: Sequence[dict[str, Any]],
     endpoint: Endpoint,
     mutation_endpoint: Endpoint,
-    score_fn: ScoreFn,
+    scorer: Scorer,
     environment_factory: EnvironmentFactory | None = None,
     on_generation: Callable[[int, list[PromptTemplate]], None] | None = None,
 ) -> OptimizationResult:
@@ -232,7 +233,7 @@ async def run_evolutionary_gepa(
         dataset: List of sample dicts
         endpoint: LLM endpoint for task evaluation
         mutation_endpoint: LLM endpoint for proposing mutations (can be same as endpoint)
-        score_fn: Function to compute score from an attempt row
+        scorer: Explicit scorer over raw execution results
         environment_factory: Optional factory for per-sample environments
         on_generation: Optional callback after each generation
 
@@ -246,7 +247,7 @@ async def run_evolutionary_gepa(
         ...     dataset=my_dataset,
         ...     endpoint=task_endpoint,
         ...     mutation_endpoint=task_endpoint,  # Can use same model
-        ...     score_fn=my_score_fn,
+        ...     scorer=my_scorer,
         ... )
         >>> print(f"Best score: {result.best_template.score}")
     """
@@ -277,7 +278,7 @@ async def run_evolutionary_gepa(
                         seeds=config.train_seeds,
                         dataset=dataset,
                         endpoint=endpoint,
-                        score_fn=score_fn,
+                        scorer=scorer,
                         environment_factory=environment_factory,
                         max_concurrent=1,  # Already limiting at population level
                     )
@@ -359,7 +360,7 @@ async def run_evolutionary_gepa(
                 seeds=config.val_seeds,
                 dataset=dataset,
                 endpoint=endpoint,
-                score_fn=score_fn,
+                scorer=scorer,
                 environment_factory=environment_factory,
                 max_concurrent=config.max_concurrent,
             )

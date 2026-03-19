@@ -4,7 +4,9 @@ from typing import NoReturn
 
 import pytest
 
+from rollouts.agents import RunConfig
 from rollouts.core import EvalConfig, Message, Metric, Score, Trajectory
+from rollouts.dtypes import StreamChunk
 from rollouts.eval.native import EvalRuntime, evaluate_sample
 from rollouts.training.types import AttemptResult
 
@@ -89,3 +91,53 @@ async def test_evaluate_sample_accepts_direct_attempt_executor(
     assert result.metadata["best_speedup"] == 1.5
     assert result.metadata["turns_used"] == 3
     assert result.environment_state == {"runtime": "fake"}
+
+
+@pytest.mark.trio
+async def test_retry_runtime_does_not_emit_sample_start_twice(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    captured_chunks: list[StreamChunk] = []
+
+    async def _on_chunk(event: StreamChunk) -> None:
+        captured_chunks.append(event)
+
+    async def _execute_attempt(
+        sample_data: dict[str, object],
+        sample_id: str,
+        environment: object,
+        run_config: object,
+    ) -> AttemptResult:
+        del sample_data, sample_id, environment, run_config
+        return AttemptResult(
+            attempt_id="sample_0000",
+            trajectory=Trajectory(
+                messages=[Message(role="assistant", content="olleh")],
+                metadata={},
+            ),
+            metadata={"status": "success"},
+        )
+
+    config = EvalConfig(
+        endpoint=None,
+        prepare_messages=lambda sample: [Message(role="user", content=str(sample["text"]))],
+        attempt_executor=_execute_attempt,
+        scorer=_ExactMatchScorer(),
+        run_config=RunConfig(on_chunk=_on_chunk),
+        verbose=False,
+        show_progress=False,
+    )
+    runtime = EvalRuntime(config=config, emit_sample_start=False)
+
+    with caplog.at_level("INFO", logger="rollouts.eval.events"):
+        await evaluate_sample(
+            sample_data={"text": "hello"},
+            sample_id="sample_0000",
+            runtime=runtime,
+            environment=_FakeEnvironment(),
+        )
+
+    assert all(chunk.type != "sample_start" for chunk in captured_chunks)
+    assert "sample_start" not in [
+        record.message for record in caplog.records if record.name == "rollouts.eval.events"
+    ]

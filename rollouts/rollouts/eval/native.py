@@ -77,6 +77,7 @@ class EvalRuntime:
     api_limiter: trio.CapacityLimiter | None = None
     tool_limiter: trio.CapacityLimiter | None = None
     progress: MultiProgress | None = None
+    emit_sample_start: bool = True
 
 
 # JSON-like recursive type for sanitize_api_keys
@@ -1000,32 +1001,31 @@ async def evaluate_sample(
 
     run_config = replace(base_run_config, on_chunk=on_chunk_with_sample_id)
 
-    # Emit sample_start event for frontend live streaming
-    # Include initial_messages so streaming handlers can display them
-    await run_config.on_chunk(
-        StreamChunk(
-            "sample_start",
-            {
-                "sample_id": sample_id,
-                "sample_data": sample_data,
-                "messages": [
-                    {
-                        "role": m.role,
-                        "content": m.content if isinstance(m.content, str) else str(m.content),
-                    }
-                    for m in initial_messages
-                ],
-            },
-        )
-    )
-
-    # Emit sample_start for progress display
-    # TODO: Retry logic can emit multiple sample_start events for the same sample_id
-    # without a corresponding sample_end, causing progress display to show 100/100
-    # while a sample is still running. Either emit sample_end before retry, or
-    # don't emit sample_start on retries. See: chiraag/supabase-eval-traces PR #504
     sample_name = sample_data.get("name", sample_id)
-    _event_logger.info("sample_start", extra={"sample_id": sample_id, "sample_name": sample_name})
+    if runtime.emit_sample_start:
+        # Emit sample_start event for frontend live streaming.
+        # Include initial_messages so streaming handlers can display them.
+        await run_config.on_chunk(
+            StreamChunk(
+                "sample_start",
+                {
+                    "sample_id": sample_id,
+                    "sample_data": sample_data,
+                    "messages": [
+                        {
+                            "role": m.role,
+                            "content": m.content if isinstance(m.content, str) else str(m.content),
+                        }
+                        for m in initial_messages
+                    ],
+                },
+            )
+        )
+
+        # Emit sample_start for progress display.
+        _event_logger.info(
+            "sample_start", extra={"sample_id": sample_id, "sample_name": sample_name}
+        )
 
     # Tiger Style: Catch operational errors (rate limits, network issues) at boundary
     # These are expected errors that should be reported, not crash the eval
@@ -1341,6 +1341,7 @@ async def evaluate(
                     api_limiter=api_limiter,
                     tool_limiter=tool_limiter,
                     progress=None,
+                    emit_sample_start=False,
                 )
                 retry_results = await _evaluate_batch(failed_samples, retry_runtime)
                 results.extend(retry_results)

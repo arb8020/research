@@ -15,7 +15,7 @@ Example (Level 1 - simplest):
     ...     system="Classify the query into a banking intent.",
     ...     user_template="Query: {query}\\nClassify:",
     ...     dataset=my_dataset,
-    ...     score_fn=exact_match_score,
+    ...     scorer=my_scorer,
     ...     endpoint=Endpoint.from_legacy(provider="openai", model="gpt-4o-mini"),
     ... )
     >>> print(f"Best: {result.best_candidate['system']}")
@@ -30,7 +30,7 @@ Example (Level 2 - pure functions):
     >>> config = SystemPromptConfig(
     ...     endpoint=endpoint,
     ...     user_template="Query: {query}\\nClassify:",
-    ...     score_fn=exact_match_score,
+    ...     scorer=my_scorer,
     ... )
     >>>
     >>> result = await run_gepa(

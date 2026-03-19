@@ -20,7 +20,7 @@ Example:
     config = SystemUserPromptConfig(
         endpoint=endpoint,
         wildcards=("query",),
-        score_fn=score_fn,
+        scorer=scorer,
     )
 
     result = await run_gepa(
@@ -44,17 +44,14 @@ from typing import Any
 import trio
 
 from ...agents import AgentState, RunConfig, handle_stop_max_turns
-from ...core import Endpoint, EvalConfig, Message, Score, StopReason
+from ...core import Endpoint, EvalConfig, Message, StopReason
 from ...dtypes import StreamEvent
 from ...eval.native import EvalRuntime, _resolve_environment, evaluate_sample
-from ...training.scoring import FunctionSampleScorer
-from ...training.types import AttemptResult, AttemptRow
+from ...training.types import AttemptResult, Scorer
 from ..types import Candidate, EvaluationBatch
 
 logger = logging.getLogger(__name__)
 
-# Type aliases
-ScoreFn = Callable[[AttemptRow], Score] | Callable[[AttemptRow], Awaitable[Score]]
 EnvironmentFactory = Callable[[dict[str, Any]], Awaitable[Any]]
 
 
@@ -71,7 +68,7 @@ class SystemUserPromptConfig:
 
     endpoint: Endpoint
     wildcards: tuple[str, ...]  # e.g., ("query", "context") - fields from sample data
-    score_fn: ScoreFn
+    scorer: Scorer
     environment_factory: EnvironmentFactory | None = None
     max_concurrent: int = 10
     max_turns: int | None = None
@@ -198,7 +195,7 @@ async def evaluate_system_user_prompt(
     Pure async function - takes config explicitly.
 
     Args:
-        config: SystemUserPromptConfig with endpoint, wildcards, score_fn, etc.
+        config: SystemUserPromptConfig with endpoint, wildcards, scorer, etc.
         batch: List of sample dicts
         candidate: Must have keys "system" and "user"
         capture_traces: If True, include execution traces
@@ -213,7 +210,7 @@ async def evaluate_system_user_prompt(
 
     eval_config = EvalConfig(
         endpoint=config.endpoint,
-        sample_scorer=FunctionSampleScorer(config.score_fn),
+        scorer=config.scorer,
         prepare_messages=make_prepare_messages(system_prompt, user_template, config.wildcards),
         environment_factory=config.environment_factory,
         run_config=run_config,

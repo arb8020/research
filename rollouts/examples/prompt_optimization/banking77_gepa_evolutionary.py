@@ -25,7 +25,8 @@ from rollouts.prompt_optimization import (
     PromptTemplate,
     run_evolutionary_gepa,
 )
-from rollouts.training.types import AttemptRow
+from rollouts.training.scoring import FunctionScorer
+from rollouts.training.types import AttemptResult
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -181,7 +182,7 @@ def normalize_intent(text: str) -> str:
     return text
 
 
-def score_fn(sample: AttemptRow) -> Score:
+def score_fn(sample: AttemptResult, _context: object) -> Score:
     """Score based on exact intent match.
 
     Extracts predicted intent from the response and compares to ground truth.
@@ -309,7 +310,7 @@ Respond with ONLY the intent label, nothing else.""",
         dataset=DATASET,
         endpoint=task_endpoint,
         mutation_endpoint=mutation_endpoint,
-        score_fn=score_fn,
+        scorer=FunctionScorer(score_fn),
         on_generation=on_generation,
     )
 

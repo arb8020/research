@@ -16,17 +16,14 @@ from typing import Any
 import trio
 
 from ...agents import AgentState, RunConfig, handle_stop_max_turns
-from ...core import Endpoint, EvalConfig, Message, Score, StopReason
+from ...core import Endpoint, EvalConfig, Message, StopReason
 from ...dtypes import StreamEvent
 from ...eval.native import EvalRuntime, _resolve_environment, evaluate_sample
-from ...training.scoring import FunctionSampleScorer
-from ...training.types import AttemptResult, AttemptRow
+from ...training.types import AttemptResult, Scorer
 from ..types import Candidate, EvaluationBatch
 
 logger = logging.getLogger(__name__)
 
-# Type aliases
-ScoreFn = Callable[[AttemptRow], Score] | Callable[[AttemptRow], Awaitable[Score]]
 EnvironmentFactory = Callable[[dict[str, Any]], Awaitable[Any]]
 
 
@@ -43,7 +40,7 @@ class SystemPromptConfig:
 
     endpoint: Endpoint
     user_template: str
-    score_fn: ScoreFn
+    scorer: Scorer
     environment_factory: EnvironmentFactory | None = None
     max_concurrent: int = 10
     max_turns: int | None = None  # None = single-turn, int = multi-turn with tools
@@ -156,7 +153,7 @@ async def evaluate_system_prompt(
 
     eval_config = EvalConfig(
         endpoint=config.endpoint,
-        sample_scorer=FunctionSampleScorer(config.score_fn),
+        scorer=config.scorer,
         prepare_messages=make_prepare_messages(system_prompt, config.user_template),
         environment_factory=config.environment_factory,
         run_config=run_config,

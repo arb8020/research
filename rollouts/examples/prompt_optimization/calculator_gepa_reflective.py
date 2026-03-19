@@ -23,7 +23,8 @@ import trio
 from rollouts.core import Endpoint, Metric, Score
 from rollouts.environments.calculator import CalculatorEnvironment
 from rollouts.prompt_optimization import GEPAConfig, optimize_prompt
-from rollouts.training.types import AttemptRow
+from rollouts.training.scoring import FunctionScorer
+from rollouts.training.types import AttemptResult
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -59,7 +60,7 @@ DATASET = [
 # ─── Score Function ───────────────────────────────────────────────────────────
 
 
-def score_fn(sample: AttemptRow) -> Score:
+def score_fn(sample: AttemptResult, _context: object) -> Score:
     """Score a calculator sample based on whether the answer is correct.
 
     The calculator environment uses complete_task tool to submit answers,
@@ -152,7 +153,7 @@ async def main() -> None:
         system=initial_system,
         user_template="{question}",
         dataset=DATASET,
-        score_fn=score_fn,
+        scorer=FunctionScorer(score_fn),
         endpoint=endpoint,
         reflection_endpoint=reflection_endpoint,
         environment_factory=environment_factory,

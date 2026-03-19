@@ -17,6 +17,7 @@ import logging
 from collections.abc import Callable, Sequence
 
 from ..dtypes import Endpoint
+from ..training.types import Scorer
 from .adapter import EvaluateFn, MakeReflectiveFn
 from .operations import (
     propose_mutation,
@@ -248,7 +249,7 @@ async def optimize_prompt(
     system: str,
     user_template: str,
     dataset: Sequence[dict],
-    score_fn: Callable,
+    scorer: Scorer,
     endpoint: Endpoint,
     reflection_endpoint: Endpoint | None = None,
     config: GEPAConfig | None = None,
@@ -265,7 +266,7 @@ async def optimize_prompt(
         system: Initial system prompt to optimize
         user_template: Template for user messages (with {placeholders})
         dataset: List of sample dicts
-        score_fn: Function to compute score from an attempt row
+        scorer: Explicit scorer over raw execution results
         endpoint: LLM endpoint for task evaluation
         reflection_endpoint: LLM endpoint for mutations (defaults to endpoint)
         config: Optimization config (defaults to GEPAConfig())
@@ -282,7 +283,7 @@ async def optimize_prompt(
         ...     system="Classify the query.",
         ...     user_template="Query: {query}\\nClassify:",
         ...     dataset=my_dataset,
-        ...     score_fn=exact_match,
+        ...     scorer=my_scorer,
         ...     endpoint=Endpoint.from_legacy(provider="openai", model="gpt-4o-mini"),
         ... )
         >>> print(result.best_candidate["system"])
@@ -298,7 +299,7 @@ async def optimize_prompt(
     config_obj = SystemPromptConfig(
         endpoint=endpoint,
         user_template=user_template,
-        score_fn=score_fn,
+        scorer=scorer,
         environment_factory=environment_factory,
         max_turns=max_turns,
     )

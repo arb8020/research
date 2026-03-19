@@ -26,7 +26,8 @@ from rollouts.prompt_optimization import (
     PromptTemplate,
     run_evolutionary_gepa,
 )
-from rollouts.training.types import AttemptRow
+from rollouts.training.scoring import FunctionScorer
+from rollouts.training.types import AttemptResult
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -62,7 +63,7 @@ DATASET = [
 # ─── Score Function ───────────────────────────────────────────────────────────
 
 
-def score_fn(sample: AttemptRow) -> Score:
+def score_fn(sample: AttemptResult, _context: object) -> Score:
     """Score a calculator sample based on whether the answer is correct.
 
     Extracts the final answer from the trajectory and compares to ground truth.
@@ -164,7 +165,7 @@ async def main() -> None:
         dataset=DATASET,
         endpoint=task_endpoint,
         mutation_endpoint=mutation_endpoint,
-        score_fn=score_fn,
+        scorer=FunctionScorer(score_fn),
         environment_factory=environment_factory,
     )
 
