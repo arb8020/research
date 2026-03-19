@@ -21,14 +21,15 @@ Usage:
 from __future__ import annotations
 
 import re
+from pathlib import Path
 from typing import Any, Literal
 
 from rollouts.core import Metric, Score
 from rollouts.environments.no_tools import BasicEnvironment
-from rollouts.training.scoring import FunctionScorer
 from rollouts.synthetic import RETRY_TOKEN as _RETRY_TOKEN
 from rollouts.synthetic import build_igsm_loader
 from rollouts.synthetic.igsm import get_tokenizer
+from rollouts.training.scoring import FunctionScorer
 
 # ──────────────────────── iGSM Data Loading ──────────────────────────────────
 

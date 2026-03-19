@@ -13,9 +13,9 @@ from typing import Any
 
 from rollouts.config.tiers import EndpointConfig, OutputConfig, RunConfig
 from rollouts.core import Message, Metric, Score
+from rollouts.eval_runner import EvalSpec, run_eval_from_spec
 from rollouts.training.scoring import FunctionScorer
 from rollouts.training.types import AttemptResult
-from rollouts.eval_runner import EvalSpec, run_eval_from_spec
 
 # ── Score function ──
 

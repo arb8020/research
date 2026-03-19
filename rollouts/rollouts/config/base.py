@@ -15,7 +15,6 @@ All defaults are explicit (no magic).
 import json
 import logging
 import os
-from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any

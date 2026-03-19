@@ -1,8 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
 from .types import AttemptResult, AttemptRow, RolloutConfig, RolloutRuntime, Scorer, ScoringContext
@@ -23,7 +22,7 @@ class FunctionScorer:
         context: ScoringContext,
     ) -> Score:
         scored = self.fn(result, context)
-        if hasattr(scored, "__await__"):
+        if isinstance(scored, Awaitable):
             scored = await scored
         if not isinstance(scored, Score):
             raise TypeError(f"FunctionScorer must return Score, got {type(scored).__name__}")
