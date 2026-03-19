@@ -1,10 +1,10 @@
 import { useEffect, useRef } from 'react'
 import { useLiveRun } from '../hooks/useLiveRun'
 import { TextWithCodeBlocks } from './Message'
-import type { LiveRun, LiveMessage } from '../types'
+import type { RunListItem, LiveMessage } from '../types'
 
 interface LiveSampleViewerProps {
-  run: LiveRun
+  run: RunListItem
   sampleId: string
   onBack: () => void
 }
@@ -33,7 +33,7 @@ function LiveMessageBlock({ msg, turn }: { msg: LiveMessage; turn: number }) {
 }
 
 export function LiveSampleViewer({ run, sampleId, onBack }: LiveSampleViewerProps) {
-  const state = useLiveRun(run.run_id, run.status)
+  const state = useLiveRun(run.id, run.status)
   const sample = state.samples.get(sampleId)
   const bottomRef = useRef<HTMLDivElement>(null)
 

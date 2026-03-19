@@ -21,9 +21,9 @@ rollouts -p "explain what this repo does"
 rollouts -c --env coding
 ```
 
-## Eval Viewer
+## Run Viewer
 
-`rollouts` now has a browser-native eval viewer substrate:
+`rollouts` now has a browser-native run viewer for saved evals:
 
 - Server: [`rollouts/frontend/server.py`](/Users/chiraagbalu/research/rollouts/rollouts/frontend/server.py)
 - UI: [`rollouts/frontend/ui`](/Users/chiraagbalu/research/rollouts/rollouts/frontend/ui)

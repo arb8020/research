@@ -2,10 +2,10 @@ import { useState } from 'react'
 import { ChevronDown, ChevronUp, Square } from 'lucide-react'
 import { useLiveRun } from '../hooks/useLiveRun'
 import { killRun } from '../api'
-import type { LiveRun } from '../types'
+import type { RunListItem } from '../types'
 
 interface LiveRunCardProps {
-  run: LiveRun
+  run: RunListItem
   onSelectSample?: (sampleId: string) => void
 }
 
@@ -39,13 +39,13 @@ function ScoreDot({ score, status }: { score: number | null; status: 'pending' |
 }
 
 export function LiveRunCard({ run, onSelectSample }: LiveRunCardProps) {
-  const state = useLiveRun(run.run_id, run.status)
+  const state = useLiveRun(run.id, run.status)
   const [expanded, setExpanded] = useState(true)
   const [killing, setKilling] = useState(false)
 
   const samples = Array.from(state.samples.values())
   const done = samples.filter(s => s.status === 'done').length
-  const total = state.total ?? run.output_length ?? samples.length
+  const total = state.total ?? run.total_samples ?? samples.length
   const progress = total > 0 ? done / total : 0
 
   const statusColor = {
@@ -59,9 +59,9 @@ export function LiveRunCard({ run, onSelectSample }: LiveRunCardProps) {
   const handleKill = async () => {
     setKilling(true)
     try {
-      await killRun(run.run_id)
+      await killRun(run.id)
     } catch (err) {
-      console.error(`Failed to kill run ${run.run_id}`, err)
+      console.error(`Failed to kill run ${run.id}`, err)
     } finally {
       setKilling(false)
     }
@@ -103,13 +103,13 @@ export function LiveRunCard({ run, onSelectSample }: LiveRunCardProps) {
               className="text-sm font-medium truncate"
               style={{ color: 'var(--color-dark-text)' }}
             >
-              {run.config_name}
+              {run.name}
             </span>
             <span
               className="text-xs flex-shrink-0"
               style={{ color: 'var(--color-dark-text-muted)' }}
             >
-              {elapsed(run.start_time)}
+              {elapsed(run.timestamp)}
             </span>
             {state.status !== 'running' && run.status !== 'watching' && (
               <span
@@ -146,7 +146,7 @@ export function LiveRunCard({ run, onSelectSample }: LiveRunCardProps) {
         </div>
 
         <div className="flex items-center gap-1 flex-shrink-0">
-          {state.status === 'running' && (
+          {run.can_kill && state.status === 'running' && (
             <button
               onClick={e => { e.stopPropagation(); void handleKill() }}
               disabled={killing}

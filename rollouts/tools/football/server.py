@@ -47,15 +47,12 @@ web_app.add_middleware(
 )
 
 # Image for the sandbox (data dependencies)
-sandbox_image = (
-    modal.Image.debian_slim(python_version="3.11")
-    .pip_install(
-        "pandas>=2.0",
-        "nfl_data_py>=0.3",
-        "matplotlib>=3.7",
-        "tabulate>=0.9",
-        "pyarrow>=14.0",
-    )
+sandbox_image = modal.Image.debian_slim(python_version="3.11").pip_install(
+    "pandas>=2.0",
+    "nfl_data_py>=0.3",
+    "matplotlib>=3.7",
+    "tabulate>=0.9",
+    "pyarrow>=14.0",
 )
 
 # ── System prompt ────────────────────────────────────────────────────────────
@@ -112,6 +109,7 @@ TOOL_SPEC: dict = {
 }
 
 # ── Sandbox execution ────────────────────────────────────────────────────────
+
 
 async def run_code(sandbox: modal.Sandbox, code: str) -> tuple[str, bool]:
     """Run code in the sandbox. Returns (output, is_error).
@@ -182,6 +180,7 @@ def extract_dataframes(output: str) -> tuple[str, list[list[dict]]]:
 
 # ── Agent loop ───────────────────────────────────────────────────────────────
 
+
 async def run_agent(
     query: str,
     api_key: str,
@@ -246,6 +245,7 @@ async def run_agent(
 
 # ── FastAPI endpoint ──────────────────────────────────────────────────────────
 
+
 @web_app.post("/query")
 async def query_endpoint(request: Request) -> StreamingResponse:
     body = await request.json()
@@ -287,10 +287,12 @@ async def query_endpoint(request: Request) -> StreamingResponse:
 
 # ── Modal function ────────────────────────────────────────────────────────────
 
+
 @app.function(
     image=(
-        modal.Image.debian_slim(python_version="3.11")
-        .pip_install("anthropic>=0.30", "fastapi[standard]>=0.110")
+        modal.Image.debian_slim(python_version="3.11").pip_install(
+            "anthropic>=0.30", "fastapi[standard]>=0.110"
+        )
     ),
     timeout=600,
     allow_concurrent_inputs=20,

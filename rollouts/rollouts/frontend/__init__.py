@@ -1,10 +1,10 @@
-"""Frontend dev loop tool for rollouts-based agents.
+"""Run viewer for rollouts eval artifacts.
 
 Usage:
     python -m rollouts.frontend.server
 
 This opens a web UI for:
-- Building agent configs visually
-- Viewing evaluation traces
-- Adding tools and adjusting prompts
+- Listing saved and live runs
+- Viewing run/sample details
+- Exporting shareable HTML artifacts
 """
