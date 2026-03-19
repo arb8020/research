@@ -14,7 +14,6 @@ from rollouts.eval import (
     EvalOutputConfig,
     EvalRunConfig,
     MaxTurnsStop,
-    make_external_attempt_executor,
 )
 from rollouts.training.scoring import FunctionScorer
 from rollouts.training.types import AttemptResult
@@ -74,13 +73,13 @@ config_status = import_tested(
 )
 
 run_spec = AgentRunSpec(
-    attempt_executor=make_external_attempt_executor(
-        "claude_code",
-        prompt_builder=build_prompt,
-        cwd=Path.cwd(),
-        model="sonnet",
-        timeout_seconds=300.0,
-    ),
+    external_runtime="claude_code",
+    prompt_builder=build_prompt,
+    external_agent_args={
+        "cwd": Path.cwd(),
+        "model": "sonnet",
+        "timeout_seconds": 300.0,
+    },
 )
 
 output = EvalOutputConfig(experiment_name="prime_ci_reverse_text_eval_claude_code")

@@ -14,7 +14,6 @@ from rollouts.eval import (
     EvalOutputConfig,
     EvalRunConfig,
     MaxTurnsStop,
-    make_external_attempt_executor,
 )
 from rollouts.training.scoring import FunctionScorer
 from rollouts.training.types import AttemptResult
@@ -74,14 +73,14 @@ config_status = import_tested(
 )
 
 run_spec = AgentRunSpec(
-    attempt_executor=make_external_attempt_executor(
-        "openhands",
-        prompt_builder=build_prompt,
-        cwd=Path.cwd(),
-        model="gpt-5.1-codex-mini",
-        api_key_env_var="OPENAI_API_KEY",
-        timeout_seconds=300.0,
-    ),
+    external_runtime="openhands",
+    prompt_builder=build_prompt,
+    external_agent_args={
+        "cwd": Path.cwd(),
+        "model": "gpt-5.1-codex-mini",
+        "api_key_env_var": "OPENAI_API_KEY",
+        "timeout_seconds": 300.0,
+    },
 )
 
 output = EvalOutputConfig(experiment_name="prime_ci_reverse_text_eval_openhands")

@@ -35,6 +35,7 @@ from typing import TYPE_CHECKING, Any, Literal
 if TYPE_CHECKING:
     from rollouts.agents.types import AgentState
     from rollouts.agents.types import RunConfig as AgentRunConfig
+    from rollouts.eval.external_attempts import ExternalRuntime
     from rollouts.training.types import AttemptResult, Scorer
 
 # Reuse HardwareConfig from training
@@ -101,6 +102,7 @@ AttemptExecutor = Callable[
     [dict[str, Any], str, Any | None, "AgentRunConfig"],
     "AttemptResult | Awaitable[AttemptResult]",
 ]
+PromptBuilder = Callable[[dict[str, Any]], str]
 
 
 @dataclass(frozen=True)
@@ -123,7 +125,9 @@ class AgentRunSpec:
     # an explicit sum type instead of adding more branch-specific optional fields.
 
     endpoint: EndpointConfig | None = None
+    external_runtime: ExternalRuntime | None = None
     prepare_messages: Callable[[dict[str, Any]], list[Any]] | None = None
+    prompt_builder: PromptBuilder | None = None
     environment: Any | None = None
     environment_factory: Callable[[dict[str, Any]], Any] | None = None
     attempt_executor: AttemptExecutor | None = None
@@ -134,8 +138,29 @@ class AgentRunSpec:
     def __post_init__(self) -> None:
         if self.environment is not None and self.environment_factory is not None:
             raise ValueError("AgentRunSpec cannot define both environment and environment_factory")
-        if self.prepare_messages is None and self.attempt_executor is None:
-            raise ValueError("AgentRunSpec requires either prepare_messages or attempt_executor")
+        if self.attempt_executor is not None and self.external_runtime is not None:
+            raise ValueError(
+                "AgentRunSpec cannot define both attempt_executor and external_runtime"
+            )
+        if self.external_runtime is not None and self.endpoint is not None:
+            raise ValueError("AgentRunSpec cannot define both endpoint and external_runtime")
+        if (
+            self.external_runtime is not None
+            and self.prompt_builder is None
+            and self.prepare_messages is None
+        ):
+            raise ValueError(
+                "AgentRunSpec external_runtime requires prompt_builder or prepare_messages"
+            )
+        if (
+            self.prepare_messages is None
+            and self.prompt_builder is None
+            and self.attempt_executor is None
+            and self.external_runtime is None
+        ):
+            raise ValueError(
+                "AgentRunSpec requires prepare_messages, prompt_builder, attempt_executor, or external_runtime"
+            )
 
 
 @dataclass(frozen=True)
@@ -265,12 +290,82 @@ class EvalTaskSpec:
 
 def resolve_eval_run_spec(config_module: Any) -> AgentRunSpec:
     """Normalize just the per-sample execution part of an eval config."""
+    from .external_attempts import make_external_attempt_executor
+
+    def _message_text(content: Any) -> str:
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            parts: list[str] = []
+            for block in content:
+                text = getattr(block, "text", None)
+                if isinstance(text, str):
+                    parts.append(text)
+                    continue
+                thinking = getattr(block, "thinking", None)
+                if isinstance(thinking, str):
+                    parts.append(thinking)
+                    continue
+                if isinstance(block, dict):
+                    if isinstance(block.get("text"), str):
+                        parts.append(block["text"])
+                    elif isinstance(block.get("thinking"), str):
+                        parts.append(block["thinking"])
+            return "\n".join(part for part in parts if part)
+        return str(content) if content is not None else ""
+
+    def _prompt_builder_from_messages(
+        prepare_messages: Callable[[dict[str, Any]], list[Any]],
+    ) -> PromptBuilder:
+        def build_prompt(sample_data: dict[str, Any]) -> str:
+            messages = prepare_messages(sample_data)
+            if not isinstance(messages, list) or not messages:
+                raise ValueError("prepare_messages(...) must return a non-empty message list")
+
+            rendered: list[str] = []
+            for msg in messages:
+                role = getattr(msg, "role", None)
+                content = getattr(msg, "content", None)
+                if role is None and isinstance(msg, dict):
+                    role = msg.get("role")
+                    content = msg.get("content")
+                if role not in {"system", "user", "developer"}:
+                    continue
+                text = _message_text(content).strip()
+                if not text:
+                    continue
+                rendered.append(f"{str(role).upper()}:\n{text}")
+
+            if not rendered:
+                raise ValueError(
+                    "prepare_messages(...) produced no system/user/developer text to launch"
+                )
+            return "\n\n".join(rendered)
+
+        return build_prompt
+
+    def _lower_external_runtime(run_spec: AgentRunSpec) -> AgentRunSpec:
+        if run_spec.external_runtime is None:
+            return run_spec
+        prompt_builder = run_spec.prompt_builder
+        if prompt_builder is None:
+            assert run_spec.prepare_messages is not None
+            prompt_builder = _prompt_builder_from_messages(run_spec.prepare_messages)
+        return replace(
+            run_spec,
+            external_runtime=None,
+            attempt_executor=make_external_attempt_executor(
+                run_spec.external_runtime,
+                prompt_builder=prompt_builder,
+                **run_spec.external_agent_args,
+            ),
+        )
 
     eval_task = getattr(config_module, "eval_task", None)
     if eval_task is not None:
         if not isinstance(eval_task, EvalTaskSpec):
             raise ValueError("Eval config must export eval_task: EvalTaskSpec")
-        return eval_task.run_spec
+        return _lower_external_runtime(eval_task.run_spec)
 
     run_spec = getattr(config_module, "run_spec", None)
     if run_spec is not None:
@@ -278,8 +373,8 @@ def resolve_eval_run_spec(config_module: Any) -> AgentRunSpec:
             raise ValueError("Eval config must export run_spec: AgentRunSpec")
         endpoint = getattr(config_module, "endpoint", None)
         if endpoint is not None and run_spec.endpoint is None:
-            return replace(run_spec, endpoint=endpoint)
-        return run_spec
+            run_spec = replace(run_spec, endpoint=endpoint)
+        return _lower_external_runtime(run_spec)
 
     prepare_messages = getattr(config_module, "prepare_messages", None)
     attempt_executor = getattr(config_module, "attempt_executor", None)
