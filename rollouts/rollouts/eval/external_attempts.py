@@ -16,7 +16,7 @@ import trio
 from ..core import Message, Trajectory
 from ..drivers import ClaudeDriver, CodexDriver, run_driver_to_trajectory
 from ..dtypes import StreamChunk
-from ..training.types import AttemptRow, ProblemRow, Status
+from ..training.types import AttemptResult, ProblemRow, Status
 
 _event_logger = logging.getLogger("rollouts.eval.events")
 
@@ -122,18 +122,18 @@ def _make_raw_driver_line_handler(
     return emit
 
 
-def _attempt_from_artifact(
+def _result_from_artifact(
     *,
     sample_data: dict[str, Any],
     sample_id: str,
     artifact: ExternalAttemptArtifact,
-) -> AttemptRow:
+) -> AttemptResult:
     problem = ProblemRow(
         problem_id=sample_id,
         payload=dict(sample_data),
         metadata=_sample_metadata(sample_data),
     )
-    return AttemptRow(
+    return AttemptResult(
         attempt_id=sample_id,
         problem=problem,
         trajectory=artifact.trajectory,
@@ -151,11 +151,7 @@ async def execute_external_attempt(
     *,
     prompt_builder: PromptBuilder,
     trajectory_adapter: TrajectoryAdapter,
-) -> AttemptRow:
-    # TODO: Tighten this stage boundary. External attempt execution should
-    # denotationally return the raw execution result, with scoring/evaluation as
-    # a later stage. Returning AttemptRow here keeps current eval plumbing
-    # working, but it blurs execution vs scored-record ownership.
+) -> AttemptResult:
     del environment
     prompt = prompt_builder(sample_data)
     if _trajectory_adapter_accepts_run_config(trajectory_adapter):
@@ -181,7 +177,7 @@ async def execute_external_attempt(
             f"(got {type(artifact)!r})"
         )
 
-    return _attempt_from_artifact(sample_data=sample_data, sample_id=sample_id, artifact=artifact)
+    return _result_from_artifact(sample_data=sample_data, sample_id=sample_id, artifact=artifact)
 
 
 async def trajectory_from_claude_code(

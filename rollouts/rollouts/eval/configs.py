@@ -35,7 +35,7 @@ from typing import TYPE_CHECKING, Any, Literal
 if TYPE_CHECKING:
     from rollouts.agents.types import AgentState
     from rollouts.agents.types import RunConfig as AgentRunConfig
-    from rollouts.training.types import AttemptRow
+    from rollouts.training.types import AttemptResult
 
 # Reuse HardwareConfig from training
 from rollouts.training.configs import HardwareConfig
@@ -96,11 +96,8 @@ SupportedStopHandler = MaxTurnsStop | TokenBudgetStop | CostBudgetStop | WallClo
 EvalStopHandler = SupportedStopHandler | Callable[["AgentState"], "AgentState"]
 AttemptExecutor = Callable[
     [dict[str, Any], str, Any | None, "AgentRunConfig"],
-    "AttemptRow | Awaitable[AttemptRow]",
+    "AttemptResult | Awaitable[AttemptResult]",
 ]
-# TODO: Narrow this to the raw execution-result type once eval no longer relies
-# on AttemptRow as the compatibility carrier for both execution and scoring
-# stages.
 
 
 @dataclass(frozen=True)

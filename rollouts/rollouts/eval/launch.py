@@ -23,7 +23,7 @@ from ..drivers.session_adapter import (
 )
 from ..dtypes import Trajectory
 from ..store import FileSessionStore
-from ..training.types import AttemptRow, ProblemRow, Status
+from ..training.types import AttemptRow, ProblemRow, ScoringContext, Status
 from .configs import EvalOutputConfig, EvalRunConfig
 from .external_attempts import trajectory_from_claude_code, trajectory_from_codex
 from .native import _compute_score
@@ -167,27 +167,26 @@ def _json_safe_environment_state(environment_state: dict[str, Any] | None) -> di
 
 
 async def _score_attempt(config_module: Any, env: Any | None, attempt: AttemptRow) -> None:
+    score_fn = getattr(config_module, "score_fn", None)
+    sample_scorer = getattr(config_module, "sample_scorer", None)
     score_method = getattr(env, "score", None)
-    if callable(score_method):
+
+    if score_fn is not None or sample_scorer is not None:
+        score = await _compute_score(
+            score_fn,
+            attempt.to_result(),
+            sample_scorer=sample_scorer,
+            scoring_context=ScoringContext(environment=env),
+        )
+    elif callable(score_method):
         score = score_method(attempt.trajectory)
         if hasattr(score, "__await__"):
             score = await score
-        attempt.score = score
-        attempt.reward = score.reward
-        return
+    else:
+        raise ValueError(
+            "launch requires score_fn, sample_scorer, or an environment path that can own scoring"
+        )
 
-    score_fn = getattr(config_module, "score_fn", None)
-    sample_scorer = getattr(config_module, "sample_scorer", None)
-    # TODO: This launch path still treats scorer absence as a valid state. Once
-    # attempt generation and scored eval are split more cleanly, require an
-    # explicit scoring story here instead of silently returning unscored
-    # attempts.
-    if score_fn is None and sample_scorer is None:
-        return
-
-    score = await _compute_score(
-        score_fn, attempt, sample_scorer=sample_scorer, scoring_context=None
-    )
     attempt.score = score
     attempt.reward = score.reward
 

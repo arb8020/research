@@ -27,16 +27,9 @@ Config files should export:
 
     - tasks: list[dict] OR tasks_path: Path (one required)
     - prepare_messages: Callable[[dict], list[Message]]
-    - attempt_executor: Callable[[dict, str, Environment | None, RunConfig], AttemptRow] (optional, current compatibility shape)
-    - score_fn: Callable[[AttemptRow], Score] or sample_scorer
+    - attempt_executor: Callable[[dict, str, Environment | None, RunConfig], AttemptResult] (optional)
+    - score_fn: Callable[[AttemptResult], Score] or sample_scorer
     - make_environment: Callable[[], Environment] (optional)
-
-TODO:
-    The current runner still carries compatibility types from the older eval
-    contract. The intended stage split is "row -> raw execution result ->
-    scored/evaluated record", with explicit evaluation-time scorers winning over
-    environment-owned scoring and attempt-only workflows potentially moving to a
-    separate entrypoint.
 """
 
 from __future__ import annotations
@@ -59,6 +52,38 @@ from ..config_contracts import validate_eval_config_module
 logger = logging.getLogger(__name__)
 
 REPO_ROOT = Path(__file__).parent.parent.parent
+
+
+def _find_config_project_root(config_path: Path) -> Path:
+    search_roots = [config_path.parent, *config_path.parents]
+    for candidate in search_roots:
+        if (candidate / "pyproject.toml").exists() or (candidate / ".git").exists():
+            return candidate
+    return config_path.parent
+
+
+def _resolve_output_dir(
+    *,
+    config_path: Path,
+    output_config: Any,
+    cli_output_dir: Path | None = None,
+) -> Path:
+    if cli_output_dir is not None:
+        return (
+            cli_output_dir.resolve()
+            if cli_output_dir.is_absolute()
+            else (Path.cwd() / cli_output_dir).resolve()
+        )
+
+    project_root = _find_config_project_root(config_path)
+    configured_output_dir = output_config.output_dir
+    if configured_output_dir is not None:
+        if configured_output_dir.is_absolute():
+            return configured_output_dir
+        return (project_root / configured_output_dir).resolve()
+
+    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    return project_root / "results" / f"{output_config.experiment_name}_{timestamp}"
 
 
 def _lower_eval_stop_handler(stop_handler: Any) -> Any:
@@ -229,10 +254,6 @@ async def run_with_api(
     )
     score_fn = getattr(config_module, "score_fn", None)
     sample_scorer = getattr(config_module, "sample_scorer", None)
-    # TODO: This loader still permits scorer-less configs for compatibility. The
-    # intended contract is that scored evals choose an explicit scoring stage,
-    # with environment-owned scoring as a fallback rather than the only source
-    # of truth.
 
     # Environment (optional)
     environment: Environment | None = run_spec.environment if run_spec is not None else None
@@ -246,6 +267,16 @@ async def run_with_api(
             environment_factory = make_env
         else:
             environment = make_env()
+
+    if (
+        score_fn is None
+        and sample_scorer is None
+        and environment is None
+        and environment_factory is None
+    ):
+        raise ValueError(
+            "Eval configs must define score_fn, sample_scorer, or an environment path that can own scoring"
+        )
 
     # Build agent run config
     async def silent_on_chunk(_: object) -> None:
@@ -272,11 +303,8 @@ async def run_with_api(
         handle_no_tool=handle_no_tool,
     )
 
-    # Output directory
     output_dir = output_config.output_dir
-    if output_dir is None:
-        timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-        output_dir = Path("results") / f"{output_config.experiment_name}_{timestamp}"
+    assert output_dir is not None, "output_dir should be resolved before execution"
 
     # Build EvalConfig
     eval_config = EvalConfig(
@@ -479,8 +507,12 @@ Examples:
     if args.command == "run" and args.max_turns:
         run_config = replace(run_config, max_turns=args.max_turns)
 
-    if args.command == "run" and args.output_dir:
-        output_config = replace(output_config, output_dir=args.output_dir)
+    resolved_output_dir = _resolve_output_dir(
+        config_path=config_path,
+        output_config=output_config,
+        cli_output_dir=args.output_dir if args.command == "run" else None,
+    )
+    output_config = replace(output_config, output_dir=resolved_output_dir)
 
     if (
         args.command == "run"
@@ -507,6 +539,7 @@ Examples:
             if endpoint_config.base_url:
                 print(f"Base URL: {endpoint_config.base_url}")
         print(f"Max concurrent: {run_config.max_concurrent}")
+        print(f"Output dir: {output_config.output_dir}")
 
     async def _run() -> dict[str, Any]:
         if args.command == "launch":

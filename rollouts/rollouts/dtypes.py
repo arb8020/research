@@ -1506,13 +1506,8 @@ class Environment(Protocol):
     loop, while resources are still live, before calling `close()`.
 
     Environments without built-in scoring leave `score` unimplemented. The eval runner
-    currently falls back to external scoring when this is absent.
-
-    TODO: Tighten the eval-stage contract. Explicit injected scorers should win
-    over environment-owned scoring, environment scoring should remain a fallback
-    for live-resource verification, and attempt-only/open-ended workflows likely
-    deserve a separate top-level pipeline rather than "no score" inside scored
-    eval.
+    prefers explicit injected scoring stages when present and falls back to
+    `environment.score(...)` when the environment owns the verification oracle.
     """
 
     def get_tools(self) -> list[Tool]:
@@ -1649,10 +1644,8 @@ class Environment(Protocol):
         so scoring can run tests, call verification oracles, or query the sandbox.
 
         Optional - environments that don't own scoring should not implement this.
-
-        TODO: Keep this as a fallback hook, not the only scoring story. Explicit
-        evaluation-time scorers may own their own resources and should be able
-        to override environment scoring when present.
+        Explicit evaluation-time scorers take precedence when configured; this
+        hook is the fallback for environments that own verification resources.
         """
         ...
 

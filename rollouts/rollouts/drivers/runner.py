@@ -197,6 +197,10 @@ async def run_driver_to_trajectory(
     accumulator = _EventAccumulator()
 
     async for event in driver.run(prompt):
+        if isinstance(event, _FlushAssistantMessage):
+            accumulator.handle(event)
+            continue
+
         # Log event if sample_id provided and eval logging is configured
         if sample_id is not None:
             _event_logger.debug(

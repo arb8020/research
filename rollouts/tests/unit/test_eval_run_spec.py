@@ -7,6 +7,7 @@ import pytest
 
 from rollouts.config_contracts import validate_eval_config_module
 from rollouts.eval import AgentRunSpec, EndpointConfig
+from rollouts.training.types import AttemptResult
 
 
 def test_validate_eval_config_accepts_run_spec_without_prepare_messages() -> None:
@@ -37,7 +38,9 @@ def test_validate_eval_config_rejects_non_agent_run_spec() -> None:
 def test_validate_eval_config_accepts_direct_attempt_executor() -> None:
     run_spec = AgentRunSpec(
         endpoint=None,
-        execute_attempt=lambda sample, sample_id, environment, run_config: sample,
+        attempt_executor=lambda sample, sample_id, environment, run_config: AttemptResult(
+            attempt_id=str(sample.get("id", sample_id))
+        ),
     )
     module = SimpleNamespace(
         tasks=[{"messages": []}],
@@ -46,3 +49,19 @@ def test_validate_eval_config_accepts_direct_attempt_executor() -> None:
     )
 
     validate_eval_config_module(module, Path("configs/trusted/example.py"))
+
+
+def test_validate_eval_config_rejects_missing_scoring_path() -> None:
+    run_spec = AgentRunSpec(
+        endpoint=EndpointConfig(provider="anthropic", model="claude-sonnet-4-20250514"),
+        prepare_messages=lambda sample: sample["messages"],
+    )
+    module = SimpleNamespace(
+        tasks=[{"messages": []}],
+        run_spec=run_spec,
+    )
+
+    with pytest.raises(
+        ValueError, match="must define score_fn, sample_scorer, or an environment path"
+    ):
+        validate_eval_config_module(module, Path("configs/trusted/example.py"))

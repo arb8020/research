@@ -6,7 +6,7 @@ import pytest
 
 from rollouts.core import EvalConfig, Message, Metric, Score, Trajectory
 from rollouts.eval.native import EvalRuntime, evaluate_sample
-from rollouts.training.types import AttemptRow
+from rollouts.training.types import AttemptResult
 
 
 class _FakeEnvironment:
@@ -34,12 +34,13 @@ async def test_evaluate_sample_accepts_direct_attempt_executor(
         sample_id: str,
         environment: object,
         run_config: object,
-    ) -> AttemptRow:
+    ) -> AttemptResult:
         del run_config
         assert sample_data["text"] == "hello"
         assert sample_id == "sample_0000"
         assert environment is not None
-        return AttemptRow(
+        return AttemptResult(
+            attempt_id=sample_id,
             trajectory=Trajectory(
                 messages=[
                     Message(role="user", content="Reverse hello"),
@@ -54,12 +55,12 @@ async def test_evaluate_sample_accepts_direct_attempt_executor(
         endpoint=None,
         prepare_messages=None,
         attempt_executor=_execute_attempt,
-        score_fn=lambda trajectory, sample_data: Score(
+        score_fn=lambda attempt: Score(
             metrics=(
                 Metric(
                     "exact_match",
                     1.0
-                    if trajectory.messages[-1].content == "olleh" and sample_data["text"] == "hello"
+                    if attempt.response == "olleh" and attempt.input["text"] == "hello"
                     else 0.0,
                     weight=1.0,
                 ),

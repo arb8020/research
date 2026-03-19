@@ -5,11 +5,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from ..training.types import AttemptRow, SampleScorer
+from ..training.types import AttemptResult, SampleScorer, ScoringContext
 
 if TYPE_CHECKING:
     from ..agents import RunConfig
-    from ..dtypes import Endpoint, Environment, Trajectory
+    from ..dtypes import Endpoint, Environment
 
 
 @dataclass(frozen=True)
@@ -33,22 +33,15 @@ class Score:
         return sum(value * weight for value, weight in weighted) / total_weight
 
 
-# TODO: Revisit the eval-stage contract. Current ScoreFn takes (trajectory, row),
-# but the more honest contract may be a scorer over a raw execution result plus
-# explicit scoring context. Keep the lower-level scoring primitive exposed even
-# if higher-level convenience APIs materialize richer scored records on top.
 ScoreFn = (
-    Callable[["Trajectory", dict[str, Any]], Score]
-    | Callable[["Trajectory", dict[str, Any]], Awaitable[Score]]
+    Callable[[AttemptResult], Score | Awaitable[Score]]
+    | Callable[[AttemptResult, ScoringContext | None], Score | Awaitable[Score]]
 )
 PrepareMessagesFn = Callable[[dict[str, Any]], list[Any]]
 EnvironmentFactory = Callable[[dict[str, Any]], Any]
-# TODO: AttemptExecutor currently returns AttemptRow for compatibility, but the
-# intended stage split may be row -> AttemptResult, then scorer attaches
-# evaluation / richer row semantics afterward.
 AttemptExecutor = Callable[
     [dict[str, Any], str, "Environment | None", "RunConfig"],
-    AttemptRow | Awaitable[AttemptRow],
+    AttemptResult | Awaitable[AttemptResult],
 ]
 
 
@@ -56,9 +49,6 @@ AttemptExecutor = Callable[
 class EvalConfig:
     endpoint: Endpoint | None
     prepare_messages: PrepareMessagesFn | None
-    # TODO: A true scored eval should probably require an explicit scoring stage
-    # (score_fn, sample_scorer, or equivalent). Open-ended / attempt-only runs
-    # may deserve a separate top-level API instead of weakening EvalConfig.
     score_fn: ScoreFn | None = None
     sample_scorer: SampleScorer | None = None
     environment: Environment | None = None
@@ -92,3 +82,12 @@ class EvalConfig:
     def __post_init__(self) -> None:
         if self.prepare_messages is None and self.attempt_executor is None:
             raise ValueError("EvalConfig requires either prepare_messages or attempt_executor")
+        if (
+            self.score_fn is None
+            and self.sample_scorer is None
+            and self.environment is None
+            and self.environment_factory is None
+        ):
+            raise ValueError(
+                "EvalConfig requires score_fn, sample_scorer, or an environment path that can own scoring"
+            )

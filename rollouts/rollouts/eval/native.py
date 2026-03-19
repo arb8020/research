@@ -4,6 +4,7 @@ Design mirrors run_agent/run_agent_step for easy parallelization.
 Tiger Style: Pure functions, explicit configuration, no hidden state.
 """
 
+import inspect
 import json
 import logging
 import sys
@@ -275,22 +276,13 @@ async def _run_attempt_executor(
     run_config: RunConfig,
 ) -> AttemptResult:
     """Run a custom per-sample executor and normalize the result shape."""
-    # TODO: Tighten this contract after the eval-stage split settles. The
-    # intended ownership is row -> AttemptResult at execution time, then an
-    # explicit scoring stage turns that raw result into the richer scored row /
-    # training record. Accepting AttemptRow here is a compatibility bridge.
     sample = attempt_executor(sample_data, sample_id, environment, run_config)
     if isawaitable(sample):
         sample = await sample
-    if isinstance(sample, AttemptRow):
-        result = sample.to_result()
-    elif isinstance(sample, AttemptResult):
+    if isinstance(sample, AttemptResult):
         result = sample
     else:
-        raise TypeError(
-            "attempt_executor must return AttemptResult or AttemptRow "
-            f"(got {type(sample).__name__})"
-        )
+        raise TypeError(f"attempt_executor must return AttemptResult (got {type(sample).__name__})")
     if result.trajectory is None:
         raise ValueError("attempt_executor must populate attempt trajectory")
     if not result.attempt_id:
@@ -308,31 +300,49 @@ async def _serialize_environment_state(environment: Environment | None) -> dict[
         return None
 
 
+def _score_fn_accepts_context(score_fn: Callable[..., Any]) -> bool:
+    try:
+        params = inspect.signature(score_fn).parameters.values()
+    except (TypeError, ValueError):
+        return False
+    positional = 0
+    for param in params:
+        if param.kind in (
+            inspect.Parameter.VAR_POSITIONAL,
+            inspect.Parameter.VAR_KEYWORD,
+        ):
+            return True
+        if param.kind in (
+            inspect.Parameter.POSITIONAL_ONLY,
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        ):
+            positional += 1
+    return positional >= 2
+
+
 async def _compute_score(
     score_fn: Callable[..., Any] | None,
-    sample: AttemptRow,
+    result: AttemptResult,
     sample_scorer: SampleScorer | None = None,
     scoring_context: ScoringContext | None = None,
 ) -> Score:
-    """Compute score from either an explicit scorer stage or a legacy score function."""
-    # TODO: Keep this lower-level scoring primitive exposed, but make the stage
-    # boundaries more honest. The higher-level eval path should own
-    # AttemptResult -> evaluated record materialization on top of this, rather
-    # than forcing every caller through a single callback shape.
-    import inspect
+    """Compute score from either an explicit scorer stage or a raw-result score function."""
     from typing import cast
 
     try:
         if sample_scorer is not None:
+            sample = AttemptRow.from_result(result)
             await sample_scorer.score_samples([sample], contexts=[scoring_context])
             if sample.score is None:
                 raise ValueError("sample_scorer must populate sample.score on each sample")
-            sample.reward = sample.score.reward
             return sample.score
 
         assert score_fn is not None, "score_fn required when sample_scorer is not provided"
-        score_result = score_fn(sample)
-        if inspect.iscoroutine(score_result):
+        if _score_fn_accepts_context(score_fn):
+            score_result = score_fn(result, scoring_context)
+        else:
+            score_result = score_fn(result)
+        if isawaitable(score_result):
             return await score_result
         else:
             return cast(Score, score_result)
@@ -827,7 +837,7 @@ async def evaluate_sample(
         environment: Fresh Environment instance for this sample (None for tool-free eval)
 
     Returns:
-        AttemptRow with trajectory, score, and computed reward
+        AttemptResult with trajectory and derived evaluation attached
     """
     # Unpack runtime for convenience
     config = runtime.config
@@ -1109,10 +1119,9 @@ async def evaluate_sample(
         if sample.metadata.get("error") is not None:
             exec_metadata["error"] = sample.metadata["error"]
     else:
-        # Inject sample_data into trajectory metadata for score function access
         initial_trajectory = Trajectory(
             messages=initial_messages,
-            metadata={"sample_data": sample_data},  # Ground truth available to score_fn
+            metadata={"sample_data": sample_data},
         )
 
         actor = Actor(
@@ -1178,42 +1187,31 @@ async def evaluate_sample(
     assert final_trajectory is not None
     sample.metadata = {**sample.metadata, **exec_metadata}
 
-    # TODO: Revisit scoring precedence and denotation. The desired contract is:
-    # explicit injected scorer wins, environment-owned scoring is a fallback for
-    # environments that keep verification resources live, and true scored evals
-    # should not silently degrade into no-score/open-ended runs. If attempt-only
-    # workflows remain, they likely deserve a separate top-level pipeline.
-    #
-    # env.score() still has to run before close() so live sandbox/container
-    # resources remain available during verification.
     score: Score | None = None
     env_score_fn = getattr(final_env, "score", None)
-    if config.sample_scorer is not None:
-        scoring_attempt = AttemptRow.from_result(sample)
-        await config.sample_scorer.score_samples(
-            [scoring_attempt], contexts=[ScoringContext(environment=final_env)]
-        )
-        if scoring_attempt.score is not None:
-            score = scoring_attempt.score
-    elif config.score_fn is not None:
-        try:
-            score_result = config.score_fn(final_trajectory, sample_data)
-            if isawaitable(score_result):
-                score = await score_result
-            else:
-                score = score_result
-        except Exception as e:
-            logger.exception(f"score_fn failed for {sample_id}: {e}")
-            score = Score(metrics=(Metric("error", 0.0, weight=1.0, metadata={"error": str(e)}),))
-    elif env_score_fn is not None:
-        try:
-            score = await env_score_fn(final_trajectory)
-        except Exception as e:
-            logger.warning(f"Environment score() failed for {sample_id}: {e}")
-            score = Score(metrics=(Metric("error", 0.0, weight=1.0, metadata={"error": str(e)}),))
-
-    # Close environment after scoring — sandbox/container is no longer needed
-    await _close_environment(environment, sample_id)
+    try:
+        if config.sample_scorer is not None or config.score_fn is not None:
+            score = await _compute_score(
+                config.score_fn,
+                sample,
+                sample_scorer=config.sample_scorer,
+                scoring_context=ScoringContext(environment=final_env),
+            )
+        elif env_score_fn is not None:
+            try:
+                score = await env_score_fn(final_trajectory)
+            except Exception as e:
+                logger.warning(f"Environment score() failed for {sample_id}: {e}")
+                score = Score(
+                    metrics=(Metric("error", 0.0, weight=1.0, metadata={"error": str(e)}),)
+                )
+        else:
+            raise ValueError(
+                "evaluate_sample requires sample_scorer, score_fn, or environment.score()"
+            )
+    finally:
+        # Close environment after scoring — sandbox/container is no longer needed
+        await _close_environment(final_env, sample_id)
 
     # Compute duration and log completion
     duration_seconds = time.time() - start_time
