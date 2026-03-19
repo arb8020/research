@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { openRunStream, openWatchStream } from '../api'
+import { openRunEvents } from '../api'
 import type { LiveRunState, LiveSample, StreamEvent } from '../types'
 
 function makeInitialState(runId: string, initialStatus: string): LiveRunState {
@@ -23,7 +23,7 @@ export function useLiveRun(runId: string, initialStatus: string) {
     // Don't open SSE for finished runs
     if (initialStatus !== 'running' && initialStatus !== 'watching') return
 
-    const es = initialStatus === 'watching' ? openWatchStream(runId) : openRunStream(runId)
+    const es = openRunEvents(runId)
 
     es.onmessage = (event: MessageEvent<string>) => {
       try {

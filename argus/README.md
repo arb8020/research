@@ -32,6 +32,10 @@ The stack should look like:
 3. `miniray` provides narrow worker / stream transport primitives
 4. `argus` owns run lifecycle, commands, events, and projections
 
+For the stricter ownership split and the boundary between local task state and
+launchable remote experiments, see
+[docs/ownership_and_launch_boundary.md](/Users/chiraagbalu/research/argus/docs/ownership_and_launch_boundary.md).
+
 ## Current Scope
 
 This initial package provides:

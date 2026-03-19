@@ -1,53 +1,44 @@
 import { useState, useEffect, useCallback } from 'react'
-import { listRuns, listActiveRuns } from '../api'
-import type { RunListItem, LiveRun } from '../types'
+import { listRuns } from '../api'
+import type { RunListItem } from '../types'
 
 type RunsState =
   | {
       kind: 'loading'
-      completedRuns: RunListItem[]
-      liveRuns: LiveRun[]
+      runs: RunListItem[]
       error: null
     }
   | {
       kind: 'loaded'
-      completedRuns: RunListItem[]
-      liveRuns: LiveRun[]
+      runs: RunListItem[]
       error: null
     }
   | {
       kind: 'error'
-      completedRuns: RunListItem[]
-      liveRuns: LiveRun[]
+      runs: RunListItem[]
       error: string
     }
 
 export function useRuns() {
   const [state, setState] = useState<RunsState>({
     kind: 'loading',
-    completedRuns: [],
-    liveRuns: [],
+    runs: [],
     error: null,
   })
   const [autoPoll, setAutoPoll] = useState(false)
 
   const refresh = useCallback(async () => {
     try {
-      const [completed, live] = await Promise.all([
-        listRuns(),
-        listActiveRuns(),
-      ])
+      const runs = await listRuns()
       setState({
         kind: 'loaded',
-        completedRuns: completed,
-        liveRuns: live,
+        runs,
         error: null,
       })
     } catch (err) {
       setState(prev => ({
         kind: 'error',
-        completedRuns: prev.completedRuns,
-        liveRuns: prev.liveRuns,
+        runs: prev.runs,
         error: err instanceof Error ? err.message : 'Failed to load runs',
       }))
     }
@@ -63,20 +54,24 @@ export function useRuns() {
     if (!autoPoll) return
 
     const interval = setInterval(() => {
-      void listActiveRuns()
-        .then(liveRuns => {
-          setState(prev => ({ ...prev, liveRuns }))
+      void listRuns()
+        .then(runs => {
+          setState(prev => ({ ...prev, runs }))
         })
         .catch(err => {
-          console.error('Failed to refresh live runs', err)
+          console.error('Failed to refresh runs', err)
         })
     }, 2000)
     return () => clearInterval(interval)
   }, [autoPoll])
 
+  const completedRuns = state.runs.filter(run => !run.live)
+  const liveRuns = state.runs.filter(run => run.live)
+
   return {
-    completedRuns: state.completedRuns,
-    liveRuns: state.liveRuns,
+    completedRuns,
+    liveRuns,
+    runs: state.runs,
     loading: state.kind === 'loading',
     error: state.error,
     autoPoll,

@@ -265,7 +265,16 @@ export default function App() {
 
         {view.kind === 'live-sample' && (
           <LiveSampleViewer
-            run={liveRuns.find(r => r.run_id === view.runId) ?? { run_id: view.runId, config_name: view.runId, start_time: 0, status: 'watching', exit_code: null }}
+            run={liveRuns.find(r => r.id === view.runId) ?? {
+              id: view.runId,
+              name: view.runId,
+              timestamp: 0,
+              total_samples: null,
+              mean_reward: null,
+              status: 'watching',
+              live: true,
+              can_kill: false,
+            }}
             sampleId={view.sampleId}
             onBack={() => navigate({ kind: 'runs' })}
           />

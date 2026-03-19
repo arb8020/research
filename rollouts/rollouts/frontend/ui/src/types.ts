@@ -1,5 +1,4 @@
-// Rollouts trace viewer types
-// Mirrors wafer-app TraceSample/TraceReport shapes where compatible
+// Rollouts run viewer types
 
 export interface RunReport {
   eval_name: string;
@@ -45,8 +44,11 @@ export interface RunListItem {
   id: string;
   name: string;
   timestamp: number;
-  total_samples: number;
-  mean_reward: number;
+  total_samples: number | null;
+  mean_reward: number | null;
+  status: 'running' | 'watching' | 'completed' | 'failed' | 'killed';
+  live: boolean;
+  can_kill: boolean;
 }
 
 export interface SampleReward {
@@ -152,17 +154,6 @@ export interface WorkspaceData {
   snapshots: WorkspaceSnapshot[]
   line_history: LineHistory
   source: 'live' | 'reconstructed'
-}
-
-// Live run types
-
-export interface LiveRun {
-  run_id: string;
-  config_name: string;
-  start_time: number;
-  status: 'running' | 'watching' | 'completed' | 'failed' | 'killed';
-  exit_code: number | null;
-  output_length?: number;
 }
 
 export type StreamEvent =

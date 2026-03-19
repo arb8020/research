@@ -1,10 +1,10 @@
 import { useState, useMemo } from 'react'
 import { LiveRunCard } from './LiveRunCard'
-import type { RunListItem, LiveRun } from '../types'
+import type { RunListItem } from '../types'
 
 interface RunsListProps {
   completedRuns: RunListItem[]
-  liveRuns: LiveRun[]
+  liveRuns: RunListItem[]
   loading: boolean
   error: string | null
   onSelectRun: (runId: string) => void
@@ -55,8 +55,8 @@ export function RunsList({ completedRuns, liveRuns, loading, error, onSelectRun,
       switch (sortField) {
         case 'name': av = a.name; bv = b.name; break
         case 'timestamp': av = a.timestamp; bv = b.timestamp; break
-        case 'samples': av = a.total_samples; bv = b.total_samples; break
-        case 'reward': av = a.mean_reward; bv = b.mean_reward; break
+        case 'samples': av = a.total_samples ?? -1; bv = b.total_samples ?? -1; break
+        case 'reward': av = a.mean_reward ?? -1; bv = b.mean_reward ?? -1; break
         default: return 0
       }
       if (av < bv) return sortDir === 'asc' ? -1 : 1
@@ -107,12 +107,12 @@ export function RunsList({ completedRuns, liveRuns, loading, error, onSelectRun,
               Live ({liveRuns.length})
             </h2>
           </div>
-          <div className="space-y-2">
-            {liveRuns.map(run => (
-              <LiveRunCard key={run.run_id} run={run} onSelectSample={onSelectLiveSample ? (sampleId) => onSelectLiveSample(run.run_id, sampleId) : undefined} />
-            ))}
+            <div className="space-y-2">
+              {liveRuns.map(run => (
+              <LiveRunCard key={run.id} run={run} onSelectSample={onSelectLiveSample ? (sampleId) => onSelectLiveSample(run.id, sampleId) : undefined} />
+              ))}
+            </div>
           </div>
-        </div>
       )}
 
       {/* Header */}
@@ -217,11 +217,15 @@ export function RunsList({ completedRuns, liveRuns, loading, error, onSelectRun,
                   </td>
                   <td className="py-2 px-3 text-right">
                     <span className="text-sm" style={{ color: 'var(--color-dark-text)' }}>
-                      {run.total_samples}
+                      {run.total_samples ?? '—'}
                     </span>
                   </td>
                   <td className="py-2 px-3 text-right">
-                    <RewardBadge reward={run.mean_reward} />
+                    {run.mean_reward === null ? (
+                      <span style={{ color: 'var(--color-dark-text-muted)' }}>—</span>
+                    ) : (
+                      <RewardBadge reward={run.mean_reward} />
+                    )}
                   </td>
                 </tr>
               ))}

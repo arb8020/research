@@ -1,42 +1,32 @@
-import type { RunListItem, RunReport, TraceSample, LiveRun, WorkspaceData } from './types'
+import type { RunListItem, RunReport, TraceSample, WorkspaceData } from './types'
 
 export async function listRuns(): Promise<RunListItem[]> {
-  const res = await fetch('/api/traces')
+  const res = await fetch('/api/runs')
   if (!res.ok) throw new Error(`Failed to list runs: ${res.status}`)
-  return res.json()
+  const data = await res.json()
+  return data.runs ?? []
 }
 
 export async function getRunReport(runId: string): Promise<{ report: RunReport; sample_ids: string[] }> {
-  const res = await fetch(`/api/trace/${runId}`)
+  const res = await fetch(`/api/runs/${encodeURIComponent(runId)}`)
   if (!res.ok) throw new Error(`Failed to get run ${runId}: ${res.status}`)
   const data = await res.json()
   return { report: data.report ?? data, sample_ids: data.sample_ids ?? data.report?.sample_ids ?? [] }
 }
 
 export async function getSample(runId: string, sampleId: string): Promise<TraceSample> {
-  const res = await fetch(`/api/trace/${runId}/sample/${sampleId}`)
+  const res = await fetch(`/api/runs/${encodeURIComponent(runId)}/samples/${encodeURIComponent(sampleId)}`)
   if (!res.ok) throw new Error(`Failed to get sample ${sampleId}: ${res.status}`)
   return res.json()
 }
 
-export async function listActiveRuns(): Promise<LiveRun[]> {
-  const res = await fetch('/api/runs')
-  if (!res.ok) throw new Error(`Failed to list active runs: ${res.status}`)
-  const data = await res.json()
-  return data.runs ?? []
-}
-
 export async function killRun(runId: string): Promise<void> {
-  const res = await fetch(`/api/kill/${runId}`, { method: 'POST' })
+  const res = await fetch(`/api/runs/${encodeURIComponent(runId)}/kill`, { method: 'POST' })
   if (!res.ok) throw new Error(`Failed to kill run ${runId}: ${res.status}`)
 }
 
-export function openRunStream(runId: string): EventSource {
-  return new EventSource(`/api/stream/${runId}`)
-}
-
-export function openWatchStream(runId: string): EventSource {
-  return new EventSource(`/api/watch/${runId}`)
+export function openRunEvents(runId: string): EventSource {
+  return new EventSource(`/api/runs/${encodeURIComponent(runId)}/events`)
 }
 
 export interface ResultsDirsResponse {
@@ -60,15 +50,15 @@ export async function setResultsDir(path: string): Promise<void> {
 }
 
 export async function getWorkspace(runId: string, sampleId: string): Promise<WorkspaceData | null> {
-  const res = await fetch(`/api/trace/${runId}/sample/${sampleId}/workspace`)
+  const res = await fetch(`/api/runs/${encodeURIComponent(runId)}/samples/${encodeURIComponent(sampleId)}/workspace`)
   if (!res.ok) return null
   return res.json()
 }
 
 export function getRunHtmlExportUrl(runId: string): string {
-  return `/api/trace/${encodeURIComponent(runId)}/export.html`
+  return `/api/runs/${encodeURIComponent(runId)}/export.html`
 }
 
 export function getSampleHtmlExportUrl(runId: string, sampleId: string): string {
-  return `/api/trace/${encodeURIComponent(runId)}/sample/${encodeURIComponent(sampleId)}/export.html`
+  return `/api/runs/${encodeURIComponent(runId)}/samples/${encodeURIComponent(sampleId)}/export.html`
 }

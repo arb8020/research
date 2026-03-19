@@ -86,11 +86,15 @@ rollouts/frontend/
 
 ## API Endpoints
 
-- `GET /` - Serve frontend
-- `GET /api/configs` - List config files in `configs/`
-- `GET /api/traces` - List evaluation results in `results/`
-- `GET /api/trace/:id` - Load specific trace with trajectories
-- `POST /api/generate` - Generate config from JSON
+- `GET /` - Serve the run viewer
+- `GET /api/runs` - List visible runs
+- `GET /api/runs/:id` - Load a saved run
+- `GET /api/runs/:id/samples/:sampleId` - Load a sample
+- `GET /api/runs/:id/samples/:sampleId/workspace` - Load workspace reconstruction
+- `GET /api/runs/:id/events` - Stream live events when available
+- `POST /api/runs/:id/kill` - Kill a locally launched live run
+- `GET /api/results-dirs` - List available results directories
+- `POST /api/set-results-dir` - Switch the active results directory
 
 ## Extending
 
