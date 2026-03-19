@@ -4,6 +4,9 @@ import builtins
 import json
 import logging
 import os
+from collections.abc import Iterator
+from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 
 import trio
@@ -16,7 +19,7 @@ from infra_utils.logging_config import setup_logging
 from rich.console import Console
 from rich.table import Table
 
-from broker.client import GPUClient
+from broker.client import ClientGPUInstance, GPUClient
 from broker.credentials import (
     CREDENTIALS_FILE,
     KNOWN_PROVIDERS,
@@ -171,6 +174,255 @@ def parse_instance_id(instance_id: str) -> tuple[str, str | None]:
         provider, id_part = instance_id.split(":", 1)
         return (id_part, provider)
     return (instance_id, None)
+
+
+@dataclass(frozen=True)
+class GPUMetrics:
+    index: int
+    name: str
+    utilization_percent: float
+    memory_used_mb: float
+    memory_total_mb: float
+
+    @property
+    def memory_percent(self) -> float:
+        return (self.memory_used_mb / self.memory_total_mb) * 100
+
+
+@dataclass(frozen=True)
+class SystemSnapshot:
+    instance_id: str
+    provider: str
+    gpus: list[GPUMetrics]
+    cpu_utilization_percent: float | None
+    memory_used_mb: int | None
+    memory_total_mb: int | None
+    memory_percent: float | None
+    disk_used: str | None
+    disk_total: str | None
+    disk_percent: str | None
+
+    def to_json_dict(self) -> dict[str, object]:
+        return {
+            "instance_id": self.instance_id,
+            "provider": self.provider,
+            "gpus": [
+                {
+                    "index": gpu.index,
+                    "name": gpu.name,
+                    "utilization_percent": gpu.utilization_percent,
+                    "memory_used_mb": gpu.memory_used_mb,
+                    "memory_total_mb": gpu.memory_total_mb,
+                    "memory_percent": gpu.memory_percent,
+                }
+                for gpu in self.gpus
+            ],
+            "cpu_utilization_percent": self.cpu_utilization_percent or 0.0,
+            "memory_used_mb": self.memory_used_mb or 0,
+            "memory_total_mb": self.memory_total_mb or 0,
+            "memory_percent": self.memory_percent or 0.0,
+            "disk_used": self.disk_used or "0",
+            "disk_total": self.disk_total or "0",
+            "disk_percent": self.disk_percent or "0%",
+        }
+
+
+async def _resolve_instance_for_command(
+    client: GPUClient,
+    instance_id_arg: str,
+    provider_arg: str | None,
+    duplicate_hint: str,
+) -> tuple[str, ClientGPUInstance]:
+    instance_id, parsed_provider = parse_instance_id(instance_id_arg)
+    provider = provider_arg or parsed_provider
+
+    if provider is None:
+        instances = await client.list_instances()
+        matches = [instance for instance in instances if instance.id == instance_id]
+        if len(matches) == 0:
+            logger.error(f"✗ Instance {instance_id} not found in any provider")
+            raise typer.Exit(1)
+        if len(matches) > 1:
+            logger.error(f"✗ Instance {instance_id} found in multiple providers:")
+            for match in matches:
+                logger.error(f"  - {match.provider}")
+            logger.info(duplicate_hint)
+            raise typer.Exit(1)
+        instance = matches[0]
+    else:
+        instance = await client.get_instance(instance_id, provider)
+        if instance is None:
+            logger.error(f"✗ Instance {instance_id} not found in {provider}")
+            raise typer.Exit(1)
+
+    if instance.public_ip is None:
+        logger.error("✗ Instance not ready (no public IP)")
+        raise typer.Exit(1)
+
+    return instance_id, instance
+
+
+@contextmanager
+def _suppress_ssh_connection_logs() -> Iterator[None]:
+    ssh_logger = logging.getLogger("shared.ssh_foundation")
+    paramiko_logger = logging.getLogger("paramiko")
+    original_ssh_level = ssh_logger.level
+    original_paramiko_level = paramiko_logger.level
+    ssh_logger.setLevel(logging.WARNING)
+    paramiko_logger.setLevel(logging.WARNING)
+    try:
+        yield
+    finally:
+        ssh_logger.setLevel(original_ssh_level)
+        paramiko_logger.setLevel(original_paramiko_level)
+
+
+def _parse_gpu_metrics(output: str) -> list[GPUMetrics]:
+    gpus: list[GPUMetrics] = []
+    for line in output.strip().split("\n"):
+        if not line.strip():
+            continue
+        parts = [part.strip() for part in line.split(",")]
+        if len(parts) < 5:
+            continue
+        gpus.append(
+            GPUMetrics(
+                index=int(parts[0]),
+                name=parts[1],
+                utilization_percent=float(parts[2]),
+                memory_used_mb=float(parts[3]),
+                memory_total_mb=float(parts[4]),
+            )
+        )
+    return gpus
+
+
+def _parse_cpu_utilization(output: str) -> float | None:
+    value = output.strip()
+    if not value:
+        return None
+    return float(value)
+
+
+def _parse_memory_metrics(output: str) -> tuple[int | None, int | None, float | None]:
+    parts = output.strip().split(",")
+    if len(parts) < 3:
+        return (None, None, None)
+    return (int(parts[0]), int(parts[1]), float(parts[2]))
+
+
+def _parse_disk_metrics(output: str) -> tuple[str | None, str | None, str | None]:
+    parts = output.strip().split(",")
+    if len(parts) < 3:
+        return (None, None, None)
+    return (parts[0], parts[1], parts[2])
+
+
+async def _collect_system_snapshot(
+    instance_id: str,
+    instance: ClientGPUInstance,
+) -> SystemSnapshot:
+    gpu_cmd = (
+        "nvidia-smi --query-gpu=index,name,utilization.gpu,memory.used,memory.total "
+        "--format=csv,noheader,nounits"
+    )
+    cpu_cmd = "top -bn1 | grep 'Cpu(s)' | awk '{print $2}'"
+    mem_cmd = "free -m | awk 'NR==2{printf \"%s,%s,%s\", $3,$2,$3*100/$2 }'"
+    disk_cmd = "df -h / | awk 'NR==2{printf \"%s,%s,%s\", $3,$2,$5}'"
+
+    try:
+        with _suppress_ssh_connection_logs():
+            gpu_output = (await instance.aexec(gpu_cmd)).stdout
+            cpu_output = (await instance.aexec(cpu_cmd)).stdout
+            mem_output = (await instance.aexec(mem_cmd)).stdout
+            disk_output = (await instance.aexec(disk_cmd)).stdout
+    except Exception as e:
+        logger.exception(f"✗ Failed to collect system info: {e}")
+        raise typer.Exit(1) from None
+
+    memory_used_mb, memory_total_mb, memory_percent = _parse_memory_metrics(mem_output)
+    disk_used, disk_total, disk_percent = _parse_disk_metrics(disk_output)
+    return SystemSnapshot(
+        instance_id=instance_id,
+        provider=instance.provider,
+        gpus=_parse_gpu_metrics(gpu_output),
+        cpu_utilization_percent=_parse_cpu_utilization(cpu_output),
+        memory_used_mb=memory_used_mb,
+        memory_total_mb=memory_total_mb,
+        memory_percent=memory_percent,
+        disk_used=disk_used,
+        disk_total=disk_total,
+        disk_percent=disk_percent,
+    )
+
+
+def _colorize_percent(percent: float, decimals: int = 1) -> str:
+    display = f"{percent:.{decimals}f}%"
+    if percent > 80:
+        return f"[red]{display}[/red]"
+    if percent > 50:
+        return f"[yellow]{display}[/yellow]"
+    return f"[green]{display}[/green]"
+
+
+def _render_system_snapshot_json(snapshot: SystemSnapshot) -> None:
+    print(json.dumps(snapshot.to_json_dict(), indent=2))
+
+
+def _render_system_snapshot_rich(snapshot: SystemSnapshot) -> None:
+    console.print(f"\n[bold]Instance: {snapshot.instance_id}[/bold] ({snapshot.provider})\n")
+
+    gpu_table = Table(title="GPU Utilization", show_header=True)
+    gpu_table.add_column("GPU", style="cyan", justify="center")
+    gpu_table.add_column("Name", style="white")
+    gpu_table.add_column("GPU Util", justify="right")
+    gpu_table.add_column("VRAM Used", justify="right")
+    gpu_table.add_column("VRAM Total", justify="right")
+    gpu_table.add_column("VRAM %", justify="right")
+    for gpu in snapshot.gpus:
+        gpu_table.add_row(
+            str(gpu.index),
+            gpu.name,
+            _colorize_percent(gpu.utilization_percent),
+            f"{gpu.memory_used_mb:.0f} MB",
+            f"{gpu.memory_total_mb:.0f} MB",
+            _colorize_percent(gpu.memory_percent),
+        )
+    console.print(gpu_table)
+
+    sys_table = Table(title="System Resources", show_header=True)
+    sys_table.add_column("Resource", style="cyan")
+    sys_table.add_column("Used", justify="right")
+    sys_table.add_column("Total", justify="right")
+    sys_table.add_column("Utilization", justify="right")
+
+    if snapshot.cpu_utilization_percent is not None:
+        sys_table.add_row("CPU", "-", "-", _colorize_percent(snapshot.cpu_utilization_percent))
+    if (
+        snapshot.memory_used_mb is not None
+        and snapshot.memory_total_mb is not None
+        and snapshot.memory_percent is not None
+    ):
+        sys_table.add_row(
+            "Memory",
+            f"{snapshot.memory_used_mb} MB",
+            f"{snapshot.memory_total_mb} MB",
+            _colorize_percent(snapshot.memory_percent),
+        )
+    if (
+        snapshot.disk_used is not None
+        and snapshot.disk_total is not None
+        and snapshot.disk_percent is not None
+    ):
+        disk_percent_raw = snapshot.disk_percent.rstrip("%")
+        try:
+            disk_display = _colorize_percent(float(disk_percent_raw), decimals=0)
+        except ValueError:
+            disk_display = snapshot.disk_percent
+        sys_table.add_row("Disk (/)", snapshot.disk_used, snapshot.disk_total, disk_display)
+
+    console.print(sys_table)
+    console.print()
 
 
 @app.command()
@@ -839,249 +1091,20 @@ def info(
     async def _info_async() -> None:
         creds = resolve_credentials(ctx)
         ssh_key = resolve_ssh_key(ctx)
-
         client = GPUClient(credentials=creds, ssh_key_path=ssh_key)
-
-        # Parse provider:id format if present
-        instance_id, parsed_provider = parse_instance_id(instance_id_arg)
-        provider = provider_arg or parsed_provider
-
-        # Auto-detect provider if not specified
-        if provider is None:
-            instances = await client.list_instances()
-            matches = [i for i in instances if i.id == instance_id]
-
-            if len(matches) == 0:
-                logger.error(f"✗ Instance {instance_id} not found in any provider")
-                raise typer.Exit(1)
-            if len(matches) > 1:
-                logger.error(f"✗ Instance {instance_id} found in multiple providers:")
-                for m in matches:
-                    logger.error(f"  - {m.provider}")
-                logger.info(f"specify provider: broker info {instance_id} <provider>")
-                raise typer.Exit(1)
-
-            instance = matches[0]
-        else:
-            instance = await client.get_instance(instance_id, provider)
-
-            if not instance:
-                logger.error(f"✗ Instance {instance_id} not found in {provider}")
-                raise typer.Exit(1)
-
-        # Check if instance is ready
-        if not instance._instance.public_ip:
-            logger.error("✗ Instance not ready (no public IP)")
-            raise typer.Exit(1)
-
-        # Collect system info
+        instance_id, instance = await _resolve_instance_for_command(
+            client,
+            instance_id_arg,
+            provider_arg,
+            f"specify provider: broker info {instance_id_arg} <provider>",
+        )
         if not ctx.obj["json"]:
             logger.info("collecting system information...")
-
-        # Temporarily suppress SSH connection logs
-        ssh_logger = logging.getLogger("shared.ssh_foundation")
-        paramiko_logger = logging.getLogger("paramiko")
-        original_ssh_level = ssh_logger.level
-        original_paramiko_level = paramiko_logger.level
-        ssh_logger.setLevel(logging.WARNING)
-        paramiko_logger.setLevel(logging.WARNING)
-
-        try:
-            # Get GPU info
-            gpu_cmd = "nvidia-smi --query-gpu=index,name,utilization.gpu,memory.used,memory.total --format=csv,noheader,nounits"
-            gpu_result = await instance._instance.aexec(gpu_cmd)
-
-            # Get CPU info
-            cpu_cmd = "top -bn1 | grep 'Cpu(s)' | awk '{print $2}'"
-            cpu_result = await instance._instance.aexec(cpu_cmd)
-
-            # Get memory info
-            mem_cmd = "free -m | awk 'NR==2{printf \"%s,%s,%s\", $3,$2,$3*100/$2 }'"
-            mem_result = await instance._instance.aexec(mem_cmd)
-
-            # Get disk info
-            disk_cmd = "df -h / | awk 'NR==2{printf \"%s,%s,%s\", $3,$2,$5}'"
-            disk_result = await instance._instance.aexec(disk_cmd)
-
-        except Exception as e:
-            logger.exception(f"✗ Failed to collect system info: {e}")
-            raise typer.Exit(1) from None
-        finally:
-            # Restore original log levels
-            ssh_logger.setLevel(original_ssh_level)
-            paramiko_logger.setLevel(original_paramiko_level)
-
-        # Parse and display results
+        snapshot = await _collect_system_snapshot(instance_id, instance)
         if ctx.obj["json"]:
-            # Parse GPU info
-            gpus = []
-            for line in gpu_result.stdout.strip().split("\n"):
-                if line.strip():
-                    parts = [p.strip() for p in line.split(",")]
-                    if len(parts) >= 5:
-                        gpus.append({
-                            "index": int(parts[0]),
-                            "name": parts[1],
-                            "utilization_percent": float(parts[2]),
-                            "memory_used_mb": float(parts[3]),
-                            "memory_total_mb": float(parts[4]),
-                            "memory_percent": (float(parts[3]) / float(parts[4])) * 100,
-                        })
-
-            # Parse CPU info
-            cpu_util = float(cpu_result.stdout.strip()) if cpu_result.stdout.strip() else 0.0
-
-            # Parse memory info
-            mem_parts = mem_result.stdout.strip().split(",")
-            mem_used_mb = int(mem_parts[0]) if len(mem_parts) > 0 else 0
-            mem_total_mb = int(mem_parts[1]) if len(mem_parts) > 1 else 0
-            mem_percent = float(mem_parts[2]) if len(mem_parts) > 2 else 0.0
-
-            # Parse disk info
-            disk_parts = disk_result.stdout.strip().split(",")
-            disk_used = disk_parts[0] if len(disk_parts) > 0 else "0"
-            disk_total = disk_parts[1] if len(disk_parts) > 1 else "0"
-            disk_percent = disk_parts[2] if len(disk_parts) > 2 else "0%"
-
-            print(
-                json.dumps(
-                    {
-                        "instance_id": instance_id,
-                        "provider": instance.provider,
-                        "gpus": gpus,
-                        "cpu_utilization_percent": cpu_util,
-                        "memory_used_mb": mem_used_mb,
-                        "memory_total_mb": mem_total_mb,
-                        "memory_percent": mem_percent,
-                        "disk_used": disk_used,
-                        "disk_total": disk_total,
-                        "disk_percent": disk_percent,
-                    },
-                    indent=2,
-                )
-            )
-        else:
-            # Display with Rich tables
-            console.print(f"\n[bold]Instance: {instance_id}[/bold] ({instance.provider})\n")
-
-            # GPU Table
-            gpu_table = Table(title="GPU Utilization", show_header=True)
-            gpu_table.add_column("GPU", style="cyan", justify="center")
-            gpu_table.add_column("Name", style="white")
-            gpu_table.add_column("GPU Util", justify="right")
-            gpu_table.add_column("VRAM Used", justify="right")
-            gpu_table.add_column("VRAM Total", justify="right")
-            gpu_table.add_column("VRAM %", justify="right")
-
-            for line in gpu_result.stdout.strip().split("\n"):
-                if line.strip():
-                    parts = [p.strip() for p in line.split(",")]
-                    if len(parts) >= 5:
-                        gpu_idx = parts[0]
-                        gpu_name = parts[1]
-                        gpu_util = float(parts[2])
-                        vram_used = float(parts[3])
-                        vram_total = float(parts[4])
-                        vram_percent = (vram_used / vram_total) * 100
-
-                        # Color coding for utilization
-                        gpu_util_str = f"{gpu_util:.1f}%"
-                        if gpu_util > 80:
-                            gpu_util_str = f"[red]{gpu_util_str}[/red]"
-                        elif gpu_util > 50:
-                            gpu_util_str = f"[yellow]{gpu_util_str}[/yellow]"
-                        else:
-                            gpu_util_str = f"[green]{gpu_util_str}[/green]"
-
-                        vram_percent_str = f"{vram_percent:.1f}%"
-                        if vram_percent > 80:
-                            vram_percent_str = f"[red]{vram_percent_str}[/red]"
-                        elif vram_percent > 50:
-                            vram_percent_str = f"[yellow]{vram_percent_str}[/yellow]"
-                        else:
-                            vram_percent_str = f"[green]{vram_percent_str}[/green]"
-
-                        gpu_table.add_row(
-                            gpu_idx,
-                            gpu_name,
-                            gpu_util_str,
-                            f"{vram_used:.0f} MB",
-                            f"{vram_total:.0f} MB",
-                            vram_percent_str,
-                        )
-
-            console.print(gpu_table)
-
-            # System Resources Table
-            sys_table = Table(title="System Resources", show_header=True)
-            sys_table.add_column("Resource", style="cyan")
-            sys_table.add_column("Used", justify="right")
-            sys_table.add_column("Total", justify="right")
-            sys_table.add_column("Utilization", justify="right")
-
-            # CPU row
-            cpu_util_str = cpu_result.stdout.strip()
-            if cpu_util_str:
-                cpu_util = float(cpu_util_str)
-                cpu_display = f"{cpu_util:.1f}%"
-                if cpu_util > 80:
-                    cpu_display = f"[red]{cpu_display}[/red]"
-                elif cpu_util > 50:
-                    cpu_display = f"[yellow]{cpu_display}[/yellow]"
-                else:
-                    cpu_display = f"[green]{cpu_display}[/green]"
-                sys_table.add_row("CPU", "-", "-", cpu_display)
-
-            # Memory row
-            mem_parts = mem_result.stdout.strip().split(",")
-            if len(mem_parts) >= 3:
-                mem_used = int(mem_parts[0])
-                mem_total = int(mem_parts[1])
-                mem_percent = float(mem_parts[2])
-
-                mem_percent_str = f"{mem_percent:.1f}%"
-                if mem_percent > 80:
-                    mem_percent_str = f"[red]{mem_percent_str}[/red]"
-                elif mem_percent > 50:
-                    mem_percent_str = f"[yellow]{mem_percent_str}[/yellow]"
-                else:
-                    mem_percent_str = f"[green]{mem_percent_str}[/green]"
-
-                sys_table.add_row(
-                    "Memory",
-                    f"{mem_used} MB",
-                    f"{mem_total} MB",
-                    mem_percent_str,
-                )
-
-            # Disk row
-            disk_parts = disk_result.stdout.strip().split(",")
-            if len(disk_parts) >= 3:
-                disk_used = disk_parts[0]
-                disk_total = disk_parts[1]
-                disk_percent_raw = disk_parts[2].rstrip("%")
-
-                try:
-                    disk_pct = float(disk_percent_raw)
-                    disk_display = f"{disk_pct:.0f}%"
-                    if disk_pct > 80:
-                        disk_display = f"[red]{disk_display}[/red]"
-                    elif disk_pct > 50:
-                        disk_display = f"[yellow]{disk_display}[/yellow]"
-                    else:
-                        disk_display = f"[green]{disk_display}[/green]"
-                except ValueError:
-                    disk_display = disk_parts[2]
-
-                sys_table.add_row(
-                    "Disk (/)",
-                    disk_used,
-                    disk_total,
-                    disk_display,
-                )
-
-            console.print(sys_table)
-            console.print()
+            _render_system_snapshot_json(snapshot)
+            return
+        _render_system_snapshot_rich(snapshot)
 
     trio.run(_info_async)
 
