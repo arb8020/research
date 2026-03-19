@@ -411,7 +411,7 @@ def resolve_eval_task_spec(config_module: Any) -> EvalTaskSpec:
     if eval_task is not None:
         if not isinstance(eval_task, EvalTaskSpec):
             raise ValueError("Eval config must export eval_task: EvalTaskSpec")
-        return eval_task
+        return replace(eval_task, run_spec=resolve_eval_run_spec(config_module))
 
     run_spec = resolve_eval_run_spec(config_module)
 
