@@ -43,6 +43,11 @@ class DepsConfig:
         )
     """
 
+    # TODO(boundary): `DepsConfig` + `HardwareConfig` currently want to be one
+    # explicit runtime-contract product type. They still blur base runtime
+    # contract, project-local overlays, cache/volume knobs, and provider-facing
+    # execution settings.
+
     python_version: str = "3.12"
     base_image: str = "debian:bookworm-slim"
     system_packages: tuple[str, ...] = (
@@ -217,6 +222,10 @@ class HardwareConfig:
         # Local execution (no provisioning)
         HardwareConfig(provider="local")
     """
+
+    # TODO(boundary): shrink this toward provision-time runtime contract only.
+    # Mutable workspace-scoped realization should move to the execution layer
+    # instead of continuing to accumulate here.
 
     gpu_type: str = "A100"
     gpu_count: int = 1

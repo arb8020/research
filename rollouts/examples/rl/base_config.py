@@ -37,6 +37,9 @@ def default_remote_training_deps() -> DepsConfig:
     It avoids the old hidden remote bootstrap behavior by declaring the base
     image and runtime Python dependencies directly in config.
     """
+    # TODO(boundary): helpers like this are really named runtime profiles.
+    # Promote them into data/product types rather than continuing to hide them
+    # behind Python functions.
     return DepsConfig(
         image=ImageSpec.from_registry("nvidia/cuda:12.4.0-devel-ubuntu22.04"),
         pip_packages=(
