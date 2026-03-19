@@ -31,7 +31,7 @@ Legacy shape still supported:
     - tasks: list[dict] OR tasks_path: Path (one required)
     - prepare_messages: Callable[[dict], list[Message]]
     - attempt_executor: Callable[[dict, str, Environment | None, RunConfig], AttemptResult] (optional)
-    - score_fn: Callable[[AttemptResult], Score] or sample_scorer
+    - scorer: explicit scoring stage over AttemptResult
     - make_environment: Callable[[], Environment] (optional)
 """
 
@@ -251,8 +251,7 @@ async def run_with_api(
     run_spec = eval_task.run_spec
     prepare_messages = run_spec.prepare_messages
     attempt_executor = run_spec.attempt_executor
-    score_fn = eval_task.score_fn
-    sample_scorer = eval_task.sample_scorer
+    scorer = eval_task.scorer
     environment: Environment | None = run_spec.environment
     environment_factory = run_spec.environment_factory
 
@@ -287,8 +286,7 @@ async def run_with_api(
     # Build EvalConfig
     eval_config = EvalConfig(
         endpoint=endpoint,
-        score_fn=score_fn,
-        sample_scorer=sample_scorer,
+        scorer=scorer,
         prepare_messages=prepare_messages,
         environment=environment,
         environment_factory=environment_factory,
@@ -376,6 +374,9 @@ Examples:
     for subparser in (run_parser, launch_parser):
         subparser.add_argument("--config", type=Path, required=True, help="Config file path")
 
+    # TODO(boundary): most of these `run` flags are config-owned execution spec
+    # fields. Move endpoint/run/output/hardware patching into `EvalTaskSpec`
+    # and leave only control-plane/task-selection flags on the CLI.
     # Batch run flags
     run_parser.add_argument(
         "--provider", choices=["anthropic", "openai", "google", "sglang", "vllm"]
@@ -449,6 +450,9 @@ Examples:
     hardware_config = eval_task.hardware
     server_config = eval_task.server
 
+    # TODO(boundary): this inline patching block reconstructs an eval run from
+    # CLI overrides instead of consuming one honest, already-resolved product
+    # type. Replace it once the CLI stops owning execution-spec mutation.
     # Apply CLI overrides
     if endpoint_config is None:
         if args.command == "run" and (
@@ -530,6 +534,9 @@ Examples:
                 results["reward"] = attempt.reward
             return results
 
+        # TODO(boundary): dispatch currently still branches on CLI-carried
+        # provisioning intent (`args.provision`) instead of a resolved eval
+        # runtime/materialization spec.
         if endpoint_config is not None and endpoint_config.provider in ("sglang", "vllm"):
             if endpoint_config.base_url:
                 return await run_with_sglang_local(

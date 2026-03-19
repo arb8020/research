@@ -1,64 +1,81 @@
 from __future__ import annotations
 
-import inspect
-from collections.abc import Callable
-from dataclasses import dataclass
-from typing import Any
+from dataclasses import replace
+from typing import TYPE_CHECKING
 
-from .types import AttemptRow, RolloutConfig, RolloutRuntime, SampleScorer, ScoringContext
+from .types import AttemptResult, AttemptRow, RolloutConfig, RolloutRuntime, Scorer, ScoringContext
 
-
-@dataclass(frozen=True)
-class FunctionSampleScorer:
-    """Adapter that turns the legacy score_fn into an explicit scoring stage."""
-
-    score_fn: Callable[[AttemptRow], Any]
-
-    async def score_samples(
-        self,
-        samples: list[AttemptRow],
-        contexts: list[ScoringContext | None] | None = None,
-    ) -> list[AttemptRow]:
-        del contexts
-        is_async = inspect.iscoroutinefunction(self.score_fn)
-
-        for sample in samples:
-            score = await self.score_fn(sample) if is_async else self.score_fn(sample)
-            sample.score = score
-            sample.reward = score.reward
-
-        return samples
+if TYPE_CHECKING:
+    from ..core import Score
 
 
-def resolve_sample_scorer(
+async def score_result(
+    scorer: Scorer,
+    result: AttemptResult,
+    context: ScoringContext | None = None,
+) -> Score:
+    from ..core import Score
+
+    resolved_context = context if context is not None else ScoringContext()
+    score = await scorer.score(result, resolved_context)
+    if not isinstance(score, Score):
+        raise TypeError(f"scorer.score() must return Score, got {type(score).__name__}")
+    return score
+
+
+def attach_score(result: AttemptResult, score: Score) -> AttemptResult:
+    result.score = score
+    result.reward = score.reward
+    return result
+
+
+async def score_results(
+    scorer: Scorer,
+    results: list[AttemptResult],
+    contexts: list[ScoringContext | None] | None = None,
+) -> list[AttemptResult]:
+    if contexts is not None and len(contexts) != len(results):
+        raise ValueError("contexts length must match results length")
+
+    scored_results: list[AttemptResult] = []
+    for index, result in enumerate(results):
+        context = contexts[index] if contexts is not None else None
+        scored_results.append(attach_score(result, await score_result(scorer, result, context)))
+    return scored_results
+
+
+async def score_rows(
+    scorer: Scorer,
+    rows: list[AttemptRow],
+    contexts: list[ScoringContext | None] | None = None,
+) -> list[AttemptRow]:
+    if contexts is not None and len(contexts) != len(rows):
+        raise ValueError("contexts length must match rows length")
+
+    results = [row.to_result() for row in rows]
+    await score_results(scorer, results, contexts=contexts)
+
+    for index, (row, result) in enumerate(zip(rows, results, strict=True)):
+        rows[index] = replace(
+            row,
+            reward=result.reward,
+            score=result.score,
+        )
+    return rows
+
+
+def resolve_scorer(
     *,
     config: RolloutConfig | None = None,
     runtime: RolloutRuntime | None = None,
-    sample_scorer: SampleScorer | None = None,
-    score_fn: Callable[[AttemptRow], Any] | None = None,
-) -> SampleScorer | None:
-    """Resolve the scoring stage with explicit precedence.
+    scorer: Scorer | None = None,
+) -> Scorer | None:
+    """Resolve the explicit scoring stage with clear precedence."""
 
-    Precedence:
-    1. Explicit sample_scorer argument
-    2. RolloutRuntime.sample_scorer
-    3. RolloutConfig.sample_scorer
-    4. Legacy score_fn argument
-    5. RolloutConfig.score_fn
-    """
-
-    # TODO(async-design-decisions.md): Once the main configs have all migrated to
-    # explicit sample scorers, remove the score_fn fallback path so scoring is
-    # always modeled as a first-class stage rather than an adapted callback.
-
-    if sample_scorer is not None:
-        return sample_scorer
-    if runtime is not None and runtime.sample_scorer is not None:
-        return runtime.sample_scorer
-    if config is not None and config.sample_scorer is not None:
-        return config.sample_scorer
-    if score_fn is not None:
-        return FunctionSampleScorer(score_fn)
-    if config is not None and config.score_fn is not None:
-        return FunctionSampleScorer(config.score_fn)
+    if scorer is not None:
+        return scorer
+    if runtime is not None and runtime.scorer is not None:
+        return runtime.scorer
+    if config is not None and config.scorer is not None:
+        return config.scorer
     return None

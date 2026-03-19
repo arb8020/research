@@ -87,33 +87,27 @@ def apply_sample_transforms(
     config: RolloutConfig,
     runtime: RolloutRuntime | None = None,
 ) -> list[AttemptRow]:
-    """Apply optional filter and score functions to samples.
+    """Apply optional filter transforms to samples.
 
     Pure function - no side effects.
 
     Args:
         samples: List of attempt rows
-        config: RolloutConfig with optional filter_fn and score_fn
+        config: RolloutConfig with optional filter_fn
 
     Returns:
-        Transformed samples (with reward populated from score_fn)
+        Transformed samples
     """
     resolved_runtime = resolve_rollout_runtime(config=config, runtime=runtime)
-    if resolved_runtime is not None and resolved_runtime.sample_scorer is not None:
+    if resolved_runtime is not None and resolved_runtime.scorer is not None:
         raise ValueError(
-            "Explicit sample scorers require an async rollout path. "
-            "Use AsyncRolloutManager/PipelinedRolloutManager or provide score_fn instead."
+            "Explicit scorers require an async rollout path. "
+            "Use AsyncRolloutManager/PipelinedRolloutManager instead."
         )
 
     if resolved_runtime is not None and resolved_runtime.filter_fn is not None:
         samples = resolved_runtime.filter_fn(samples)
         assert len(samples) > 0, "filter_fn must not filter out all samples"
-
-    if config.score_fn is not None:
-        # score_fn returns Score object, extract .reward for training
-        for sample in samples:
-            score = config.score_fn(sample)
-            sample.reward = score.reward
 
     return samples
 

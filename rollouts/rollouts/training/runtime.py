@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from .scoring import FunctionSampleScorer
+from .scoring import resolve_scorer
 from .types import RolloutConfig, RolloutRuntime
 
 
@@ -21,12 +21,8 @@ def resolve_rollout_runtime(
     if config is None or config.generate_fn is None:
         return None
 
-    sample_scorer = config.sample_scorer
-    if sample_scorer is None and config.score_fn is not None:
-        sample_scorer = FunctionSampleScorer(config.score_fn)
-
     return RolloutRuntime(
         generate_fn=config.generate_fn,
         filter_fn=config.filter_fn,
-        sample_scorer=sample_scorer,
+        scorer=resolve_scorer(config=config),
     )

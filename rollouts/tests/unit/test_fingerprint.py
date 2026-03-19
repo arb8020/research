@@ -3,12 +3,15 @@ from __future__ import annotations
 import pytest
 
 import rollouts.fingerprint as fingerprint_module
-from rollouts.core import Endpoint, EvalConfig, Message
+from rollouts.core import Endpoint, EvalConfig, Message, Metric, Score
 from rollouts.fingerprint import fingerprint_eval
+from rollouts.training.types import AttemptResult
 
 
-def _score_fn(sample: object) -> object:
-    return sample
+class _FingerprintScorer:
+    async def score(self, result: AttemptResult, context: object) -> Score:
+        del result, context
+        return Score(metrics=(Metric("reward", 0.0, weight=1.0),))
 
 
 def _prepare_messages(sample: dict[str, str]) -> list[Message]:
@@ -29,7 +32,7 @@ def test_fingerprint_eval_hash_changes_when_extra_config_changes(
             base_url="https://api.anthropic.com/v1",
             api_format="anthropic-messages",
         ),
-        score_fn=_score_fn,
+        scorer=_FingerprintScorer(),
         prepare_messages=_prepare_messages,
         max_samples=4,
     )

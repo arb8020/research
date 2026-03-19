@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from ..training.types import AttemptResult, SampleScorer, ScoringContext
+from ..training.types import AttemptResult, Scorer
 
 if TYPE_CHECKING:
     from ..agents import RunConfig
@@ -33,10 +33,6 @@ class Score:
         return sum(value * weight for value, weight in weighted) / total_weight
 
 
-ScoreFn = (
-    Callable[[AttemptResult], Score | Awaitable[Score]]
-    | Callable[[AttemptResult, ScoringContext | None], Score | Awaitable[Score]]
-)
 PrepareMessagesFn = Callable[[dict[str, Any]], list[Any]]
 EnvironmentFactory = Callable[[dict[str, Any]], Any]
 AttemptExecutor = Callable[
@@ -49,8 +45,7 @@ AttemptExecutor = Callable[
 class EvalConfig:
     endpoint: Endpoint | None
     prepare_messages: PrepareMessagesFn | None
-    score_fn: ScoreFn | None = None
-    sample_scorer: SampleScorer | None = None
+    scorer: Scorer | None = None
     environment: Environment | None = None
     # environment_factory is the preferred construction path for task environments.
     # It should be a thin wrapper around row_to_state + Environment.deserialize:
@@ -82,12 +77,5 @@ class EvalConfig:
     def __post_init__(self) -> None:
         if self.prepare_messages is None and self.attempt_executor is None:
             raise ValueError("EvalConfig requires either prepare_messages or attempt_executor")
-        if (
-            self.score_fn is None
-            and self.sample_scorer is None
-            and self.environment is None
-            and self.environment_factory is None
-        ):
-            raise ValueError(
-                "EvalConfig requires score_fn, sample_scorer, or an environment path that can own scoring"
-            )
+        if self.scorer is None:
+            raise ValueError("EvalConfig requires an explicit scorer")

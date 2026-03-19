@@ -515,18 +515,19 @@ class ScoringContext:
 
 
 @runtime_checkable
-class SampleScorer(Protocol):
-    """Explicit scoring stage for rollout samples.
+class Scorer(Protocol):
+    """Explicit scoring stage over raw execution results.
 
     Implementations may own separate scoring resources, admission logic, and
     observability without coupling that behavior to rollout generation.
+    Lifecycle, if needed, should be owned outside this protocol.
     """
 
-    async def score_samples(
+    async def score(
         self,
-        samples: list[AttemptRow],
-        contexts: list[ScoringContext | None] | None = None,
-    ) -> list[AttemptRow]: ...
+        result: AttemptResult,
+        context: ScoringContext,
+    ) -> "Score": ...
 
 
 @dataclass(frozen=True)
@@ -539,7 +540,7 @@ class RolloutRuntime:
 
     generate_fn: Callable
     filter_fn: Callable | None = None
-    sample_scorer: SampleScorer | None = None
+    scorer: Scorer | None = None
 
 
 @dataclass(frozen=True)
@@ -556,8 +557,9 @@ class RolloutConfig:
             sample-level filtering or assembly.
         max_refill_rounds: Maximum number of refill attempts for incomplete
             groups when using request_more policy.
-        generate_fn / score_fn / sample_scorer / filter_fn: Legacy runtime
-            wiring fields kept temporarily for backward compatibility.
+        generate_fn / scorer / filter_fn: Runtime wiring fields kept
+            temporarily on the config for backward compatibility. Prefer
+            RolloutRuntime for new code.
 
     Example:
         >>> async def my_generate(prompts, config):
@@ -583,14 +585,13 @@ class RolloutConfig:
 
     # Legacy runtime wiring. Prefer RolloutRuntime for new code.
     generate_fn: Callable | None = None
-    score_fn: Callable | None = None  # Backwards-compatible function scorer.
-    sample_scorer: SampleScorer | None = None
+    scorer: Scorer | None = None
     filter_fn: Callable | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dict for serialization.
 
-        Note: Functions (generate_fn, score_fn, filter_fn) are not serialized.
+        Note: Functions/objects (generate_fn, scorer, filter_fn) are not serialized.
         They must be re-provided when using from_dict().
 
         Returns:
@@ -608,8 +609,7 @@ class RolloutConfig:
             data["incomplete_group_policy"] = self.incomplete_group_policy.value
         # Remove non-serializable functions
         data.pop("generate_fn", None)
-        data.pop("score_fn", None)
-        data.pop("sample_scorer", None)
+        data.pop("scorer", None)
         data.pop("filter_fn", None)
         return data
 
@@ -617,18 +617,16 @@ class RolloutConfig:
     def from_dict(
         data: dict[str, Any],
         generate_fn: Callable | None = None,
-        score_fn: Callable | None = None,
         filter_fn: Callable | None = None,
-        sample_scorer: SampleScorer | None = None,
+        scorer: Scorer | None = None,
     ) -> "RolloutConfig":
         """Create RolloutConfig from dict.
 
         Args:
             data: Dict from to_dict()
             generate_fn: User-provided generation function (not serializable)
-            score_fn: User-provided score function (not serializable)
+            scorer: Explicit scoring stage (not serializable)
             filter_fn: User-provided filter function (not serializable)
-            sample_scorer: Explicit scoring stage (not serializable)
 
         Returns:
             RolloutConfig instance
@@ -646,8 +644,7 @@ class RolloutConfig:
         return RolloutConfig(
             **payload,
             generate_fn=generate_fn,
-            score_fn=score_fn,
-            sample_scorer=sample_scorer,
+            scorer=scorer,
             filter_fn=filter_fn,
         )
 

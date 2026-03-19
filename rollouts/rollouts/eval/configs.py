@@ -35,7 +35,7 @@ from typing import TYPE_CHECKING, Any, Literal
 if TYPE_CHECKING:
     from rollouts.agents.types import AgentState
     from rollouts.agents.types import RunConfig as AgentRunConfig
-    from rollouts.training.types import AttemptResult
+    from rollouts.training.types import AttemptResult, Scorer
 
 # Reuse HardwareConfig from training
 from rollouts.training.configs import HardwareConfig
@@ -250,8 +250,7 @@ class EvalTaskSpec:
     run_spec: AgentRunSpec
     tasks: list[dict[str, Any]] | None = None
     tasks_path: Path | None = None
-    score_fn: Callable[[Any], Any] | None = None
-    sample_scorer: Any | None = None
+    scorer: Scorer | None = None
     run: EvalRunConfig = field(default_factory=EvalRunConfig)
     output: EvalOutputConfig = field(default_factory=EvalOutputConfig)
     hardware: HardwareConfig | None = None
@@ -260,15 +259,8 @@ class EvalTaskSpec:
     def __post_init__(self) -> None:
         if (self.tasks is None) == (self.tasks_path is None):
             raise ValueError("EvalTaskSpec must define exactly one of tasks or tasks_path")
-        if (
-            self.score_fn is None
-            and self.sample_scorer is None
-            and self.run_spec.environment is None
-            and self.run_spec.environment_factory is None
-        ):
-            raise ValueError(
-                "EvalTaskSpec requires score_fn, sample_scorer, or an environment path that can own scoring"
-            )
+        if self.scorer is None:
+            raise ValueError("EvalTaskSpec requires an explicit scorer")
 
 
 def resolve_eval_run_spec(config_module: Any) -> AgentRunSpec:
@@ -337,8 +329,7 @@ def resolve_eval_task_spec(config_module: Any) -> EvalTaskSpec:
         run_spec=run_spec,
         tasks=tasks,
         tasks_path=Path(tasks_path) if tasks_path is not None else None,
-        score_fn=getattr(config_module, "score_fn", None),
-        sample_scorer=getattr(config_module, "sample_scorer", None),
+        scorer=getattr(config_module, "scorer", None),
         run=getattr(config_module, "run", EvalRunConfig()),
         output=getattr(config_module, "output", EvalOutputConfig()),
         hardware=getattr(config_module, "hardware", None),

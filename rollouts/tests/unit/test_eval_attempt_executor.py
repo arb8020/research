@@ -17,6 +17,20 @@ class _FakeEnvironment:
         return {"best_speedup": 1.5}
 
 
+class _ExactMatchScorer:
+    async def score(self, result: AttemptResult, context: object) -> Score:
+        del context
+        return Score(
+            metrics=(
+                Metric(
+                    "exact_match",
+                    1.0 if result.response == "olleh" and result.input["text"] == "hello" else 0.0,
+                    weight=1.0,
+                ),
+            )
+        )
+
+
 @pytest.mark.trio
 async def test_evaluate_sample_accepts_direct_attempt_executor(
     monkeypatch: pytest.MonkeyPatch,
@@ -55,17 +69,7 @@ async def test_evaluate_sample_accepts_direct_attempt_executor(
         endpoint=None,
         prepare_messages=None,
         attempt_executor=_execute_attempt,
-        score_fn=lambda attempt: Score(
-            metrics=(
-                Metric(
-                    "exact_match",
-                    1.0
-                    if attempt.response == "olleh" and attempt.input["text"] == "hello"
-                    else 0.0,
-                    weight=1.0,
-                ),
-            )
-        ),
+        scorer=_ExactMatchScorer(),
         verbose=False,
         show_progress=False,
     )

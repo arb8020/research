@@ -4,7 +4,6 @@ Design mirrors run_agent/run_agent_step for easy parallelization.
 Tiger Style: Pure functions, explicit configuration, no hidden state.
 """
 
-import inspect
 import json
 import logging
 import sys
@@ -32,12 +31,12 @@ from ..dtypes import (
 )
 from ..export_html import run_to_html, sample_to_html
 from ..progress import MultiProgress
+from ..training.scoring import attach_score, score_result
 from ..training.types import (
     AttemptEvaluation,
     AttemptResult,
-    AttemptRow,
     ProblemRow,
-    SampleScorer,
+    Scorer,
     ScoringContext,
 )
 
@@ -300,52 +299,15 @@ async def _serialize_environment_state(environment: Environment | None) -> dict[
         return None
 
 
-def _score_fn_accepts_context(score_fn: Callable[..., Any]) -> bool:
-    try:
-        params = inspect.signature(score_fn).parameters.values()
-    except (TypeError, ValueError):
-        return False
-    positional = 0
-    for param in params:
-        if param.kind in (
-            inspect.Parameter.VAR_POSITIONAL,
-            inspect.Parameter.VAR_KEYWORD,
-        ):
-            return True
-        if param.kind in (
-            inspect.Parameter.POSITIONAL_ONLY,
-            inspect.Parameter.POSITIONAL_OR_KEYWORD,
-        ):
-            positional += 1
-    return positional >= 2
-
-
 async def _compute_score(
-    score_fn: Callable[..., Any] | None,
     result: AttemptResult,
-    sample_scorer: SampleScorer | None = None,
+    scorer: Scorer,
     scoring_context: ScoringContext | None = None,
 ) -> Score:
-    """Compute score from either an explicit scorer stage or a raw-result score function."""
-    from typing import cast
+    """Compute score from an explicit scorer stage over a raw result."""
 
     try:
-        if sample_scorer is not None:
-            sample = AttemptRow.from_result(result)
-            await sample_scorer.score_samples([sample], contexts=[scoring_context])
-            if sample.score is None:
-                raise ValueError("sample_scorer must populate sample.score on each sample")
-            return sample.score
-
-        assert score_fn is not None, "score_fn required when sample_scorer is not provided"
-        if _score_fn_accepts_context(score_fn):
-            score_result = score_fn(result, scoring_context)
-        else:
-            score_result = score_fn(result)
-        if isawaitable(score_result):
-            return await score_result
-        else:
-            return cast(Score, score_result)
+        return await score_result(scorer, result, scoring_context)
     except Exception as e:
         logger.exception(f"❌ SCORE COMPUTATION FAILED: {e}")
         return Score(metrics=(Metric("error", 0.0, weight=1.0, metadata={"error": str(e)}),))
@@ -1188,27 +1150,13 @@ async def evaluate_sample(
     sample.metadata = {**sample.metadata, **exec_metadata}
 
     score: Score | None = None
-    env_score_fn = getattr(final_env, "score", None)
     try:
-        if config.sample_scorer is not None or config.score_fn is not None:
-            score = await _compute_score(
-                config.score_fn,
-                sample,
-                sample_scorer=config.sample_scorer,
-                scoring_context=ScoringContext(environment=final_env),
-            )
-        elif env_score_fn is not None:
-            try:
-                score = await env_score_fn(final_trajectory)
-            except Exception as e:
-                logger.warning(f"Environment score() failed for {sample_id}: {e}")
-                score = Score(
-                    metrics=(Metric("error", 0.0, weight=1.0, metadata={"error": str(e)}),)
-                )
-        else:
-            raise ValueError(
-                "evaluate_sample requires sample_scorer, score_fn, or environment.score()"
-            )
+        score = await _compute_score(
+            sample,
+            scorer=config.scorer,
+            scoring_context=ScoringContext(environment=final_env),
+        )
+        attach_score(sample, score)
     finally:
         # Close environment after scoring — sandbox/container is no longer needed
         await _close_environment(final_env, sample_id)
@@ -1250,7 +1198,7 @@ async def evaluate(
     Args:
         dataset: Iterator of sample dictionaries
         config: Evaluation configuration (includes endpoint, template/prepare_messages,
-                environment_factory, score_fn, and execution settings)
+                environment_factory, scorer, and execution settings)
 
     Returns:
         EvalReport with results and summary metrics
@@ -1258,7 +1206,7 @@ async def evaluate(
     Example:
         >>> config = EvalConfig(
         ...     endpoint=Endpoint.from_legacy(provider="openai", model="gpt-4o-mini"),
-        ...     score_fn=my_score_fn,
+        ...     scorer=my_scorer,
         ...     template=PromptTemplate(system="...", user_template="{question}"),
         ... )
         >>> report = await evaluate(dataset, config)
@@ -1623,7 +1571,7 @@ async def simple_evaluate(
     Args:
         dataset_path: Path to dataset file (.jsonl or .csv)
         config: Evaluation configuration (includes endpoint, template/prepare_messages,
-                environment_factory, score_fn, etc.)
+                environment_factory, scorer, etc.)
 
     Returns:
         EvalReport with results and summary metrics
@@ -1631,7 +1579,7 @@ async def simple_evaluate(
     Example:
         >>> config = EvalConfig(
         ...     endpoint=Endpoint(...),
-        ...     score_fn=my_score_fn,
+        ...     scorer=my_scorer,
         ...     template=PromptTemplate(system="...", user_template="{question}"),
         ... )
         >>> report = await simple_evaluate(Path("data.jsonl"), config)

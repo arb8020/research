@@ -23,7 +23,8 @@ from ..drivers.session_adapter import (
 )
 from ..dtypes import StopReason, Trajectory
 from ..store import FileSessionStore
-from ..training.types import AttemptRow, ProblemRow, ScoringContext, Status
+from ..training.scoring import attach_score
+from ..training.types import AttemptResult, ProblemRow, ScoringContext, Status
 from .configs import EvalOutputConfig, EvalRunConfig, resolve_eval_run_spec, resolve_eval_task_spec
 from .native import _compute_score
 from .run import load_tasks_from_module
@@ -195,30 +196,18 @@ def _interactive_codex_launch_kwargs(
     }
 
 
-async def _score_attempt(config_module: Any, env: Any | None, attempt: AttemptRow) -> None:
+async def _score_attempt(config_module: Any, env: Any | None, attempt: AttemptResult) -> None:
     eval_task = resolve_eval_task_spec(config_module)
-    score_fn = eval_task.score_fn
-    sample_scorer = eval_task.sample_scorer
-    score_method = getattr(env, "score", None)
+    scorer = eval_task.scorer
+    if scorer is None:
+        raise ValueError("launch requires an explicit scorer")
 
-    if score_fn is not None or sample_scorer is not None:
-        score = await _compute_score(
-            score_fn,
-            attempt.to_result(),
-            sample_scorer=sample_scorer,
-            scoring_context=ScoringContext(environment=env),
-        )
-    elif callable(score_method):
-        score = score_method(attempt.trajectory)
-        if hasattr(score, "__await__"):
-            score = await score
-    else:
-        raise ValueError(
-            "launch requires score_fn, sample_scorer, or an environment path that can own scoring"
-        )
-
-    attempt.score = score
-    attempt.reward = score.reward
+    score = await _compute_score(
+        attempt,
+        scorer=scorer,
+        scoring_context=ScoringContext(environment=env),
+    )
+    attach_score(attempt, score)
 
 
 async def _initialize_environment_for_launch(env: Any | None, sample_id: str) -> None:
@@ -268,8 +257,8 @@ def _build_attempt(
     runtime: str,
     control_mode: str,
     metadata: dict[str, Any] | None = None,
-) -> AttemptRow:
-    return AttemptRow(
+) -> AttemptResult:
+    return AttemptResult(
         attempt_id=sample_id,
         problem=ProblemRow(
             problem_id=sample_id,
@@ -493,7 +482,7 @@ async def launch_sample(
     output_config: EvalOutputConfig,
     model: str | None = None,
     session_store: FileSessionStore | None = None,
-) -> tuple[AttemptRow, str]:
+) -> tuple[AttemptResult, str]:
     if runtime not in {"claude_code", "codex"}:
         raise ValueError(f"Unsupported runtime for eval launch: {runtime}")
     if not sys.stdin.isatty() or not sys.stdout.isatty():
@@ -624,9 +613,6 @@ async def launch_sample(
         if session_stop_reason is not StopReason.TASK_COMPLETED:
             attempt.status = Status.ABORTED
         await _score_attempt(config_module, env, attempt)
-        if attempt.score is not None:
-            trajectory = replace(trajectory)
-            attempt.trajectory = trajectory
 
         if session_store is None:
             session_store = FileSessionStore()

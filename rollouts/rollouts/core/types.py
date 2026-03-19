@@ -31,7 +31,7 @@ from ..dtypes import (
     Usage,
 )
 from ..training.types import AttemptRow, ProblemRow, TrainingSample
-from .eval import EnvironmentFactory, EvalConfig, Metric, PrepareMessagesFn, Score, ScoreFn
+from .eval import EnvironmentFactory, EvalConfig, Metric, PrepareMessagesFn, Score
 from .session import EnvironmentConfig, SessionSummary
 
 __all__ = [
@@ -54,7 +54,6 @@ __all__ = [
     "PrepareMessagesFn",
     "AttemptRow",
     "Score",
-    "ScoreFn",
     "SessionSummary",
     "StopReason",
     "StreamChunk",

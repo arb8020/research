@@ -6,7 +6,7 @@ from rollouts.agents import Actor, AgentState
 from rollouts.core import EvalConfig, Metric, Score
 from rollouts.dtypes import Message, Trajectory
 from rollouts.eval.native import EvalRuntime, _AgentRunResult, evaluate_sample
-from rollouts.training.types import AttemptRow, ScoringContext
+from rollouts.training.types import AttemptResult, ScoringContext
 
 
 class _FakeEnvironment:
@@ -32,26 +32,18 @@ class _FakeEnvironment:
 
 
 class _ContextualScorer:
-    async def score_samples(
-        self,
-        samples: list[AttemptRow],
-        contexts: list[ScoringContext | None] | None = None,
-    ) -> list[AttemptRow]:
-        assert contexts is not None
-        for sample, context in zip(samples, contexts, strict=False):
-            assert context is not None
-            metadata = context.environment.get_runtime_metadata()
-            correct = 1.0 if metadata["has_correct_kernel"] else 0.0
-            speedup = float(metadata["best_speedup"])
-            sample.score = Score(
-                metrics=(
-                    Metric("reward", speedup, weight=1.0),
-                    Metric("correct", correct, weight=0.0),
-                    Metric("speedup", speedup, weight=0.0),
-                )
+    async def score(self, result: AttemptResult, context: ScoringContext) -> Score:
+        del result
+        metadata = context.environment.get_runtime_metadata()
+        correct = 1.0 if metadata["has_correct_kernel"] else 0.0
+        speedup = float(metadata["best_speedup"])
+        return Score(
+            metrics=(
+                Metric("reward", speedup, weight=1.0),
+                Metric("correct", correct, weight=0.0),
+                Metric("speedup", speedup, weight=0.0),
             )
-            sample.reward = sample.score.reward
-        return samples
+        )
 
 
 @pytest.mark.trio
@@ -89,7 +81,7 @@ async def test_evaluate_sample_scores_against_final_environment(
     config = EvalConfig(
         endpoint=None,
         prepare_messages=lambda _: [Message(role="user", content="hi")],
-        sample_scorer=_ContextualScorer(),
+        scorer=_ContextualScorer(),
         verbose=False,
         show_progress=False,
     )
