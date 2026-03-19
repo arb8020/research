@@ -19,6 +19,9 @@ Usage:
     python -m rollouts.eval.run --config ... --endpoint sglang --model Qwen/Qwen2.5-7B-Instruct
 
 Config files should export:
+    - eval_task: EvalTaskSpec (preferred)
+
+Legacy shape still supported:
     - endpoint: EndpointConfig (optional when attempt_executor supplies execution)
     - run: EvalRunConfig (optional, defaults provided)
     - output: EvalOutputConfig (optional, defaults provided)
@@ -163,12 +166,15 @@ def load_config_module(config_path: Path) -> Any:
 
 def load_tasks_from_module(config_module: Any) -> list[dict[str, Any]]:
     """Load task rows from an eval config module."""
-    if hasattr(config_module, "tasks"):
-        tasks = config_module.tasks
-    elif hasattr(config_module, "tasks_path"):
+    from .configs import resolve_eval_task_spec
+
+    eval_task = resolve_eval_task_spec(config_module)
+    if eval_task.tasks is not None:
+        tasks = eval_task.tasks
+    elif eval_task.tasks_path is not None:
         import json
 
-        tasks_path = Path(config_module.tasks_path)
+        tasks_path = eval_task.tasks_path
         data = json.loads(tasks_path.read_text())
         tasks = data if isinstance(data, list) else data.get("tasks", [])
     else:
@@ -205,6 +211,9 @@ async def run_with_api(
     from rollouts.agents import RunConfig as AgentRunConfig
     from rollouts.core import Endpoint, EvalConfig
     from rollouts.eval import evaluate
+    from rollouts.eval.configs import resolve_eval_task_spec
+
+    eval_task = resolve_eval_task_spec(config_module)
 
     endpoint = None
     if endpoint_config is not None:
@@ -239,44 +248,13 @@ async def run_with_api(
 
     logger.info(f"Loaded {len(tasks)} tasks")
 
-    run_spec = getattr(config_module, "run_spec", None)
-
-    # Get eval functions from config
-    prepare_messages = (
-        run_spec.prepare_messages
-        if run_spec is not None
-        else getattr(config_module, "prepare_messages", None)
-    )
-    attempt_executor = (
-        run_spec.attempt_executor
-        if run_spec is not None
-        else getattr(config_module, "attempt_executor", None)
-    )
-    score_fn = getattr(config_module, "score_fn", None)
-    sample_scorer = getattr(config_module, "sample_scorer", None)
-
-    # Environment (optional)
-    environment: Environment | None = run_spec.environment if run_spec is not None else None
-    environment_factory = run_spec.environment_factory if run_spec is not None else None
-    if run_spec is None and hasattr(config_module, "make_environment"):
-        make_env = config_module.make_environment
-        if (
-            hasattr(config_module, "per_sample_environment")
-            and config_module.per_sample_environment
-        ):
-            environment_factory = make_env
-        else:
-            environment = make_env()
-
-    if (
-        score_fn is None
-        and sample_scorer is None
-        and environment is None
-        and environment_factory is None
-    ):
-        raise ValueError(
-            "Eval configs must define score_fn, sample_scorer, or an environment path that can own scoring"
-        )
+    run_spec = eval_task.run_spec
+    prepare_messages = run_spec.prepare_messages
+    attempt_executor = run_spec.attempt_executor
+    score_fn = eval_task.score_fn
+    sample_scorer = eval_task.sample_scorer
+    environment: Environment | None = run_spec.environment
+    environment_factory = run_spec.environment_factory
 
     # Build agent run config
     async def silent_on_chunk(_: object) -> None:
@@ -367,10 +345,8 @@ def main() -> int:
 
     from .configs import (
         EndpointConfig,
-        EvalOutputConfig,
-        EvalRunConfig,
         HardwareConfig,
-        InferenceServerConfig,
+        resolve_eval_task_spec,
     )
 
     parser = argparse.ArgumentParser(
@@ -430,12 +406,6 @@ Examples:
         choices=["claude_code", "codex"],
         help="External runtime to launch",
     )
-    launch_parser.add_argument(
-        "--control-mode",
-        default="autonomous",
-        choices=["interactive", "autonomous"],
-        help="Who controls the runtime session",
-    )
     launch_parser.add_argument("--model", help="Override external runtime model")
     launch_parser.add_argument("--quiet", action="store_true")
 
@@ -468,21 +438,16 @@ Examples:
         print(str(exc), file=sys.stderr)
         return 1
 
+    eval_task = resolve_eval_task_spec(config_module)
+
     # Get configs with defaults
-    run_spec = getattr(config_module, "run_spec", None)
-    top_level_attempt_executor = getattr(config_module, "attempt_executor", None)
-    if run_spec is not None:
-        endpoint_config = run_spec.endpoint
-    elif hasattr(config_module, "endpoint"):
-        endpoint_config = config_module.endpoint
-    elif top_level_attempt_executor is not None:
-        endpoint_config = None
-    else:
+    endpoint_config = eval_task.run_spec.endpoint
+    if endpoint_config is None and eval_task.run_spec.attempt_executor is None:
         endpoint_config = EndpointConfig()
-    run_config = getattr(config_module, "run", EvalRunConfig())
-    output_config = getattr(config_module, "output", EvalOutputConfig())
-    hardware_config = getattr(config_module, "hardware", None)
-    server_config = getattr(config_module, "server", InferenceServerConfig())
+    run_config = eval_task.run
+    output_config = eval_task.output
+    hardware_config = eval_task.hardware
+    server_config = eval_task.server
 
     # Apply CLI overrides
     if endpoint_config is None:
@@ -530,7 +495,7 @@ Examples:
     if args.command == "launch":
         print(f"Launch sample: {args.sample}")
         print(f"Runtime: {args.runtime}")
-        print(f"Control mode: {args.control_mode}")
+        print("Control mode: interactive")
     else:
         if endpoint_config is None:
             print("Endpoint: direct-attempt executor")
@@ -550,7 +515,6 @@ Examples:
                 config_path=config_path,
                 sample_selector=args.sample,
                 runtime=args.runtime,
-                control_mode=args.control_mode,
                 run_config=run_config,
                 output_config=output_config,
                 model=args.model,
@@ -559,7 +523,7 @@ Examples:
                 "sample_id": attempt.id,
                 "session_id": session_id,
                 "runtime": args.runtime,
-                "control_mode": args.control_mode,
+                "control_mode": "interactive",
                 "message_count": len(attempt.trajectory.messages) if attempt.trajectory else 0,
             }
             if attempt.score is not None:

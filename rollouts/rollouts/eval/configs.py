@@ -28,7 +28,7 @@ Example usage:
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -43,6 +43,7 @@ from rollouts.training.configs import HardwareConfig
 __all__ = [
     "AgentRunSpec",
     "AttemptExecutor",
+    "EvalTaskSpec",
     "EndpointConfig",
     "EvalRunConfig",
     "EvalOutputConfig",
@@ -53,6 +54,8 @@ __all__ = [
     "TokenBudgetStop",
     "CostBudgetStop",
     "WallClockStop",
+    "resolve_eval_run_spec",
+    "resolve_eval_task_spec",
 ]
 
 
@@ -107,15 +110,24 @@ class AgentRunSpec:
     This is the eval-side product type closest to what one `run_agent(...)`
     execution needs: either an endpoint-driven agent loop or a custom
     attempt executor, plus optional environment ownership and stop/no-tool
-    behavior. Dataset iteration, concurrency, retries, and output policy
-    still belong to EvalRunConfig/EvalOutputConfig.
+    behavior. Runtime-specific external CLI knobs belong in
+    `external_agent_args`; they are intentionally passed through without
+    pretending Claude/Codex/OpenHands share one honest permission algebra.
+    Dataset iteration, concurrency, retries, and output policy still belong
+    to EvalRunConfig/EvalOutputConfig.
     """
+
+    # TODO(sum-type): This dataclass currently encodes two execution branches:
+    # native rollouts execution (`endpoint` + `prepare_messages`) and external/custom
+    # execution (`attempt_executor`). If the surface keeps growing, split this into
+    # an explicit sum type instead of adding more branch-specific optional fields.
 
     endpoint: EndpointConfig | None = None
     prepare_messages: Callable[[dict[str, Any]], list[Any]] | None = None
     environment: Any | None = None
     environment_factory: Callable[[dict[str, Any]], Any] | None = None
     attempt_executor: AttemptExecutor | None = None
+    external_agent_args: dict[str, Any] = field(default_factory=dict)
     stop_handler: EvalStopHandler | None = None
     handle_no_tool: Callable[[AgentState, AgentRunConfig], Awaitable[AgentState]] | None = None
 
@@ -223,3 +235,112 @@ class InferenceServerConfig:
     dtype: str = "bfloat16"
     startup_timeout: int = 300
     health_check_interval: int = 5
+
+
+@dataclass(frozen=True)
+class EvalTaskSpec:
+    """Explicit eval task product type.
+
+    This is the first honest eval authoring surface for the current runner:
+    dataset source, per-sample execution spec, scoring path, run settings, and
+    output policy all travel together instead of being inferred from a bag of
+    top-level module exports.
+    """
+
+    run_spec: AgentRunSpec
+    tasks: list[dict[str, Any]] | None = None
+    tasks_path: Path | None = None
+    score_fn: Callable[[Any], Any] | None = None
+    sample_scorer: Any | None = None
+    run: EvalRunConfig = field(default_factory=EvalRunConfig)
+    output: EvalOutputConfig = field(default_factory=EvalOutputConfig)
+    hardware: HardwareConfig | None = None
+    server: InferenceServerConfig = field(default_factory=InferenceServerConfig)
+
+    def __post_init__(self) -> None:
+        if (self.tasks is None) == (self.tasks_path is None):
+            raise ValueError("EvalTaskSpec must define exactly one of tasks or tasks_path")
+        if (
+            self.score_fn is None
+            and self.sample_scorer is None
+            and self.run_spec.environment is None
+            and self.run_spec.environment_factory is None
+        ):
+            raise ValueError(
+                "EvalTaskSpec requires score_fn, sample_scorer, or an environment path that can own scoring"
+            )
+
+
+def resolve_eval_run_spec(config_module: Any) -> AgentRunSpec:
+    """Normalize just the per-sample execution part of an eval config."""
+
+    eval_task = getattr(config_module, "eval_task", None)
+    if eval_task is not None:
+        if not isinstance(eval_task, EvalTaskSpec):
+            raise ValueError("Eval config must export eval_task: EvalTaskSpec")
+        return eval_task.run_spec
+
+    run_spec = getattr(config_module, "run_spec", None)
+    if run_spec is not None:
+        if not isinstance(run_spec, AgentRunSpec):
+            raise ValueError("Eval config must export run_spec: AgentRunSpec")
+        endpoint = getattr(config_module, "endpoint", None)
+        if endpoint is not None and run_spec.endpoint is None:
+            return replace(run_spec, endpoint=endpoint)
+        return run_spec
+
+    prepare_messages = getattr(config_module, "prepare_messages", None)
+    attempt_executor = getattr(config_module, "attempt_executor", None)
+    if not callable(prepare_messages) and not callable(attempt_executor):
+        raise ValueError(
+            "Eval config must export callable prepare_messages or attempt_executor or run_spec"
+        )
+
+    environment = None
+    environment_factory = None
+    if hasattr(config_module, "make_environment"):
+        make_env = config_module.make_environment
+        if (
+            hasattr(config_module, "per_sample_environment")
+            and config_module.per_sample_environment
+        ):
+            environment_factory = make_env
+        else:
+            environment = make_env()
+
+    return AgentRunSpec(
+        endpoint=getattr(config_module, "endpoint", None),
+        prepare_messages=prepare_messages if callable(prepare_messages) else None,
+        environment=environment,
+        environment_factory=environment_factory,
+        attempt_executor=attempt_executor if callable(attempt_executor) else None,
+    )
+
+
+def resolve_eval_task_spec(config_module: Any) -> EvalTaskSpec:
+    """Normalize legacy eval module exports into an explicit EvalTaskSpec."""
+
+    eval_task = getattr(config_module, "eval_task", None)
+    if eval_task is not None:
+        if not isinstance(eval_task, EvalTaskSpec):
+            raise ValueError("Eval config must export eval_task: EvalTaskSpec")
+        return eval_task
+
+    run_spec = resolve_eval_run_spec(config_module)
+
+    tasks = getattr(config_module, "tasks", None)
+    tasks_path = getattr(config_module, "tasks_path", None)
+    if tasks is None and tasks_path is None:
+        raise ValueError("Eval config must define 'tasks' or 'tasks_path'")
+
+    return EvalTaskSpec(
+        run_spec=run_spec,
+        tasks=tasks,
+        tasks_path=Path(tasks_path) if tasks_path is not None else None,
+        score_fn=getattr(config_module, "score_fn", None),
+        sample_scorer=getattr(config_module, "sample_scorer", None),
+        run=getattr(config_module, "run", EvalRunConfig()),
+        output=getattr(config_module, "output", EvalOutputConfig()),
+        hardware=getattr(config_module, "hardware", None),
+        server=getattr(config_module, "server", InferenceServerConfig()),
+    )

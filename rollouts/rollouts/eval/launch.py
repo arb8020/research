@@ -21,11 +21,10 @@ from ..drivers.session_adapter import (
     find_claude_session,
     read_codex_session_id,
 )
-from ..dtypes import Trajectory
+from ..dtypes import StopReason, Trajectory
 from ..store import FileSessionStore
 from ..training.types import AttemptRow, ProblemRow, ScoringContext, Status
-from .configs import EvalOutputConfig, EvalRunConfig
-from .external_attempts import trajectory_from_claude_code, trajectory_from_codex
+from .configs import EvalOutputConfig, EvalRunConfig, resolve_eval_run_spec, resolve_eval_task_spec
 from .native import _compute_score
 from .run import load_tasks_from_module
 
@@ -89,12 +88,8 @@ def _message_text(content: Any) -> str:
 
 
 def _build_launch_prompt(config_module: Any, sample_data: dict[str, Any]) -> str:
-    run_spec = getattr(config_module, "run_spec", None)
-    prepare_messages = (
-        run_spec.prepare_messages
-        if run_spec is not None and run_spec.prepare_messages is not None
-        else getattr(config_module, "prepare_messages", None)
-    )
+    run_spec = resolve_eval_run_spec(config_module)
+    prepare_messages = run_spec.prepare_messages
     if prepare_messages is None:
         raise ValueError(
             "rollouts eval launch requires prepare_messages(...) so the launcher can "
@@ -166,9 +161,44 @@ def _json_safe_environment_state(environment_state: dict[str, Any] | None) -> di
     return environment_state
 
 
+def _external_agent_args(config_module: Any) -> dict[str, Any]:
+    return dict(resolve_eval_run_spec(config_module).external_agent_args)
+
+
+def _interactive_claude_launch_kwargs(
+    config_module: Any,
+    *,
+    cwd: Path,
+    model: str,
+) -> dict[str, Any]:
+    external_agent_args = _external_agent_args(config_module)
+    return {
+        **external_agent_args,
+        "cwd": cwd,
+        "model": model,
+    }
+
+
+def _interactive_codex_launch_kwargs(
+    config_module: Any,
+    *,
+    cwd: Path,
+    model: str,
+    default_sandbox: str,
+) -> dict[str, Any]:
+    external_agent_args = _external_agent_args(config_module)
+    return {
+        **external_agent_args,
+        "cwd": cwd,
+        "model": model,
+        "sandbox": external_agent_args.get("sandbox", default_sandbox),
+    }
+
+
 async def _score_attempt(config_module: Any, env: Any | None, attempt: AttemptRow) -> None:
-    score_fn = getattr(config_module, "score_fn", None)
-    sample_scorer = getattr(config_module, "sample_scorer", None)
+    eval_task = resolve_eval_task_spec(config_module)
+    score_fn = eval_task.score_fn
+    sample_scorer = eval_task.sample_scorer
     score_method = getattr(env, "score", None)
 
     if score_fn is not None or sample_scorer is not None:
@@ -333,7 +363,10 @@ async def _launch_interactive_claude(
     prompt: str,
     cwd: Path,
     model: str,
-) -> tuple[Trajectory, dict[str, Any], str]:
+    allowed_tools: list[str] | None = None,
+    system_prompt: str | None = None,
+    dangerously_skip_permissions: bool = True,
+) -> tuple[Trajectory, dict[str, Any], StopReason]:
     claude_bin = shutil.which("claude")
     if claude_bin is None:
         raise RuntimeError(
@@ -347,9 +380,14 @@ async def _launch_interactive_claude(
         model,
         "--session-id",
         session_id,
-        "--dangerously-skip-permissions",
-        prompt,
     ]
+    if dangerously_skip_permissions:
+        cmd.append("--dangerously-skip-permissions")
+    if system_prompt is not None:
+        cmd.extend(["--system-prompt", system_prompt])
+    if allowed_tools:
+        cmd.extend(["--allowedTools", ",".join(allowed_tools)])
+    cmd.append(prompt)
 
     print(
         f"Launching Claude Code interactively in {cwd}.\n"
@@ -369,7 +407,7 @@ async def _launch_interactive_claude(
     if not messages:
         raise RuntimeError(f"Claude Code session {session_id} produced no importable messages.")
 
-    status = Status.COMPLETED if returncode == 0 else Status.ABORTED
+    stop_reason = StopReason.TASK_COMPLETED if returncode == 0 else StopReason.ABORTED
     trajectory = Trajectory(messages=messages)
     metadata = {
         "runtime": "claude_code",
@@ -380,7 +418,11 @@ async def _launch_interactive_claude(
         "session_path": str(session_path),
         "returncode": returncode,
     }
-    return trajectory, metadata, status.value
+    if allowed_tools:
+        metadata["allowed_tools"] = list(allowed_tools)
+    if system_prompt is not None:
+        metadata["system_prompt"] = system_prompt
+    return trajectory, metadata, stop_reason
 
 
 async def _launch_interactive_codex(
@@ -388,7 +430,9 @@ async def _launch_interactive_codex(
     prompt: str,
     cwd: Path,
     model: str,
-) -> tuple[Trajectory, dict[str, Any], str]:
+    sandbox: str = "workspace-write",
+    ask_for_approval: str = "never",
+) -> tuple[Trajectory, dict[str, Any], StopReason]:
     codex_bin = shutil.which("codex")
     if codex_bin is None:
         raise RuntimeError("Codex CLI not found. Install from: https://github.com/openai/codex")
@@ -399,9 +443,9 @@ async def _launch_interactive_codex(
         "--model",
         model,
         "--sandbox",
-        "workspace-write",
+        sandbox,
         "--ask-for-approval",
-        "never",
+        ask_for_approval,
         prompt,
     ]
 
@@ -424,18 +468,19 @@ async def _launch_interactive_codex(
         raise RuntimeError(f"Codex session at {session_path} produced no importable messages.")
 
     session_id = read_codex_session_id(session_path)
-    status = Status.COMPLETED if returncode == 0 else Status.ABORTED
+    stop_reason = StopReason.TASK_COMPLETED if returncode == 0 else StopReason.ABORTED
     trajectory = Trajectory(messages=messages)
     metadata = {
         "runtime": "codex",
         "driver": "interactive-cli",
         "model": model,
         "cwd": str(cwd),
+        "sandbox": sandbox,
         "session_id": session_id,
         "session_path": str(session_path),
         "returncode": returncode,
     }
-    return trajectory, metadata, status.value
+    return trajectory, metadata, stop_reason
 
 
 async def launch_sample(
@@ -444,7 +489,6 @@ async def launch_sample(
     config_path: Path,
     sample_selector: str,
     runtime: str,
-    control_mode: str,
     run_config: EvalRunConfig,
     output_config: EvalOutputConfig,
     model: str | None = None,
@@ -452,9 +496,7 @@ async def launch_sample(
 ) -> tuple[AttemptRow, str]:
     if runtime not in {"claude_code", "codex"}:
         raise ValueError(f"Unsupported runtime for eval launch: {runtime}")
-    if control_mode not in {"autonomous", "interactive"}:
-        raise ValueError(f"Unsupported control mode for eval launch: {control_mode}")
-    if control_mode == "interactive" and (not sys.stdin.isatty() or not sys.stdout.isatty()):
+    if not sys.stdin.isatty() or not sys.stdout.isatty():
         raise ValueError(
             "Interactive eval launch requires a real terminal (stdin/stdout must be TTYs)."
         )
@@ -462,14 +504,8 @@ async def launch_sample(
     tasks = load_tasks_from_module(config_module)
     sample_id, sample_data = _resolve_sample(tasks, sample_selector)
 
-    run_spec = getattr(config_module, "run_spec", None)
-    environment_factory = run_spec.environment_factory if run_spec is not None else None
-    if (
-        run_spec is None
-        and hasattr(config_module, "make_environment")
-        and getattr(config_module, "per_sample_environment", False)
-    ):
-        environment_factory = config_module.make_environment
+    run_spec = resolve_eval_run_spec(config_module)
+    environment_factory = run_spec.environment_factory
 
     env = None
     environment_state = None
@@ -497,45 +533,34 @@ async def launch_sample(
                     cwd = Path(value)
                     break
 
-        timeout_seconds = float(getattr(run_config, "max_turns", 10) * 60)
         runtime_model = model or ("sonnet" if runtime == "claude_code" else "gpt-5.1-codex-mini")
-        session_status = Status.COMPLETED.value
-        if control_mode == "autonomous" and runtime == "claude_code":
-            artifact = await trajectory_from_claude_code(
-                prompt,
-                sample_id,
-                sample_data,
-                cwd=cwd,
-                run_config=None,
-                model=runtime_model,
-                timeout_seconds=timeout_seconds,
-            )
-            base_trajectory = artifact.trajectory
-            artifact_metadata = artifact.metadata
-        elif control_mode == "autonomous":
-            artifact = await trajectory_from_codex(
-                prompt,
-                sample_id,
-                sample_data,
-                cwd=cwd,
-                run_config=None,
-                model=runtime_model,
-                sandbox="workspace-write",
-                timeout_seconds=timeout_seconds,
-            )
-            base_trajectory = artifact.trajectory
-            artifact_metadata = artifact.metadata
-        elif runtime == "claude_code":
-            base_trajectory, artifact_metadata, session_status = await _launch_interactive_claude(
+        session_stop_reason = StopReason.TASK_COMPLETED
+        if runtime == "claude_code":
+            (
+                base_trajectory,
+                artifact_metadata,
+                session_stop_reason,
+            ) = await _launch_interactive_claude(
                 prompt=prompt,
-                cwd=cwd,
-                model=runtime_model,
+                **_interactive_claude_launch_kwargs(
+                    config_module,
+                    cwd=cwd,
+                    model=runtime_model,
+                ),
             )
         else:
-            base_trajectory, artifact_metadata, session_status = await _launch_interactive_codex(
+            (
+                base_trajectory,
+                artifact_metadata,
+                session_stop_reason,
+            ) = await _launch_interactive_codex(
                 prompt=prompt,
-                cwd=cwd,
-                model=runtime_model,
+                **_interactive_codex_launch_kwargs(
+                    config_module,
+                    cwd=cwd,
+                    model=runtime_model,
+                    default_sandbox="workspace-write",
+                ),
             )
 
         now = datetime.now().isoformat()
@@ -544,7 +569,7 @@ async def launch_sample(
             base_trajectory,
             session=TrajectorySession(
                 endpoint=endpoint,
-                status=session_status,
+                stop_reason=session_stop_reason,
                 created_at=now,
                 updated_at=now,
                 tags={
@@ -552,7 +577,7 @@ async def launch_sample(
                     "eval_config": str(config_path),
                     "sample_id": sample_id,
                     "runtime": runtime,
-                    "control_mode": control_mode,
+                    "control_mode": "interactive",
                 },
             ),
             environment=_build_environment_bundle(env, environment_state),
@@ -586,7 +611,7 @@ async def launch_sample(
             trajectory=trajectory,
             environment_state=environment_state,
             runtime=runtime,
-            control_mode=control_mode,
+            control_mode="interactive",
             metadata={
                 **(
                     dict(sample_data.get("metadata", {}))
@@ -596,7 +621,7 @@ async def launch_sample(
                 **trajectory.metadata,
             },
         )
-        if session_status != Status.COMPLETED.value:
+        if session_stop_reason is not StopReason.TASK_COMPLETED:
             attempt.status = Status.ABORTED
         await _score_attempt(config_module, env, attempt)
         if attempt.score is not None:

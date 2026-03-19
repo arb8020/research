@@ -28,15 +28,27 @@ def _require_prime_ci_status(config_module: Any, config_path: Path) -> None:
 def validate_train_config_module(config_module: Any, config_path: Path) -> None:
     """Validate the module contract for train/run entrypoints."""
     _require_prime_ci_status(config_module, config_path)
+    # TODO(boundary): this module export contract (`config` here, callable
+    # `train(...)` at the runner) wants to collapse into one explicit training
+    # workload product type instead of split module-level conventions.
     if not hasattr(config_module, "config"):
         raise ValueError(f"Training config {config_path} must export 'config'")
 
 
 def validate_eval_config_module(config_module: Any, config_path: Path) -> None:
     """Validate the module contract for eval entrypoints."""
-    from .eval.configs import AgentRunSpec
+    from .eval.configs import AgentRunSpec, EvalTaskSpec
 
     _require_prime_ci_status(config_module, config_path)
+    # TODO(boundary): these eval exports (`tasks`, `run_spec` /
+    # `prepare_messages`, scorer, run/output) want to be one explicit eval task
+    # product type instead of a bag of top-level module attributes.
+
+    eval_task = getattr(config_module, "eval_task", None)
+    if eval_task is not None:
+        if not isinstance(eval_task, EvalTaskSpec):
+            raise ValueError(f"Eval config {config_path} must export eval_task: EvalTaskSpec")
+        return
 
     has_tasks = hasattr(config_module, "tasks")
     has_tasks_path = hasattr(config_module, "tasks_path")

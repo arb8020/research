@@ -8,7 +8,13 @@ from difflib import SequenceMatcher
 from examples.rl.reverse_text.base_config import SYSTEM_PROMPT, parse_reversed_text
 from rollouts.config_status import import_tested
 from rollouts.core import Message, Metric, Score
-from rollouts.eval import EndpointConfig, EvalOutputConfig, EvalRunConfig
+from rollouts.eval import (
+    AgentRunSpec,
+    EndpointConfig,
+    EvalOutputConfig,
+    EvalRunConfig,
+    EvalTaskSpec,
+)
 from rollouts.training.scoring import FunctionSampleScorer
 from rollouts.training.types import AttemptRow
 
@@ -16,34 +22,6 @@ config_status = import_tested(
     "70bce1bf",
     "Imports cleanly and exercises the shared eval path with explicit sample scoring.",
 )
-
-endpoint = EndpointConfig(
-    provider="anthropic",
-    model="claude-sonnet-4-20250514",
-    temperature=0.0,
-    max_tokens=256,
-)
-
-run = EvalRunConfig(
-    max_concurrent=4,
-    max_samples=12,
-    max_turns=1,
-    verbose=True,
-    show_progress=True,
-)
-
-output = EvalOutputConfig(
-    experiment_name="prime_ci_reverse_text_eval_api",
-)
-
-tasks = [
-    {"text": "hello world"},
-    {"text": "prime intellect"},
-    {"text": "reverse this string"},
-    {"text": "attention is all you need"},
-    {"text": "kernelbench is harder than reverse text"},
-    {"text": "abc123xyz"},
-]
 
 
 def prepare_messages(sample: dict[str, str]) -> list[Message]:
@@ -86,3 +64,36 @@ def reverse_text_eval_score_fn(sample: AttemptRow) -> Score:
 
 
 sample_scorer = FunctionSampleScorer(reverse_text_eval_score_fn)
+
+run_spec = AgentRunSpec(
+    endpoint=EndpointConfig(
+        provider="anthropic",
+        model="claude-sonnet-4-20250514",
+        temperature=0.0,
+        max_tokens=256,
+    ),
+    prepare_messages=prepare_messages,
+)
+
+eval_task = EvalTaskSpec(
+    tasks=[
+        {"text": "hello world"},
+        {"text": "prime intellect"},
+        {"text": "reverse this string"},
+        {"text": "attention is all you need"},
+        {"text": "kernelbench is harder than reverse text"},
+        {"text": "abc123xyz"},
+    ],
+    run=EvalRunConfig(
+        max_concurrent=4,
+        max_samples=12,
+        max_turns=1,
+        verbose=True,
+        show_progress=True,
+    ),
+    output=EvalOutputConfig(
+        experiment_name="prime_ci_reverse_text_eval_api",
+    ),
+    run_spec=run_spec,
+    sample_scorer=sample_scorer,
+)
