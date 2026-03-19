@@ -61,6 +61,10 @@ class BrokerBifrostWorkspaceLeasePoolConfig:
 
 @dataclass
 class BrokerBifrostWorkspaceResource:
+    # TODO(session-first): this should become the canonical
+    # `InspectableRemoteSession` example. The honest substrate is Bifrost exec
+    # + upload/download over a live SSH session; the workspace shape should be
+    # derived via `SessionBackedWorkspaceHandle`.
     config: BrokerBifrostWorkspaceResourceConfig
     sample_data: dict[str, Any] = field(default_factory=dict)
     _instance_id: str | None = field(default=None, repr=False)

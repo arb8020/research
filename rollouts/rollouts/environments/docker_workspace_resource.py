@@ -66,6 +66,11 @@ class DockerWorkspaceResource:
 
     Satisfies CodingWorkspaceResource and CommandRunner, so it can be passed
     directly to CodingEnvironment as both workspace= and command_runner=.
+
+    TODO(session-first): this should eventually become a Docker-backed
+    `InspectableRemoteSession` plus a `SessionBackedWorkspaceHandle`, since the
+    real substrate here is `docker exec` + `docker cp`, not the flattened
+    workspace protocol.
     """
 
     config: DockerWorkspaceResourceConfig

@@ -76,6 +76,10 @@ class ModalSandboxLease:
 
 @dataclass
 class ModalSandboxResource:
+    # TODO(session-first): this should eventually be split into a Modal-backed
+    # `InspectableRemoteSession` plus a `SessionBackedWorkspaceHandle`. The
+    # actual substrate here is modal exec + file movement, not the flattened
+    # workspace protocol.
     config: ModalSandboxResourceConfig
     sample_data: dict[str, Any] = field(default_factory=dict)
     workspace_setup: Any | None = None

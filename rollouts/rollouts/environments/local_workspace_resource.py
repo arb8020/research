@@ -46,6 +46,10 @@ class LocalWorkspaceResource:
 
     Satisfies CodingWorkspaceResource and CommandRunner, so it can be passed
     directly to CodingEnvironment as both workspace= and command_runner=.
+
+    TODO(session-first): model this as a local `InspectableRemoteSession`
+    analogue plus `SessionBackedWorkspaceHandle` so local, Docker, Modal, and
+    SSH-backed sandboxes all share the same substrate boundary.
     """
 
     source_dir: Path
