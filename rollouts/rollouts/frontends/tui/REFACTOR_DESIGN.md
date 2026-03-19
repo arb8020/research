@@ -394,7 +394,7 @@ async def load_session_state(
     # ... build and return AgentState
 
 # TUI update - side effect
-def update_tui_for_session(tui: TUI, renderer: AgentRenderer, session: SessionHandle):
+def update_tui_for_session(tui: TUI, renderer: AgentRenderer, session: Trajectory):
     renderer.clear_chat()
     renderer.render_history(session.messages)
     tui.reset_render_state()

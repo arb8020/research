@@ -18,7 +18,7 @@ This document proposes the direction for a refactor where `Trajectory` becomes t
 Current implementation direction:
 
 - `Trajectory` is the canonical durable session object.
-- `SessionHandle` is the thin live CLI/TUI wrapper over a `Trajectory`.
+- full session loads use `Trajectory` directly.
 - `SessionSummary` is the cheap list/index read model.
 - `AgentSession` has been removed from live code. Historical docs may still mention it.
 
@@ -326,7 +326,6 @@ Reason:
 So the likely boundary is:
 
 - `Trajectory` stores durable semantic state
-- `SessionHandle` owns live CLI/TUI orchestration around a trajectory
 - `SessionSummary` owns cheap list/index metadata
 - sidecars or store-owned metadata handle transient control state
 
@@ -335,10 +334,9 @@ So the likely boundary is:
 Long term, ownership should simplify to:
 
 - `Trajectory`: canonical durable semantic record
-- `SessionHandle`: live wrapper for coding CLI/TUI and orchestration
 - `SessionSummary`: cheap listing/index view
 - `agents.py`: canonical runtime transition owner
-- `store.py`: persistence of canonical trajectory + small control-plane sidecars
+- `store.py`: persistence of canonical trajectory + small adjunct metadata only if needed
 - frontends: rendering and input only
 
 This would remove the current "session wrapper vs runtime trace" split and reduce state reconstruction in the CLI/TUI.

@@ -15,7 +15,6 @@ from ..core import (
     Endpoint,
     Environment,
     Message,
-    SessionStatus,
 )
 from ..dtypes import (
     LLMCallEnd,
@@ -953,7 +952,7 @@ async def run_agent(
             if session_store and current_state.session_id:
                 await session_store.update(
                     current_state.session_id,
-                    status=SessionStatus.ABORTED,
+                    stop_reason=StopReason.ABORTED,
                 )
 
         # Return states instead of re-raising - caller can check stop reason
@@ -962,26 +961,15 @@ async def run_agent(
     # Save final state
     await handle_checkpoint_event(current_state, "final", run_config, current_state.session_id)
 
-    # Save final session status and environment state
+    # Save final stop reason and environment state
     if session_store and current_state.session_id:
-        if current_state.stop == StopReason.TASK_COMPLETED:
-            status = SessionStatus.COMPLETED
-        elif current_state.stop == StopReason.ABORTED:
-            status = SessionStatus.ABORTED
-        elif current_state.stop == StopReason.NEEDS_INPUT:
-            status = SessionStatus.WAITING
-        elif current_state.stop in (StopReason.MAX_TURNS,):
-            status = SessionStatus.TRUNCATED
-        else:
-            status = SessionStatus.PENDING
-
         env_state = None
         if current_state.environment is not None:
             env_state = await current_state.environment.serialize()
 
         await session_store.update(
             current_state.session_id,
-            status=status,
+            stop_reason=current_state.stop,
             environment_state=env_state,
         )
 

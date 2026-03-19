@@ -7,9 +7,6 @@ from typing import Any
 import trio
 
 from ..core import (
-    Message,
-    SessionHandle,
-    SessionStatus,
     Trajectory,
     TrajectoryEnvironment,
     TrajectorySession,
@@ -38,7 +35,7 @@ def format_time_ago(dt_str: str) -> str:
         return dt_str[:10]
 
 
-async def pick_session_async(session_store: FileSessionStore) -> SessionHandle | None:
+async def pick_session_async(session_store: FileSessionStore) -> Trajectory | None:
     sessions = await session_store.list(limit=20)
     if not sessions:
         print("No sessions found.", file=sys.stderr)
@@ -124,7 +121,7 @@ def cmd_export(config: Any, session_store: FileSessionStore) -> int:
 
 
 def _diagnose_session_issues(
-    session: SessionHandle,
+    session: Trajectory,
 ) -> list[tuple[str, str, list[int]]]:
     issues: list[tuple[str, str, list[int]]] = []
 
@@ -169,7 +166,7 @@ def _diagnose_session_issues(
 
 
 async def _fix_session_issues(
-    session: SessionHandle,
+    session: Trajectory,
     issues: list[tuple[str, str, list[int]]],
     session_store: FileSessionStore,
 ) -> int:
@@ -185,18 +182,16 @@ async def _fix_session_issues(
     fixed_messages = [msg for i, msg in enumerate(session.messages) if i not in indices_to_remove]
     fixed_trajectory = Trajectory(
         messages=fixed_messages,
-        annotations=session.to_trajectory().annotations,
         session=TrajectorySession(
             parent_id=session.session_id,
             branch_point=len(fixed_messages),
             endpoint=session.endpoint,
-            status=SessionStatus.PENDING.value,
             tags={"doctor": "fixed", "removed_indices": str(sorted(indices_to_remove))},
             vcs=session.vcs,
         ),
         environment=TrajectoryEnvironment.from_session_parts(
-            session.environment,
-            session.environment_state,
+            session.environment_config(),
+            session.environment_state(),
         ),
     )
 
@@ -213,7 +208,7 @@ async def _fix_session_issues(
 
 
 async def _trim_session(
-    session: SessionHandle,
+    session: Trajectory,
     trim_count: int,
     session_store: FileSessionStore,
 ) -> int:
@@ -230,18 +225,16 @@ async def _trim_session(
     trimmed_messages = session.messages[:-trim_count]
     trimmed_trajectory = Trajectory(
         messages=trimmed_messages,
-        annotations=session.to_trajectory().annotations,
         session=TrajectorySession(
             parent_id=session.session_id,
             branch_point=len(trimmed_messages),
             endpoint=session.endpoint,
-            status=SessionStatus.PENDING.value,
             tags={"doctor": "trimmed", "trimmed_count": str(trim_count)},
             vcs=session.vcs,
         ),
         environment=TrajectoryEnvironment.from_session_parts(
-            session.environment,
-            session.environment_state,
+            session.environment_config(),
+            session.environment_state(),
         ),
     )
 
@@ -281,7 +274,7 @@ def cmd_doctor(config: Any, session_store: FileSessionStore) -> int:
         print(f"  Messages: {len(session.messages)}")
         print(f"  Total chars: {total_chars:,}")
         print(f"  Est. tokens: {estimated_tokens:,}")
-        print(f"  Status: {session.status.value}")
+        print(f"  Status: {session.status}")
         if session.parent_id:
             print(f"  Parent: {session.parent_id}")
 
@@ -437,9 +430,7 @@ def cmd_ls(session_store: FileSessionStore, include_all: bool = False) -> int:
     async def ls_action() -> int:
         sessions = await session_store.list(limit=100)
         if not include_all:
-            sessions = [
-                s for s in sessions if s.status in (SessionStatus.PENDING, SessionStatus.WAITING)
-            ]
+            sessions = [s for s in sessions if s.status == "pending"]
 
         if not sessions:
             print(
@@ -452,23 +443,11 @@ def cmd_ls(session_store: FileSessionStore, include_all: bool = False) -> int:
         print(f"{'SESSION ID':<28} {'STATUS':<12} {'MODEL':<25} {'UPDATED':<12}")
         print("-" * 77)
         for session in sessions:
-            status_str = session.status.value
-            if session.status == SessionStatus.WAITING:
-                pending = await session_store.read_pending_input(session.session_id)
-                if pending:
-                    q_type = pending.get("type", "")
-                    if q_type == "ask_user":
-                        questions = pending.get("questions", [])
-                        if questions:
-                            status_str = f"waiting: {questions[0].get('question', '')[:20]}..."
-                    else:
-                        status_str = "waiting: input needed"
-
             model = f"{session.endpoint.provider}/{session.endpoint.model}"
             if len(model) > 25:
                 model = model[:22] + "..."
             updated = format_time_ago(session.updated_at) if session.updated_at else "?"
-            print(f"{session.session_id:<28} {status_str:<12} {model:<25} {updated:<12}")
+            print(f"{session.session_id:<28} {session.status:<12} {model:<25} {updated:<12}")
         return 0
 
     return trio.run(ls_action)
@@ -482,61 +461,14 @@ def cmd_status(session_store: FileSessionStore, session_id: str) -> int:
             return 1
 
         print(f"Session: {session.session_id}")
-        print(f"Status:  {session.status.value}")
+        print(f"Status:  {session.status}")
         print(f"Model:   {session.endpoint.provider}/{session.endpoint.model}")
         print(f"Messages: {len(session.messages)}")
         if session.updated_at:
             print(f"Updated: {session.updated_at}")
-
-        if session.status == SessionStatus.WAITING:
-            pending = await session_store.read_pending_input(session_id)
-            if pending:
-                print("\n--- Pending Input ---")
-                p_type = pending.get("type", "unknown")
-                if p_type == "ask_user":
-                    for q in pending.get("questions", []):
-                        print(f"Q: {q.get('question', '')}")
-                        options = q.get("options", [])
-                        if options:
-                            print(f"   Options: {', '.join(options)}")
-                elif p_type == "no_tools":
-                    last_msg = pending.get("last_message", "")
-                    print(f"Agent stopped. Last message:\n{last_msg[:200]}...")
         return 0
 
     return trio.run(status_action)
-
-
-def cmd_send(config: Any, session_store: FileSessionStore, session_id: str, message: str) -> int:
-    async def send_action() -> int | None:
-        session, err = await session_store.get(session_id)
-        if err or not session:
-            print(f"Session not found: {session_id}", file=sys.stderr)
-            return 1
-        if session.status != SessionStatus.WAITING:
-            print(
-                f"Session is not waiting for input (status: {session.status.value})",
-                file=sys.stderr,
-            )
-            return 1
-
-        queued_message = Message(role="user", content=message)
-        _, err = await session_store.enqueue_message(session_id, queued_message)
-        if err is not None:
-            print(f"Failed to queue input for {session_id}: {err}", file=sys.stderr)
-            return 1
-        _, err = await session_store.clear_pending_input(session_id)
-        if err is not None:
-            print(f"Failed to clear pending input for {session_id}: {err}", file=sys.stderr)
-            return 1
-
-        print(f"Resuming {session_id}...", file=sys.stderr)
-        config.session = session_id
-        config.detached = True
-        return None
-
-    result = trio.run(send_action)
-    return -1 if result is None else result
 
 
 def cmd_attach(config: Any, session_id: str) -> int:

@@ -25,7 +25,6 @@ from typing import TYPE_CHECKING
 
 import trio
 
-from ..core import SessionStatus
 from ..dtypes import (
     LLMCallEnd,
     LLMCallStart,
@@ -196,17 +195,13 @@ async def run_cursor(
     except trio.Cancelled:
         current_state = replace(current_state, stop=StopReason.ABORTED)
         if session_store and current_state.session_id:
-            await session_store.update(current_state.session_id, status=SessionStatus.ABORTED)
+            await session_store.update(current_state.session_id, stop_reason=StopReason.ABORTED)
         states.append(current_state)
         return states
 
-    # Update session status
+    # Update persisted stop reason
     if session_store and current_state.session_id:
-        if current_state.stop == StopReason.PROVIDER_ERROR:
-            status = SessionStatus.ABORTED
-        else:
-            status = SessionStatus.COMPLETED
-        await session_store.update(current_state.session_id, status=status)
+        await session_store.update(current_state.session_id, stop_reason=current_state.stop)
 
     states.append(current_state)
     return states

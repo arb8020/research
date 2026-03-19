@@ -41,7 +41,6 @@ from ..core import (
     Endpoint,
     Environment,
     Message,
-    SessionHandle,
     StopReason,
     ToolCall,
     ToolConfirmResult,
@@ -228,7 +227,6 @@ class InteractiveRunner:
         self.enable_swap = cfg.enable_swap
         self.run_fn: RunFn = cfg.run_fn or run_agent
 
-        self.session_handle: SessionHandle | None = None
         self._cancel_scope: trio.CancelScope | None = None
 
     async def run(self) -> list[AgentState]:
@@ -344,11 +342,6 @@ class InteractiveRunner:
         """
         first_input = self.bootstrap_input
 
-        if first_input is None:
-            queued_message = await self._consume_queued_message()
-            if queued_message is not None:
-                first_input = queued_message
-
         # Check if bootstrap input is a slash command
         if first_input and first_input.startswith("/"):
             space_idx = first_input.find(" ")
@@ -419,40 +412,6 @@ class InteractiveRunner:
             confirm_tools=self.confirm_tools,
         )
 
-    async def _consume_queued_message(self) -> str | None:
-        """Consume one queued user message from the active session handle, if any."""
-        if not (self.session_store and self.session_id):
-            return None
-
-        session, err = await self.session_store.get(self.session_id)
-        if err is not None or session is None:
-            return None
-
-        self.session_handle = session
-        if not session.queued_messages:
-            return None
-
-        queued, err = await self.session_store.consume_queued_message(self.session_id)
-        if err is not None:
-            raise RuntimeError(err)
-        if queued is None:
-            return None
-
-        self.session_handle = SessionHandle.from_trajectory(
-            session.to_trajectory(),
-            message_count=session.message_count,
-            pending_input=session.pending_input,
-            queued_messages=session.queued_messages[1:],
-        )
-
-        content = queued.content
-        if isinstance(content, str):
-            return content
-        if isinstance(content, list):
-            text_parts = [block.text for block in content if getattr(block, "type", None) == "text"]
-            return "\n".join(text_parts)
-        return str(content) if content is not None else ""
-
     async def _ensure_session(self, state: AgentState) -> AgentState:
         """Create session if needed, return state with session_id set.
 
@@ -477,10 +436,6 @@ class InteractiveRunner:
             ),
         )
         self.trajectory = persisted_trajectory
-        self.session_handle = SessionHandle.from_trajectory(
-            persisted_trajectory,
-            message_count=len(persisted_trajectory.messages),
-        )
         return dc_replace(
             ensured_state,
             actor=dc_replace(ensured_state.actor, trajectory=persisted_trajectory),
@@ -537,7 +492,7 @@ class InteractiveRunner:
 
         This is the key callback that controls interactive behavior:
         - single_turn: Stop immediately
-        - detached: Write pending_input and stop
+        - detached: Stop and leave the session resumable
         - interactive: Get input, handle slash commands, continue
         """
         self._update_frontend_status(state)
@@ -546,8 +501,7 @@ class InteractiveRunner:
             return dc_replace(state, stop=StopReason.NO_TOOL_CALLED)
 
         if self.detached:
-            await self._write_pending_input(state)
-            return dc_replace(state, stop=StopReason.NEEDS_INPUT)
+            return dc_replace(state, stop=StopReason.NO_TOOL_CALLED)
 
         # Interactive: get input and handle it
         while True:
@@ -658,19 +612,18 @@ class InteractiveRunner:
         if err or not session:
             return False
 
-        self.session_handle = session
         self.session_id = new_session_id
         self.parent_session_id = session.parent_id
         self.branch_point = session.branch_point
         self.endpoint = session.endpoint
-        self.trajectory = session.to_trajectory()
+        self.trajectory = session
         if environment is not None:
             self.environment = environment
         return True
 
     def _build_state_for_active_session(self, state: AgentState) -> AgentState:
         """Rebuild agent state from the runner's active session handle."""
-        if self.session_handle is None:
+        if not self.trajectory.session_id:
             return state
 
         tools = self.environment.get_tools() if self.environment else []
@@ -678,7 +631,7 @@ class InteractiveRunner:
             state,
             actor=dc_replace(
                 state.actor,
-                trajectory=self.session_handle.to_trajectory(),
+                trajectory=self.trajectory,
                 endpoint=self.endpoint,
                 tools=tools,
             ),
@@ -711,13 +664,6 @@ class InteractiveRunner:
 
         self.trajectory = current_trajectory
 
-        if self.session_handle is not None:
-            self.session_handle = SessionHandle.from_trajectory(
-                current_trajectory,
-                message_count=self.session_handle.message_count,
-                pending_input=self.session_handle.pending_input,
-            )
-
         tools = self.environment.get_tools() if self.environment else []
         return dc_replace(
             state,
@@ -740,33 +686,6 @@ class InteractiveRunner:
     # -----------------------------------------------------------------------
     # Helpers
     # -----------------------------------------------------------------------
-
-    async def _write_pending_input(self, state: AgentState) -> None:
-        """Write pending_input.json for detached mode."""
-        session_id = state.session_id or self.session_id
-        if not (self.session_store and session_id):
-            return
-
-        last_message = self._extract_last_assistant_message(state)
-        await self.session_store.write_pending_input(
-            session_id, {"type": "no_tools", "last_message": last_message}
-        )
-
-    def _extract_last_assistant_message(self, state: AgentState) -> str:
-        """Extract text from the last assistant message for pending_input context."""
-        for msg in reversed(state.actor.trajectory.messages):
-            if msg.role == "assistant":
-                content = msg.content
-                if isinstance(content, str):
-                    return content[:500]
-                if isinstance(content, list):
-                    texts = [
-                        b.get("text", "")
-                        for b in content
-                        if isinstance(b, dict) and b.get("type") == "text"
-                    ]
-                    return " ".join(texts)[:500]
-        return ""
 
     def _update_session_id_from_states(self, states: list[AgentState]) -> None:
         """Update self.session_id from final state."""

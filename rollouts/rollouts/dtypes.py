@@ -18,7 +18,9 @@ from typing import (
 )
 
 if TYPE_CHECKING:
+    from .agents import Actor, AgentState, RunConfig
     from .core.eval import Score
+    from .core.session import EnvironmentConfig, SessionSummary
 
 import dacite
 import trio
@@ -905,44 +907,6 @@ class ChatCompletion(JsonSerializable):
 
 
 @dataclass(frozen=True)
-class TrajectoryAnnotations(JsonSerializable):
-    """Optional rollout/training annotations attached to a trajectory.
-
-    These fields are currently duplicated in legacy top-level Trajectory fields.
-    The nested bundle is the migration target; the top-level fields remain for
-    compatibility until callers are moved over.
-    """
-
-    reward: float | dict[str, float] | None = None
-    group: int | None = None
-    replica: int | None = None
-    advantage: float | None = None
-
-    @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> TrajectoryAnnotations:
-        assert data is not None
-        assert isinstance(data, dict)
-        return cls(
-            reward=data.get("reward"),
-            group=data.get("group"),
-            replica=data.get("replica"),
-            advantage=data.get("advantage"),
-        )
-
-    def to_dict(self) -> dict[str, Any]:
-        result: dict[str, Any] = {}
-        if self.reward is not None:
-            result["reward"] = self.reward
-        if self.group is not None:
-            result["group"] = self.group
-        if self.replica is not None:
-            result["replica"] = self.replica
-        if self.advantage is not None:
-            result["advantage"] = self.advantage
-        return result
-
-
-@dataclass(frozen=True)
 class TrajectorySession(JsonSerializable):
     """Session/branching metadata attached to a trajectory."""
 
@@ -950,7 +914,7 @@ class TrajectorySession(JsonSerializable):
     parent_id: str | None = None
     branch_point: int | None = None
     endpoint: Endpoint | None = None
-    status: str | None = None
+    stop_reason: StopReason | None = None
     created_at: str | None = None
     updated_at: str | None = None
     tags: dict[str, str] = field(default_factory=dict)
@@ -960,11 +924,10 @@ class TrajectorySession(JsonSerializable):
     def from_dict(cls, data: dict[str, Any]) -> TrajectorySession:
         assert data is not None
         assert isinstance(data, dict)
+        from .core.session import normalize_stop_reason
+
         raw_tags = data.get("tags", {})
         tags = raw_tags if isinstance(raw_tags, dict) else {}
-        status = data.get("status")
-        if status is not None:
-            status = str(status)
         return cls(
             session_id=data.get("session_id"),
             parent_id=data.get("parent_id"),
@@ -974,7 +937,10 @@ class TrajectorySession(JsonSerializable):
                 if isinstance(data.get("endpoint"), dict)
                 else None
             ),
-            status=status,
+            stop_reason=normalize_stop_reason(
+                data.get("stop_reason"),
+                legacy_status=data.get("status"),
+            ),
             created_at=data.get("created_at"),
             updated_at=data.get("updated_at"),
             tags=tags,
@@ -991,8 +957,8 @@ class TrajectorySession(JsonSerializable):
             result["branch_point"] = self.branch_point
         if self.endpoint is not None:
             result["endpoint"] = self.endpoint.to_dict(exclude_secrets=True)
-        if self.status is not None:
-            result["status"] = self.status
+        if self.stop_reason is not None:
+            result["stop_reason"] = self.stop_reason.value
         if self.created_at is not None:
             result["created_at"] = self.created_at
         if self.updated_at is not None:
@@ -1080,14 +1046,9 @@ class TrajectoryEnvironment(JsonSerializable):
 class Trajectory(JsonSerializable):
     completions: list[ChatCompletion] = field(default_factory=list)
     messages: list[Message] = field(default_factory=list)  # debugging only
-    rewards: float = 0.0
-    group: int = 0
-    replica: int = 0
-    advantages: float = 0.0  # scalar; broadcast later if needed
     metadata: dict[str, Any] = field(
         default_factory=dict
     )  # For dataset-specific info (e.g., ground truth)
-    annotations: TrajectoryAnnotations = field(default_factory=TrajectoryAnnotations)
     session: TrajectorySession = field(default_factory=TrajectorySession)
     environment: TrajectoryEnvironment | None = None
 
@@ -1095,14 +1056,8 @@ class Trajectory(JsonSerializable):
         result = {
             "completions": [asdict(completion) for completion in self.completions],
             "messages": [asdict(message) for message in self.messages],
-            "rewards": self.rewards,
-            "group": self.group,
-            "replica": self.replica,
-            "advantages": self.advantages,
             "metadata": self.metadata,
         }
-        if self.annotations.to_dict():
-            result["annotations"] = self.annotations.to_dict()
         if self.session.to_dict():
             result["session"] = self.session.to_dict()
         if self.environment is not None:
@@ -1142,17 +1097,6 @@ class Trajectory(JsonSerializable):
                 )
             )
 
-        annotations_data = data.get("annotations", {})
-        if annotations_data:
-            annotations = TrajectoryAnnotations.from_dict(annotations_data)
-        else:
-            annotations = TrajectoryAnnotations(
-                reward=data.get("reward", data.get("rewards")),
-                group=data.get("group"),
-                replica=data.get("replica"),
-                advantage=data.get("advantage", data.get("advantages")),
-            )
-
         session_data = data.get("session", {})
         session = TrajectorySession.from_dict(session_data) if session_data else TrajectorySession()
 
@@ -1166,35 +1110,58 @@ class Trajectory(JsonSerializable):
         result = Trajectory(
             completions=comps,
             messages=data.get("messages", []),
-            rewards=data.get("rewards", 0.0),
-            group=data.get("group", 0),
-            replica=data.get("replica", 0),
-            advantages=data.get("advantages", 0.0),
             metadata=data.get("metadata", {}),
-            annotations=annotations,
             session=session,
             environment=environment,
         )
         assert result is not None
         return result
 
-    def session_reward(self) -> float | dict[str, float] | None:
-        """Return the persisted session-level reward annotation."""
-        if self.annotations.reward is not None:
-            return self.annotations.reward
-        if self.rewards != 0.0:
-            return self.rewards
-        return None
+    @property
+    def session_id(self) -> str:
+        return self.session.session_id or ""
 
-    def session_status(self) -> SessionStatus:
-        """Return the persisted session status with a safe default."""
-        from .core.session import SessionStatus
+    @property
+    def parent_id(self) -> str | None:
+        return self.session.parent_id
 
-        status_str = self.session.status or SessionStatus.PENDING.value
-        try:
-            return SessionStatus(status_str)
-        except ValueError:
-            return SessionStatus[status_str.upper()]
+    @property
+    def branch_point(self) -> int | None:
+        return self.session.branch_point
+
+    @property
+    def endpoint(self) -> Endpoint:
+        return self.endpoint_or_default()
+
+    @property
+    def status(self) -> str:
+        return self.session_status()
+
+    @property
+    def stop_reason(self) -> StopReason | None:
+        return self.session.stop_reason
+
+    @property
+    def tags(self) -> dict[str, str]:
+        return dict(self.session.tags)
+
+    @property
+    def created_at(self) -> str:
+        return self.session.created_at or datetime.now().isoformat()
+
+    @property
+    def updated_at(self) -> str:
+        return self.session.updated_at or datetime.now().isoformat()
+
+    @property
+    def vcs(self) -> dict[str, str] | None:
+        return self.session.vcs
+
+    def session_status(self) -> str:
+        """Return the derived persisted session status label."""
+        from .core.session import derive_session_status
+
+        return derive_session_status(self.session.stop_reason)
 
     def endpoint_or_default(self) -> Endpoint:
         """Return the session endpoint or an empty placeholder."""
@@ -1221,8 +1188,7 @@ class Trajectory(JsonSerializable):
             "endpoint": self.endpoint_or_default().to_dict(exclude_secrets=True),
             "environment": self.environment_config().to_dict(),
             "environment_state": self.environment_state(),
-            "status": self.session_status().value,
-            "reward": self.session_reward(),
+            "stop_reason": self.session.stop_reason.value if self.session.stop_reason else None,
             "tags": dict(self.session.tags),
             "created_at": self.session.created_at or datetime.now().isoformat(),
             "updated_at": self.session.updated_at or datetime.now().isoformat(),
@@ -1234,24 +1200,23 @@ class Trajectory(JsonSerializable):
         cls, data: dict[str, Any], messages: list[Message] | None = None
     ) -> Trajectory:
         """Deserialize the session store's durable shape into a canonical trajectory."""
-        from .core.session import EnvironmentConfig, SessionStatus
+        from .core.session import EnvironmentConfig, normalize_stop_reason
 
         environment = TrajectoryEnvironment.from_session_parts(
             EnvironmentConfig.from_dict(data["environment"]),
             data.get("environment_state"),
         )
-        reward = data.get("reward")
-        reward_scalar = reward if isinstance(reward, (int, float)) else 0.0
         return cls(
             messages=list(messages or []),
-            rewards=reward_scalar,
-            annotations=TrajectoryAnnotations(reward=reward),
             session=TrajectorySession(
                 session_id=data["session_id"],
                 parent_id=data.get("parent_id"),
                 branch_point=data.get("branch_point"),
                 endpoint=Endpoint.from_dict(data["endpoint"]),
-                status=data.get("status", SessionStatus.PENDING.value),
+                stop_reason=normalize_stop_reason(
+                    data.get("stop_reason"),
+                    legacy_status=data.get("status"),
+                ),
                 created_at=data.get("created_at", datetime.now().isoformat()),
                 updated_at=data.get("updated_at", datetime.now().isoformat()),
                 tags=data.get("tags", {}),
@@ -1271,7 +1236,6 @@ class Trajectory(JsonSerializable):
             endpoint=self.endpoint_or_default(),
             environment=self.environment_config(),
             status=self.session_status(),
-            reward=self.session_reward(),
             tags=dict(self.session.tags),
             created_at=self.session.created_at or datetime.now().isoformat(),
             updated_at=self.session.updated_at or datetime.now().isoformat(),
@@ -1433,7 +1397,6 @@ class StopReason(Enum):
     NO_TOOL_CALLED = "NO_TOOL_CALLED"
     TASK_COMPLETED = "TASK_COMPLETED"
     ABORTED = "ABORTED"
-    NEEDS_INPUT = "NEEDS_INPUT"  # Agent waiting for user input (interactive mode)
     INTERRUPTED = "INTERRUPTED"  # User interrupted (Escape) - can resume with driver_session_id
     ERROR = "ERROR"  # General driver error (e.g. invalid state, unexpected condition)
     END_TURN = "END_TURN"  # Claude driver: model finished its turn normally

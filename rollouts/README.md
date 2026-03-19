@@ -21,6 +21,46 @@ rollouts -p "explain what this repo does"
 rollouts -c --env coding
 ```
 
+## Eval Viewer
+
+`rollouts` now has a browser-native eval viewer substrate:
+
+- Server: [`rollouts/frontend/server.py`](/Users/chiraagbalu/research/rollouts/rollouts/frontend/server.py)
+- UI: [`rollouts/frontend/ui`](/Users/chiraagbalu/research/rollouts/rollouts/frontend/ui)
+
+### Launch Against Local Results
+
+Point the viewer at any rollouts-style results directory with `report.json`, `samples/`, and `trajectories/`.
+
+```bash
+uv run rollouts webui --project /path/to/project
+```
+
+Or run the frontend server directly:
+
+```bash
+uv run python -m rollouts.frontend.server \
+  --project /path/to/project \
+  --results-dirs /path/to/other/results
+```
+
+The default UI lives at `http://localhost:8080` and reads `results/` under `--project`.
+
+If you want the checked-in React UI to rebuild locally:
+
+```bash
+cd rollouts/frontend/ui
+npm install
+```
+
+Example against `charisma`:
+
+```bash
+uv run rollouts webui \
+  --project /Users/chiraagbalu/research/rollouts \
+  --results-dirs /Users/chiraagbalu/silares_stuff/charisma/results
+```
+
 ## Model Configuration
 
 Models use `provider/model` format:

@@ -8,7 +8,6 @@ from typing import TYPE_CHECKING
 from ..core import (
     Environment,
     EnvironmentConfig,
-    SessionStatus,
     Trajectory,
     TrajectoryEnvironment,
     TrajectorySession,
@@ -51,12 +50,7 @@ def state_to_persisted_trajectory(state: AgentState) -> Trajectory:
     return Trajectory(
         completions=list(source.completions),
         messages=list(source.messages),
-        rewards=source.rewards,
-        group=source.group,
-        replica=source.replica,
-        advantages=source.advantages,
         metadata=dict(source.metadata),
-        annotations=source.annotations,
         session=TrajectorySession(
             session_id=source.session.session_id,
             parent_id=state.parent_session_id or source.session.parent_id,
@@ -64,7 +58,7 @@ def state_to_persisted_trajectory(state: AgentState) -> Trajectory:
             if state.branch_point is not None
             else source.session.branch_point,
             endpoint=state.actor.endpoint,
-            status=source.session.status or SessionStatus.PENDING.value,
+            stop_reason=source.session.stop_reason,
             created_at=source.session.created_at,
             updated_at=source.session.updated_at,
             tags=dict(source.session.tags),

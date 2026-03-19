@@ -417,9 +417,6 @@ def _build_root_extra(trajectory: Trajectory) -> dict[str, Any] | None:
     extra: dict[str, Any] = {}
     if trajectory.metadata:
         extra["rollouts_metadata"] = trajectory.metadata
-    annotations = trajectory.annotations.to_dict()
-    if annotations:
-        extra["rollouts_annotations"] = annotations
     session = trajectory.session.to_dict()
     if session:
         extra["rollouts_session"] = session

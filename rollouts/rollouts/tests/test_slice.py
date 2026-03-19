@@ -11,12 +11,10 @@ from pathlib import Path
 
 import pytest
 
-from ..dtypes import (
+from ..core import (
     Endpoint,
     EnvironmentConfig,
     Message,
-    SessionHandle,
-    SessionStatus,
     Trajectory,
     TrajectoryEnvironment,
     TrajectorySession,
@@ -27,36 +25,33 @@ from ..store import FileSessionStore
 # ── Fixtures ────────────────────────────────────────────────────────────────
 
 
-def make_session(n_messages: int = 20) -> SessionHandle:
+def make_session(n_messages: int = 20) -> Trajectory:
     """Create a test session with n messages."""
     messages = []
     for i in range(n_messages):
         role = "user" if i % 2 == 0 else "assistant"
         messages.append(Message(role=role, content=f"Message {i}"))
 
-    return SessionHandle.from_trajectory(
-        Trajectory(
-            messages=messages,
-            session=TrajectorySession(
-                session_id="test-session",
-                endpoint=Endpoint(
-                    model="test/test",
-                    base_url="http://test",
-                    api_format="openai-completions",
-                ),
-                status=SessionStatus.PENDING.value,
-                tags={},
-                created_at="2024-01-01T00:00:00",
-                updated_at="2024-01-01T00:00:00",
+    return Trajectory(
+        messages=messages,
+        session=TrajectorySession(
+            session_id="test-session",
+            endpoint=Endpoint(
+                model="test/test",
+                base_url="http://test",
+                api_format="openai-completions",
             ),
-            environment=TrajectoryEnvironment.from_session_parts(
-                EnvironmentConfig(type="none", config={})
-            ),
-        )
+            tags={},
+            created_at="2024-01-01T00:00:00",
+            updated_at="2024-01-01T00:00:00",
+        ),
+        environment=TrajectoryEnvironment.from_session_parts(
+            EnvironmentConfig(type="none", config={})
+        ),
     )
 
 
-def make_session_with_tools() -> SessionHandle:
+def make_session_with_tools() -> Trajectory:
     """Create a session that looks like a real coding session with tool calls."""
     messages = [
         Message(role="system", content="You are a coding assistant."),
@@ -98,25 +93,22 @@ def make_session_with_tools() -> SessionHandle:
         Message(role="assistant", content="All tests pass!"),
     ]
 
-    return SessionHandle.from_trajectory(
-        Trajectory(
-            messages=messages,
-            session=TrajectorySession(
-                session_id="test-session-tools",
-                endpoint=Endpoint(
-                    model="test/test",
-                    base_url="http://test",
-                    api_format="openai-completions",
-                ),
-                status=SessionStatus.PENDING.value,
-                tags={},
-                created_at="2024-01-01T00:00:00",
-                updated_at="2024-01-01T00:00:00",
+    return Trajectory(
+        messages=messages,
+        session=TrajectorySession(
+            session_id="test-session-tools",
+            endpoint=Endpoint(
+                model="test/test",
+                base_url="http://test",
+                api_format="openai-completions",
             ),
-            environment=TrajectoryEnvironment.from_session_parts(
-                EnvironmentConfig(type="none", config={})
-            ),
-        )
+            tags={},
+            created_at="2024-01-01T00:00:00",
+            updated_at="2024-01-01T00:00:00",
+        ),
+        environment=TrajectoryEnvironment.from_session_parts(
+            EnvironmentConfig(type="none", config={})
+        ),
     )
 
 

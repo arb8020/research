@@ -26,7 +26,6 @@ from .core import (
     Endpoint,
     EnvironmentConfig,
     Message,
-    SessionStatus,
     TextContent,
     Trajectory,
     TrajectoryEnvironment,
@@ -356,7 +355,6 @@ async def import_claude_code_session(
         messages=list(messages),
         session=TrajectorySession(
             endpoint=endpoint,
-            status=SessionStatus.PENDING.value,
             tags={
                 "imported_from": "claude_code",
                 "original_session_id": session.session_id,
