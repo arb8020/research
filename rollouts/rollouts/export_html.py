@@ -144,6 +144,10 @@ def _sample_body(sample: dict[str, Any], *, compact_header: bool = False) -> str
 
 def _html_shell(title: str, body: str) -> str:
     safe_title = html.escape(title)
+    # TODO(html-parity): HTML export is now the default share surface, but this
+    # renderer still has its own parallel visual language. Either pull shared
+    # design tokens/layout from the viewer or consciously define a static-export
+    # style system instead of letting it drift from the React UI.
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>

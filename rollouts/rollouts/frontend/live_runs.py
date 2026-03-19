@@ -128,6 +128,10 @@ def recent_claude_sessions(
 
 
 def discover_external_session_runs() -> list[dict[str, Any]]:
+    # TODO(project-scope): this still scans global `~/.codex` / `~/.claude`
+    # state, so a viewer opened for one project can surface unrelated external
+    # sessions from another. Filter this discovery by the active project/results
+    # roots once we decide the honest viewer scoping rule.
     runs: list[dict[str, Any]] = []
     seen: set[str] = set()
 

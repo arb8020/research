@@ -139,6 +139,16 @@ async def execute_external_attempt(
     prompt_builder: PromptBuilder,
     trajectory_adapter: TrajectoryAdapter,
 ) -> AttemptResult:
+    # TODO(external-runtime-helper): configs still build this path manually with
+    # nested partials over `execute_external_attempt(...)` and
+    # `trajectory_from_{runtime}(...)`. Add one honest helper/factory for the
+    # autonomous external-runtime path instead of continuing to duplicate that
+    # wiring in eval configs.
+    #
+    # TODO(external-agent-args): once that helper exists, decide whether
+    # `AgentRunSpec.external_agent_args` should lower into this path too, or
+    # remain explicitly launcher-only. Right now the older attempt-executor path
+    # still passes runtime-specific kwargs via Python partials.
     del environment
     prompt = prompt_builder(sample_data)
     if _trajectory_adapter_accepts_run_config(trajectory_adapter):
