@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, Any
 import trio
 
 from ..infra_errors import WorkspaceInfraError
-from .resources import CommandExecutionResult
+from .resources import CommandExecutionResult, SessionExecSpec
 from .runtime_probe import build_gpu_runtime_probe_script
 
 if TYPE_CHECKING:
@@ -230,6 +230,21 @@ class ModalSandboxResource:
         stdout, stderr, returncode = await trio.to_thread.run_sync(do_write)
         if returncode != 0:
             raise RuntimeError(stderr or stdout or f"Failed to write {resolved}")
+
+    async def exec(self, spec: SessionExecSpec) -> CommandExecutionResult:
+        return await self.run(
+            spec.command,
+            cwd=spec.cwd,
+            timeout=spec.timeout,
+            session_id=spec.session_id,
+            cancel_scope=spec.cancel_scope,
+        )
+
+    async def upload_bytes(self, remote_path: str, content: bytes) -> None:
+        await self.write_file(remote_path, content)
+
+    async def download_bytes(self, remote_path: str) -> bytes:
+        return await self.read_file(remote_path)
 
     async def run(
         self,
@@ -595,6 +610,18 @@ class ManagedModalSandboxResource:
             session_id=session_id,
             cancel_scope=cancel_scope,
         )
+
+    async def exec(self, spec: SessionExecSpec) -> CommandExecutionResult:
+        resource = await self._ensure_resource()
+        return await resource.exec(spec)
+
+    async def upload_bytes(self, remote_path: str, content: bytes) -> None:
+        resource = await self._ensure_resource()
+        await resource.upload_bytes(remote_path, content)
+
+    async def download_bytes(self, remote_path: str) -> bytes:
+        resource = await self._ensure_resource()
+        return await resource.download_bytes(remote_path)
 
     async def _ensure_resource(self) -> ModalSandboxResource:
         if self._resource is not None:
