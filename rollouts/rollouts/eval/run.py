@@ -8,15 +8,10 @@ Usage:
     python -m rollouts.eval.run --config examples/eval/reverse_text/smoke.py
 
     # Against local SGLang server (must be running)
-    python -m rollouts.eval.run --config examples/eval/reverse_text/smoke.py
+    python -m rollouts.eval.run --config examples/eval/reverse_text/sglang.py
 
-    # Provision GPU and launch SGLang server
-    python -m rollouts.eval.run --config examples/eval/reverse_text/sglang.py --provider runpod
-    python -m rollouts.eval.run --config examples/eval/reverse_text/sglang.py --provider modal
-
-    # Override endpoint from CLI
-    python -m rollouts.eval.run --config ... --model claude-opus-4-20250514
-    python -m rollouts.eval.run --config ... --endpoint sglang --model Qwen/Qwen2.5-7B-Instruct
+    # Launch one sample interactively in an external runtime
+    python -m rollouts.eval.run launch --config examples/eval/reverse_text/smoke.py --sample 0 --runtime codex
 
 Config files should export:
     - eval_task: EvalTaskSpec (preferred)
@@ -69,15 +64,7 @@ def _resolve_output_dir(
     *,
     config_path: Path,
     output_config: Any,
-    cli_output_dir: Path | None = None,
 ) -> Path:
-    if cli_output_dir is not None:
-        return (
-            cli_output_dir.resolve()
-            if cli_output_dir.is_absolute()
-            else (Path.cwd() / cli_output_dir).resolve()
-        )
-
     project_root = _find_config_project_root(config_path)
     configured_output_dir = output_config.output_dir
     if configured_output_dir is not None:
@@ -343,7 +330,6 @@ def main() -> int:
 
     from .configs import (
         EndpointConfig,
-        HardwareConfig,
         resolve_eval_task_spec,
     )
 
@@ -358,8 +344,8 @@ Examples:
     # Against local SGLang server
     python -m rollouts.eval.run --config examples/eval/reverse_text/sglang.py
 
-    # Override model
-    python -m rollouts.eval.run --config ... --model claude-opus-4-20250514
+    # Launch one sample interactively in Codex
+    python -m rollouts.eval.run launch --config examples/eval/reverse_text/smoke.py --sample 0 --runtime codex
         """,
     )
 
@@ -374,25 +360,7 @@ Examples:
     for subparser in (run_parser, launch_parser):
         subparser.add_argument("--config", type=Path, required=True, help="Config file path")
 
-    # TODO(boundary): most of these `run` flags are config-owned execution spec
-    # fields. Move endpoint/run/output/hardware patching into `EvalTaskSpec`
-    # and leave only control-plane/task-selection flags on the CLI.
     # Batch run flags
-    run_parser.add_argument(
-        "--provider", choices=["anthropic", "openai", "google", "sglang", "vllm"]
-    )
-    run_parser.add_argument("--model", help="Override model")
-    run_parser.add_argument("--base-url", help="Override base URL (for SGLang/vLLM)")
-    run_parser.add_argument("--limit", type=int, help="Limit number of samples")
-    run_parser.add_argument("--max-concurrent", type=int, help="Max parallel samples")
-    run_parser.add_argument("--max-turns", type=int, help="Max conversation turns")
-    run_parser.add_argument("--provision", action="store_true", help="Provision GPU for SGLang")
-    run_parser.add_argument("--gpu-type", default="A100", help="GPU type for provisioning")
-    run_parser.add_argument(
-        "--hardware-provider", choices=["modal", "runpod", "lambdalabs", "vast"]
-    )
-    run_parser.add_argument("--output-dir", type=Path, help="Override output directory")
-    run_parser.add_argument("--verbose", action="store_true", default=True)
     run_parser.add_argument("--quiet", action="store_true")
 
     # Launch flags
@@ -407,7 +375,6 @@ Examples:
         choices=["claude_code", "codex"],
         help="External runtime to launch",
     )
-    launch_parser.add_argument("--model", help="Override external runtime model")
     launch_parser.add_argument("--quiet", action="store_true")
 
     argv = sys.argv[1:]
@@ -450,50 +417,11 @@ Examples:
     hardware_config = eval_task.hardware
     server_config = eval_task.server
 
-    # TODO(boundary): this inline patching block reconstructs an eval run from
-    # CLI overrides instead of consuming one honest, already-resolved product
-    # type. Replace it once the CLI stops owning execution-spec mutation.
-    # Apply CLI overrides
-    if endpoint_config is None:
-        if args.command == "run" and (
-            args.provider or args.model or args.base_url or args.provision or args.hardware_provider
-        ):
-            raise ValueError(
-                "Endpoint overrides and provisioning flags are invalid for attempt-executor-only evals."
-            )
-    else:
-        if args.command == "run" and args.provider:
-            endpoint_config = replace(endpoint_config, provider=args.provider)
-        if args.command == "run" and args.model:
-            endpoint_config = replace(endpoint_config, model=args.model)
-        if args.command == "run" and args.base_url:
-            endpoint_config = replace(endpoint_config, base_url=args.base_url)
-
-    if args.command == "run" and args.limit:
-        run_config = replace(run_config, max_samples=args.limit)
-    if args.command == "run" and args.max_concurrent:
-        run_config = replace(run_config, max_concurrent=args.max_concurrent)
-    if args.command == "run" and args.max_turns:
-        run_config = replace(run_config, max_turns=args.max_turns)
-
     resolved_output_dir = _resolve_output_dir(
         config_path=config_path,
         output_config=output_config,
-        cli_output_dir=args.output_dir if args.command == "run" else None,
     )
     output_config = replace(output_config, output_dir=resolved_output_dir)
-
-    if (
-        args.command == "run"
-        and endpoint_config is not None
-        and (args.provision or args.hardware_provider)
-    ):
-        if hardware_config is None:
-            hardware_config = HardwareConfig()
-        if args.gpu_type:
-            hardware_config = replace(hardware_config, gpu_type=args.gpu_type)
-        if args.hardware_provider:
-            hardware_config = replace(hardware_config, provider=args.hardware_provider)
 
     print(f"Config: {config_path}")
     if args.command == "launch":
@@ -521,7 +449,6 @@ Examples:
                 runtime=args.runtime,
                 run_config=run_config,
                 output_config=output_config,
-                model=args.model,
             )
             results: dict[str, Any] = {
                 "sample_id": attempt.id,
@@ -534,15 +461,12 @@ Examples:
                 results["reward"] = attempt.reward
             return results
 
-        # TODO(boundary): dispatch currently still branches on CLI-carried
-        # provisioning intent (`args.provision`) instead of a resolved eval
-        # runtime/materialization spec.
         if endpoint_config is not None and endpoint_config.provider in ("sglang", "vllm"):
             if endpoint_config.base_url:
                 return await run_with_sglang_local(
                     config_module, endpoint_config, run_config, output_config
                 )
-            elif args.provision or hardware_config:
+            elif hardware_config is not None:
                 return await run_with_sglang_provision(
                     config_module,
                     endpoint_config,
