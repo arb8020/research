@@ -54,6 +54,14 @@ def _append_weight_sync_trace(event: str, **data: object) -> None:
         return
 
 
+def _route_paths(app: Any) -> list[str]:
+    return sorted(
+        path
+        for route in getattr(app, "routes", ())
+        if isinstance(path := getattr(route, "path", None), str)
+    )
+
+
 class _LikeWorker(Protocol):
     rank: int
     local_rank: int
@@ -494,10 +502,25 @@ async def run_server(args: Any, **uvicorn_kwargs: Any) -> None:
     )
 
     args.worker_extension_cls = f"{__name__}.WorkerExtension"
+    logger.info(
+        "qed_vllm.run_server start worker_extension_cls=%s host=%s port=%s model=%s",
+        args.worker_extension_cls,
+        getattr(args, "host", None),
+        getattr(args, "port", None),
+        getattr(args, "model", None),
+    )
+    _emit_argus_diag(
+        "qed_vllm_run_server_start",
+        worker_extension_cls=args.worker_extension_cls,
+        host=getattr(args, "host", None),
+        port=getattr(args, "port", None),
+        model=getattr(args, "model", None),
+    )
 
     _listen_address, sock = setup_server(args)
 
     async with build_async_engine_client(args) as engine_client:
+        logger.info("qed_vllm engine_client ready")
         startup_master_address = getattr(args, "rollouts_weight_sync_master_address", None)
         if startup_master_address:
             startup_request = InitWeightUpdateGroupRequest(
@@ -538,11 +561,18 @@ async def run_server(args: Any, **uvicorn_kwargs: Any) -> None:
                 "vllm_startup_init_weight_update_group_finished",
                 request=startup_request.to_dict(),
             )
+        # Keep this explicit warmup call even though we do not consume the value.
+        # vLLM's engine client path is not purely query-like here; forcing task
+        # discovery exercises initialization that the patched server depends on.
+        _ = await engine_client.get_supported_tasks()
+        logger.info("qed_vllm supported_tasks warmup finished")
         app = build_app(args)
+        logger.info("qed_vllm build_app finished routes=%s", _route_paths(app))
         # Initialize upstream app state before attaching custom control-plane routes.
         # Newer vLLM startup may mutate app wiring here, and we need the patched
         # NCCL endpoints to survive whatever initialization the base server does.
         await init_app_state(engine_client, app.state, args)
+        logger.info("qed_vllm init_app_state finished routes=%s", _route_paths(app))
 
         @app.get("/weight_update_schema")
         async def weight_update_schema(limit: int = 1) -> dict[str, Any]:
@@ -659,6 +689,24 @@ async def run_server(args: Any, **uvicorn_kwargs: Any) -> None:
             maybe = _maybe_await(result)
             payload = await maybe if maybe is not None else result
             return {"status": "ok", "results": payload}
+
+        routes = _route_paths(app)
+        logger.info("qed_vllm patched routes registered routes=%s", routes)
+        _emit_argus_diag("qed_vllm_routes_registered", routes=routes)
+        required_routes = {
+            "/weight_update_schema",
+            "/init_weights_update_group",
+            "/receive_weight_update",
+            "/destroy_weights_update_group",
+        }
+        missing_routes = sorted(required_routes.difference(routes))
+        if missing_routes:
+            raise RuntimeError(
+                "qed_vllm patched routes missing after registration: "
+                f"{missing_routes}; available routes={routes}"
+            )
+
+        logger.info("qed_vllm serving patched app")
 
         shutdown_task = await serve_http(
             app,
