@@ -1,3 +1,4 @@
+import pytest
 from bifrost.provision import GPUQuery
 
 from broker.types import ProvisionImage, ProvisionRequest
@@ -29,3 +30,8 @@ def test_gpu_query_creates_default_registry_boot_image() -> None:
     assert query.boot_image is not None
     assert query.boot_image.source_type == "registry"
     assert query.boot_image.reference == query.image
+
+
+def test_provision_request_rejects_non_positive_max_lifetime() -> None:
+    with pytest.raises(AssertionError, match="max_lifetime_seconds"):
+        ProvisionRequest(max_lifetime_seconds=0)

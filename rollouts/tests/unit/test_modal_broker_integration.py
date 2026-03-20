@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
 from broker.providers.modal import _build_image_from_deps
+from broker.types import ProvisionRequest
 from rollouts.environments.modal_sandbox_resource import (
     ModalSandboxResource,
     ModalSandboxResourceConfig,
@@ -77,12 +79,19 @@ async def test_modal_sandbox_resource_provisions_and_terminates_via_broker(
 
     calls: dict[str, object] = {}
 
-    async def fake_provision_instance(request, ssh_startup_script=None, api_key=None):
+    async def fake_provision_instance(
+        request: ProvisionRequest,
+        ssh_startup_script: str | None = None,
+        api_key: str | None = None,
+    ) -> Any:
         del ssh_startup_script, api_key
         calls["request"] = request
         return SimpleNamespace(id="sb-broker-123")
 
-    async def fake_terminate_instance(instance_id: str, api_key=None) -> bool:
+    async def fake_terminate_instance(
+        instance_id: str,
+        api_key: str | None = None,
+    ) -> bool:
         del api_key
         calls["terminated"] = instance_id
         return True
@@ -105,6 +114,7 @@ async def test_modal_sandbox_resource_provisions_and_terminates_via_broker(
     request = calls["request"]
     assert request.provider == "modal"
     assert request.gpu_type == "A100"
+    assert request.max_lifetime_seconds == 1800
     assert request.raw_data["deps"].source_ref == "nvidia/cuda:13.0.0-devel-ubuntu22.04"
     assert request.raw_data["deps"].env["THUNDERKITTENS_ROOT"] == "/root/ThunderKittens"
 

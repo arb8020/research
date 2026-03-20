@@ -43,6 +43,8 @@ class BrokerBifrostWorkspaceLeasePoolConfig:
     resource_config: BrokerBifrostWorkspaceResourceConfig
     gpu_ids: tuple[int, ...]
     node_gpu_count: int
+    # Default cold. Warm retention is opt-in because pooled remote GPU
+    # workspaces are expensive and currently rely on in-process cleanup.
     keep_warm: bool = False
 
     def __post_init__(self) -> None:
@@ -618,6 +620,9 @@ class BrokerBifrostWorkspaceManager:
         resource = self._resources[lease.gpu_id]
         if not self.config.keep_warm:
             await resource.close()
+        # TODO(lifecycle): like Modal, this release path is not durable. We
+        # need owner/lease records plus a janitor so warm retained workspaces do
+        # not survive abandoned processes indefinitely.
         self._release_count += 1
         assert self._in_flight > 0, "cannot release workspace lease when none are in flight"
         self._in_flight -= 1

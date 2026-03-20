@@ -349,6 +349,11 @@ class ProvisionRequest:
     boot_image: ProvisionImage | None = None
     name: str | None = None
     max_price_per_hour: float | None = None
+    # Provider-supported max lifetime / auto-reap TTL for the live resource.
+    # Providers that do not support this may ignore it. This is the first
+    # provider-side backstop against leaked-cost resources; durable lifecycle
+    # ownership still needs a higher-level lease registry and janitor.
+    max_lifetime_seconds: int | None = None
     provider: str | None = None  # If None, search all providers
     spot_instance: bool = False
     ssh_startup_script: str | None = None  # SSH key injection script
@@ -376,6 +381,9 @@ class ProvisionRequest:
 
     def __post_init__(self) -> None:
         """Normalize provider-specific volume aliases into the generic attachment."""
+        if self.max_lifetime_seconds is not None:
+            assert self.max_lifetime_seconds > 0, "max_lifetime_seconds must be positive"
+
         if self.boot_image is None:
             self.boot_image = ProvisionImage(reference=self.image)
         else:

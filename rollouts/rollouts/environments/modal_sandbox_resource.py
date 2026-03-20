@@ -41,6 +41,8 @@ def _command_preview(command: str, *, max_len: int = 160) -> str:
 class ModalSandboxResourceConfig:
     app_name: str = "rollouts-sandbox"
     gpu: str = "A100"
+    # Provider-side sandbox TTL. This is the hard upper bound on how long a
+    # live sandbox may exist if local cleanup never runs.
     timeout_seconds: int = 1800
     python_version: str = "3.10"
     workspace_dir: str = DEFAULT_WORKSPACE_DIR
@@ -468,6 +470,7 @@ class ModalSandboxResource:
             gpu_count=1,
             provider="modal",
             name=self.config.app_name,
+            max_lifetime_seconds=self.config.timeout_seconds,
             raw_data={"deps": self._broker_deps()},
         )
         instance = await broker_modal.provision_instance(request)
@@ -637,7 +640,12 @@ class ModalSandboxManager:
     config: ModalSandboxResourceConfig
     workspace_setup: Any | None = None
     max_sandboxes: int = 1
+    # Default cold. Expensive GPU sandboxes should terminate on release unless a
+    # caller explicitly opts into warm retention.
     keep_warm: bool = False
+    # TODO(lifecycle): keep_warm currently means leaked-cost risk if the owning
+    # process dies before `stop()` runs. We need a durable lease registry /
+    # janitor state machine, not only in-process finally cleanup.
     resource_factory: Callable[[ModalSandboxResourceConfig, Any | None], ModalSandboxResource] = (
         lambda config, workspace_setup: ModalSandboxResource(
             config=config,
@@ -745,6 +753,9 @@ class ModalSandboxManager:
         resource = self._resources[lease.resource_index]
         if not self.keep_warm:
             await resource.close()
+        # TODO(lifecycle): release() is currently only an in-process transition.
+        # We still need durable owner/lease records with TTL so another process
+        # can reap retained sandboxes after crashes or abandoned runs.
         self._release_count += 1
         assert self._in_flight > 0, "cannot release modal sandbox when none are in flight"
         self._in_flight -= 1

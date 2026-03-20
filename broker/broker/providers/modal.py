@@ -184,19 +184,26 @@ def _create_sandbox_sync(
     ts = int(time.time())
     sandbox_name = f"broker-{request.name or gpu_type}-{ts}"
 
-    # Create sandbox (24h max lifetime)
+    # Create sandbox with provider-supported max lifetime.
+    sandbox_timeout_seconds = request.max_lifetime_seconds or 60 * 60 * 24
     sandbox = modal.Sandbox.create(
         app=app,
         image=image,
         gpu=gpu_spec,
-        timeout=60 * 60 * 24,  # 24 hours
+        timeout=sandbox_timeout_seconds,
         name=sandbox_name,
     )
 
     assert sandbox is not None, "Sandbox.create() returned None"
     assert sandbox.object_id, "Sandbox missing object_id"
 
-    logger.info(f"Modal sandbox created: {sandbox.object_id} (gpu={gpu_spec}, name={sandbox_name})")
+    logger.info(
+        "Modal sandbox created: %s (gpu=%s, name=%s, ttl_seconds=%s)",
+        sandbox.object_id,
+        gpu_spec,
+        sandbox_name,
+        sandbox_timeout_seconds,
+    )
 
     return sandbox, modal
 
