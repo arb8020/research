@@ -4,6 +4,24 @@ from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import Any, Protocol, runtime_checkable
 
+# TODO(resource-boundary): resources currently blur three distinct things:
+# - serializable state needed to rehydrate a capability later
+# - live capability handles like workspaces/sessions/evaluators
+# - environment-facing tool surfaces built from those capabilities
+#
+# The intended split is:
+# 1. ResourceState: serializable handle/reference, no tools
+# 2. ResourceHandle: live capability object, no task semantics
+# 3. Environment: owns tool exposure plus how resource state participates in
+#    environment ser/deser
+#
+# KernelBench is the forcing example:
+# - workspace/evaluator should be injected as capabilities
+# - workspace-style SDK-agent KernelBench should expose coding/kernel tools at
+#   the environment layer
+# - external-agent KernelBench can still use attempt_executor, but should
+#   consume the same underlying resource/state boundary
+
 
 @runtime_checkable
 class KernelEvaluator(Protocol):
