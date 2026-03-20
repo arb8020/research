@@ -1452,7 +1452,8 @@ async def evaluate(
                     logger.info(f"{key}: {value}")
 
         if runtime_owner is not None:
-            await _maybe_stop_environment_runtime(runtime_owner)
+            with trio.CancelScope(shield=True):
+                await _maybe_stop_environment_runtime(runtime_owner)
 
     if report is None:
         raise RuntimeError(

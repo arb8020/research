@@ -15,6 +15,7 @@ from typing import Any
 import trio
 
 from ..types import GPUInstance, GPUOffer, InstanceStatus, ProvisionRequest, SSHResult
+from .modal_image import build_modal_image
 
 logger = logging.getLogger(__name__)
 
@@ -51,41 +52,14 @@ def _import_modal():  # noqa: ANN202
         raise ImportError("Modal SDK not installed. Install with: pip install modal") from e
 
 
-def _build_image_from_deps(modal: Any, deps: Any) -> Any:
+def _build_image_from_deps(modal: Any, deps: Any, gpu_type: str) -> Any:
     """Build Modal image from a DepsConfig (recipes/schema.py).
 
     Translates the explicit dependency spec into modal.Image builder calls.
     No guessing — every pip package, system package, and bootstrap command
     comes from the DepsConfig.
     """
-    source_ref = getattr(deps, "source_ref", None)
-    source_type = getattr(deps, "source_type", "registry")
-    if source_ref and source_type == "registry":
-        image = modal.Image.from_registry(source_ref, add_python=deps.python_version)
-    else:
-        image = modal.Image.debian_slim(python_version=deps.python_version)
-
-    if deps.system_packages:
-        image = image.apt_install(*deps.system_packages)
-
-    if deps.pip_packages:
-        pip_kwargs: dict[str, Any] = {}
-        if deps.pip_index_url:
-            pip_kwargs["index_url"] = deps.pip_index_url
-        if deps.pip_extra_index_url:
-            pip_kwargs["extra_index_url"] = deps.pip_extra_index_url
-        if getattr(deps, "pip_prerelease", False):
-            pip_kwargs["pre"] = True
-        image = image.pip_install(*deps.pip_packages, **pip_kwargs)
-
-    for cmd in deps.bootstrap_commands:
-        image = image.run_commands(cmd)
-
-    env = getattr(deps, "env", None)
-    if env:
-        image = image.env(dict(env))
-
-    return image
+    return build_modal_image(modal, deps, gpu_type)
 
 
 def _build_default_image(modal: Any, gpu_type: str) -> Any:
@@ -166,7 +140,7 @@ def _create_sandbox_sync(
     # Build image — explicit deps if available, fallback otherwise
     gpu_type = request.gpu_type or "T4"
     if deps is not None:
-        image = _build_image_from_deps(modal, deps)
+        image = _build_image_from_deps(modal, deps, gpu_type)
     else:
         image = _build_default_image(modal, gpu_type)
 

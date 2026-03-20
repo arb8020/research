@@ -9,12 +9,13 @@ import time
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from pathlib import PurePosixPath
-from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
 import trio
 
+from ..image_spec import ImageSpec, RuntimeOverlay
 from ..infra_errors import WorkspaceInfraError
+from ..training.configs import DepsConfig
 from .resources import CommandExecutionResult, SessionExecSpec
 from .runtime_probe import build_gpu_runtime_probe_script
 
@@ -419,46 +420,20 @@ class ModalSandboxResource:
             raise
 
     def _broker_deps(self) -> Any:
-        return SimpleNamespace(
-            source_type="registry",
-            source_ref=self.config.image_registry,
+        return DepsConfig(
             python_version=self.config.python_version,
             system_packages=tuple(self.config.apt_packages),
             pip_packages=tuple(self.config.pip_packages),
-            pip_index_url=None,
-            pip_extra_index_url=None,
-            pip_prerelease=False,
-            env=dict(self.config.env),
-            bootstrap_commands=(
-                tuple(self.config.run_commands) + (self._manifest_write_command(),)
+            image=ImageSpec.from_registry(
+                self.config.image_registry,
+                python_version=self.config.python_version,
             ),
-        )
-
-    def _manifest_write_command(self) -> str:
-        payload = {
-            "schema_version": 1,
-            "source_type": "registry",
-            "source_ref": self.config.image_registry,
-            "resolved_image_ref": None,
-            "image_name": None,
-            "cuda_version": self.config.image_registry.split(":")[1].split("-")[0]
-            if ":" in self.config.image_registry
-            else None,
-            "python_version": self.config.python_version,
-            "env": self.config.env,
-            "features": ["kernelbench-v3", "kernelbench-backend:cuda"],
-            "installed_groups": ["kernelbench-v3-runtime"],
-            "paths": {
-                "workspace_dir": self.config.workspace_dir,
-                "thunderkittens_root": self.config.env.get("THUNDERKITTENS_ROOT", ""),
-            },
-        }
-        encoded = base64.b64encode(json.dumps(payload, indent=2, sort_keys=True).encode()).decode()
-        return (
-            'python3 -c "import base64; from pathlib import Path; '
-            "path = Path('/etc/rollouts-image.json').expanduser(); "
-            "path.parent.mkdir(parents=True, exist_ok=True); "
-            f"path.write_text(base64.b64decode('{encoded}').decode('utf-8'))\""
+            bootstrap_commands=tuple(self.config.run_commands),
+            runtime_overlay=RuntimeOverlay(
+                env=dict(self.config.env),
+                features=("kernelbench-v3", "kernelbench-backend:cuda"),
+                installed_groups=("kernelbench-v3-runtime",),
+            ),
         )
 
     async def _provision_sandbox_via_broker(self) -> str:
@@ -637,6 +612,26 @@ class ManagedModalSandboxResource:
 
 @dataclass
 class ModalSandboxManager:
+    # TODO(lifecycle): the honest long-term model here is a durable resource
+    # state machine, not only in-process manager bookkeeping.
+    #
+    # Intended states:
+    # - requested: a run/sample asked for a sandbox
+    # - provisioning: provider allocation/create is in flight
+    # - leased: a live sandbox is owned by one run/sample
+    # - idle: sandbox exists but is intentionally retained warm
+    # - reaping: janitor or owner is trying to terminate it
+    # - terminated: provider confirms it is gone
+    #
+    # Missing pieces:
+    # - durable lease registry: resource id -> owner, acquired_at, ttl,
+    #   heartbeat, cleanup_policy, state
+    # - heartbeats from the owning process so abandoned runs become detectable
+    # - out-of-band janitor that reaps expired/abandoned warm sandboxes
+    # - the same lifecycle model applied across Modal and Bifrost-backed pools
+    #
+    # Until that exists, keep_warm=True is only best-effort and can leak cost
+    # whenever the owning process dies before stop()/finally runs.
     config: ModalSandboxResourceConfig
     workspace_setup: Any | None = None
     max_sandboxes: int = 1

@@ -12,6 +12,8 @@ from rollouts.environments.modal_sandbox_resource import (
     ModalSandboxResource,
     ModalSandboxResourceConfig,
 )
+from rollouts.image_spec import ImageSpec, RuntimeOverlay
+from rollouts.training.configs import DepsConfig
 
 
 @dataclass
@@ -52,23 +54,24 @@ class _FakeModal:
 
 
 def test_build_image_from_deps_preserves_registry_source_and_env() -> None:
-    deps = SimpleNamespace(
-        source_type="registry",
-        source_ref="nvidia/cuda:13.0.0-devel-ubuntu22.04",
+    deps = DepsConfig(
         python_version="3.10",
         system_packages=("git",),
         pip_packages=("torch",),
-        pip_index_url=None,
-        pip_extra_index_url=None,
-        pip_prerelease=False,
+        image=ImageSpec.from_registry(
+            "nvidia/cuda:13.0.0-devel-ubuntu22.04",
+            python_version="3.10",
+        ),
         bootstrap_commands=("echo hello",),
-        env={"THUNDERKITTENS_ROOT": "/root/ThunderKittens"},
+        runtime_overlay=RuntimeOverlay(env={"THUNDERKITTENS_ROOT": "/root/ThunderKittens"}),
     )
 
-    image = _build_image_from_deps(_FakeModal, deps)
+    image = _build_image_from_deps(_FakeModal, deps, "A100")
 
     assert image.source == "registry:nvidia/cuda:13.0.0-devel-ubuntu22.04:3.10"
-    assert ("env", {"THUNDERKITTENS_ROOT": "/root/ThunderKittens"}) in image.actions
+    env_actions = [payload for action, payload in image.actions if action == "env"]
+    assert env_actions, "expected final image env to be set"
+    assert env_actions[-1]["THUNDERKITTENS_ROOT"] == "/root/ThunderKittens"
 
 
 @pytest.mark.trio
@@ -115,8 +118,11 @@ async def test_modal_sandbox_resource_provisions_and_terminates_via_broker(
     assert request.provider == "modal"
     assert request.gpu_type == "A100"
     assert request.max_lifetime_seconds == 1800
-    assert request.raw_data["deps"].source_ref == "nvidia/cuda:13.0.0-devel-ubuntu22.04"
-    assert request.raw_data["deps"].env["THUNDERKITTENS_ROOT"] == "/root/ThunderKittens"
+    deps = request.raw_data["deps"]
+    assert isinstance(deps, DepsConfig)
+    assert deps.image is not None
+    assert deps.image.source_ref == "nvidia/cuda:13.0.0-devel-ubuntu22.04"
+    assert deps.runtime_overlay.env["THUNDERKITTENS_ROOT"] == "/root/ThunderKittens"
 
     resource._sandbox = object()
     resource._sandbox_id = "sb-broker-123"
