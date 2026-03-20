@@ -36,10 +36,12 @@ import argparse
 import importlib.util
 import logging
 import os
+import signal
 import sys
 from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
+from types import FrameType
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -193,6 +195,7 @@ async def run_with_api(
     endpoint_config: Any,
     run_config: Any,
     output_config: Any,
+    cancel_scope: Any | None = None,
 ) -> dict[str, Any]:
     """Run eval against an API endpoint."""
     from rollouts.agents import RunConfig as AgentRunConfig
@@ -265,6 +268,7 @@ async def run_with_api(
         on_chunk=silent_on_chunk,
         handle_stop=handle_stop,
         handle_no_tool=handle_no_tool,
+        cancel_scope=cancel_scope,
     )
 
     output_dir = output_config.output_dir
@@ -302,10 +306,17 @@ async def run_with_sglang_local(
     endpoint_config: Any,
     run_config: Any,
     output_config: Any,
+    cancel_scope: Any | None = None,
 ) -> dict[str, Any]:
     """Run eval against a local SGLang server (already running)."""
     # Same as API but with SGLang endpoint
-    return await run_with_api(config_module, endpoint_config, run_config, output_config)
+    return await run_with_api(
+        config_module,
+        endpoint_config,
+        run_config,
+        output_config,
+        cancel_scope=cancel_scope,
+    )
 
 
 async def run_with_sglang_provision(
@@ -332,6 +343,9 @@ def main() -> int:
         EndpointConfig,
         resolve_eval_task_spec,
     )
+
+    class _EvalInterrupted(Exception):
+        pass
 
     parser = argparse.ArgumentParser(
         description="Run evaluation",
@@ -438,59 +452,100 @@ Examples:
         print(f"Max concurrent: {run_config.max_concurrent}")
         print(f"Output dir: {output_config.output_dir}")
 
+    scope_holder: dict[str, trio.CancelScope | None] = {"scope": None}
+    original_sigint_handler = signal.getsignal(signal.SIGINT)
+
+    def _handle_sigint(signum: int, frame: FrameType | None) -> None:
+        del signum, frame
+        active_scope = scope_holder["scope"]
+        if active_scope is not None:
+            logger.info("SIGINT received, cancelling evaluation...")
+            active_scope.cancel()
+            return
+        raise KeyboardInterrupt
+
     async def _run() -> dict[str, Any]:
-        if args.command == "launch":
-            from .launch import launch_sample
+        with trio.CancelScope() as cancel_scope:
+            scope_holder["scope"] = cancel_scope
+            try:
+                if args.command == "launch":
+                    from .launch import launch_sample
 
-            attempt, session_id = await launch_sample(
-                config_module=config_module,
-                config_path=config_path,
-                sample_selector=args.sample,
-                runtime=args.runtime,
-                run_config=run_config,
-                output_config=output_config,
-            )
-            results: dict[str, Any] = {
-                "sample_id": attempt.id,
-                "session_id": session_id,
-                "runtime": args.runtime,
-                "control_mode": "interactive",
-                "message_count": len(attempt.trajectory.messages) if attempt.trajectory else 0,
-            }
-            if attempt.score is not None:
-                results["reward"] = attempt.reward
-            return results
+                    attempt, session_id = await launch_sample(
+                        config_module=config_module,
+                        config_path=config_path,
+                        sample_selector=args.sample,
+                        runtime=args.runtime,
+                        run_config=run_config,
+                        output_config=output_config,
+                    )
+                    results: dict[str, Any] = {
+                        "sample_id": attempt.id,
+                        "session_id": session_id,
+                        "runtime": args.runtime,
+                        "control_mode": "interactive",
+                        "message_count": len(attempt.trajectory.messages)
+                        if attempt.trajectory
+                        else 0,
+                    }
+                    if attempt.score is not None:
+                        results["reward"] = attempt.reward
+                    return results
 
-        if endpoint_config is not None and endpoint_config.provider in ("sglang", "vllm"):
-            if endpoint_config.base_url:
-                return await run_with_sglang_local(
-                    config_module, endpoint_config, run_config, output_config
-                )
-            elif hardware_config is not None:
-                return await run_with_sglang_provision(
+                if endpoint_config is not None and endpoint_config.provider in ("sglang", "vllm"):
+                    if endpoint_config.base_url:
+                        return await run_with_sglang_local(
+                            config_module,
+                            endpoint_config,
+                            run_config,
+                            output_config,
+                            cancel_scope=cancel_scope,
+                        )
+                    if hardware_config is not None:
+                        return await run_with_sglang_provision(
+                            config_module,
+                            endpoint_config,
+                            run_config,
+                            output_config,
+                            hardware_config,
+                            server_config,
+                        )
+
+                    endpoint_with_url = replace(
+                        endpoint_config,
+                        base_url=endpoint_config.get_base_url(),
+                    )
+                    return await run_with_sglang_local(
+                        config_module,
+                        endpoint_with_url,
+                        run_config,
+                        output_config,
+                        cancel_scope=cancel_scope,
+                    )
+
+                return await run_with_api(
                     config_module,
                     endpoint_config,
                     run_config,
                     output_config,
-                    hardware_config,
-                    server_config,
+                    cancel_scope=cancel_scope,
                 )
-            else:
-                endpoint_with_url = replace(
-                    endpoint_config,
-                    base_url=endpoint_config.get_base_url(),
-                )
-                return await run_with_sglang_local(
-                    config_module, endpoint_with_url, run_config, output_config
-                )
-        else:
-            return await run_with_api(config_module, endpoint_config, run_config, output_config)
+            finally:
+                scope_holder["scope"] = None
 
+        raise _EvalInterrupted
+
+    signal.signal(signal.SIGINT, _handle_sigint)
     try:
         results = trio.run(_run)
+    except _EvalInterrupted:
+        logger.info("Evaluation interrupted")
+        return 130
     except Exception as e:
         logger.exception(f"Evaluation failed: {e}")
         return 1
+    finally:
+        signal.signal(signal.SIGINT, original_sigint_handler)
 
     # Print results
     print("\n" + "=" * 60)
@@ -507,3 +562,6 @@ Examples:
 
 if __name__ == "__main__":
     sys.exit(main())
+
+    class _EvalInterrupted(Exception):
+        pass
