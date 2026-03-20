@@ -538,8 +538,11 @@ async def run_server(args: Any, **uvicorn_kwargs: Any) -> None:
                 "vllm_startup_init_weight_update_group_finished",
                 request=startup_request.to_dict(),
             )
-        supported_tasks = await engine_client.get_supported_tasks()
         app = build_app(args)
+        # Initialize upstream app state before attaching custom control-plane routes.
+        # Newer vLLM startup may mutate app wiring here, and we need the patched
+        # NCCL endpoints to survive whatever initialization the base server does.
+        await init_app_state(engine_client, app.state, args)
 
         @app.get("/weight_update_schema")
         async def weight_update_schema(limit: int = 1) -> dict[str, Any]:
@@ -657,7 +660,6 @@ async def run_server(args: Any, **uvicorn_kwargs: Any) -> None:
             payload = await maybe if maybe is not None else result
             return {"status": "ok", "results": payload}
 
-        await init_app_state(engine_client, app.state, args)
         shutdown_task = await serve_http(
             app,
             sock=sock,
