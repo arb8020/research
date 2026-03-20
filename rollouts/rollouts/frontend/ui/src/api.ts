@@ -1,4 +1,4 @@
-import type { RunListItem, RunReport, TraceSample, WorkspaceData } from './types'
+import type { RunListItem, RunReport, RunTags, TraceSample, WorkspaceData } from './types'
 
 export async function listRuns(): Promise<RunListItem[]> {
   const res = await fetch('/api/runs')
@@ -7,11 +7,17 @@ export async function listRuns(): Promise<RunListItem[]> {
   return data.runs ?? []
 }
 
-export async function getRunReport(runId: string): Promise<{ report: RunReport; sample_ids: string[] }> {
+export async function getRunReport(
+  runId: string,
+): Promise<{ report: RunReport; sample_ids: string[]; tags: RunTags }> {
   const res = await fetch(`/api/runs/${encodeURIComponent(runId)}`)
   if (!res.ok) throw new Error(`Failed to get run ${runId}: ${res.status}`)
   const data = await res.json()
-  return { report: data.report ?? data, sample_ids: data.sample_ids ?? data.report?.sample_ids ?? [] }
+  return {
+    report: data.report ?? data,
+    sample_ids: data.sample_ids ?? data.report?.sample_ids ?? [],
+    tags: data.tags ?? { user: {}, derived: {} },
+  }
 }
 
 export async function getSample(runId: string, sampleId: string): Promise<TraceSample> {
@@ -47,6 +53,20 @@ export async function setResultsDir(path: string): Promise<void> {
     body: JSON.stringify({ path }),
   })
   if (!res.ok) throw new Error(`Failed to set results dir: ${res.status}`)
+}
+
+export async function setRunTags(
+  runId: string,
+  tags: Record<string, string | null>,
+): Promise<Record<string, string>> {
+  const res = await fetch(`/api/runs/${encodeURIComponent(runId)}/tags`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ tags }),
+  })
+  if (!res.ok) throw new Error(`Failed to set tags for run ${runId}: ${res.status}`)
+  const data = await res.json()
+  return data.user ?? {}
 }
 
 export async function getWorkspace(runId: string, sampleId: string): Promise<WorkspaceData | null> {

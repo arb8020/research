@@ -17,6 +17,21 @@ function RewardCell({ reward }: { reward: number | null }) {
   return <span style={{ color, fontWeight: 500 }}>{pct}%</span>
 }
 
+function TagPill({ label }: { label: string }) {
+  return (
+    <span
+      className="px-2 py-0.5 rounded text-[10px] font-mono"
+      style={{
+        color: 'var(--color-dark-text-secondary)',
+        background: 'var(--color-dark-elevated)',
+        border: '1px solid var(--color-dark-border)',
+      }}
+    >
+      {label}
+    </span>
+  )
+}
+
 export function RunDetail({ runId, onBack, onSelectSample }: RunDetailProps) {
   const state = useRunDetail(runId)
 
@@ -40,7 +55,7 @@ export function RunDetail({ runId, onBack, onSelectSample }: RunDetailProps) {
     )
   }
 
-  const { report, samples } = state
+  const { report, samples, tags } = state
   const metrics = report.summary_metrics
   const model = report.config?.endpoint?.model ?? '—'
 
@@ -78,6 +93,25 @@ export function RunDetail({ runId, onBack, onSelectSample }: RunDetailProps) {
       </div>
 
       {/* Summary metrics */}
+      {(Object.keys(tags.user).length > 0 || Object.keys(tags.derived).length > 0) && (
+        <div className="mb-4 space-y-2">
+          {Object.keys(tags.user).length > 0 && (
+            <div className="flex flex-wrap gap-2">
+              {Object.entries(tags.user).map(([key, value]) => (
+                <TagPill key={`user-${key}`} label={`${key}=${value}`} />
+              ))}
+            </div>
+          )}
+          {Object.keys(tags.derived).length > 0 && (
+            <div className="flex flex-wrap gap-2">
+              {Object.entries(tags.derived).map(([key, value]) => (
+                <TagPill key={`derived-${key}`} label={`${key}=${value}`} />
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
       {metrics && (
         <div
           className="grid gap-px mb-6 rounded overflow-hidden"

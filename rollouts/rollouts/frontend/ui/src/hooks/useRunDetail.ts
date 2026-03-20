@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { getRunReport } from '../api'
-import type { RunReport } from '../types'
+import type { RunReport, RunTags } from '../types'
 
 export interface SampleRow {
   id: string
@@ -17,6 +17,7 @@ type RunDetailState =
       kind: 'loading'
       report: null
       samples: SampleRow[]
+      tags: RunTags
       error: null
     }
   | {
@@ -24,6 +25,7 @@ type RunDetailState =
       kind: 'loaded'
       report: RunReport
       samples: SampleRow[]
+      tags: RunTags
       error: null
     }
   | {
@@ -31,6 +33,7 @@ type RunDetailState =
       kind: 'error'
       report: null
       samples: SampleRow[]
+      tags: RunTags
       error: string
     }
 
@@ -51,6 +54,7 @@ export function useRunDetail(runId: string): RunDetailState {
     kind: 'loading',
     report: null,
     samples: [],
+    tags: { user: {}, derived: {} },
     error: null,
   })
 
@@ -58,13 +62,14 @@ export function useRunDetail(runId: string): RunDetailState {
     let cancelled = false
 
     void getRunReport(runId)
-      .then(({ report, sample_ids }) => {
+      .then(({ report, sample_ids, tags }) => {
         if (cancelled) return
         setState({
           runId,
           kind: 'loaded',
           report,
           samples: buildSampleRows(sample_ids),
+          tags,
           error: null,
         })
       })
@@ -75,6 +80,7 @@ export function useRunDetail(runId: string): RunDetailState {
           kind: 'error',
           report: null,
           samples: [],
+          tags: { user: {}, derived: {} },
           error: err instanceof Error ? err.message : 'Failed to load run',
         })
       })
@@ -90,6 +96,7 @@ export function useRunDetail(runId: string): RunDetailState {
       kind: 'loading',
       report: null,
       samples: [],
+      tags: { user: {}, derived: {} },
       error: null,
     }
   }

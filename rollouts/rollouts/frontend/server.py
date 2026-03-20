@@ -37,6 +37,7 @@ from .live_runs import (
     list_registered_runs,
 )
 from .live_streams import stream_registered_run, stream_watch_run
+from .tags import build_live_run_tags, build_run_tags, update_user_tags
 from .workspace_views import load_workspace_response
 
 # Configure logging
@@ -82,6 +83,7 @@ GET_ROUTES = [
 POST_ROUTES = [
     Route("POST", re.compile(r"^/api/set-results-dir$"), "_set_results_dir"),
     Route("POST", re.compile(r"^/api/runs/(?P<run_id>[^/]+)/kill$"), "_kill_run"),
+    Route("POST", re.compile(r"^/api/runs/(?P<run_id>[^/]+)/tags$"), "_set_run_tags"),
 ]
 
 
@@ -148,7 +150,9 @@ class RolloutsViewerServer(SimpleHTTPRequestHandler):
         """Serve the built React UI from ui/dist/index.html."""
         ui_dist = Path(__file__).parent / "ui" / "dist" / "index.html"
         if not ui_dist.exists():
-            self.send_error(404, "UI build not found. Run `npm --prefix rollouts/frontend/ui run build`.")
+            self.send_error(
+                404, "UI build not found. Run `npm --prefix rollouts/frontend/ui run build`."
+            )
             return
 
         content = ui_dist.read_bytes()
@@ -214,6 +218,7 @@ class RolloutsViewerServer(SimpleHTTPRequestHandler):
                     "status": "completed",
                     "live": False,
                     "can_kill": False,
+                    "tags": build_run_tags(run_dir, report),
                 })
 
         live_runs = list_registered_runs()
@@ -236,6 +241,7 @@ class RolloutsViewerServer(SimpleHTTPRequestHandler):
                 "status": run["status"],
                 "live": True,
                 "can_kill": run["status"] == "running" and get_run(run_id) is not None,
+                "tags": build_live_run_tags(run),
             })
 
         runs.sort(key=lambda run: run["timestamp"], reverse=True)
@@ -368,8 +374,7 @@ class RolloutsViewerServer(SimpleHTTPRequestHandler):
 
     def _set_results_dir(self) -> None:
         """Hot-swap the results directory. Body: {"path": "/abs/path/to/results"}"""
-        length = int(self.headers.get("Content-Length", 0))
-        body = json.loads(self.rfile.read(length))
+        body = self._read_json_body()
         new_path = Path(body["path"]).expanduser().resolve()
         if not new_path.exists():
             self.send_error(400, f"Directory does not exist: {new_path}")
@@ -377,6 +382,28 @@ class RolloutsViewerServer(SimpleHTTPRequestHandler):
         self.__class__.results_dir = new_path
         logger.info(f"Results dir switched to: {new_path}")
         self._json_response({"ok": True, "path": str(new_path)})
+
+    def _set_run_tags(self, run_id: str) -> None:
+        trace_dir = self._resolve_run_dir(run_id)
+        if trace_dir is None:
+            self.send_error(404, f"Run not found: {run_id}")
+            return
+
+        body = self._read_json_body()
+        raw_updates = body.get("tags")
+        if not isinstance(raw_updates, dict):
+            self.send_error(400, "Body must contain object field 'tags'")
+            return
+
+        updates: dict[str, str | None] = {}
+        for key, value in raw_updates.items():
+            if value is not None and not isinstance(value, str):
+                self.send_error(400, f"Tag {key!r} must be a string or null")
+                return
+            updates[str(key)] = value
+
+        tags = update_user_tags(trace_dir, updates)
+        self._json_response({"ok": True, "user": tags})
 
     def _kill_run(self, run_id: str) -> None:
         """Kill a running process."""
@@ -403,6 +430,13 @@ class RolloutsViewerServer(SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(json_data.encode("utf-8"))
 
+    def _read_json_body(self) -> dict[str, Any]:
+        length = int(self.headers.get("Content-Length", 0))
+        body = json.loads(self.rfile.read(length))
+        if not isinstance(body, dict):
+            raise ValueError("Request body must be a JSON object")
+        return body
+
     def _html_response(self, document: str, *, filename: str) -> None:
         content = document.encode("utf-8")
         self.send_response(200)
@@ -415,9 +449,7 @@ class RolloutsViewerServer(SimpleHTTPRequestHandler):
 
 def main() -> None:
     """Run the rollouts run viewer server."""
-    parser = argparse.ArgumentParser(
-        description="Rollouts run viewer"
-    )
+    parser = argparse.ArgumentParser(description="Rollouts run viewer")
     parser.add_argument(
         "--port", type=int, default=8080, help="Port to run server on (default: 8080)"
     )

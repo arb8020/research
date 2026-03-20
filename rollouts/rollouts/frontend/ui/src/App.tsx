@@ -274,6 +274,15 @@ export default function App() {
               status: 'watching',
               live: true,
               can_kill: false,
+              tags: {
+                user: {},
+                derived: {
+                  status: 'watching',
+                  live: 'true',
+                  completed: 'false',
+                  successful: 'false',
+                },
+              },
             }}
             sampleId={view.sampleId}
             onBack={() => navigate({ kind: 'runs' })}

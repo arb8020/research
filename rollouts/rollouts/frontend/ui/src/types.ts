@@ -1,5 +1,10 @@
 // Rollouts run viewer types
 
+export interface RunTags {
+  user: Record<string, string>;
+  derived: Record<string, string>;
+}
+
 export interface RunReport {
   eval_name: string;
   dataset_path: string;
@@ -49,6 +54,7 @@ export interface RunListItem {
   status: 'running' | 'watching' | 'completed' | 'failed' | 'killed';
   live: boolean;
   can_kill: boolean;
+  tags: RunTags;
 }
 
 export interface SampleReward {

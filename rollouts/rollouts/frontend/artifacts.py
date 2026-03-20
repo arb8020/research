@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from ..sample_views import normalize_sample_payload
+from .tags import build_run_tags
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +53,7 @@ def load_trace_payload(trace_dir: Path, trace_id: str) -> dict[str, Any]:
         "samples": samples,
         "sample_ids": report.get("sample_ids", []),
         "report": report,
+        "tags": build_run_tags(trace_dir, report),
     }
 
 

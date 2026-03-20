@@ -51,6 +51,7 @@ function RewardBadge({ reward }: { reward: number }) {
 
 export function RunsList({ completedRuns, liveRuns, loading, error, onSelectRun, onSelectLiveSample }: RunsListProps) {
   const [search, setSearch] = useState('')
+  const [successfulOnly, setSuccessfulOnly] = useState(false)
   const [sortField, setSortField] = useState<SortField>('timestamp')
   const [sortDir, setSortDir] = useState<SortDir>('desc')
 
@@ -67,7 +68,16 @@ export function RunsList({ completedRuns, liveRuns, loading, error, onSelectRun,
     let runs = completedRuns
     if (search.trim()) {
       const q = search.toLowerCase()
-      runs = runs.filter(r => r.name.toLowerCase().includes(q))
+      runs = runs.filter(r => {
+        const tagText = [...Object.entries(r.tags.user), ...Object.entries(r.tags.derived)]
+          .map(([key, value]) => `${key}:${value}`)
+          .join(' ')
+          .toLowerCase()
+        return r.name.toLowerCase().includes(q) || tagText.includes(q)
+      })
+    }
+    if (successfulOnly) {
+      runs = runs.filter(r => r.tags.derived.successful === 'true')
     }
     return [...runs].sort((a, b) => {
       let av: string | number, bv: string | number
@@ -82,7 +92,7 @@ export function RunsList({ completedRuns, liveRuns, loading, error, onSelectRun,
       if (av > bv) return sortDir === 'asc' ? 1 : -1
       return 0
     })
-  }, [completedRuns, search, sortField, sortDir])
+  }, [completedRuns, search, successfulOnly, sortField, sortDir])
 
   if (loading) {
     return (
@@ -153,6 +163,19 @@ export function RunsList({ completedRuns, liveRuns, loading, error, onSelectRun,
             width: 220,
           }}
         />
+      </div>
+      <div className="flex items-center gap-2 mb-4">
+        <button
+          onClick={() => setSuccessfulOnly(value => !value)}
+          className="text-xs px-2 py-1 rounded"
+          style={{
+            color: successfulOnly ? 'var(--color-dark-bg)' : 'var(--color-dark-text-secondary)',
+            background: successfulOnly ? '#22c55e' : 'var(--color-dark-card)',
+            border: '1px solid var(--color-dark-border)',
+          }}
+        >
+          successful only
+        </button>
       </div>
 
       {filtered.length === 0 ? (
