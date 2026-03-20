@@ -62,6 +62,15 @@ def _route_paths(app: Any) -> list[str]:
     )
 
 
+try:
+    sys.stderr.write(
+        f"{_ARGUS_DIAG_EVENT_SENTINEL}{json.dumps({'event': 'qed_vllm_module_imported', 'module': __name__}, sort_keys=True)}\n"
+    )
+    sys.stderr.flush()
+except Exception:
+    pass
+
+
 class _LikeWorker(Protocol):
     rank: int
     local_rank: int
@@ -728,6 +737,8 @@ def main() -> None:
     import uvloop
     from vllm.entrypoints.openai.cli_args import make_arg_parser, validate_parsed_serve_args
 
+    _emit_argus_diag("qed_vllm_main_entered", module=__name__)
+
     original_boolean_optional_init = argparse.BooleanOptionalAction.__init__
 
     def _patched_boolean_optional_init(
@@ -750,6 +761,13 @@ def main() -> None:
     parser.add_argument("--rollouts-weight-sync-group-name", type=str, default=None)
     parser.add_argument("--rollouts-weight-sync-timeout-seconds", type=float, default=300.0)
     args = parser.parse_args()
+    _emit_argus_diag(
+        "qed_vllm_main_parsed_args",
+        module=__name__,
+        host=getattr(args, "host", None),
+        port=getattr(args, "port", None),
+        model=getattr(args, "model", None),
+    )
     validate_parsed_serve_args(args)
     uvloop.run(run_server(args))
 
