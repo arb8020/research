@@ -4,7 +4,7 @@ Patches transformers.utils.hub.list_repo_templates to handle 404s gracefully.
 See: https://github.com/huggingface/transformers/issues/41813
 
 Usage:
-    python -m rollouts.training.sglang_launcher --model-path ... --port ...
+    python -m rollouts.inference.realizations.slime_sglang --model-path ... --port ...
 """
 
 from __future__ import annotations

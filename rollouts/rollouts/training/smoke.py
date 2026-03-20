@@ -83,13 +83,21 @@ def run_torchtitan_backend_init_smoke(config: Any, **_: Any) -> dict[str, Any]:
 
 
 async def _inference_startup_smoke_async(config: Any) -> dict[str, Any]:
-    from .grpo import _create_inference_engines, _create_teacher_engine
+    from .grpo import _create_teacher_engine
+    from .inference_runtime_factory import create_inference_backend_runtime
 
     output_root = Path(getattr(getattr(config, "output", None), "output_dir", "results"))
     checkpoint_dir = output_root / "smoke_inference_startup"
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
-    engines = _create_inference_engines(config, checkpoint_dir)
+    inference_runtime = create_inference_backend_runtime(
+        model=config.model,
+        inference=config.inference,
+        rollout=config.rollout,
+        checkpoint=config.checkpoint,
+        output_dir=checkpoint_dir,
+    )
+    engines = list(inference_runtime.engines)
     teacher_engine = _create_teacher_engine(config, checkpoint_dir)
 
     launched: list[dict[str, Any]] = []
@@ -118,6 +126,7 @@ async def _inference_startup_smoke_async(config: Any) -> dict[str, Any]:
         return {
             "smoke": "inference_startup",
             "backend": getattr(config.inference, "backend", None),
+            "realization": inference_runtime.realization.name,
             "model": getattr(config.model, "name", None),
             "num_engines": len(engines),
             "engines": launched,
@@ -156,10 +165,10 @@ async def _training_and_inference_startup_smoke_async(
 
     from .grpo import (
         _build_grpo_run_context,
-        _create_inference_engines,
         _create_teacher_engine,
         _run_training_preflight,
     )
+    from .inference_runtime_factory import create_inference_backend_runtime
 
     output_root = Path(getattr(getattr(config, "output", None), "output_dir", "results"))
     checkpoint_dir = output_root / "smoke_training_and_inference_startup"
@@ -233,7 +242,14 @@ async def _training_and_inference_startup_smoke_async(
             "combined_smoke_inference_setup_start",
             **run_context,
         )
-        inference_engines = _create_inference_engines(config, checkpoint_dir)
+        inference_runtime = create_inference_backend_runtime(
+            model=config.model,
+            inference=config.inference,
+            rollout=config.rollout,
+            checkpoint=config.checkpoint,
+            output_dir=checkpoint_dir,
+        )
+        inference_engines = list(inference_runtime.engines)
         teacher_engine = _create_teacher_engine(config, checkpoint_dir)
         emit(
             "combined_smoke_inference_setup_finished",
@@ -298,6 +314,7 @@ async def _training_and_inference_startup_smoke_async(
             "smoke": "training_and_inference_startup",
             "trainer_backend": getattr(config.trainer, "backend", None),
             "inference_backend": getattr(config.inference, "backend", None),
+            "inference_realization": inference_runtime.realization.name,
             "num_engines": len(inference_engines),
             "teacher_engine": teacher_engine is not None,
             "trainer_cuda_device_ids": list(config.trainer.cuda_device_ids),

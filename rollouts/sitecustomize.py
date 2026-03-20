@@ -23,7 +23,7 @@ def _emit_fallback(payload: dict[str, object]) -> None:
 
 if os.environ.get("ROLLOUTS_SGLANG_SITE_TRACE") == "1":
     try:
-        from rollouts.training.sglang_launcher import (
+        from rollouts.inference.realizations.slime_sglang import (
             _emit_argus_diag,
             _instrument_sglang_runtime_methods,
             _process_context,

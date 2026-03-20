@@ -1,6 +1,6 @@
 """Patched vLLM OpenAI server with QED-Nano-style NCCL weight update hooks.
 
-This is intentionally a standalone entrypoint. It lets us verify the vLLM-side
+This is intentionally a standalone inference entrypoint. It lets us verify the vLLM-side
 worker extension and HTTP control surface in isolation before wiring it into a
 training backend.
 """

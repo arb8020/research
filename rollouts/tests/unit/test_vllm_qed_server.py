@@ -5,8 +5,8 @@ from typing import Any
 
 import pytest
 
-import rollouts.training.vllm_qed_server as vllm_qed_server
-from rollouts.training.vllm_qed_server import (
+import rollouts.inference.realizations.qed_vllm as vllm_qed_server
+from rollouts.inference.realizations.qed_vllm import (
     _dispatch_init_weight_update_group,
     _dispatch_receive_weight_update,
 )

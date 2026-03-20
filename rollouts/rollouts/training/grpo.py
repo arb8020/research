@@ -51,6 +51,7 @@ from ..training.configs import (  # noqa: E402
     TrainerConfig,
     deps_config_from_data,
 )
+from ..training.inference_runtime_factory import create_inference_backend_runtime
 from ..training.runtime_factory import (
     build_megatron_lowering,
     create_training_backend_runtime,
@@ -253,96 +254,6 @@ def _setup_output_dir(config: GRPOConfig) -> tuple[Path, str]:
         output_dir = Path(config.output.output_dir) / run_name
     output_dir.mkdir(parents=True, exist_ok=True)
     return output_dir, run_name
-
-
-def _create_inference_engine(
-    config: GRPOConfig, output_dir: Path
-) -> Any:  # SGLangEngine | VLLMEngine
-    """Create single inference engine (legacy API, calls _create_inference_engines)."""
-    engines = _create_inference_engines(config, output_dir)
-    if len(engines) != 1:
-        raise ValueError(
-            f"_create_inference_engine expects 1 engine but config has {len(engines)}. "
-            "Use _create_inference_engines() for multi-engine setup."
-        )
-    return engines[0]
-
-
-def _create_inference_engines(
-    config: GRPOConfig, output_dir: Path
-) -> list[Any]:  # list[SGLangEngine | VLLMEngine | EngineV2Engine]
-    """Create multiple inference engines for parallel rollout generation.
-
-    Each engine runs on its own GPU(s) and port. More engines = more samples/second.
-
-    Returns:
-        List of inference engines (one per GPU or TP group)
-    """
-    # Architectural note:
-    # Training backends already lower through `runtime_factory`. Inference
-    # backends do not: this is still an inline selector over concrete engine
-    # classes. As a result, `config.inference.backend` and
-    # `config.checkpoint.pipeline_mode` are not jointly validated/lowered into a
-    # single runtime plan yet. If you add a backend or new pipeline semantics,
-    # prefer moving that work behind an inference runtime factory instead of
-    # extending this branch tree further.
-    from ..training.weight_sync import EngineV2Engine, SGLangEngine, VLLMEngine
-
-    engines = []
-    gpu_assignments = config.inference.gpu_assignments
-    ports = config.inference.ports
-
-    for _idx, (gpus, port) in enumerate(zip(gpu_assignments, ports, strict=False)):
-        if config.inference.backend == "sglang":
-            # NCCL weight sync uses HTTP API (init_weights_update_group),
-            # not CLI flags. See weight_sync.py for implementation.
-            engine = SGLangEngine(
-                model_name=config.model.name,
-                port=port,
-                cuda_device_ids=gpus,
-                output_dir=output_dir,
-                dtype=config.model.dtype,
-                mem_fraction=config.inference.mem_fraction,
-                disable_cuda_graph=config.inference.disable_cuda_graph,
-                max_total_tokens=config.inference.max_total_tokens,
-                max_prefill_tokens=config.inference.max_prefill_tokens,
-                max_running_requests=config.inference.max_running_requests,
-                chunked_prefill_size=config.inference.chunked_prefill_size,
-            )
-        elif config.inference.backend == "vllm":
-            requested_sync_realization = config.checkpoint.inference_sync_realization
-            available_sync_realizations = (
-                (requested_sync_realization,) if requested_sync_realization else ()
-            )
-            engine = VLLMEngine(
-                model_name=config.model.name,
-                port=port,
-                cuda_device_ids=gpus,
-                output_dir=output_dir,
-                dtype=config.model.dtype,
-                gpu_memory_utilization=config.inference.mem_fraction,
-                available_sync_realizations=available_sync_realizations,
-                default_sync_realization=requested_sync_realization,
-            )
-        elif config.inference.backend == "engine_v2":
-            # Rollouts native inference engine
-            # max_batch_size = prompts * samples_per_prompt + headroom
-            max_batch = config.rollout.batch_size * config.rollout.n_samples_per_prompt * 2
-            engine = EngineV2Engine(
-                model_name=config.model.name,
-                port=port,
-                cuda_device_ids=gpus,
-                output_dir=output_dir,
-                dtype=config.model.dtype,
-                mem_fraction=config.inference.mem_fraction,
-                max_batch_size=max_batch,
-                max_seq_len=config.rollout.max_seq_len,
-            )
-        else:
-            raise ValueError(f"Unknown inference backend: {config.inference.backend}")
-        engines.append(engine)
-
-    return engines
 
 
 def _create_teacher_engine(
@@ -554,6 +465,7 @@ def _build_grpo_run_context(
         "model_name": config.model.name,
         "trainer_backend": config.trainer.backend,
         "inference_backend": config.inference.backend,
+        "inference_realization": config.inference.realization or config.inference.backend,
         "trainer_cuda_device_ids": tuple(config.trainer.cuda_device_ids),
         "inference_cuda_device_ids": tuple(config.inference.cuda_device_ids),
         "rollout_batch_size": config.rollout.batch_size,
@@ -1254,7 +1166,7 @@ async def _grpo_train_async(
     logger.info(f"GRPO Training: {run_name}")
     logger.info("=" * 60)
     logger.info(f"Model: {config.model.name}")
-    logger.info(f"Backend: {config.inference.backend}")
+    logger.info(f"Inference: {config.inference.realization or config.inference.backend}")
     logger.info(f"Steps: {config.checkpoint.num_steps}")
     logger.info(
         f"Batch: {config.rollout.batch_size} prompts x {config.rollout.n_samples_per_prompt} samples"
@@ -1385,6 +1297,7 @@ async def _grpo_train_async(
             "model_name": config.model.name,
             "trainer_backend": config.trainer.backend,
             "inference_backend": config.inference.backend,
+            "inference_realization": config.inference.realization or config.inference.backend,
             "node_id": os.environ.get("ROLLOUTS_NODE_ID"),
             "hostname": socket.gethostname(),
         },
@@ -1407,6 +1320,7 @@ async def _grpo_train_async(
             "model_name": config.model.name,
             "trainer_backend": config.trainer.backend,
             "inference_backend": config.inference.backend,
+            "inference_realization": config.inference.realization or config.inference.backend,
             "node_id": os.environ.get("ROLLOUTS_NODE_ID"),
             "hostname": socket.gethostname(),
         },
@@ -1414,7 +1328,14 @@ async def _grpo_train_async(
 
     # Launch inference engine(s) - multi-engine for higher throughput
     # NOTE: This is when CUDA gets initialized (SGLang loads model on GPU 0)
-    inference_engines = _create_inference_engines(config, output_dir)
+    inference_runtime = create_inference_backend_runtime(
+        model=config.model,
+        inference=config.inference,
+        rollout=config.rollout,
+        checkpoint=config.checkpoint,
+        output_dir=output_dir,
+    )
+    inference_engines = list(inference_runtime.engines)
     num_engines = len(inference_engines)
     run_context = _build_grpo_run_context(
         config=config,
@@ -1432,6 +1353,12 @@ async def _grpo_train_async(
             "ports": list(config.inference.ports),
             "gpu_assignments": [list(gpus) for gpus in config.inference.gpu_assignments],
             "inference_backend": config.inference.backend,
+            "inference_realization": inference_runtime.realization.name,
+            "inference_sync_realization": (
+                inference_runtime.sync_realization.name
+                if inference_runtime.sync_realization is not None
+                else config.checkpoint.inference_sync_realization
+            ),
             "inference_mem_fraction": config.inference.mem_fraction,
             "inference_tensor_parallel_size": config.inference.tensor_parallel_size,
             "inference_startup_timeout": config.inference.startup_timeout,
@@ -1478,7 +1405,10 @@ async def _grpo_train_async(
         engine.launch()
         engine.start_log_tailer()
 
-    # Primary engine for backward compat (endpoint creation uses first engine's base_url)
+    # Primary engine for backward compat (endpoint creation uses first engine's base_url).
+    # TODO(inference-routing): launching multiple inference engines is not the same
+    # as routing rollout requests across them. Replace this single-engine binding
+    # with an explicit multi-endpoint inference client/runtime plan.
     inference_engine = inference_engines[0]
 
     # Launch teacher engine for OPD (On-Policy Distillation)

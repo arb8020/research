@@ -456,11 +456,11 @@ class InferenceBackend(Protocol):
     No inheritance! Just duck typing.
 
     Architectural note:
-    This protocol is cleaner than the current construction story. GRPO still
-    chooses concrete inference engines with an inline string switch rather than
-    going through an inference-side runtime factory/lowering path comparable to
-    training backends. So the lifecycle/update surface is explicit here, but
-    backend selection and pipeline capability validation are not centralized yet.
+    Concrete engine construction now goes through `inference_runtime_factory`,
+    so backend selection and first-cut pipeline validation have one home.
+    The lifecycle/update surface is still not fully owned here though: GRPO
+    still drives launch sequencing, and `true_pipeline` still bypasses this
+    protocol in favor of an experimental direct NCCL path.
 
     Lifecycle:
     1. launch() -> str               # Start server in tmux, return session name
@@ -741,6 +741,9 @@ class SGLangEngine:
     max_running_requests: int | None = None
     chunked_prefill_size: int | None = None
     timeout: float = 300.0
+    realization_name: str = "slime-sglang"
+    launch_module: str = "rollouts.inference.realizations.slime_sglang"
+    capability_notes: tuple[str, ...] = ()
     available_sync_realizations: tuple[str, ...] = (SGLANG_HTTP_PATH_RELOAD.name,)
     default_sync_realization: str | None = SGLANG_HTTP_PATH_RELOAD.name
     # NOTE: NCCL weight sync is done via HTTP API (/init_weights_update_group),
@@ -771,7 +774,7 @@ class SGLangEngine:
 
     @property
     def name(self) -> str:
-        return "sglang"
+        return self.realization_name
 
     @property
     def session_name(self) -> str:
@@ -801,6 +804,7 @@ class SGLangEngine:
             default_sync_realization=self.default_sync_realization,
             supports_blocking_updates=True,
             supports_inflight_updates=False,
+            capability_notes=self.capability_notes,
         )
 
     @property
@@ -860,7 +864,7 @@ class SGLangEngine:
             f"TORCH_DISABLE_SHARE_RDZV_TCP_STORE=1 "
             f"ROLLOUTS_SGLANG_FORCE_SYNC_BROADCAST=1 "
             f"ROLLOUTS_SGLANG_TRACE_PATH={shlex.quote(str(self._trace_file))} "
-            f"python -m rollouts.training.sglang_launcher "
+            f"python -m {self.launch_module} "
             f"--model-path {self.model_name} "
             f"--host 0.0.0.0 "
             f"--port {self.port} "
@@ -1253,6 +1257,9 @@ class VLLMEngine:
     dtype: str = "bfloat16"
     gpu_memory_utilization: float = 0.7
     timeout: float = 300.0
+    realization_name: str = "vllm"
+    launch_module: str = "vllm.entrypoints.openai.api_server"
+    capability_notes: tuple[str, ...] = ()
     available_sync_realizations: tuple[str, ...] = ()
     default_sync_realization: str | None = None
     weight_sync_startup_master_address: str | None = None
@@ -1273,7 +1280,7 @@ class VLLMEngine:
 
     @property
     def name(self) -> str:
-        return "vllm"
+        return self.realization_name
 
     @property
     def session_name(self) -> str:
@@ -1293,7 +1300,7 @@ class VLLMEngine:
 
     @property
     def capabilities(self) -> InferenceBackendCapabilities:
-        notes: list[str] = []
+        notes = list(self.capability_notes)
         if not self.available_sync_realizations:
             notes.append(
                 "Current upstream vLLM launch has no truthful default live weight-sync adapter. "
@@ -1329,9 +1336,6 @@ class VLLMEngine:
     def build_launch_cmd(self) -> str:
         """Build vLLM launch command (without redirection - tmux handles that)."""
         gpu_str = ",".join(str(g) for g in self.cuda_device_ids)
-        entrypoint = "vllm.entrypoints.openai.api_server"
-        if self.default_sync_realization == VLLM_CUSTOM_NCCL_BROADCAST.name:
-            entrypoint = "rollouts.training.vllm_qed_server"
         cmd = (
             f"CUDA_VISIBLE_DEVICES={gpu_str} "
             f"VLLM_SERVER_DEV_MODE=1 "
@@ -1340,7 +1344,7 @@ class VLLMEngine:
             f"NCCL_ASYNC_ERROR_HANDLING=1 "
             f"NCCL_P2P_DISABLE=1 "
             f"TORCH_DISABLE_SHARE_RDZV_TCP_STORE=1 "
-            f"python -m {entrypoint} "
+            f"python -m {self.launch_module} "
             f"--model {self.model_name} "
             f"--host 0.0.0.0 "
             f"--port {self.port} "

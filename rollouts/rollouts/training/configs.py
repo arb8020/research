@@ -470,13 +470,12 @@ class InferenceConfig:
     Each GPU in cuda_device_ids gets its own inference server on a separate port.
 
     Architectural note:
-    Training backends already go through an explicit factory/lowering path.
-    Inference backends are not there yet: `backend` is still a stringly selector
-    that gets interpreted directly in `grpo._create_inference_engines()`.
-    That means pipeline semantics like `checkpoint.pipeline_mode="true_pipeline"`
-    are not yet lowered jointly against trainer and inference capabilities.
-    Keep this config honest about concrete engine settings; do not treat it as a
-    full runtime-capability contract yet.
+    Inference backends now go through `inference_runtime_factory`, so engine
+    construction and first-cut pipeline validation have one home. That runtime
+    boundary is still narrower than the training-side one: launch sequencing,
+    lifecycle ownership, and async publication lowering still leak into GRPO.
+    Keep this config honest about concrete engine settings; do not treat it as
+    a complete cross-runtime capability contract yet.
 
     Example:
         # Single inference engine on GPU 0
@@ -492,7 +491,12 @@ class InferenceConfig:
     When DistributedConfig is provided, it takes precedence.
     """
 
-    backend: str = "sglang"  # "sglang", "vllm", or "engine_v2"
+    backend: str = "sglang"  # Compatibility input; factory lowers this to a realization.
+    # Preferred explicit runtime selection. Examples:
+    # - "slime-sglang"
+    # - "qed-vllm"
+    # Keep patch/local-server choices here instead of deriving them from sync flags.
+    realization: str | None = None
     # Service-scoped runtime deps for the inference process.
     # Current launchers do not realize per-service environments yet.
     deps: DepsConfig | None = None
@@ -529,6 +533,11 @@ class InferenceConfig:
 
     def __post_init__(self) -> None:
         """Validate configuration."""
+        if self.backend not in ("sglang", "vllm", "engine_v2"):
+            raise ValueError(
+                f"Unknown inference backend: {self.backend!r}. "
+                "Use 'sglang', 'vllm', or 'engine_v2'."
+            )
         if len(self.cuda_device_ids) % self.tensor_parallel_size != 0:
             raise ValueError(
                 f"tensor_parallel_size={self.tensor_parallel_size} must divide "
