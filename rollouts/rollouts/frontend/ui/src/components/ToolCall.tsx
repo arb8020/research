@@ -40,6 +40,7 @@ function detectLanguage(code: string): string {
 }
 
 export function ToolCall({ name, args, id: _id }: ToolCallProps) {
+  void _id
   if (typeof args === 'string') {
     return (
       <div className="my-1 min-w-0 overflow-hidden">

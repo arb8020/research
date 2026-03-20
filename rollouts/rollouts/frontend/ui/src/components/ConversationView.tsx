@@ -382,16 +382,26 @@ function highlightJson(obj: unknown): string {
   const raw = JSON.stringify(obj, null, 2)
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
   return raw.replace(
-    /("(?:\\u[a-zA-Z0-9]{4}|\\[^u]|[^\\"])*"(\s*:)?|\b(?:true|false|null)\b|-?\d+(?:\.\d*)?(?:[eE][+\-]?\d+)?|[{}\[\],:])/g,
+    /("(?:\\u[a-zA-Z0-9]{4}|\\[^u]|[^\\"])*"(\s*:)?|\b(?:true|false|null)\b|-?\d+(?:\.\d*)?(?:[eE][+-]?\d+)?|[[\]{},:])/g,
     m => {
       if (/^".*":$/.test(m))   return `<span class="rv-jk">${m}</span>`
       if (/^"/.test(m))         return `<span class="rv-js">${m}</span>`
       if (/true|false/.test(m)) return `<span class="rv-jb">${m}</span>`
       if (/null/.test(m))       return `<span class="rv-jb">${m}</span>`
-      if (/[{}\[\],:]/.test(m)) return `<span class="rv-jp">${m}</span>`
+      if (/[[\]{},:]/.test(m)) return `<span class="rv-jp">${m}</span>`
       return `<span class="rv-jn">${m}</span>`
     }
   )
+}
+
+function toggleSetEntry(current: Set<number>, index: number, isOpen: boolean): Set<number> {
+  const next = new Set(current)
+  if (isOpen) {
+    next.delete(index)
+  } else {
+    next.add(index)
+  }
+  return next
 }
 
 // ─── Message component ────────────────────────────────────────────────────────
@@ -455,7 +465,10 @@ function Message({ msg, isPinned, onTogglePin }: { msg: ParsedMessage; isPinned?
                 <div key={i} className="rv-text-block">
                   <div
                     className="rv-text-block-header"
-                    onClick={e => { e.stopPropagation(); setOpenText(s => { const n = new Set(s); isOpen ? n.delete(i) : n.add(i); return n }) }}
+                    onClick={e => {
+                      e.stopPropagation()
+                      setOpenText(s => toggleSetEntry(s, i, isOpen))
+                    }}
                   >
                     <span className="rv-text-block-label">text</span>
                     {!isOpen && <span className="rv-text-block-preview">{preview}</span>}
@@ -494,7 +507,10 @@ function Message({ msg, isPinned, onTogglePin }: { msg: ParsedMessage; isPinned?
                 <div key={i} className="rv-thinking-block">
                   <div
                     className="rv-thinking-header"
-                    onClick={e => { e.stopPropagation(); setOpenThinking(s => { const n = new Set(s); isOpen ? n.delete(i) : n.add(i); return n }) }}
+                    onClick={e => {
+                      e.stopPropagation()
+                      setOpenThinking(s => toggleSetEntry(s, i, isOpen))
+                    }}
                   >
                     <span className="rv-thinking-label">thinking</span>
                     <span className="rv-collapse-icon" style={{ transform: isOpen ? '' : 'rotate(-90deg)' }}>▾</span>
@@ -513,7 +529,10 @@ function Message({ msg, isPinned, onTogglePin }: { msg: ParsedMessage; isPinned?
                 <div key={i} className="rv-tool-call">
                   <div
                     className="rv-tool-call-header"
-                    onClick={e => { e.stopPropagation(); setOpenToolCalls(s => { const n = new Set(s); isOpen ? n.delete(i) : n.add(i); return n }) }}
+                    onClick={e => {
+                      e.stopPropagation()
+                      setOpenToolCalls(s => toggleSetEntry(s, i, isOpen))
+                    }}
                   >
                     <span className="rv-tool-name">{block.name || '?'}</span>
                     <span className="rv-tool-id">{block.id || ''}</span>

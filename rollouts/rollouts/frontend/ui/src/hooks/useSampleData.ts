@@ -4,18 +4,24 @@ import type { TraceSample, WorkspaceData } from '../types'
 
 type SampleDataState =
   | {
+      runId: string
+      sampleId: string
       kind: 'loading'
       sample: null
       workspaceData: null
       error: null
     }
   | {
+      runId: string
+      sampleId: string
       kind: 'loaded'
       sample: TraceSample
       workspaceData: WorkspaceData | null
       error: null
     }
   | {
+      runId: string
+      sampleId: string
       kind: 'error'
       sample: null
       workspaceData: null
@@ -24,6 +30,8 @@ type SampleDataState =
 
 export function useSampleData(runId: string, sampleId: string): SampleDataState {
   const [state, setState] = useState<SampleDataState>({
+    runId,
+    sampleId,
     kind: 'loading',
     sample: null,
     workspaceData: null,
@@ -33,13 +41,6 @@ export function useSampleData(runId: string, sampleId: string): SampleDataState 
   useEffect(() => {
     let cancelled = false
 
-    setState({
-      kind: 'loading',
-      sample: null,
-      workspaceData: null,
-      error: null,
-    })
-
     void Promise.all([
       getSample(runId, sampleId),
       getWorkspace(runId, sampleId).catch(() => null),
@@ -47,6 +48,8 @@ export function useSampleData(runId: string, sampleId: string): SampleDataState 
       .then(([sample, workspaceData]) => {
         if (cancelled) return
         setState({
+          runId,
+          sampleId,
           kind: 'loaded',
           sample,
           workspaceData,
@@ -56,6 +59,8 @@ export function useSampleData(runId: string, sampleId: string): SampleDataState 
       .catch(err => {
         if (cancelled) return
         setState({
+          runId,
+          sampleId,
           kind: 'error',
           sample: null,
           workspaceData: null,
@@ -67,6 +72,17 @@ export function useSampleData(runId: string, sampleId: string): SampleDataState 
       cancelled = true
     }
   }, [runId, sampleId])
+
+  if (state.runId !== runId || state.sampleId !== sampleId) {
+    return {
+      runId,
+      sampleId,
+      kind: 'loading',
+      sample: null,
+      workspaceData: null,
+      error: null,
+    }
+  }
 
   return state
 }

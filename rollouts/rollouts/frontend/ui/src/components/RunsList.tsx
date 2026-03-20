@@ -14,6 +14,25 @@ interface RunsListProps {
 type SortField = 'name' | 'timestamp' | 'samples' | 'reward'
 type SortDir = 'asc' | 'desc'
 
+function SortIndicator({
+  field,
+  sortField,
+  sortDir,
+}: {
+  field: SortField
+  sortField: SortField
+  sortDir: SortDir
+}) {
+  if (sortField !== field) {
+    return <span style={{ color: 'var(--color-dark-text-muted)', fontSize: 9 }}>⇅</span>
+  }
+  return (
+    <span style={{ color: 'var(--color-dark-text-secondary)', fontSize: 9 }}>
+      {sortDir === 'asc' ? '↑' : '↓'}
+    </span>
+  )
+}
+
 function formatTimestamp(ts: number): string {
   const d = new Date(ts * 1000)
   return d.toLocaleString(undefined, {
@@ -64,11 +83,6 @@ export function RunsList({ completedRuns, liveRuns, loading, error, onSelectRun,
       return 0
     })
   }, [completedRuns, search, sortField, sortDir])
-
-  function SortIndicator({ field }: { field: SortField }) {
-    if (sortField !== field) return <span style={{ color: 'var(--color-dark-text-muted)', fontSize: 9 }}>⇅</span>
-    return <span style={{ color: 'var(--color-dark-text-secondary)', fontSize: 9 }}>{sortDir === 'asc' ? '↑' : '↓'}</span>
-  }
 
   if (loading) {
     return (
@@ -161,7 +175,7 @@ export function RunsList({ completedRuns, liveRuns, loading, error, onSelectRun,
                   onClick={() => handleSort('name')}
                 >
                   <span className="flex items-center gap-1">
-                    Run <SortIndicator field="name" />
+                    Run <SortIndicator field="name" sortField={sortField} sortDir={sortDir} />
                   </span>
                 </th>
                 <th
@@ -170,7 +184,7 @@ export function RunsList({ completedRuns, liveRuns, loading, error, onSelectRun,
                   onClick={() => handleSort('timestamp')}
                 >
                   <span className="flex items-center gap-1">
-                    Time <SortIndicator field="timestamp" />
+                    Time <SortIndicator field="timestamp" sortField={sortField} sortDir={sortDir} />
                   </span>
                 </th>
                 <th
@@ -179,7 +193,7 @@ export function RunsList({ completedRuns, liveRuns, loading, error, onSelectRun,
                   onClick={() => handleSort('samples')}
                 >
                   <span className="flex items-center justify-end gap-1">
-                    Samples <SortIndicator field="samples" />
+                    Samples <SortIndicator field="samples" sortField={sortField} sortDir={sortDir} />
                   </span>
                 </th>
                 <th
@@ -188,7 +202,7 @@ export function RunsList({ completedRuns, liveRuns, loading, error, onSelectRun,
                   onClick={() => handleSort('reward')}
                 >
                   <span className="flex items-center justify-end gap-1">
-                    Reward <SortIndicator field="reward" />
+                    Reward <SortIndicator field="reward" sortField={sortField} sortDir={sortDir} />
                   </span>
                 </th>
               </tr>

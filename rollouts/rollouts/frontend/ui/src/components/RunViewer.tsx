@@ -17,7 +17,11 @@ function useSplitPct(): [number, (pct: number) => void] {
   })
   const set = useCallback((v: number) => {
     setPct(v)
-    try { localStorage.setItem(SPLIT_KEY, String(v)) } catch {}
+    try {
+      localStorage.setItem(SPLIT_KEY, String(v))
+    } catch {
+      return
+    }
   }, [])
   return [pct, set]
 }
@@ -205,10 +209,6 @@ export function RunViewer({ runId, sampleId, evalName, onBack }: RunViewerProps)
     })
   }, [])
 
-  const handleJumpToMessage = useCallback((_messageIndex: number) => {
-    setActiveTab('conversation')
-  }, [])
-
   const onDividerMouseDown = useCallback((e: React.MouseEvent) => {
     e.preventDefault()
     dragging.current = true
@@ -394,7 +394,6 @@ export function RunViewer({ runId, sampleId, evalName, onBack }: RunViewerProps)
                     workspaceData={workspaceData!}
                     selectedTurn={selectedTurn}
                     checkedTurns={checkedTurnsSorted}
-                    onJumpToMessage={handleJumpToMessage}
                     onFitWidth={handleFitWidth}
                   />
                 </ErrorBoundary>

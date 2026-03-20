@@ -41,8 +41,29 @@ export function useResultsDirs() {
   }, [])
 
   useEffect(() => {
-    void refresh()
-  }, [refresh])
+    let cancelled = false
+
+    async function loadInitial(): Promise<void> {
+      try {
+        const data = await getResultsDirs()
+        if (cancelled) return
+        setState({ kind: 'loaded', data, error: null })
+      } catch (err) {
+        if (cancelled) return
+        setState({
+          kind: 'error',
+          data: null,
+          error: err instanceof Error ? err.message : 'Failed to load results directories',
+        })
+      }
+    }
+
+    void loadInitial()
+
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   return { state, refresh }
 }

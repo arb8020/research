@@ -13,18 +13,21 @@ export interface SampleRow {
 
 type RunDetailState =
   | {
+      runId: string
       kind: 'loading'
       report: null
       samples: SampleRow[]
       error: null
     }
   | {
+      runId: string
       kind: 'loaded'
       report: RunReport
       samples: SampleRow[]
       error: null
     }
   | {
+      runId: string
       kind: 'error'
       report: null
       samples: SampleRow[]
@@ -44,6 +47,7 @@ function buildSampleRows(sampleIds: string[]): SampleRow[] {
 
 export function useRunDetail(runId: string): RunDetailState {
   const [state, setState] = useState<RunDetailState>({
+    runId,
     kind: 'loading',
     report: null,
     samples: [],
@@ -53,17 +57,11 @@ export function useRunDetail(runId: string): RunDetailState {
   useEffect(() => {
     let cancelled = false
 
-    setState({
-      kind: 'loading',
-      report: null,
-      samples: [],
-      error: null,
-    })
-
     void getRunReport(runId)
       .then(({ report, sample_ids }) => {
         if (cancelled) return
         setState({
+          runId,
           kind: 'loaded',
           report,
           samples: buildSampleRows(sample_ids),
@@ -73,6 +71,7 @@ export function useRunDetail(runId: string): RunDetailState {
       .catch(err => {
         if (cancelled) return
         setState({
+          runId,
           kind: 'error',
           report: null,
           samples: [],
@@ -84,6 +83,16 @@ export function useRunDetail(runId: string): RunDetailState {
       cancelled = true
     }
   }, [runId])
+
+  if (state.runId !== runId) {
+    return {
+      runId,
+      kind: 'loading',
+      report: null,
+      samples: [],
+      error: null,
+    }
+  }
 
   return state
 }

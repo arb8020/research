@@ -195,13 +195,11 @@ export function WorkspacePanel({
   workspaceData,
   selectedTurn,
   checkedTurns,
-  onJumpToMessage: _onJumpToMessage,
   onFitWidth,
 }: {
   workspaceData: WorkspaceData
   selectedTurn: number
   checkedTurns: number[]
-  onJumpToMessage: (messageIndex: number) => void
   onFitWidth?: (contentWidthPx: number) => void
 }) {
   const { snapshots, line_history, source } = workspaceData
@@ -212,7 +210,11 @@ export function WorkspacePanel({
 
   // Resizable split: top panel height as % of total (persisted)
   const [splitHeightPct, setSplitHeightPct] = useState(() => {
-    try { return Number(localStorage.getItem(SPLIT_HEIGHT_KEY)) || DEFAULT_SPLIT_HEIGHT } catch { return DEFAULT_SPLIT_HEIGHT }
+    try {
+      return Number(localStorage.getItem(SPLIT_HEIGHT_KEY)) || DEFAULT_SPLIT_HEIGHT
+    } catch {
+      return DEFAULT_SPLIT_HEIGHT
+    }
   })
   const splitContainerRef = useRef<HTMLDivElement>(null)
   const splitDragging = useRef(false)
@@ -226,7 +228,11 @@ export function WorkspacePanel({
       const pct = Math.min(80, Math.max(20, ((ev.clientY - rect.top) / rect.height) * 100))
       const rounded = Math.round(pct)
       setSplitHeightPct(rounded)
-      try { localStorage.setItem(SPLIT_HEIGHT_KEY, String(rounded)) } catch {}
+      try {
+        localStorage.setItem(SPLIT_HEIGHT_KEY, String(rounded))
+      } catch {
+        return
+      }
     }
     const onUp = () => { splitDragging.current = false; window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp) }
     window.addEventListener('mousemove', onMove)
@@ -250,7 +256,7 @@ export function WorkspacePanel({
   //   0 checked → snapshot[0] to last snapshot (full run)
   //   1 checked (turn T) → snapshot just before T to snapshot at T (before/after that turn)
   //   2+ checked → snapshot before min-turn to snapshot at max-turn
-  const { snapshotA, snapshotB } = useMemo(() => {
+  const { snapshotA, snapshotB } = (() => {
     const last = snapshots[snapshots.length - 1]
     if (checkedTurns.length === 0) {
       return { snapshotA: snapshots[0], snapshotB: last }
@@ -264,10 +270,10 @@ export function WorkspacePanel({
       snapshotA: snapshotBefore(sorted[0]),
       snapshotB: snapshotAt(sorted[sorted.length - 1]),
     }
-  }, [checkedTurns, snapshots])
+  })()
 
   // State mode uses selectedTurn (driven by clicking conversation messages)
-  const snapshot = useMemo(() => snapshotAt(selectedTurn), [snapshots, selectedTurn])
+  const snapshot = snapshotAt(selectedTurn)
 
   const modifiedFiles = useMemo(() => new Set(Object.keys(line_history)), [line_history])
   const preferredDiffFile = Object.keys(snapshotB.files).find(

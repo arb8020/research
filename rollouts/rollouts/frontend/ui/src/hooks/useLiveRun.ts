@@ -18,8 +18,6 @@ export function useLiveRun(runId: string, initialStatus: string) {
   const [state, setState] = useState<LiveRunState>(() => makeInitialState(runId, initialStatus))
 
   useEffect(() => {
-    setState(makeInitialState(runId, initialStatus))
-
     // Don't open SSE for finished runs
     if (initialStatus !== 'running' && initialStatus !== 'watching') return
 
@@ -28,7 +26,12 @@ export function useLiveRun(runId: string, initialStatus: string) {
     es.onmessage = (event: MessageEvent<string>) => {
       try {
         const data = JSON.parse(event.data) as StreamEvent
-        setState(prev => applyEvent(prev, data))
+        setState(prev =>
+          applyEvent(
+            prev.run_id === runId ? prev : makeInitialState(runId, initialStatus),
+            data,
+          ),
+        )
       } catch (err) {
         console.error('Failed to parse live run stream event', err)
       }
@@ -36,11 +39,18 @@ export function useLiveRun(runId: string, initialStatus: string) {
 
     es.onerror = () => {
       es.close()
-      setState(prev => ({ ...prev, status: 'completed' }))
+      setState(prev => ({
+        ...(prev.run_id === runId ? prev : makeInitialState(runId, initialStatus)),
+        status: 'completed',
+      }))
     }
 
     return () => es.close()
   }, [runId, initialStatus])
+
+  if (state.run_id !== runId) {
+    return makeInitialState(runId, initialStatus)
+  }
 
   return state
 }
