@@ -33,6 +33,11 @@ from ..config.base import (
 from ..config.loader import (
     load_config_from_file,
 )
+from ..config.pools import (
+    ElasticPool,
+    PoolSpec,
+    ResourceProfile,
+)
 from ..config.protocols import (
     HasEnvironmentConfig,
     HasEvaluationConfig,
@@ -62,6 +67,9 @@ __all__ = [
     "BaseEnvironmentConfig",
     "BaseEvaluationConfig",
     "BaseOutputConfig",
+    "ResourceProfile",
+    "ElasticPool",
+    "PoolSpec",
     # Utilities
     "load_config_from_file",
 ]
