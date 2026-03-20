@@ -1066,14 +1066,17 @@ async def _wait_for_direct_ssh_assignment(instance, start_time: float, timeout: 
             instance.status = fresh.status
 
             elapsed = int(time.time() - start_time)
-            logger.debug(f"direct ssh: {instance.public_ip}:{instance.ssh_port} (took {elapsed}s)")
+            logger.info(
+                f"direct ssh assigned for {instance.id}: "
+                f"{instance.public_ip}:{instance.ssh_port} ({elapsed}s elapsed)"
+            )
             return True
 
         # Log progress every 30s
         current_time = time.time()
         if current_time >= next_log_time:
             elapsed = int(current_time - start_time)
-            _log_ssh_wait_status(instance, elapsed)
+            _log_ssh_wait_status(fresh or instance, elapsed)
             next_log_time += 30  # Schedule next log
 
         await trio.sleep(10)
@@ -1094,30 +1097,65 @@ def _has_direct_ssh(instance) -> bool:
 
 def _log_ssh_wait_status(instance, elapsed_seconds: int) -> None:
     """Log SSH wait status with timing"""
-    if instance.public_ip and instance.ssh_port:
-        if instance.public_ip == "ssh.runpod.io":
-            logger.debug(f"Waiting for direct SSH (proxy now) - {elapsed_seconds}s")
-        else:
-            logger.debug(f"SSH details available - {elapsed_seconds}s")
-    else:
-        logger.debug(f"Waiting for SSH details - {elapsed_seconds}s")
+    proxy_username = None
+    raw_data = getattr(instance, "raw_data", None)
+    if isinstance(raw_data, dict):
+        proxy_username = _extract_proxy_ssh(raw_data)
+
+    if _has_direct_ssh(instance):
+        logger.info(
+            f"instance {instance.id} has direct ssh details "
+            f"{instance.public_ip}:{instance.ssh_port} ({elapsed_seconds}s elapsed); "
+            "awaiting connectivity check"
+        )
+        return
+
+    if instance.public_ip == "ssh.runpod.io" and instance.ssh_port:
+        proxy_label = f" as {instance.ssh_username}" if instance.ssh_username else ""
+        logger.info(
+            f"instance {instance.id} still waiting for direct ssh ({elapsed_seconds}s elapsed); "
+            f"proxy ssh is available via ssh.runpod.io{proxy_label}, but direct-only policy is in effect"
+        )
+        return
+
+    if proxy_username:
+        logger.info(
+            f"instance {instance.id} still waiting for direct ssh ({elapsed_seconds}s elapsed); "
+            f"RunPod proxy metadata is present for podHostId={proxy_username}, but no direct ssh assignment yet"
+        )
+        return
+
+    logger.info(
+        f"instance {instance.id} still waiting for direct ssh ({elapsed_seconds}s elapsed); no ssh details yet"
+    )
 
 
 async def _test_ssh_connectivity(instance) -> bool:
     """Test SSH connectivity with echo command (≤70 lines)"""
-    logger.debug("direct ssh ready! waiting 30s for ssh daemon...")
+    logger.info(
+        f"testing direct ssh connectivity for {instance.id} at "
+        f"{instance.public_ip}:{instance.ssh_port}; waiting 30s for ssh daemon"
+    )
     await trio.sleep(30)
 
     try:
         result = instance.exec("echo 'ssh_ready'", timeout=30)
         if result.success and "ssh_ready" in result.stdout:
-            logger.debug("ssh connectivity confirmed!")
+            logger.info(
+                f"ssh connectivity confirmed for {instance.id} at "
+                f"{instance.public_ip}:{instance.ssh_port}"
+            )
             return True
         else:
-            logger.warning(f"SSH test failed: {result.stderr}")
+            logger.warning(
+                f"SSH test failed for {instance.id} at {instance.public_ip}:{instance.ssh_port}: "
+                f"{result.stderr}"
+            )
             return False
     except Exception as e:
-        logger.exception(f"SSH connection error: {e}")
+        logger.exception(
+            f"SSH connection error for {instance.id} at {instance.public_ip}:{instance.ssh_port}: {e}"
+        )
         return False
 
 
