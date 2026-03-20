@@ -23,6 +23,7 @@ from ..core import Environment, EvalConfig, Metric, Score, Trajectory
 from ..dtypes import (
     FirstToken,
     LLMCallEnd,
+    StopReason,
     StreamChunk,
     TextDelta,
     TextEnd,
@@ -38,6 +39,7 @@ from ..training.types import (
     ProblemRow,
     Scorer,
     ScoringContext,
+    Status,
 )
 
 logger = logging.getLogger(__name__)  # Human/operator-oriented module logs.
@@ -221,9 +223,12 @@ async def _evaluate_batch(
         # Mark task complete
         if progress:
             reward = result.reward
-            success = result.metadata.get("status") == "success"
+            status = result.metadata.get("status")
+            success = status == "success"
             if success:
                 message = f"reward={reward:.2f}"
+            elif status == "aborted":
+                message = "aborted"
             else:
                 error = result.metadata.get("error", "failed")
                 message = error[:30] if len(error) > 30 else error
@@ -326,7 +331,7 @@ def _log_sample_completion(
     duration_seconds = exec_metadata.get("duration_seconds", 0.0)
 
     logger.info(
-        f"Sample {sample_id} completed: reward={reward:.3f}, "
+        f"Sample {sample_id} finished: reward={reward:.3f}, "
         f"turns={exec_metadata['turns_used']}, duration={duration_seconds:.2f}s, "
         f"status={exec_metadata['status']}",
         extra={
@@ -361,6 +366,13 @@ def _log_sample_completion(
     if verbose and score:
         metric_str = ", ".join(f"{m.name}={m.value:.3f}" for m in score.metrics[:3])
         logger.info(f"  {metric_str}")
+
+
+def _map_exec_status(status: str) -> Status:
+    """Map eval metadata status strings onto canonical AttemptResult status."""
+    if status == "aborted":
+        return Status.ABORTED
+    return Status.COMPLETED
 
 
 def _build_base_run_config(
@@ -1143,20 +1155,28 @@ async def evaluate_sample(
         elif final_state.error:
             exec_metadata["error"] = final_state.error
             exec_metadata["status"] = "failed"
+        elif final_state.stop in (
+            StopReason.ABORTED,
+            StopReason.INTERRUPTED,
+            StopReason.USER_ABORT,
+        ):
+            exec_metadata["status"] = "aborted"
         else:
             exec_metadata["status"] = "success"
 
     assert final_trajectory is not None
     sample.metadata = {**sample.metadata, **exec_metadata}
+    sample.status = _map_exec_status(exec_metadata["status"])
 
     score: Score | None = None
     try:
-        score = await _compute_score(
-            sample,
-            scorer=config.scorer,
-            scoring_context=ScoringContext(environment=final_env),
-        )
-        attach_score(sample, score)
+        if exec_metadata["status"] != "aborted":
+            score = await _compute_score(
+                sample,
+                scorer=config.scorer,
+                scoring_context=ScoringContext(environment=final_env),
+            )
+            attach_score(sample, score)
     finally:
         # Close environment after scoring — sandbox/container is no longer needed
         await _close_environment(final_env, sample_id)
@@ -1171,7 +1191,8 @@ async def evaluate_sample(
     )
 
     # Attach derived evaluation to the canonical execution result.
-    sample.evaluation = AttemptEvaluation(reward=score.reward if score else 0.0, score=score)
+    if score is not None:
+        sample.evaluation = AttemptEvaluation(reward=score.reward, score=score)
 
     # Emit sample_end event for frontend live streaming
     await run_config.on_chunk(
@@ -1498,19 +1519,23 @@ def compute_summary_metrics(results: list[AttemptResult]) -> dict[str, float]:
     # Provider errors (rate limits, timeouts) are excluded from accuracy calculation
     provider_errors = [r for r in results if r.metadata.get("status") == "provider_error"]
     failed_samples = [r for r in results if r.metadata.get("status") == "failed"]
+    aborted_samples = [r for r in results if r.metadata.get("status") == "aborted"]
     successful_samples = [r for r in results if r.metadata.get("status") == "success"]
 
     summary["provider_errors"] = len(provider_errors)
     summary["failed_samples"] = len(failed_samples)
+    summary["aborted_samples"] = len(aborted_samples)
     summary["successful_samples"] = len(successful_samples)
 
-    # Success rate excludes provider errors from denominator
-    # (we can't count them as failures if the model never got to run)
-    valid_samples = len(results) - len(provider_errors)
+    # Success rate excludes provider errors and operator-aborted runs from the denominator.
+    # Those attempts did not produce a normal task outcome.
+    valid_samples = len(results) - len(provider_errors) - len(aborted_samples)
     summary["success_rate"] = len(successful_samples) / valid_samples if valid_samples > 0 else 0.0
 
-    # Also provide raw completion rate (including provider errors as failures)
-    summary["completion_rate"] = len(successful_samples) / len(results) if results else 0.0
+    # Completion rate counts terminal task outcomes (success or failure), excluding
+    # provider errors and operator-aborted runs.
+    completed_samples = len(successful_samples) + len(failed_samples)
+    summary["completion_rate"] = completed_samples / len(results) if results else 0.0
 
     # Breakdown errors by type (for failed samples only, not provider errors)
     error_types: dict[str, int] = {}

@@ -4,9 +4,14 @@ import pytest
 
 from rollouts.agents import Actor, AgentState
 from rollouts.core import EvalConfig, Metric, Score
-from rollouts.dtypes import Message, Trajectory
-from rollouts.eval.native import EvalRuntime, _AgentRunResult, evaluate_sample
-from rollouts.training.types import AttemptResult, ScoringContext
+from rollouts.dtypes import Message, StopReason, Trajectory
+from rollouts.eval.native import (
+    EvalRuntime,
+    _AgentRunResult,
+    compute_summary_metrics,
+    evaluate_sample,
+)
+from rollouts.training.types import AttemptResult, ScoringContext, Status
 
 
 class _FakeEnvironment:
@@ -100,3 +105,92 @@ async def test_evaluate_sample_scores_against_final_environment(
     assert result.metadata["best_speedup"] == 1.25
     assert result.environment_state is not None
     assert result.environment_state["has_correct_kernel"] is True
+
+
+@pytest.mark.trio
+async def test_evaluate_sample_marks_aborted_runs_honestly(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    environment = _FakeEnvironment(best_speedup=0.0, has_correct_kernel=False)
+    aborted_trajectory = Trajectory(
+        messages=[Message(role="assistant", content="partial")],
+        metadata={},
+    )
+    aborted_state = AgentState(
+        actor=Actor(trajectory=aborted_trajectory, endpoint=None, tools=[]),
+        environment=environment,
+        stop=StopReason.ABORTED,
+    )
+
+    async def _fake_run_agent_with_error_handling(
+        initial_state: AgentState,
+        run_config: object,
+        sample_id: str,
+    ) -> _AgentRunResult:
+        del run_config, sample_id
+        return _AgentRunResult(
+            states=[initial_state, replace(aborted_state, turn_idx=0)],
+            final_trajectory=aborted_trajectory,
+        )
+
+    async def _fail_if_scored(result: AttemptResult, context: ScoringContext) -> Score:
+        del result, context
+        raise AssertionError("aborted samples should not be scored")
+
+    monkeypatch.setattr(
+        "rollouts.eval.native._run_agent_with_error_handling",
+        _fake_run_agent_with_error_handling,
+    )
+
+    config = EvalConfig(
+        endpoint=None,
+        prepare_messages=lambda _: [Message(role="user", content="hi")],
+        scorer=_fail_if_scored,
+        verbose=False,
+        show_progress=False,
+    )
+    runtime = EvalRuntime(config=config)
+
+    result = await evaluate_sample(
+        sample_data={"name": "sample"},
+        sample_id="sample_0000",
+        runtime=runtime,
+        environment=environment,
+    )
+
+    assert result.metadata["status"] == "aborted"
+    assert result.status == Status.ABORTED
+    assert result.score is None
+    assert result.reward == 0.0
+
+
+def test_compute_summary_metrics_excludes_aborted_from_completion_and_success() -> None:
+    aborted = AttemptResult(
+        attempt_id="aborted",
+        status=Status.ABORTED,
+        metadata={"status": "aborted", "turns_used": 0, "total_tokens": 10},
+    )
+    failed = AttemptResult(
+        attempt_id="failed",
+        status=Status.COMPLETED,
+        metadata={
+            "status": "failed",
+            "error": "ValueError: boom",
+            "turns_used": 1,
+            "total_tokens": 20,
+        },
+    )
+    success = AttemptResult(
+        attempt_id="success",
+        status=Status.COMPLETED,
+        metadata={"status": "success", "turns_used": 2, "total_tokens": 30},
+    )
+    success.score = Score(metrics=(Metric("reward", 1.0, weight=1.0),))
+
+    summary = compute_summary_metrics([aborted, failed, success])
+
+    assert summary["aborted_samples"] == 1
+    assert summary["failed_samples"] == 1
+    assert summary["successful_samples"] == 1
+    assert summary["success_rate"] == 0.5
+    assert summary["completion_rate"] == 2 / 3
