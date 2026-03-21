@@ -30,7 +30,11 @@ from infra_utils.ssh_foundation import test_ssh_connection as _test_ssh_connecti
 
 
 class SSHMethod(Enum):
-    """SSH connection methods - only direct SSH supported"""
+    """SSH connection methods.
+
+    Proxy SSH endpoints such as RunPod's ssh.runpod.io are not supported by
+    this compatibility layer; only direct instance SSH is treated as usable.
+    """
 
     DIRECT = "direct"
 
@@ -61,7 +65,10 @@ def _create_connection_info_from_gpu_instance(
     """
     # Reject proxy SSH - only direct SSH supported
     if instance.public_ip == "ssh.runpod.io":
-        raise ValueError("Direct SSH not available - only proxy SSH found")
+        raise ValueError(
+            "Direct SSH not available. RunPod proxy SSH via ssh.runpod.io is "
+            "metadata-only here and is not a supported execution transport."
+        )
 
     if not instance.public_ip or not instance.ssh_port or not instance.ssh_username:
         raise ValueError("Instance SSH details not available")

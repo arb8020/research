@@ -84,6 +84,11 @@ def _resolve_socket_ifname_for_launch() -> tuple[str | None, str]:
     return "eth0", "default:eth0"
 
 
+def _python_module_launch(module: str) -> str:
+    """Launch a Python module with the current interpreter."""
+    return f"{shlex.quote(sys.executable)} -m {module}"
+
+
 def _classify_sglang_startup_phase(line: str) -> tuple[str, dict[str, Any]] | None:
     """Extract one-shot SGLang startup phase transitions from raw log lines."""
     if not line:
@@ -864,7 +869,7 @@ class SGLangEngine:
             f"TORCH_DISABLE_SHARE_RDZV_TCP_STORE=1 "
             f"ROLLOUTS_SGLANG_FORCE_SYNC_BROADCAST=1 "
             f"ROLLOUTS_SGLANG_TRACE_PATH={shlex.quote(str(self._trace_file))} "
-            f"python -m {self.launch_module} "
+            f"{_python_module_launch(self.launch_module)} "
             f"--model-path {self.model_name} "
             f"--host 0.0.0.0 "
             f"--port {self.port} "
@@ -1344,7 +1349,7 @@ class VLLMEngine:
             f"NCCL_ASYNC_ERROR_HANDLING=1 "
             f"NCCL_P2P_DISABLE=1 "
             f"TORCH_DISABLE_SHARE_RDZV_TCP_STORE=1 "
-            f"python -m {self.launch_module} "
+            f"{_python_module_launch(self.launch_module)} "
             f"--model {self.model_name} "
             f"--host 0.0.0.0 "
             f"--port {self.port} "
@@ -1756,7 +1761,7 @@ class EngineV2Engine:
             f"HF_HUB_DOWNLOAD_TIMEOUT=300 "
             # NCCL environment for cross-process weight sync
             f"NCCL_CUMEM_ENABLE=0 "
-            f"python -m rollouts.inference.server "
+            f"{_python_module_launch('rollouts.inference.server')} "
             f"--model {self.model_name} "
             f"--port {self.port} "
             f"--dtype {self.dtype} "

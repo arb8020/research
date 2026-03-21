@@ -133,8 +133,10 @@ def _extract_proxy_ssh(pod: dict[str, Any]) -> str | None:
 
     Returns podHostId (username for ssh.runpod.io) or None.
 
-    Why proxy fallback: RunPod always provides proxy SSH via ssh.runpod.io,
-    even when direct IP not yet assigned. Uses podHostId as SSH username.
+    RunPod exposes proxy SSH metadata via ssh.runpod.io even when direct SSH is
+    not yet assigned. The current broker/bifrost execution stack does not treat
+    that proxy as a usable execution transport; we keep this metadata only so
+    callers can report the real failure mode instead of a generic timeout.
     """
     machine = pod.get("machine")
     if not machine:
@@ -152,12 +154,14 @@ def _extract_proxy_ssh(pod: dict[str, Any]) -> str | None:
 
 
 def _extract_ssh_info(pod: dict[str, Any]) -> tuple[str, int, str] | None:
-    """Extract SSH connection info with fallback strategy.
+    """Extract provider-reported SSH connection info.
 
     Returns (public_ip, ssh_port, ssh_username) or None if no SSH method available.
 
-    Why two-method fallback: Direct SSH is faster but takes 5-10 min to provision.
-    Proxy SSH is always available immediately but slower. Try direct first, fall back to proxy.
+    Important boundary: this reflects what RunPod reports, not what the current
+    execution stack can actually use. Direct SSH is the only supported
+    transport for broker/bifrost execution today. Proxy SSH is surfaced here
+    purely as metadata for diagnostics.
     """
     # Tiger Style: Assert preconditions
     assert isinstance(pod, dict), f"Pod must be dict, got {type(pod)}"
@@ -169,10 +173,11 @@ def _extract_ssh_info(pod: dict[str, Any]) -> tuple[str, int, str] | None:
         ip, port = direct_ssh
         return (ip, port, "root")  # Direct SSH always uses root
 
-    # Method 2: Fallback to proxy SSH
+    # Method 2: Surface proxy SSH metadata for diagnostics only.
     pod_host_id = _extract_proxy_ssh(pod)
     if pod_host_id:
-        # Proxy SSH: connect to ssh.runpod.io using podHostId as username
+        # Proxy SSH uses ssh.runpod.io with podHostId as username. The current
+        # execution stack does not treat this as a ready transport.
         return ("ssh.runpod.io", 22, pod_host_id)
 
     # No SSH method available - pod may still be provisioning
@@ -1002,7 +1007,11 @@ async def terminate_instance(instance_id: str, api_key: str | None = None) -> bo
 
 
 async def wait_for_ssh_ready(instance, timeout: int = 900) -> bool:  # noqa: ASYNC109
-    """RunPod-specific SSH waiting implementation (15 min default)"""
+    """Wait until direct SSH is usable for execution.
+
+    RunPod often exposes proxy SSH metadata via ssh.runpod.io earlier, but that
+    is not a supported execution transport for the current broker/bifrost stack.
+    """
     # Tiger Style: Assert preconditions
     assert instance.provider == "runpod"
     assert instance.api_key
@@ -1057,6 +1066,10 @@ async def _wait_for_direct_ssh_assignment(instance, start_time: float, timeout: 
 
     while time.time() - start_time < timeout:
         fresh = await get_instance_details(instance.id, api_key=instance.api_key)
+        if fresh:
+            # Preserve the latest provider-reported SSH metadata even before
+            # direct SSH is ready so callers can surface the actual boundary.
+            instance.__dict__.update(fresh.__dict__)
 
         if fresh and _has_direct_ssh(fresh):
             # Update instance with SSH details
@@ -1082,7 +1095,15 @@ async def _wait_for_direct_ssh_assignment(instance, start_time: float, timeout: 
         await trio.sleep(10)
 
     elapsed_min = int((time.time() - start_time) / 60)
-    logger.error(f"Timeout waiting for direct SSH after {elapsed_min} min")
+    if instance.public_ip == "ssh.runpod.io" and instance.ssh_port:
+        proxy_label = f" as {instance.ssh_username}" if instance.ssh_username else ""
+        logger.error(
+            f"Timeout waiting for direct SSH after {elapsed_min} min. "
+            f"RunPod only exposed proxy SSH via ssh.runpod.io{proxy_label}, "
+            "but proxy SSH is not a supported execution transport here."
+        )
+    else:
+        logger.error(f"Timeout waiting for direct SSH after {elapsed_min} min")
     return False
 
 

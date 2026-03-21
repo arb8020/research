@@ -4,10 +4,11 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
+from ..core import Score
 from .types import AttemptResult, AttemptRow, RolloutConfig, RolloutRuntime, Scorer, ScoringContext
 
 if TYPE_CHECKING:
-    from ..core import Score
+    pass
 
 
 @dataclass(frozen=True)

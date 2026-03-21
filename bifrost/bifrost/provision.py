@@ -26,6 +26,23 @@ from broker.types import PersistentVolumeAttachment, ProvisionImage
 logger = logging.getLogger(__name__)
 
 
+def _ssh_not_ready_message(instance, timeout: int, *, node_label: str) -> str:
+    """Describe why SSH readiness failed in the current execution stack."""
+    if instance.provider == "runpod" and instance.public_ip == "ssh.runpod.io":
+        proxy_label = f" as {instance.ssh_username}" if instance.ssh_username else ""
+        return (
+            f"SSH not ready after {timeout}s for instance {node_label}. "
+            f"RunPod only exposed proxy SSH via ssh.runpod.io{proxy_label}, but "
+            "broker/bifrost require direct SSH for remote execution. Proxy SSH "
+            "is metadata-only here, not a supported transport. Wait for direct "
+            "SSH assignment or reprovision a different node."
+        )
+    return (
+        f"SSH not ready after {timeout}s for instance {node_label}. "
+        "Instance may still be starting up - try again in a minute."
+    )
+
+
 class InstanceNotFoundError(Exception):
     """Raised when trying to connect to an instance that no longer exists.
 
@@ -208,10 +225,7 @@ async def acquire_node(
         logger.info("  Waiting for SSH...")
         ssh_ready = await instance.wait_until_ssh_ready(timeout=ssh_timeout)
         if not ssh_ready:
-            raise RuntimeError(
-                f"SSH not ready after {ssh_timeout}s for instance {node_id}. "
-                f"Instance may still be starting up - try again in a minute."
-            )
+            raise RuntimeError(_ssh_not_ready_message(instance, ssh_timeout, node_label=node_id))
 
         key_path = broker.get_ssh_key_path(provider)
         if key_path is None:
@@ -254,8 +268,11 @@ async def acquire_node(
     ssh_ready = await instance.wait_until_ssh_ready(timeout=ssh_timeout)
     if not ssh_ready:
         raise RuntimeError(
-            f"SSH not ready after {ssh_timeout}s. Instance may still be starting up. "
-            f"Try again with --node-id {instance.provider}:{instance.id}"
+            _ssh_not_ready_message(
+                instance,
+                ssh_timeout,
+                node_label=f"{instance.provider}:{instance.id}",
+            )
         )
 
     key_path = broker.get_ssh_key_path(instance.provider)
