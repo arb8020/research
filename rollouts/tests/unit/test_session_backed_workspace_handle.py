@@ -38,6 +38,16 @@ class FakeInspectableSession:
     def stats(self) -> dict[str, Any]:
         return {"kind": "fake-session", "exec_count": len(self.exec_calls)}
 
+    def serialize_state(self) -> dict[str, Any]:
+        return {
+            "kind": "fake-session",
+            "downloaded": self.downloaded,
+        }
+
+    @classmethod
+    def deserialize_state(cls, data: dict[str, Any]) -> FakeInspectableSession:
+        return cls(downloaded=dict(data.get("downloaded", {})))
+
 
 @pytest.mark.trio
 async def test_session_backed_workspace_handle_routes_ops_through_session() -> None:
@@ -66,3 +76,19 @@ async def test_session_backed_workspace_handle_routes_ops_through_session() -> N
     assert runtime == {"runtime_ok": True, "kind": "fake-session"}
     assert stats == {"kind": "fake-session", "exec_count": 1}
     assert session.closed is True
+
+
+def test_session_backed_workspace_handle_round_trips_serializable_session_state() -> None:
+    session = FakeInspectableSession(downloaded={"/workspace/result.txt": b"hello"})
+    workspace = SessionBackedWorkspaceHandle(session=session, working_dir="/workspace")
+
+    state = workspace.serialize_state()
+
+    assert state == {
+        "kind": "session_backed_workspace_handle",
+        "working_dir": "/workspace",
+        "session": {
+            "kind": "fake-session",
+            "downloaded": {"/workspace/result.txt": b"hello"},
+        },
+    }

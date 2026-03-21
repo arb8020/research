@@ -197,6 +197,43 @@ class SessionBackedWorkspaceHandle:
     def stats(self) -> dict[str, Any]:
         return self.session.stats()
 
+    def serialize_state(self) -> dict[str, Any]:
+        serialize = getattr(self.session, "serialize_state", None)
+        if not callable(serialize):
+            raise TypeError(
+                "SessionBackedWorkspaceHandle requires the wrapped session to expose "
+                "serialize_state() for environment checkpointing."
+            )
+        return {
+            "kind": "session_backed_workspace_handle",
+            "working_dir": self.working_dir,
+            "session": serialize(),
+        }
+
+    @classmethod
+    def deserialize_state(cls, data: dict[str, Any]) -> SessionBackedWorkspaceHandle:
+        session_state = data["session"]
+        kind = session_state.get("kind")
+        if kind == "managed_modal_sandbox_resource":
+            from .modal_sandbox_resource import ManagedModalSandboxResource
+
+            session = ManagedModalSandboxResource.deserialize_state(session_state)
+        elif kind == "managed_broker_bifrost_workspace_resource":
+            from .bifrost_workspace_resource import ManagedBrokerBifrostWorkspaceResource
+
+            session = ManagedBrokerBifrostWorkspaceResource.deserialize_state(session_state)
+        elif kind == "broker_bifrost_workspace_resource":
+            from .bifrost_workspace_resource import BrokerBifrostWorkspaceResource
+
+            session = BrokerBifrostWorkspaceResource.deserialize_state(session_state)
+        else:
+            raise ValueError(f"Unsupported session-backed workspace state kind: {kind!r}")
+
+        return cls(
+            session=session,
+            working_dir=data["working_dir"],
+        )
+
 
 @runtime_checkable
 class SandboxWorkspaceResource(CodingWorkspaceResource, CommandRunner, Protocol):
