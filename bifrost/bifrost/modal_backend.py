@@ -419,6 +419,13 @@ class ModalExecutionSession:
                 results["stdout"] = stdout
                 results["stderr"] = stderr
                 results["exit_code"] = exit_code
+            except BaseException as exc:
+                if shutdown_requested.is_set():
+                    results.setdefault("stdout", "")
+                    results.setdefault("stderr", "")
+                    results.setdefault("exit_code", 130)
+                    return
+                results["exception"] = exc
             finally:
                 shutdown_requested.set()
                 _close_output_stream()
@@ -450,6 +457,8 @@ class ModalExecutionSession:
                 pass
             shutdown_requested.set()
             worker.join(timeout=1.0)
+            if "exception" in results:
+                raise results["exception"]
             stdout = str(results.get("stdout", ""))
             stderr = str(results.get("stderr", ""))
             exit_code = int(results.get("exit_code", 1))
