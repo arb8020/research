@@ -16,7 +16,9 @@ import trio_asyncio
 from infra_utils.validation import validate_ssh_key_path, validate_timeout
 
 from .types import (
+    append_lifecycle_event,
     CopyResult,
+    create_jsonl_event_stream,
     EnvironmentVariables,
     EventStreamRef,
     ExecResult,
@@ -658,11 +660,30 @@ class AsyncBifrostClient:
         stdout_log_file = f"{log_file}.stdout.log"
         stderr_log_file = f"{log_file}.stderr.log"
         await self.exec(f": > {shlex.quote(stdout_log_file)} && : > {shlex.quote(stderr_log_file)}")
+        lifecycle_events = create_jsonl_event_stream(
+            backend=self.backend,
+            handle_kind="process",
+            handle_name=process_name,
+        )
+        append_lifecycle_event(
+            lifecycle_events,
+            event="process_launch_requested",
+            backend=self.backend,
+            handle_name=process_name,
+            command=effective_spec.command,
+            cwd=effective_spec.cwd,
+        )
 
         conn = await self._get_connection()
         full_cmd = effective_spec.build_command()
         observed_cmd = full_cmd
         process = await _trio_wrap(conn.create_process)(observed_cmd)
+        append_lifecycle_event(
+            lifecycle_events,
+            event="process_launch_succeeded",
+            backend=self.backend,
+            handle_name=process_name,
+        )
         stdout_chunks: list[str] = []
         stderr_chunks: list[str] = []
         # TODO: This per-chunk remote append is semantically honest but may be
@@ -723,10 +744,7 @@ class AsyncBifrostClient:
                 location=stdout_log_file,
                 description=f"stdout mirrored to {stdout_log_file}; stderr mirrored to {stderr_log_file}",
             ),
-            lifecycle_events=EventStreamRef(
-                kind="unknown",
-                description="Async SSH observed processes do not yet emit a canonical lifecycle event stream",
-            ),
+            lifecycle_events=lifecycle_events,
             state=ProcessState.RUNNING,
             _stream_output=_stream_output,
             _wait=_wait,
@@ -784,6 +802,21 @@ class AsyncBifrostClient:
         stderr_log_file = f"{log_file}.stderr.log"
         pid_file = f"{log_file}.pid"
         service_id = f"bifrost-service-{name}"
+        lifecycle_events = create_jsonl_event_stream(
+            backend=self.backend,
+            handle_kind="service",
+            handle_name=name,
+        )
+        append_lifecycle_event(
+            lifecycle_events,
+            event="service_launch_requested",
+            backend=self.backend,
+            handle_name=name,
+            port=service.port,
+            cwd=effective_spec.cwd,
+            readiness_probe=service.readiness_probe.kind,
+            readiness_target=service.readiness_probe.target,
+        )
         await self.exec(
             " && ".join(
                 (
@@ -805,6 +838,14 @@ class AsyncBifrostClient:
         result = await self.exec(launch_cmd, working_dir="~")
         if result.exit_code != 0:
             raise SSHConnectionError(f"Failed to start service {name}: {result.stderr}")
+        append_lifecycle_event(
+            lifecycle_events,
+            event="service_launch_succeeded",
+            backend=self.backend,
+            handle_name=name,
+            service_id=service_id,
+            port=service.port,
+        )
 
         health_target = service.readiness_probe.target
 
@@ -886,10 +927,7 @@ class AsyncBifrostClient:
                 location=stdout_log_file,
                 description=f"stdout mirrored to {stdout_log_file}; stderr mirrored to {stderr_log_file}",
             ),
-            lifecycle_events=EventStreamRef(
-                kind="unknown",
-                description="Async SSH detached services do not yet emit a canonical lifecycle event stream",
-            ),
+            lifecycle_events=lifecycle_events,
             readiness_probe=ReadinessProbe(
                 kind=service.readiness_probe.kind,
                 target=readiness_target,

@@ -23,6 +23,8 @@ from typing import Any
 import trio
 
 from .types import (
+    append_lifecycle_event,
+    create_jsonl_event_stream,
     EventStreamRef,
     ExecResult,
     ObservedProcessHandle,
@@ -217,6 +219,11 @@ class ModalExecutionSession:
         stderr_tail: deque[str] = deque(maxlen=40)
         output_send, output_receive = trio.open_memory_channel[ProcessOutputLine](256)
         trio_token = trio.lowlevel.current_trio_token()
+        lifecycle_events = create_jsonl_event_stream(
+            backend=self.backend,
+            handle_kind="process",
+            handle_name=process_name,
+        )
         process_state: dict[str, Any] = {
             "stdout_line_count": 0,
             "stderr_line_count": 0,
@@ -230,6 +237,13 @@ class ModalExecutionSession:
             return time.monotonic() - process_started_ts
 
         def _emit(event: str, **data: Any) -> None:
+            append_lifecycle_event(
+                lifecycle_events,
+                event=event,
+                backend=self.backend,
+                handle_name=process_name,
+                **data,
+            )
             if emit is not None:
                 emit(event, **data)
 
@@ -429,10 +443,7 @@ class ModalExecutionSession:
                 kind="provider_stream",
                 description="Modal attached process stdout/stderr stream",
             ),
-            lifecycle_events=EventStreamRef(
-                kind="provider_stream",
-                description="Modal run_logger event stream",
-            ),
+            lifecycle_events=lifecycle_events,
             state=ProcessState.RUNNING,
             _stream_output=_stream_output,
             _wait=_wait,
@@ -455,10 +466,6 @@ class ModalExecutionSession:
     ) -> ServiceHandle:
         import shlex
 
-        # TODO(service-events): detached services now share the same basic
-        # pid/log/readiness shape across SSH and Modal, but they still do not
-        # emit one canonical parent-owned lifecycle event stream. Add that next
-        # so callers stop learning backend-local service phase behavior.
         effective_spec = service.process
         workspace_root = workspace.root if workspace is not None else None
         if effective_spec.cwd is None and workspace_root is not None:
@@ -476,6 +483,21 @@ class ModalExecutionSession:
         stdout_log = f"{log_file}.stdout.log"
         stderr_log = f"{log_file}.stderr.log"
         pid_file = f"{log_file}.pid"
+        lifecycle_events = create_jsonl_event_stream(
+            backend=self.backend,
+            handle_kind="service",
+            handle_name=service_name,
+        )
+        append_lifecycle_event(
+            lifecycle_events,
+            event="service_launch_requested",
+            backend=self.backend,
+            handle_name=service_name,
+            port=service.port,
+            cwd=effective_spec.cwd,
+            readiness_probe=service.readiness_probe.kind,
+            readiness_target=service.readiness_probe.target,
+        )
         await self.exec(
             " && ".join(
                 (
@@ -494,6 +516,14 @@ class ModalExecutionSession:
         )
         proc = await trio.to_thread.run_sync(
             lambda: self.sandbox_handle.sandbox.exec("bash", "-lc", wrapped_command, timeout=86400)
+        )
+        append_lifecycle_event(
+            lifecycle_events,
+            event="service_launch_succeeded",
+            backend=self.backend,
+            handle_name=service_name,
+            service_id=f"{self.sandbox_handle.sandbox_id}:{service_name}",
+            port=service.port,
         )
 
         async def _is_running() -> bool:
@@ -554,10 +584,7 @@ class ModalExecutionSession:
                 location=stdout_log,
                 description=f"stdout mirrored to {stdout_log}; stderr mirrored to {stderr_log}",
             ),
-            lifecycle_events=EventStreamRef(
-                kind="provider_stream",
-                description="Modal services do not yet emit a canonical lifecycle event stream",
-            ),
+            lifecycle_events=lifecycle_events,
             readiness_probe=service.readiness_probe,
             initial_state=ServiceState.LAUNCHING,
             _is_running=_is_running,

@@ -12,7 +12,9 @@ from infra_utils.validation import validate_ssh_key_path, validate_timeout
 
 from . import git_sync
 from .types import (
+    append_lifecycle_event,
     CopyResult,
+    create_jsonl_event_stream,
     EnvironmentVariables,
     EventStreamRef,
     ExecResult,
@@ -538,6 +540,19 @@ class BifrostClient:
         stdout_log_file = f"{log_file}.stdout.log"
         stderr_log_file = f"{log_file}.stderr.log"
         self.exec(f": > {shlex.quote(stdout_log_file)} && : > {shlex.quote(stderr_log_file)}")
+        lifecycle_events = create_jsonl_event_stream(
+            backend=self.backend,
+            handle_kind="process",
+            handle_name=process_name,
+        )
+        append_lifecycle_event(
+            lifecycle_events,
+            event="process_launch_requested",
+            backend=self.backend,
+            handle_name=process_name,
+            command=effective_spec.command,
+            cwd=effective_spec.cwd,
+        )
 
         ssh_client = self._get_ssh_client()
         transport = ssh_client.get_transport()
@@ -550,6 +565,12 @@ class BifrostClient:
         if timeout is not None:
             channel.settimeout(timeout)
         channel.exec_command(observed_cmd)
+        append_lifecycle_event(
+            lifecycle_events,
+            event="process_launch_succeeded",
+            backend=self.backend,
+            handle_name=process_name,
+        )
 
         stdout_buffer = ""
         stderr_buffer = ""
@@ -686,10 +707,7 @@ class BifrostClient:
                 location=stdout_log_file,
                 description=f"stdout mirrored to {stdout_log_file}; stderr mirrored to {stderr_log_file}",
             ),
-            lifecycle_events=EventStreamRef(
-                kind="unknown",
-                description="Observed SSH processes do not yet emit a canonical lifecycle event stream",
-            ),
+            lifecycle_events=lifecycle_events,
             state=ProcessState.LAUNCHING,
             _stream_output=_stream_output,
             _wait=_wait,
@@ -1059,6 +1077,20 @@ class BifrostClient:
         stderr_log_file = f"{log_file}.stderr.log"
         pid_file = f"{log_file}.pid"
         service_id = f"bifrost-service-{name}"
+        lifecycle_events = create_jsonl_event_stream(
+            backend="ssh",
+            handle_kind="service",
+            handle_name=name,
+        )
+        append_lifecycle_event(
+            lifecycle_events,
+            event="service_launch_requested",
+            backend="ssh",
+            handle_name=name,
+            port=port,
+            cwd=effective_spec.cwd,
+            readiness_probe=health_endpoint or "process_alive",
+        )
         self.exec(
             " && ".join(
                 (
@@ -1081,6 +1113,14 @@ class BifrostClient:
             raise JobError(f"Failed to start server {name}: {result.stderr}")
 
         self.logger.info(f"Server started: {name} (handle: {service_id}, port: {port})")
+        append_lifecycle_event(
+            lifecycle_events,
+            event="service_launch_succeeded",
+            backend="ssh",
+            handle_name=name,
+            service_id=service_id,
+            port=port,
+        )
 
         def _is_running() -> bool:
             result = self.exec(
@@ -1141,10 +1181,7 @@ class BifrostClient:
                 location=stdout_log_file,
                 description=f"stdout mirrored to {stdout_log_file}; stderr mirrored to {stderr_log_file}",
             ),
-            lifecycle_events=EventStreamRef(
-                kind="unknown",
-                description="SSH detached services do not yet emit a canonical lifecycle event stream",
-            ),
+            lifecycle_events=lifecycle_events,
             readiness_probe=ReadinessProbe(
                 kind="http" if health_endpoint else "process_alive",
                 target=(

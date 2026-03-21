@@ -7,6 +7,7 @@ import trio
 from bifrost import (
     EventStreamRef,
     ExecutionSession,
+    LifecycleEvent,
     ObservedProcessHandle,
     OutputSink,
     ProcessHandle,
@@ -20,6 +21,8 @@ from bifrost import (
     WorkspaceHandle,
     WorkspaceMaterializationSpec,
     connect,
+    create_jsonl_event_stream,
+    read_lifecycle_events,
 )
 from bifrost.server import server_is_healthy
 from bifrost.types import ExecResult, JobInfo, ServerInfo
@@ -209,3 +212,68 @@ def test_observed_process_handle_exposes_live_process_surface() -> None:
         assert terminated is True
 
     asyncio.run(_exercise())
+
+
+def test_lifecycle_event_stream_records_parent_owned_process_events() -> None:
+    stream = create_jsonl_event_stream(
+        backend="ssh",
+        handle_kind="process",
+        handle_name="attached-train",
+    )
+    handle = ObservedProcessHandle(
+        name="attached-train",
+        backend="ssh",
+        spec=ProcessSpec(command="python", args=("train.py",)),
+        lifecycle_events=stream,
+        _stream_output=lambda: iter([ProcessOutputLine(stream="stdout", text="one")]),
+        _wait=lambda: ExecResult(stdout="one\n", stderr="", exit_code=0),
+        _terminate=lambda: None,
+    )
+
+    async def _exercise() -> None:
+        _ = [line async for line in handle.stream_output()]
+        _ = await handle.wait()
+        await handle.terminate()
+
+    asyncio.run(_exercise())
+    events = read_lifecycle_events(stream)
+    assert [event.event for event in events] == [
+        "process_output_stream_started",
+        "process_exit_observed",
+        "process_termination_requested",
+    ]
+    assert all(event.handle_name == "attached-train" for event in events)
+    assert all(event.backend == "ssh" for event in events)
+
+
+def test_service_handle_records_canonical_lifecycle_events() -> None:
+    stream = create_jsonl_event_stream(
+        backend="modal",
+        handle_kind="service",
+        handle_name="qed-vllm",
+    )
+    server = ServerInfo(
+        name="qed-vllm",
+        service_id="service-123",
+        backend="modal",
+        lifecycle_events=stream,
+        readiness_probe=ReadinessProbe(kind="http", target="/health"),
+        _is_running=lambda: True,
+        _is_healthy=lambda: True,
+        _stop=lambda: None,
+    )
+
+    async def _exercise() -> None:
+        assert await server.wait_until_healthy(timeout=0.01, poll_interval=0.001) is True
+        await server.stop()
+
+    asyncio.run(_exercise())
+    events = read_lifecycle_events(stream)
+    assert [event.event for event in events] == [
+        "service_wait_until_healthy_started",
+        "service_health_check",
+        "service_ready",
+        "service_stop_requested",
+        "service_stop_completed",
+    ]
+    assert all(isinstance(event, LifecycleEvent) for event in events)

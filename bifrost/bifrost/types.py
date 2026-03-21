@@ -2,11 +2,15 @@
 
 import asyncio
 import inspect
+import json
+import os
 import re
+import tempfile
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 from dataclasses import dataclass
 from enum import Enum
+from pathlib import Path
 from typing import Any, Literal, Optional
 
 import sniffio
@@ -343,6 +347,98 @@ class EventStreamRef:
 
 
 @dataclass(frozen=True)
+class LifecycleEvent:
+    """Canonical parent-owned lifecycle event for a launched handle."""
+
+    ts: str
+    event: str
+    backend: str
+    handle_name: str
+    data: dict[str, Any] | None = None
+
+    def __post_init__(self) -> None:
+        assert self.ts, "lifecycle event ts cannot be empty"
+        assert self.event, "lifecycle event name cannot be empty"
+        assert self.backend, "lifecycle event backend cannot be empty"
+        assert self.handle_name, "lifecycle event handle_name cannot be empty"
+
+
+def create_jsonl_event_stream(*, backend: str, handle_kind: str, handle_name: str) -> EventStreamRef:
+    """Create a canonical local JSONL event stream reference for a handle."""
+
+    safe_name = re.sub(r"[^A-Za-z0-9_.-]+", "-", handle_name).strip("-") or "handle"
+    events_dir = Path(tempfile.gettempdir()) / "bifrost-events"
+    events_dir.mkdir(parents=True, exist_ok=True)
+    path = events_dir / f"{backend}-{handle_kind}-{safe_name}-{os.getpid()}-{time.time_ns()}.jsonl"
+    path.touch()
+    return EventStreamRef(
+        kind="jsonl_file",
+        location=str(path),
+        description=f"Canonical parent-owned lifecycle events for {backend} {handle_kind}",
+    )
+
+
+def append_lifecycle_event(
+    stream: EventStreamRef,
+    *,
+    event: str,
+    backend: str,
+    handle_name: str,
+    **data: Any,
+) -> None:
+    """Append one lifecycle event to the canonical event sink if available."""
+
+    if stream.kind != "jsonl_file" or not stream.location:
+        return
+    payload = LifecycleEvent(
+        ts=time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime()) + f".{int(time.time_ns() % 1_000_000_000):09d}Z",
+        event=event,
+        backend=backend,
+        handle_name=handle_name,
+        data=data or None,
+    )
+    with Path(stream.location).open("a", encoding="utf-8") as f:
+        f.write(
+            json.dumps(
+                {
+                    "ts": payload.ts,
+                    "event": payload.event,
+                    "backend": payload.backend,
+                    "handle_name": payload.handle_name,
+                    "data": payload.data,
+                },
+                sort_keys=True,
+            )
+            + "\n"
+        )
+
+
+def read_lifecycle_events(stream: EventStreamRef) -> list[LifecycleEvent]:
+    """Read all canonical lifecycle events currently available for a handle."""
+
+    if stream.kind != "jsonl_file" or not stream.location:
+        return []
+    events: list[LifecycleEvent] = []
+    path = Path(stream.location)
+    if not path.exists():
+        return events
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        if not line.strip():
+            continue
+        payload = json.loads(line)
+        events.append(
+            LifecycleEvent(
+                ts=str(payload["ts"]),
+                event=str(payload["event"]),
+                backend=str(payload["backend"]),
+                handle_name=str(payload["handle_name"]),
+                data=payload.get("data"),
+            )
+        )
+    return events
+
+
+@dataclass(frozen=True)
 class ReadinessProbe:
     """How a parent launcher determines that a service is ready."""
 
@@ -455,6 +551,12 @@ class ObservedProcessHandle:
         assert self._stream_output is not None, "process output stream is unavailable"
         if self.state is ProcessState.LAUNCHING:
             self.state = ProcessState.RUNNING
+            append_lifecycle_event(
+                self.lifecycle_events,
+                event="process_output_stream_started",
+                backend=self.backend,
+                handle_name=self.name,
+            )
         stream = self._stream_output()
         if hasattr(stream, "__aiter__"):
             async for line in stream:
@@ -469,14 +571,30 @@ class ObservedProcessHandle:
         if inspect.isawaitable(result):
             result = await result
         self.state = ProcessState.EXITED
+        append_lifecycle_event(
+            self.lifecycle_events,
+            event="process_exit_observed",
+            backend=self.backend,
+            handle_name=self.name,
+            exit_code=result.exit_code,
+        )
         return result
 
     async def terminate(self) -> None:
         assert self._terminate is not None, "process termination is unavailable"
         self.state = ProcessState.TERMINATION_REQUESTED
+        append_lifecycle_event(
+            self.lifecycle_events,
+            event="process_termination_requested",
+            backend=self.backend,
+            handle_name=self.name,
+        )
         result = self._terminate()
         if inspect.isawaitable(result):
             await result
+
+    def read_lifecycle_events(self) -> list[LifecycleEvent]:
+        return read_lifecycle_events(self.lifecycle_events)
 
 
 @dataclass(frozen=True)
@@ -509,11 +627,6 @@ class JobInfo:
 @dataclass(frozen=True)
 class ServerInfo:
     """Generic long-lived service handle with explicit readiness semantics."""
-
-    # TODO(service-events): add a canonical structured lifecycle event stream
-    # for services, not just typed stdout/stderr and backend-local readiness
-    # callbacks. SSH and Modal should emit the same parent-owned event algebra
-    # here so callers stop learning backend-specific lifecycle behavior.
 
     name: str
     service_id: str | None = None
@@ -558,6 +671,13 @@ class ServerInfo:
         result = self._is_running()
         if inspect.isawaitable(result):
             result = await result
+        append_lifecycle_event(
+            self.lifecycle_events,
+            event="service_running_check",
+            backend=self.backend,
+            handle_name=self.name,
+            running=bool(result),
+        )
         return bool(result)
 
     async def is_healthy(self) -> bool:
@@ -565,6 +685,15 @@ class ServerInfo:
             result = self._is_healthy()
             if inspect.isawaitable(result):
                 result = await result
+            append_lifecycle_event(
+                self.lifecycle_events,
+                event="service_health_check",
+                backend=self.backend,
+                handle_name=self.name,
+                healthy=bool(result),
+                readiness_probe=self.readiness_probe.kind,
+                readiness_target=self.readiness_probe.target,
+            )
             return bool(result)
         if self.readiness_probe.kind == "none":
             return await self.is_running()
@@ -578,12 +707,41 @@ class ServerInfo:
         assert timeout > 0, "timeout must be positive"
         assert poll_interval > 0, "poll_interval must be positive"
         started = time.monotonic()
+        append_lifecycle_event(
+            self.lifecycle_events,
+            event="service_wait_until_healthy_started",
+            backend=self.backend,
+            handle_name=self.name,
+            timeout=timeout,
+            poll_interval=poll_interval,
+        )
         while time.monotonic() - started < timeout:
             if await self.is_healthy():
+                append_lifecycle_event(
+                    self.lifecycle_events,
+                    event="service_ready",
+                    backend=self.backend,
+                    handle_name=self.name,
+                    elapsed_sec=round(time.monotonic() - started, 3),
+                )
                 return True
             if not await self.is_running():
+                append_lifecycle_event(
+                    self.lifecycle_events,
+                    event="service_exited_before_ready",
+                    backend=self.backend,
+                    handle_name=self.name,
+                    elapsed_sec=round(time.monotonic() - started, 3),
+                )
                 return False
             await _sleep_current_async_library(poll_interval)
+        append_lifecycle_event(
+            self.lifecycle_events,
+            event="service_readiness_timeout",
+            backend=self.backend,
+            handle_name=self.name,
+            timeout=timeout,
+        )
         return False
 
     async def logs(self, tail: int = 100) -> str:
@@ -598,9 +756,24 @@ class ServerInfo:
     async def stop(self) -> None:
         if self._stop is None:
             return
+        append_lifecycle_event(
+            self.lifecycle_events,
+            event="service_stop_requested",
+            backend=self.backend,
+            handle_name=self.name,
+        )
         result = self._stop()
         if inspect.isawaitable(result):
             await result
+        append_lifecycle_event(
+            self.lifecycle_events,
+            event="service_stop_completed",
+            backend=self.backend,
+            handle_name=self.name,
+        )
+
+    def read_lifecycle_events(self) -> list[LifecycleEvent]:
+        return read_lifecycle_events(self.lifecycle_events)
 
 
 # Public handle aliases. Keep the old names for compatibility while making the
