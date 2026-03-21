@@ -211,6 +211,20 @@ def emit(event: str, **data: object) -> None:
     sys.stderr.flush()
 
 
+def write_status(status_path: str | None, payload: dict[str, object]) -> None:
+    if not status_path:
+        return
+    parent = os.path.dirname(status_path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    tmp_path = f"{status_path}.tmp"
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, sort_keys=True)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp_path, status_path)
+
+
 def read_proc_status(pid: int) -> dict[str, str]:
     wanted = {"Name", "State", "VmRSS", "VmHWM", "VmSize", "Threads"}
     path = f"/proc/{pid}/status"
@@ -279,9 +293,11 @@ def main() -> int:
     diag = None
     started_at = time.monotonic()
     env = os.environ.copy()
+    status_path = env.get("ARGUS_SUPERVISOR_STATUS_FILE")
 
     def _handle_signal(signum, _frame):
         emit("remote_supervisor_signal", signum=signum)
+        write_status(status_path, {"event": "remote_supervisor_signal", "signum": signum})
         terminate_process(child)
         terminate_process(diag)
         raise SystemExit(128 + signum)
@@ -299,6 +315,10 @@ def main() -> int:
             "remote_supervisor_child_started",
             child_pid=child.pid,
             process_tree=snapshot_tree(child.pid),
+        )
+        write_status(
+            status_path,
+            {"event": "remote_supervisor_child_started", "child_pid": child.pid},
         )
         diag = subprocess.Popen(
             [image_python, "-u", "-c", diag_python, str(child.pid), "1.0"],
@@ -319,6 +339,17 @@ def main() -> int:
             child_signal=(-rc if rc < 0 else None),
             elapsed_sec=round(time.monotonic() - started_at, 3),
             process_tree=snapshot_tree(child.pid),
+        )
+        write_status(
+            status_path,
+            {
+                "event": "remote_supervisor_child_exit",
+                "child_pid": child.pid,
+                "child_returncode": rc,
+                "child_was_signaled": (rc < 0),
+                "child_signal": (-rc if rc < 0 else None),
+                "elapsed_sec": round(time.monotonic() - started_at, 3),
+            },
         )
         if diag.poll() is None:
             try:

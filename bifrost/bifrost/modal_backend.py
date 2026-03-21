@@ -9,10 +9,12 @@ from __future__ import annotations
 
 import logging
 import os
+import json
 import subprocess
 import tempfile
 import threading
 import time
+import shlex
 from collections import deque
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
@@ -88,6 +90,29 @@ def _modal_supervisor_exit_code(event_name: str, event_data: dict[str, Any]) -> 
     if raw < 0:
         return 128 + (-raw)
     return raw
+
+
+def _read_modal_supervisor_status_sync(sandbox: Any, status_file: str) -> dict[str, Any] | None:
+    """Read the supervisor status file from the sandbox, if present."""
+
+    proc = sandbox.exec(
+        "bash",
+        "-lc",
+        f"if [ -f {shlex.quote(status_file)} ]; then cat {shlex.quote(status_file)}; fi",
+        timeout=30,
+    )
+    stdout = "".join(proc.stdout)
+    _ = "".join(proc.stderr)
+    exit_code = proc.wait()
+    if exit_code != 0 or not stdout.strip():
+        return None
+    try:
+        payload = json.loads(stdout)
+    except json.JSONDecodeError:
+        return None
+    if isinstance(payload, dict):
+        return payload
+    return None
 
 
 @dataclass(frozen=True)
@@ -276,6 +301,10 @@ class ModalExecutionSession:
             handle_kind="process",
             handle_name=process_name,
         )
+        completion_status_file = None
+        if spec.env is not None:
+            completion_status_file = spec.env.get("ARGUS_SUPERVISOR_STATUS_FILE")
+        last_completion_status_poll = 0.0
         process_state: dict[str, Any] = {
             "stdout_line_count": 0,
             "stderr_line_count": 0,
@@ -308,6 +337,34 @@ class ModalExecutionSession:
                 text=text[:max_chars],
                 truncated=len(text) > max_chars,
             )
+
+        def _maybe_record_supervisor_completion(event_name: str, event_data: dict[str, Any]) -> None:
+            exit_code = _modal_supervisor_exit_code(event_name, event_data)
+            if exit_code is None:
+                return
+            supervisor_completion["event_name"] = event_name
+            supervisor_completion["event_data"] = dict(event_data)
+            supervisor_completion["exit_code"] = exit_code
+            supervisor_completion_seen.set()
+
+        def _poll_supervisor_completion() -> None:
+            nonlocal last_completion_status_poll
+            if completion_status_file is None or supervisor_completion_seen.is_set():
+                return
+            now = time.monotonic()
+            if now - last_completion_status_poll < 5.0:
+                return
+            last_completion_status_poll = now
+            payload = _read_modal_supervisor_status_sync(
+                self.sandbox_handle.sandbox,
+                completion_status_file,
+            )
+            if not payload:
+                return
+            event_name = payload.get("event")
+            if not isinstance(event_name, str):
+                return
+            _maybe_record_supervisor_completion(event_name, payload)
 
         def _send_output_line(line: ProcessOutputLine) -> None:
             try:
@@ -393,12 +450,7 @@ class ModalExecutionSession:
                         event_name = event_data.pop("event", None)
                         if event_name:
                             _emit(event_name, **event_data)
-                            exit_code = _modal_supervisor_exit_code(event_name, event_data)
-                            if exit_code is not None:
-                                supervisor_completion["event_name"] = event_name
-                                supervisor_completion["event_data"] = dict(event_data)
-                                supervisor_completion["exit_code"] = exit_code
-                                supervisor_completion_seen.set()
+                            _maybe_record_supervisor_completion(event_name, event_data)
                         remaining = payload[end_idx:].lstrip()
                     if remaining:
                         process_state["stderr_line_count"] += 1
@@ -487,6 +539,7 @@ class ModalExecutionSession:
 
         def _wait() -> ExecResult:
             while True:
+                _poll_supervisor_completion()
                 if done.wait(timeout=0.1):
                     break
                 if supervisor_completion_seen.is_set():
