@@ -74,6 +74,12 @@ def lower_model_to_megatron(
             "qwen3_next lowers through an explicit Megatron custom spec and custom bridge registration; "
             "this family includes linear-attention semantics beyond the generic provider/raw_gpt paths"
         )
+    elif family in {"glm4", "glm4_moe"}:
+        adapter_kind = "custom_spec"
+        notes.append(
+            "glm4 lowers through the bridge-native transformer layer spec; "
+            "generic raw_gpt fallback does not honestly preserve GLM layer semantics"
+        )
     elif bridge_supports_provider:
         adapter_kind: MegatronAdapterKind = "provider"
     elif family == "qwen3":

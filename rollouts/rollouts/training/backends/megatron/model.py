@@ -120,7 +120,7 @@ class RawGPTMegatronAdapter:
     def validate_support(self, denotation: ModelDenotation, *, backend_name: str) -> None:
         assert denotation.source, f"{backend_name} model source must be non-empty"
         if (
-            denotation.architecture.family in {"qwen3", "qwen3_moe"}
+            denotation.architecture.family in {"qwen3", "qwen3_moe", "glm4", "glm4_moe"}
             and denotation.architecture.norm == "rmsnorm"
         ):
             raise ValueError(
@@ -413,6 +413,88 @@ class BridgeCustomSpecMegatronAdapter:
         )
 
 
+class BridgeNativeSpecMegatronAdapter:
+    """Megatron adapter for families whose bridge owns the transformer layer spec."""
+
+    adapter_name = "custom_spec:bridge_native"
+    expected_families: tuple[str, ...] = ()
+
+    def normalize_denotation(self, denotation: ModelDenotation) -> ModelDenotation:
+        return denotation
+
+    def validate_support(self, denotation: ModelDenotation, *, backend_name: str) -> None:
+        assert denotation.source, f"{backend_name} model source must be non-empty"
+        if denotation.architecture.family not in self.expected_families:
+            raise ValueError(
+                f"{backend_name} {self.adapter_name} expects one of {self.expected_families!r}, got "
+                f"{denotation.architecture.family!r}"
+            )
+
+    def normalize_hf_config(self, hf_config: Any) -> Any:
+        return _normalize_hf_config_for_megatron_bridge(hf_config)
+
+    def build_provider(
+        self,
+        *,
+        denotation: ModelDenotation,
+        runtime_config: MegatronModelConfig,
+        bridge: Any,
+    ) -> Any:
+        from megatron.core.models.gpt import GPTModel
+
+        if not hasattr(bridge, "_build_config"):
+            raise AttributeError(
+                "Bridge object does not expose `_build_config` for bridge-native custom-spec Megatron loading."
+            )
+        if not hasattr(bridge, "_get_transformer_layer_spec"):
+            raise AttributeError(
+                "Bridge object does not expose `_get_transformer_layer_spec`; "
+                "this family needs a bridge-native transformer layer spec instead of raw_gpt fallback."
+            )
+
+        transformer_config = bridge._build_config()
+        _apply_architecture_overrides(transformer_config, runtime_config)
+
+        hf_config = self.normalize_hf_config(bridge.hf_config)
+        gpt_kwargs = {}
+        if hasattr(bridge, "_get_gptmodel_args"):
+            gpt_kwargs = dict(bridge._get_gptmodel_args())
+        _populate_gpt_model_defaults(
+            gpt_kwargs=gpt_kwargs,
+            hf_config=hf_config,
+            runtime_config=runtime_config,
+        )
+
+        def model_provider(
+            pre_process: bool = True,
+            post_process: bool = True,
+            config: Any = None,
+            pg_collection: Any = None,
+            vp_stage: int | None = None,
+        ) -> GPTModel:
+            del config, pg_collection
+            transformer_layer_spec = _get_bridge_transformer_layer_spec(bridge, vp_stage)
+            kwargs = dict(gpt_kwargs)
+            kwargs.update({
+                "config": transformer_config,
+                "transformer_layer_spec": transformer_layer_spec,
+                "pre_process": pre_process,
+                "post_process": post_process,
+            })
+            if vp_stage is not None:
+                kwargs["vp_stage"] = vp_stage
+            return GPTModel(**kwargs)
+
+        return model_provider
+
+    def load_weights(self, *, bridge: Any, model: list[Any], denotation: ModelDenotation) -> None:
+        bridge.load_weights(
+            model,
+            _materialize_hf_checkpoint_snapshot(denotation.source),
+            memory_efficient=True,
+        )
+
+
 class Qwen35CustomSpecMegatronAdapter(BridgeCustomSpecMegatronAdapter):
     adapter_name = "custom_spec:qwen3_5"
     expected_families = ("qwen3_5", "qwen3_5_moe")
@@ -423,6 +505,11 @@ class Qwen3NextCustomSpecMegatronAdapter(BridgeCustomSpecMegatronAdapter):
     adapter_name = "custom_spec:qwen3_next"
     expected_families = ("qwen3_next",)
     spec_builder = staticmethod(get_qwen3_next_spec)
+
+
+class GLMBridgeNativeSpecMegatronAdapter(BridgeNativeSpecMegatronAdapter):
+    adapter_name = "custom_spec:glm_bridge"
+    expected_families = ("glm4", "glm4_moe")
 
 
 def _adapter_for_lowering(lowering: MegatronModelLowering) -> MegatronModelAdapter:
@@ -438,6 +525,8 @@ def _adapter_for_lowering(lowering: MegatronModelLowering) -> MegatronModelAdapt
             return Qwen35CustomSpecMegatronAdapter()
         if lowering.denotation.architecture.family == "qwen3_next":
             return Qwen3NextCustomSpecMegatronAdapter()
+        if lowering.denotation.architecture.family in {"glm4", "glm4_moe"}:
+            return GLMBridgeNativeSpecMegatronAdapter()
     raise ValueError(f"Unsupported Megatron adapter kind: {lowering.adapter_kind!r}")
 
 
@@ -797,6 +886,23 @@ def _populate_gpt_model_defaults(
         gpt_kwargs["parallel_output"] = True
 
     gpt_kwargs.update(runtime_config.architecture_args)
+
+
+def _get_bridge_transformer_layer_spec(bridge: Any, vp_stage: int | None) -> Any:
+    """Call the bridge-native layer-spec builder with an honest vp_stage shape."""
+    get_spec = bridge._get_transformer_layer_spec
+    try:
+        signature = inspect.signature(get_spec)
+    except (TypeError, ValueError):
+        return get_spec(vp_stage)
+
+    if "vp_stage" in signature.parameters:
+        return get_spec(vp_stage=vp_stage)
+    if len(signature.parameters) == 0:
+        return get_spec()
+    if vp_stage is None:
+        return get_spec()
+    return get_spec(vp_stage)
 
 
 def _infer_num_experts(runtime_config: MegatronModelConfig, hf_config: Any) -> int | None:
