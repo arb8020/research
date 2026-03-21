@@ -1,8 +1,11 @@
 """Bifrost SDK data types and structures."""
 
+import inspect
 import re
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 from dataclasses import dataclass
-from typing import Optional
+from enum import Enum
+from typing import Any, Literal, Optional
 
 
 @dataclass
@@ -286,12 +289,199 @@ class ProcessSpec:
         return full_cmd
 
 
+class ProcessState(str, Enum):
+    """Parent-observed lifecycle state for a launched process."""
+
+    CREATED = "created"
+    LAUNCHING = "launching"
+    RUNNING = "running"
+    EXITED = "exited"
+    LAUNCH_FAILED = "launch_failed"
+    TERMINATION_REQUESTED = "termination_requested"
+
+
+class ServiceState(str, Enum):
+    """Parent-observed lifecycle state for a launched service."""
+
+    CREATED = "created"
+    LAUNCHING = "launching"
+    STARTING = "starting"
+    READY = "ready"
+    READINESS_FAILED = "readiness_failed"
+    STOPPING = "stopping"
+    EXITED = "exited"
+
+
+@dataclass(frozen=True)
+class OutputSink:
+    """Reference to canonical raw process output owned by the parent launcher."""
+
+    kind: Literal["file", "provider_stream", "unknown"] = "unknown"
+    location: str | None = None
+    description: str | None = None
+
+    def __post_init__(self) -> None:
+        assert self.kind in {"file", "provider_stream", "unknown"}, "invalid output sink kind"
+
+
+@dataclass(frozen=True)
+class EventStreamRef:
+    """Reference to canonical lifecycle events for a launched handle."""
+
+    kind: Literal["jsonl_file", "provider_stream", "unknown"] = "unknown"
+    location: str | None = None
+    description: str | None = None
+
+    def __post_init__(self) -> None:
+        assert self.kind in {"jsonl_file", "provider_stream", "unknown"}, (
+            "invalid event stream kind"
+        )
+
+
+@dataclass(frozen=True)
+class ReadinessProbe:
+    """How a parent launcher determines that a service is ready."""
+
+    kind: Literal["http", "process_alive", "custom", "none"] = "none"
+    target: str | None = None
+    timeout_s: float | None = None
+
+    def __post_init__(self) -> None:
+        assert self.kind in {"http", "process_alive", "custom", "none"}, (
+            "invalid readiness probe kind"
+        )
+        if self.timeout_s is not None:
+            assert self.timeout_s > 0, "timeout_s must be positive"
+
+
+@dataclass(frozen=True)
+class WorkspaceMaterializationSpec:
+    """Materialization request for a project snapshot on an execution session.
+
+    `requested_root` is a hint, not a guarantee. Some backends can honor an
+    exact workspace root; others may materialize into a backend-owned fixed
+    root and report the realized path in the returned WorkspaceHandle.
+    """
+
+    requested_root: str | None = None
+    bootstrap_commands: tuple[str, ...] = ()
+    source_mode: Literal["git_bundle_committed"] = "git_bundle_committed"
+    allow_dirty: bool = False
+
+    def __post_init__(self) -> None:
+        assert self.source_mode == "git_bundle_committed", "unsupported source_mode"
+
+
+@dataclass(frozen=True)
+class ServiceSpec:
+    """Long-lived process denotation with readiness semantics."""
+
+    process: ProcessSpec
+    port: int | None = None
+    readiness_probe: ReadinessProbe = ReadinessProbe()
+    shutdown_signal: str | None = None
+
+    def __post_init__(self) -> None:
+        assert self.process is not None, "service process cannot be None"
+        if self.port is not None:
+            assert self.port > 0, "service port must be positive"
+
+
+@dataclass(frozen=True)
+class WorkspaceHandle:
+    """Materialized workspace on a live execution session."""
+
+    root: str
+    backend: str = "ssh"
+    source_ref: str | None = None
+    materialization: str | None = None
+    requested_root: str | None = None
+
+    def __post_init__(self) -> None:
+        assert self.root, "workspace root cannot be empty"
+        assert self.backend, "workspace backend cannot be empty"
+
+
+@dataclass(frozen=True)
+class ChildEvent:
+    """Optional semantic milestone emitted by the launched child process."""
+
+    name: str
+    detail: dict[str, str] | None = None
+
+    def __post_init__(self) -> None:
+        assert self.name, "child event name cannot be empty"
+
+
+@dataclass(frozen=True)
+class ProcessOutputLine:
+    """One line of live process output with an explicit source stream."""
+
+    stream: Literal["stdout", "stderr"]
+    text: str
+
+    def __post_init__(self) -> None:
+        assert self.stream in ("stdout", "stderr"), "stream must be stdout or stderr"
+        assert isinstance(self.text, str), "text must be a string"
+
+
+@dataclass
+class ObservedProcessHandle:
+    """Live attached process handle with parent-owned output observation."""
+
+    name: str
+    backend: str
+    spec: ProcessSpec
+    workspace: str | None = None
+    output_sink: OutputSink = OutputSink(kind="provider_stream")
+    lifecycle_events: EventStreamRef = EventStreamRef(kind="provider_stream")
+    state: ProcessState = ProcessState.LAUNCHING
+    _stream_output: (
+        Callable[[], AsyncIterator[ProcessOutputLine] | Iterator[ProcessOutputLine]] | None
+    ) = None
+    _wait: Callable[[], Awaitable[ExecResult] | ExecResult] | None = None
+    _terminate: Callable[[], Awaitable[None] | None] | None = None
+    metadata: dict[str, Any] | None = None
+
+    def __post_init__(self) -> None:
+        assert self.name, "process handle name cannot be empty"
+        assert self.backend, "process handle backend cannot be empty"
+
+    async def stream_output(self) -> AsyncIterator[ProcessOutputLine]:
+        assert self._stream_output is not None, "process output stream is unavailable"
+        if self.state is ProcessState.LAUNCHING:
+            self.state = ProcessState.RUNNING
+        stream = self._stream_output()
+        if hasattr(stream, "__aiter__"):
+            async for line in stream:
+                yield line
+            return
+        for line in stream:
+            yield line
+
+    async def wait(self) -> ExecResult:
+        assert self._wait is not None, "process wait is unavailable"
+        result = self._wait()
+        if inspect.isawaitable(result):
+            result = await result
+        self.state = ProcessState.EXITED
+        return result
+
+    async def terminate(self) -> None:
+        assert self._terminate is not None, "process termination is unavailable"
+        self.state = ProcessState.TERMINATION_REQUESTED
+        result = self._terminate()
+        if inspect.isawaitable(result):
+            await result
+
+
 @dataclass(frozen=True)
 class JobInfo:
-    """Immutable job identifier - just data.
+    """Immutable detached-process handle.
 
     This is the new v2 JobInfo that follows the functions-over-classes pattern.
-    It contains only identifiers, not status. Status comes from job_status().
+    It contains stable handle identity and output/event sink references, not
+    live status. Status comes from job_status() and related functions.
 
     Returned by BifrostClient.submit().
     Used with job_status(), job_wait(), job_logs(), job_kill() functions.
@@ -301,18 +491,25 @@ class JobInfo:
     tmux_session: str
     log_file: str | None = None
     workspace: str | None = None
+    backend: str = "ssh"
+    output_sink: OutputSink = OutputSink()
+    lifecycle_events: EventStreamRef = EventStreamRef()
+    initial_state: ProcessState = ProcessState.CREATED
 
     def __post_init__(self) -> None:
         assert self.name, "name cannot be empty"
         assert self.tmux_session, "tmux_session cannot be empty"
+        assert self.backend, "backend cannot be empty"
 
 
 @dataclass(frozen=True)
 class ServerInfo:
-    """Immutable server identifier - just data.
+    """Immutable long-lived service handle.
 
     This is the new v2 ServerInfo that follows the functions-over-classes pattern.
-    It contains only identifiers, not health status. Status comes from server_is_healthy().
+    It contains stable handle identity plus readiness metadata, not live status.
+    Health and lifecycle state come from server_is_healthy() and related
+    functions.
 
     Returned by BifrostClient.serve().
     Used with server_is_healthy(), server_wait_until_healthy(), server_stop() functions.
@@ -324,10 +521,16 @@ class ServerInfo:
     port: int | None = None
     health_endpoint: str | None = None
     workspace: str | None = None
+    backend: str = "ssh"
+    output_sink: OutputSink = OutputSink()
+    lifecycle_events: EventStreamRef = EventStreamRef()
+    readiness_probe: ReadinessProbe = ReadinessProbe()
+    initial_state: ServiceState = ServiceState.CREATED
 
     def __post_init__(self) -> None:
         assert self.name, "name cannot be empty"
         assert self.tmux_session, "tmux_session cannot be empty"
+        assert self.backend, "backend cannot be empty"
 
     @property
     def url(self) -> str | None:
@@ -335,3 +538,9 @@ class ServerInfo:
         if self.port:
             return f"http://localhost:{self.port}"
         return None
+
+
+# Public handle aliases. Keep the old names for compatibility while making the
+# intended execution semantics explicit.
+ProcessHandle = JobInfo | ObservedProcessHandle
+ServiceHandle = ServerInfo

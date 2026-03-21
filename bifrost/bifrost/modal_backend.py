@@ -1,0 +1,1223 @@
+"""Transitional Modal execution backend for bifrost.
+
+This module is the provider boundary for Modal-backed execution. Provider-owned
+mechanics such as sandbox command execution and workspace materialization live
+here, while Rollouts still owns workload-specific helper code.
+"""
+
+from __future__ import annotations
+
+import logging
+import os
+import subprocess
+import tempfile
+import threading
+import time
+from collections import deque
+from collections.abc import AsyncIterator, Callable
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+import trio
+
+from .types import (
+    EventStreamRef,
+    ExecResult,
+    ObservedProcessHandle,
+    OutputSink,
+    ProcessOutputLine,
+    ProcessSpec,
+    ProcessState,
+    WorkspaceHandle,
+    WorkspaceMaterializationSpec,
+)
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class ModalExecutionRequest:
+    """Provider-owned execution request for the current Modal backend."""
+
+    config_path: str
+    runtime: Any
+    materialization: Any
+    source_sync_policy: Any
+    timeout_hours: int = 4
+    sandbox_id: str | None = None
+    keep_alive: bool = False
+    cleanup_scope: str = "run"
+    run_name: str | None = None
+    model_name: str | None = None
+    pruning_recipe: str | None = None
+    run_logger: Any = None
+    tags: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class ModalSandboxHandle:
+    """Live Modal sandbox handle owned by the bifrost boundary."""
+
+    sandbox: Any
+    sandbox_id: str
+    backend: str = "modal"
+
+
+@dataclass(frozen=True)
+class ModalExecutionSession:
+    """Live Modal execution session backed by one sandbox."""
+
+    sandbox_handle: ModalSandboxHandle
+    local_root: Path
+    backend: str = "modal"
+    current_workspace_handle: WorkspaceHandle | None = None
+
+    async def materialize(
+        self,
+        spec: WorkspaceMaterializationSpec,
+        *,
+        emit: Callable[[str], None] | None = None,
+    ) -> WorkspaceHandle:
+        workspace = await materialize_modal_workspace(
+            self.sandbox_handle,
+            self.local_root,
+            emit=emit,
+        )
+        return WorkspaceHandle(
+            root=workspace.root,
+            backend=workspace.backend,
+            source_ref=workspace.source_ref,
+            materialization=workspace.materialization,
+            requested_root=spec.requested_root,
+        )
+
+    async def materialize_workspace(
+        self,
+        workspace_path: str,
+        bootstrap_cmd: str | list[str] | None = None,
+        on_bootstrap_step: Callable[[str, int, int], None] | None = None,
+        allow_dirty: bool = False,
+    ) -> WorkspaceHandle:
+        del bootstrap_cmd, on_bootstrap_step, allow_dirty
+        return await self.materialize(WorkspaceMaterializationSpec(requested_root=workspace_path))
+
+    async def exec(
+        self,
+        command: str,
+        env: dict[str, str] | None = None,
+        working_dir: str | None = None,
+        timeout: float | None = None,
+    ) -> ExecResult:
+        import shlex
+
+        prefix = ""
+        if working_dir is not None:
+            prefix += f"cd {shlex.quote(working_dir)} && "
+        if env:
+            prefix += " ".join(f"{k}={shlex.quote(v)}" for k, v in env.items()) + " "
+        stdout, stderr, exit_code = await exec_modal_command(
+            self.sandbox_handle,
+            f"{prefix}{command}",
+            timeout=int(timeout or 300),
+        )
+        return ExecResult(stdout=stdout, stderr=stderr, exit_code=exit_code)
+
+    async def run(self, spec: ProcessSpec, timeout: float | None = None) -> ExecResult:
+        return await self.exec(spec.build_command(), timeout=timeout)
+
+    async def stream_exec(
+        self,
+        command: str,
+        env: dict[str, str] | None = None,
+        working_dir: str | None = None,
+    ) -> AsyncIterator[ProcessOutputLine]:
+        import shlex
+
+        prefix = ""
+        if working_dir is not None:
+            prefix += f"cd {shlex.quote(working_dir)} && "
+        if env:
+            prefix += " ".join(f"{k}={shlex.quote(v)}" for k, v in env.items()) + " "
+
+        send_channel, receive_channel = trio.open_memory_channel[ProcessOutputLine](256)
+        trio_token = trio.lowlevel.current_trio_token()
+        result_holder: dict[str, Any] = {}
+
+        def _worker() -> None:
+            try:
+
+                def _on_stdout_line(line: str) -> None:
+                    trio.from_thread.run(
+                        send_channel.send,
+                        ProcessOutputLine(stream="stdout", text=line.rstrip("\r\n")),
+                        trio_token=trio_token,
+                    )
+
+                def _on_stderr_line(line: str) -> None:
+                    trio.from_thread.run(
+                        send_channel.send,
+                        ProcessOutputLine(stream="stderr", text=line.rstrip("\r\n")),
+                        trio_token=trio_token,
+                    )
+
+                result_holder["result"] = exec_modal_command_sync(
+                    self.sandbox_handle.sandbox,
+                    f"{prefix}{command}",
+                    timeout=300,
+                    stream_output=False,
+                    on_stdout_line=_on_stdout_line,
+                    on_stderr_line=_on_stderr_line,
+                )
+            except Exception as exc:
+                result_holder["error"] = exc
+            finally:
+                trio.from_thread.run_sync(send_channel.close, trio_token=trio_token)
+
+        worker = threading.Thread(target=_worker, daemon=True)
+        worker.start()
+        try:
+            async with receive_channel:
+                async for item in receive_channel:
+                    yield item
+        finally:
+            await trio.to_thread.run_sync(worker.join)
+
+        if "error" in result_holder:
+            raise result_holder["error"]
+
+    async def terminate(self) -> None:
+        await terminate_modal_sandbox(self.sandbox_handle)
+
+    async def start_process(
+        self,
+        spec: ProcessSpec,
+        *,
+        name: str | None = None,
+        timeout: int = 14400,
+        emit: Callable[[str], None] | None = None,
+        startup_sentinel: str | None = None,
+        stdout_event_sentinel: str | None = None,
+        stderr_event_sentinel: str | None = None,
+        start_timeout_s: float | None = None,
+    ) -> ObservedProcessHandle:
+        """Launch and observe a live attached process inside the sandbox."""
+
+        process_name = name or f"modal-process-{int(time.time())}"
+        results: dict[str, Any] = {}
+        done = threading.Event()
+        startup_seen = threading.Event()
+        process_started_ts = time.monotonic()
+        stdout_tail: deque[str] = deque(maxlen=20)
+        stderr_tail: deque[str] = deque(maxlen=40)
+        output_send, output_receive = trio.open_memory_channel[ProcessOutputLine](256)
+        trio_token = trio.lowlevel.current_trio_token()
+        process_state: dict[str, Any] = {
+            "stdout_line_count": 0,
+            "stderr_line_count": 0,
+            "last_stdout_line": None,
+            "last_stderr_line": None,
+            "last_stdout_elapsed_sec": None,
+            "last_stderr_elapsed_sec": None,
+        }
+
+        def _elapsed() -> float:
+            return time.monotonic() - process_started_ts
+
+        def _emit(event: str, **data: Any) -> None:
+            if emit is not None:
+                emit(event, **data)
+
+        def _emit_stream_line(event: str, line_count: int, text: str) -> None:
+            max_chars = 4000
+            _emit(
+                event,
+                line_no=line_count,
+                elapsed_sec=round(_elapsed(), 3),
+                text=text[:max_chars],
+                truncated=len(text) > max_chars,
+            )
+
+        def _on_started() -> None:
+            _emit("remote_entrypoint_invoked")
+            _emit("remote_stdout_stream_open")
+            _emit("remote_stderr_stream_open")
+
+        def _on_stdout_line(line: str) -> None:
+            if "\n" in line:
+                for subline in line.splitlines():
+                    _on_stdout_line(subline)
+                return
+            stripped = line.rstrip()
+            if stdout_event_sentinel and stripped.startswith(stdout_event_sentinel):
+                payload = stripped[len(stdout_event_sentinel) :]
+                try:
+                    import json
+
+                    event_data = json.loads(payload)
+                    event_name = event_data.pop("event", None)
+                    if event_name:
+                        _emit(event_name, **event_data)
+                except Exception as exc:
+                    _emit("remote_event_stream_parse_failed", error=f"{type(exc).__name__}: {exc}")
+                return
+            process_state["stdout_line_count"] += 1
+            process_state["last_stdout_line"] = stripped
+            process_state["last_stdout_elapsed_sec"] = round(_elapsed(), 3)
+            stdout_tail.append(stripped)
+            trio.from_thread.run(
+                output_send.send,
+                ProcessOutputLine(stream="stdout", text=stripped),
+                trio_token=trio_token,
+            )
+            _emit_stream_line("remote_stdout_line", process_state["stdout_line_count"], stripped)
+            if startup_sentinel and startup_sentinel in stripped and not startup_seen.is_set():
+                startup_seen.set()
+                _emit("workload_entrypoint_started")
+
+        def _on_stderr_line(line: str) -> None:
+            stripped = line.rstrip()
+            if stderr_event_sentinel and stderr_event_sentinel in stripped:
+                try:
+                    import json
+
+                    decoder = json.JSONDecoder()
+                    remaining = stripped
+                    while stderr_event_sentinel in remaining:
+                        prefix, payload = remaining.split(stderr_event_sentinel, 1)
+                        prefix = prefix.rstrip()
+                        if prefix:
+                            process_state["stderr_line_count"] += 1
+                            process_state["last_stderr_line"] = prefix
+                            process_state["last_stderr_elapsed_sec"] = round(_elapsed(), 3)
+                            stderr_tail.append(prefix)
+                            trio.from_thread.run(
+                                output_send.send,
+                                ProcessOutputLine(stream="stderr", text=prefix),
+                                trio_token=trio_token,
+                            )
+                            _emit_stream_line(
+                                "remote_stderr_line",
+                                process_state["stderr_line_count"],
+                                prefix,
+                            )
+                        payload = payload.lstrip()
+                        event_data, end_idx = decoder.raw_decode(payload)
+                        event_name = event_data.pop("event", None)
+                        if event_name:
+                            _emit(event_name, **event_data)
+                        remaining = payload[end_idx:].lstrip()
+                    if remaining:
+                        process_state["stderr_line_count"] += 1
+                        process_state["last_stderr_line"] = remaining
+                        process_state["last_stderr_elapsed_sec"] = round(_elapsed(), 3)
+                        stderr_tail.append(remaining)
+                        trio.from_thread.run(
+                            output_send.send,
+                            ProcessOutputLine(stream="stderr", text=remaining),
+                            trio_token=trio_token,
+                        )
+                        _emit_stream_line(
+                            "remote_stderr_line",
+                            process_state["stderr_line_count"],
+                            remaining,
+                        )
+                except Exception as exc:
+                    _emit("remote_diag_stream_parse_failed", error=f"{type(exc).__name__}: {exc}")
+                return
+
+            process_state["stderr_line_count"] += 1
+            process_state["last_stderr_line"] = stripped
+            process_state["last_stderr_elapsed_sec"] = round(_elapsed(), 3)
+            stderr_tail.append(stripped)
+            trio.from_thread.run(
+                output_send.send,
+                ProcessOutputLine(stream="stderr", text=stripped),
+                trio_token=trio_token,
+            )
+            _emit_stream_line("remote_stderr_line", process_state["stderr_line_count"], stripped)
+
+        def _on_heartbeat(elapsed_sec: float, silence_sec: float) -> None:
+            _emit(
+                "remote_process_heartbeat",
+                elapsed_sec=round(elapsed_sec, 3),
+                silence_sec=round(silence_sec, 3),
+                stdout_line_count=process_state["stdout_line_count"],
+                stderr_line_count=process_state["stderr_line_count"],
+                last_stdout_elapsed_sec=process_state["last_stdout_elapsed_sec"],
+                last_stderr_elapsed_sec=process_state["last_stderr_elapsed_sec"],
+            )
+
+        def _run_attached() -> None:
+            try:
+                stdout, stderr, exit_code = exec_modal_command_sync(
+                    self.sandbox_handle.sandbox,
+                    spec.build_command(),
+                    timeout=timeout,
+                    on_started=_on_started,
+                    on_stdout_line=_on_stdout_line,
+                    on_stderr_line=_on_stderr_line,
+                    on_heartbeat=_on_heartbeat,
+                )
+                results["stdout"] = stdout
+                results["stderr"] = stderr
+                results["exit_code"] = exit_code
+            finally:
+                trio.from_thread.run_sync(output_send.close, trio_token=trio_token)
+                done.set()
+
+        _emit("remote_entrypoint_invoke_start", command=spec.command)
+        worker = threading.Thread(target=_run_attached, daemon=True)
+        worker.start()
+
+        if start_timeout_s is not None and startup_sentinel:
+            deadline = time.monotonic() + start_timeout_s
+            while not done.is_set() and not startup_seen.is_set():
+                if time.monotonic() >= deadline:
+                    _emit("workload_entrypoint_start_timeout", timeout_sec=start_timeout_s)
+                    self.sandbox_handle.sandbox.terminate()
+                    worker.join(timeout=5.0)
+                    results.setdefault(
+                        "stderr",
+                        f"Workload entrypoint did not emit startup sentinel within {start_timeout_s}s",
+                    )
+                    results.setdefault("stdout", "")
+                    results.setdefault("exit_code", 124)
+                    break
+                time.sleep(0.1)
+
+        def _wait() -> ExecResult:
+            worker.join()
+            stdout = str(results.get("stdout", ""))
+            stderr = str(results.get("stderr", ""))
+            exit_code = int(results.get("exit_code", 1))
+            _emit(
+                "remote_exit_observed",
+                exit_code=exit_code,
+                elapsed_sec=round(_elapsed(), 3),
+                stdout_line_count=process_state["stdout_line_count"],
+                stderr_line_count=process_state["stderr_line_count"],
+                last_stdout_line=process_state["last_stdout_line"],
+                last_stderr_line=process_state["last_stderr_line"],
+                last_stdout_elapsed_sec=process_state["last_stdout_elapsed_sec"],
+                last_stderr_elapsed_sec=process_state["last_stderr_elapsed_sec"],
+                stdout_tail=list(stdout_tail),
+                stderr_tail=list(stderr_tail),
+            )
+            return ExecResult(stdout=stdout, stderr=stderr, exit_code=exit_code)
+
+        def _terminate() -> None:
+            self.sandbox_handle.sandbox.terminate()
+            worker.join(timeout=5.0)
+
+        async def _stream_output() -> AsyncIterator[ProcessOutputLine]:
+            async with output_receive:
+                async for item in output_receive:
+                    yield item
+
+        return ObservedProcessHandle(
+            name=process_name,
+            backend=self.backend,
+            spec=spec,
+            workspace=spec.cwd,
+            output_sink=OutputSink(
+                kind="provider_stream",
+                description="Modal attached process stdout/stderr stream",
+            ),
+            lifecycle_events=EventStreamRef(
+                kind="provider_stream",
+                description="Modal run_logger event stream",
+            ),
+            state=ProcessState.RUNNING,
+            _stream_output=_stream_output,
+            _wait=_wait,
+            _terminate=_terminate,
+            metadata={
+                "stdout_tail": stdout_tail,
+                "stderr_tail": stderr_tail,
+                "process_state": process_state,
+                "startup_seen": startup_seen,
+            },
+        )
+
+
+async def create_modal_sandbox(request: ModalExecutionRequest) -> ModalSandboxHandle:
+    """Create or attach to a Modal sandbox."""
+
+    import modal
+    import trio_asyncio
+    from broker.providers.modal_image import build_modal_image, eager_build_modal_image
+    from rollouts.modal_workload import MODAL_APP_NAME
+
+    if request.sandbox_id:
+        logger.info("Reusing sandbox: %s", request.sandbox_id)
+
+        def _attach() -> Any:
+            return modal.Sandbox.from_id(request.sandbox_id)
+
+        sandbox = await trio.to_thread.run_sync(_attach)
+        assert sandbox is not None, f"Failed to reattach to sandbox: {request.sandbox_id}"
+        assert sandbox.object_id, "Sandbox missing object_id"
+        logger.info("Reattached to sandbox: %s", sandbox.object_id)
+        return ModalSandboxHandle(sandbox=sandbox, sandbox_id=sandbox.object_id)
+
+    logger.info("Looking up app: %s", MODAL_APP_NAME)
+    app = await trio_asyncio.aio_as_trio(
+        modal.App.lookup.aio(MODAL_APP_NAME, create_if_missing=True)
+    )
+
+    owner_tags = {
+        key: value for key in ("control_plane", "launcher_id") if (value := request.tags.get(key))
+    }
+    group_tags = {
+        key: value
+        for key in ("control_plane", "config_basename", "provider")
+        if (value := request.tags.get(key))
+    }
+
+    def _list_owned_sandboxes() -> list[Any]:
+        if request.cleanup_scope == "none":
+            return []
+        if request.cleanup_scope == "app":
+            return list(modal.Sandbox.list(app_id=app.app_id))
+        if request.cleanup_scope == "tag":
+            return list(modal.Sandbox.list(app_id=app.app_id, tags=group_tags))
+        assert request.cleanup_scope == "run"
+        return list(modal.Sandbox.list(app_id=app.app_id, tags=owner_tags))
+
+    cleanup_event: tuple[str, dict[str, Any]]
+    if request.keep_alive:
+        logger.info("Skipping pre-create sandbox cleanup because keep_alive=True")
+        cleanup_event = ("modal_sandbox_cleanup_skipped", {"reason": "keep_alive_enabled"})
+    elif request.cleanup_scope == "none":
+        logger.info("Skipping pre-create sandbox cleanup because cleanup_scope=none")
+        cleanup_event = ("modal_sandbox_cleanup_skipped", {"reason": "cleanup_scope_none"})
+    elif request.cleanup_scope == "run" and not owner_tags:
+        logger.info("Skipping pre-create sandbox cleanup because run owner tags are missing")
+        cleanup_event = ("modal_sandbox_cleanup_skipped", {"reason": "missing_run_tags"})
+    elif request.cleanup_scope == "tag" and not group_tags:
+        logger.info("Skipping pre-create sandbox cleanup because tag scope tags are missing")
+        cleanup_event = ("modal_sandbox_cleanup_skipped", {"reason": "missing_tag_tags"})
+    else:
+        if request.cleanup_scope == "run":
+            cleanup_event = ("modal_sandbox_cleanup_scope", {"scope": "run", "tags": owner_tags})
+        elif request.cleanup_scope == "tag":
+            cleanup_event = ("modal_sandbox_cleanup_scope", {"scope": "tag", "tags": group_tags})
+        else:
+            cleanup_event = ("modal_sandbox_cleanup_scope", {"scope": "app"})
+        existing = await trio.to_thread.run_sync(_list_owned_sandboxes)
+        if existing:
+            logger.info(
+                "Cleaning up %s existing sandbox(es) for cleanup_scope=%s...",
+                len(existing),
+                request.cleanup_scope,
+            )
+            for sandbox in existing:
+                try:
+                    await trio_asyncio.aio_as_trio(sandbox.terminate.aio())
+                    logger.info("  Terminated %s", sandbox.object_id)
+                except Exception as exc:
+                    logger.warning("  Failed to terminate %s: %s", sandbox.object_id, exc)
+        else:
+            logger.info(
+                "No existing sandboxes found for cleanup_scope=%s",
+                request.cleanup_scope,
+            )
+
+    gpu_spec = (
+        f"{request.runtime.gpu_type}:{request.runtime.gpu_count}"
+        if request.runtime.gpu_count > 1
+        else request.runtime.gpu_type
+    )
+    ts = int(datetime.now(timezone.utc).timestamp())
+    sandbox_name = f"rollouts-{request.runtime.gpu_type.lower()}-{ts}"
+    timeout_seconds = request.timeout_hours * 3600
+    keepalive_cmd = (
+        "python3",
+        "-c",
+        "import signal,time; signal.signal(signal.SIGTERM, lambda *_: exit(0)); "
+        "signal.signal(signal.SIGINT, lambda *_: exit(0)); time.sleep(315360000)",
+    )
+    create_timeout_s = 300
+    create_heartbeat_s = 15
+    create_attempts = 2
+
+    def emit(event: str, **data: Any) -> None:
+        if request.run_logger is not None:
+            request.run_logger.event(
+                event,
+                provider="modal",
+                run_name=request.run_name,
+                sandbox_name=sandbox_name,
+                gpu_type=request.runtime.gpu_type,
+                gpu_count=request.runtime.gpu_count,
+                **data,
+            )
+
+    cleanup_event_name, cleanup_event_data = cleanup_event
+    emit(cleanup_event_name, **cleanup_event_data)
+
+    logger.info("Constructing Modal image...")
+    assert request.runtime.deps is not None, "Modal deps must be present before sandbox creation"
+    emit("modal_image_construct_start", app_id=app.app_id)
+    image = build_modal_image(modal, request.runtime.deps, request.runtime.gpu_type)
+    emit(
+        "modal_image_construct_finished",
+        app_id=app.app_id,
+        source_ref=getattr(
+            request.runtime.deps.resolved_image(request.runtime.gpu_type),
+            "source_ref",
+            None,
+        ),
+    )
+    logger.info("Eagerly building Modal image...")
+    image = await eager_build_modal_image(image, app, emit)
+    logger.info("Modal image ready: %s", getattr(image, "object_id", None))
+
+    async def _create_once(attempt: int) -> Any:
+        logger.info(
+            "Creating sandbox: %s (gpu=%s) attempt=%s/%s",
+            sandbox_name,
+            gpu_spec,
+            attempt,
+            create_attempts,
+        )
+        emit("modal_sandbox_create_attempt_start", attempt=attempt, timeout_sec=create_timeout_s)
+
+        result: dict[str, Any] = {}
+
+        async def _create_task() -> None:
+            result["sandbox"] = await trio_asyncio.aio_as_trio(
+                modal.Sandbox.create.aio(
+                    *keepalive_cmd,
+                    app=app,
+                    image=image,
+                    gpu=gpu_spec,
+                    timeout=timeout_seconds,
+                    name=sandbox_name,
+                    verbose=True,
+                )
+            )
+
+        start = trio.current_time()
+        with trio.move_on_after(create_timeout_s) as scope:
+            async with trio.open_nursery() as nursery:
+                nursery.start_soon(_create_task)
+                while "sandbox" not in result:
+                    elapsed = trio.current_time() - start
+                    emit(
+                        "modal_sandbox_create_heartbeat",
+                        attempt=attempt,
+                        elapsed_sec=round(elapsed, 3),
+                    )
+                    await trio.sleep(create_heartbeat_s)
+                nursery.cancel_scope.cancel()
+
+        if "sandbox" in result:
+            elapsed = trio.current_time() - start
+            emit(
+                "modal_sandbox_create_attempt_succeeded",
+                attempt=attempt,
+                elapsed_sec=round(elapsed, 3),
+            )
+            return result["sandbox"]
+
+        assert scope.cancelled_caught
+        emit(
+            "modal_sandbox_create_attempt_timeout",
+            attempt=attempt,
+            timeout_sec=create_timeout_s,
+        )
+        raise TimeoutError(
+            f"Modal sandbox creation timed out after {create_timeout_s}s "
+            f"(attempt {attempt}/{create_attempts})"
+        )
+
+    sandbox = None
+    last_error: Exception | None = None
+    for attempt in range(1, create_attempts + 1):
+        try:
+            sandbox = await _create_once(attempt)
+            break
+        except Exception as exc:
+            last_error = exc
+            logger.warning(
+                "Modal sandbox create attempt %s/%s failed: %s",
+                attempt,
+                create_attempts,
+                exc,
+            )
+            if attempt == create_attempts:
+                break
+            emit(
+                "modal_sandbox_create_retry_scheduled",
+                attempt=attempt,
+                next_attempt=attempt + 1,
+                error=f"{type(exc).__name__}: {exc}",
+            )
+
+    if sandbox is None:
+        emit(
+            "modal_sandbox_create_failed",
+            attempts=create_attempts,
+            error=f"{type(last_error).__name__}: {last_error}" if last_error else "unknown",
+        )
+        raise RuntimeError(
+            f"Modal sandbox creation failed after {create_attempts} attempts: {last_error}"
+        ) from last_error
+
+    assert sandbox.object_id, "Sandbox missing object_id"
+    logger.info("Sandbox created: %s", sandbox.object_id)
+    stabilize_window_s = 5.0
+    stabilize_interval_s = 1.0
+    stabilize_start = trio.current_time()
+    stabilize_attempt = 0
+    while True:
+        stabilize_attempt += 1
+        try:
+            initial_returncode = await trio_asyncio.aio_as_trio(sandbox.poll.aio())
+        except Exception as exc:
+            emit(
+                "modal_sandbox_poll_failed",
+                phase="post_create_stabilization",
+                attempt=stabilize_attempt,
+                elapsed_sec=round(trio.current_time() - stabilize_start, 3),
+                error=f"{type(exc).__name__}: {exc}",
+            )
+            initial_returncode = None
+
+        sandbox_result = getattr(sandbox, "_result", None)
+        elapsed = trio.current_time() - stabilize_start
+        emit(
+            "modal_sandbox_stabilization_probe",
+            attempt=stabilize_attempt,
+            elapsed_sec=round(elapsed, 3),
+            returncode=initial_returncode,
+            status=getattr(sandbox_result, "status", None),
+            exception=getattr(sandbox_result, "exception", None),
+        )
+        if initial_returncode is not None:
+            emit(
+                "modal_sandbox_primary_exited_early",
+                elapsed_sec=round(elapsed, 3),
+                returncode=initial_returncode,
+                status=getattr(sandbox_result, "status", None),
+                exception=getattr(sandbox_result, "exception", None),
+            )
+            raise RuntimeError(
+                "Modal sandbox primary process exited before first exec: "
+                f"returncode={initial_returncode}"
+            )
+        if elapsed >= stabilize_window_s:
+            break
+        await trio.sleep(stabilize_interval_s)
+
+    emit(
+        "modal_sandbox_stabilized",
+        elapsed_sec=round(trio.current_time() - stabilize_start, 3),
+        probe_count=stabilize_attempt,
+    )
+    emit("modal_sandbox_keepalive_configured", command=list(keepalive_cmd))
+
+    if request.tags:
+        try:
+            sandbox.set_tags(request.tags)
+            emit("modal_sandbox_tags_set", tags=request.tags)
+        except Exception as exc:
+            emit("modal_sandbox_tags_failed", error=f"{type(exc).__name__}: {exc}")
+
+    return ModalSandboxHandle(sandbox=sandbox, sandbox_id=sandbox.object_id)
+
+
+async def materialize_modal_workspace(
+    sandbox: ModalSandboxHandle,
+    local_root: Path,
+    *,
+    emit: Callable[[str], None] | None = None,
+) -> WorkspaceHandle:
+    """Materialize the current repo into a Modal sandbox workspace."""
+
+    workspace = await _sync_code_to_sandbox(sandbox.sandbox, local_root, emit=emit)
+    return WorkspaceHandle(root=workspace, backend="modal")
+
+
+async def terminate_modal_sandbox(sandbox: ModalSandboxHandle) -> None:
+    """Terminate a live Modal sandbox."""
+
+    def _terminate() -> None:
+        sandbox.sandbox.terminate()
+
+    await trio.to_thread.run_sync(_terminate)
+
+
+def exec_modal_command_sync(
+    sandbox: Any,
+    command: str,
+    timeout: int = 300,
+    *,
+    stream_output: bool = True,
+    on_started: Callable[[], None] | None = None,
+    on_stdout_line: Callable[[str], None] | None = None,
+    on_stderr_line: Callable[[str], None] | None = None,
+    on_heartbeat: Callable[[float, float], None] | None = None,
+    heartbeat_interval_s: float = 15.0,
+) -> tuple[str, str, int]:
+    """Execute a command inside a Modal sandbox with streaming output."""
+
+    proc = sandbox.exec("bash", "-c", command, timeout=timeout)
+    if on_started is not None:
+        on_started()
+
+    stdout_lines: list[str] = []
+    stderr_lines: list[str] = []
+    stop_heartbeat = threading.Event()
+    activity_lock = threading.Lock()
+    last_activity_ts = time.monotonic()
+
+    def mark_activity() -> None:
+        nonlocal last_activity_ts
+        with activity_lock:
+            last_activity_ts = time.monotonic()
+
+    def read_stdout() -> None:
+        for line in proc.stdout:
+            stdout_lines.append(line)
+            mark_activity()
+            if stream_output:
+                logger.info("[sandbox] %s", line.rstrip())
+            if on_stdout_line is not None:
+                on_stdout_line(line)
+
+    def read_stderr() -> None:
+        for line in proc.stderr:
+            stderr_lines.append(line)
+            mark_activity()
+            if stream_output:
+                logger.warning("[sandbox stderr] %s", line.rstrip())
+            if on_stderr_line is not None:
+                on_stderr_line(line)
+
+    def emit_heartbeats() -> None:
+        if on_heartbeat is None:
+            return
+        started_ts = time.monotonic()
+        while not stop_heartbeat.wait(heartbeat_interval_s):
+            with activity_lock:
+                silence_sec = time.monotonic() - last_activity_ts
+            elapsed_sec = time.monotonic() - started_ts
+            on_heartbeat(elapsed_sec, silence_sec)
+
+    stdout_thread = threading.Thread(target=read_stdout)
+    stderr_thread = threading.Thread(target=read_stderr)
+    heartbeat_thread = threading.Thread(target=emit_heartbeats, daemon=True)
+    stdout_thread.start()
+    stderr_thread.start()
+    heartbeat_thread.start()
+    stdout_thread.join()
+    stderr_thread.join()
+
+    proc.wait()
+    stop_heartbeat.set()
+    heartbeat_thread.join(timeout=1.0)
+
+    return "".join(stdout_lines), "".join(stderr_lines), proc.returncode
+
+
+async def exec_modal_command(
+    sandbox: ModalSandboxHandle,
+    command: str,
+    *,
+    timeout: int = 300,
+    stream_output: bool = True,
+    on_started: Callable[[], None] | None = None,
+    on_stdout_line: Callable[[str], None] | None = None,
+    on_stderr_line: Callable[[str], None] | None = None,
+    on_heartbeat: Callable[[float, float], None] | None = None,
+    heartbeat_interval_s: float = 15.0,
+) -> tuple[str, str, int]:
+    """Execute a command inside a Modal sandbox."""
+
+    return await trio.to_thread.run_sync(
+        lambda: exec_modal_command_sync(
+            sandbox.sandbox,
+            command,
+            timeout=timeout,
+            stream_output=stream_output,
+            on_started=on_started,
+            on_stdout_line=on_stdout_line,
+            on_stderr_line=on_stderr_line,
+            on_heartbeat=on_heartbeat,
+            heartbeat_interval_s=heartbeat_interval_s,
+        )
+    )
+
+
+async def _sync_code_to_sandbox(
+    sandbox: Any,
+    local_root: Path,
+    *,
+    emit: Callable[[str], None] | None = None,
+) -> str:
+    """Sync the local repo into a Modal sandbox workspace via a git bundle."""
+
+    clone_dir = "/workspace/research"
+    workspace = "/workspace/research/rollouts"
+
+    def _emit_progress(stage: str, **data: Any) -> None:
+        if emit is not None:
+            emit("modal_repo_sync_progress", stage=stage, **data)
+
+    def _sync() -> None:
+        with tempfile.NamedTemporaryFile(suffix=".bundle", delete=False) as f:
+            bundle_path = f.name
+
+        try:
+            result = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=str(local_root),
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            commit = result.stdout.strip()
+            logger.info("Bundling commit %s...", commit[:8])
+            _emit_progress("bundle_create_start", commit=commit)
+
+            subprocess.run(
+                ["git", "bundle", "create", bundle_path, "HEAD"],
+                cwd=str(local_root),
+                check=True,
+                capture_output=True,
+            )
+
+            bundle_size = os.path.getsize(bundle_path)
+            logger.info("Bundle size: %.1f MB", bundle_size / 1024 / 1024)
+            _emit_progress(
+                "bundle_create_finished",
+                commit=commit,
+                bundle_size_mb=round(bundle_size / 1024 / 1024, 3),
+            )
+
+            with open(bundle_path, "rb") as f:
+                bundle_data = f.read()
+
+            _emit_progress("workspace_prepare_start", path="/workspace")
+            exec_modal_command_sync(sandbox, "mkdir -p /workspace", timeout=30)
+            _emit_progress("workspace_prepare_finished", path="/workspace")
+
+            logger.info("Uploading bundle via sandbox.open()...")
+            _emit_progress(
+                "bundle_upload_start",
+                remote_path="/tmp/repo.bundle",
+                bundle_size_mb=round(len(bundle_data) / 1024 / 1024, 3),
+            )
+            remote_file = sandbox.open("/tmp/repo.bundle", "wb")
+            remote_file.write(bundle_data)
+            remote_file.close()
+            logger.info("Uploaded %.1f MB", len(bundle_data) / 1024 / 1024)
+            _emit_progress(
+                "bundle_upload_finished",
+                remote_path="/tmp/repo.bundle",
+                bundle_size_mb=round(len(bundle_data) / 1024 / 1024, 3),
+            )
+
+            logger.info("Extracting bundle...")
+            _emit_progress("clone_start", clone_dir=clone_dir, workspace=workspace)
+
+            def _on_clone_stderr_line(line: str) -> None:
+                stripped = line.rstrip()
+                if not stripped:
+                    return
+                if "Cloning into" in stripped:
+                    _emit_progress("clone_progress", message=stripped)
+                    return
+                if "switching to" in stripped or "Updating files:" in stripped:
+                    _emit_progress("checkout_progress", message=stripped)
+
+            exec_modal_command_sync(
+                sandbox,
+                "cd /workspace && git clone /tmp/repo.bundle research && "
+                "cd research && git checkout HEAD",
+                timeout=120,
+                on_stderr_line=_on_clone_stderr_line,
+            )
+            _emit_progress("clone_finished", clone_dir=clone_dir, workspace=workspace)
+
+            logger.info("Code synced to %s", workspace)
+            _emit_progress("sync_finished", workspace=workspace, commit=commit)
+        finally:
+            os.unlink(bundle_path)
+
+    await trio.to_thread.run_sync(_sync)
+    return workspace
+
+
+async def _verify_modal_gpu(
+    sandbox_handle: ModalSandboxHandle,
+    *,
+    sandbox_id: str,
+    emit: Callable[[str], None] | None = None,
+) -> None:
+    """Fail loudly if the sandbox cannot see the requested GPU."""
+
+    import trio_asyncio
+
+    def _emit(event: str, **data: Any) -> None:
+        if emit is not None:
+            emit(event, **data)
+
+    _emit("modal_gpu_verify_start", sandbox_id=sandbox_id)
+    gpu_verify_attempts = 3
+    gpu_verify_retry_delay_s = 3.0
+
+    for attempt in range(1, gpu_verify_attempts + 1):
+        _emit(
+            "modal_gpu_verify_attempt_start",
+            sandbox_id=sandbox_id,
+            attempt=attempt,
+            timeout_sec=30,
+        )
+        start = trio.current_time()
+        proc = await trio_asyncio.aio_as_trio(
+            sandbox_handle.sandbox.exec.aio("nvidia-smi", timeout=30)
+        )
+        stdout = await trio_asyncio.aio_as_trio(proc.stdout.read.aio())
+        stderr = await trio_asyncio.aio_as_trio(proc.stderr.read.aio())
+        exit_code = await trio_asyncio.aio_as_trio(proc.wait.aio())
+        elapsed = trio.current_time() - start
+        if stdout:
+            logger.info("[sandbox] %s", stdout)
+        if stderr:
+            logger.warning("[sandbox stderr] %s", stderr)
+        if exit_code == 0:
+            _emit(
+                "modal_gpu_verified",
+                sandbox_id=sandbox_id,
+                elapsed_sec=round(elapsed, 3),
+                attempt=attempt,
+            )
+            return
+        _emit(
+            "modal_gpu_verify_attempt_failed",
+            sandbox_id=sandbox_id,
+            attempt=attempt,
+            exit_code=exit_code,
+            elapsed_sec=round(elapsed, 3),
+            stdout_tail=stdout[-1000:],
+            stderr_tail=stderr[-1000:],
+        )
+        if attempt < gpu_verify_attempts:
+            _emit(
+                "modal_gpu_verify_retrying",
+                sandbox_id=sandbox_id,
+                attempt=attempt,
+                retry_delay_sec=gpu_verify_retry_delay_s,
+            )
+            await trio.sleep(gpu_verify_retry_delay_s)
+
+    raise RuntimeError(f"nvidia-smi failed after {gpu_verify_attempts} attempts")
+
+
+def _build_argus_local_process_spec(
+    *,
+    workspace: str,
+    config_path: str,
+    run_name: str,
+    deps: Any,
+    gpu_type: str,
+) -> ProcessSpec:
+    """Lower the Modal workload launch into one observed process spec."""
+
+    # TODO: This still launches an inner `argus.run --local` control plane via
+    # the supervisor trampoline. Replace it with a resolved workload entrypoint
+    # so the Modal backend launches the real workload directly and
+    # `rollouts.modal_runner` can disappear.
+    from rollouts.modal_workload import (
+        IMAGE_VENV_DIR,
+        IMAGE_VENV_PYTHON,
+        REPO_ROOT,
+        sandbox_runtime_diag_python,
+        sandbox_runtime_supervisor_python,
+    )
+
+    config_p = Path(config_path)
+    config_rel = config_p.relative_to(REPO_ROOT) if config_p.is_absolute() else config_p
+
+    image_python = IMAGE_VENV_PYTHON
+    image_path_prefix = f"{IMAGE_VENV_DIR}/bin:/root/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+    if deps is not None:
+        image = deps.resolved_image(gpu_type)
+        if image.python_runtime == "image_owned":
+            image_python = image.python_executable
+            image_path_prefix = (
+                "/root/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+            )
+
+    env = {
+        "PYTHONUNBUFFERED": "1",
+        "PATH": image_path_prefix,
+        "PYTHONPATH": f"{workspace}:/workspace/research:/root/Megatron-LM:/root",
+        "ARGUS_EMIT_STARTUP_SENTINEL": "1",
+        "ARGUS_RUN_EVENT_STREAM": "1",
+        "ROLLOUTS_RUN_NAME": run_name,
+        "ROLLOUTS_OUTPUT_DIR": f"results/rl/{run_name}",
+    }
+
+    return ProcessSpec(
+        command=image_python,
+        args=(
+            "-u",
+            "-c",
+            sandbox_runtime_supervisor_python(),
+            workspace,
+            image_python,
+            sandbox_runtime_diag_python(),
+            str(config_rel),
+        ),
+        cwd=workspace,
+        env=env,
+    )
+
+
+async def run_modal_request(request: ModalExecutionRequest) -> dict[str, Any]:
+    """Run a Modal-backed workload through the bifrost-owned Modal session."""
+
+    import modal
+    import trio_asyncio
+    from rollouts.modal_workload import (
+        ARGUS_DIAG_EVENT_SENTINEL,
+        REPO_ROOT,
+        WORKLOAD_ENTRYPOINT_SENTINEL,
+        collect_modal_failure_diagnostics,
+        download_and_snapshot_model,
+        download_prune_and_snapshot_model,
+        get_cached_snapshot,
+        mount_cached_weights,
+        prune_mounted_model_and_snapshot,
+        save_snapshot_to_cache,
+    )
+    from rollouts.remote_runtime import enforce_source_sync_policy
+    from rollouts.run_logger import ARGUS_RUN_EVENT_SENTINEL
+
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    run_name = request.run_name or f"modal_{timestamp}"
+
+    def emit(event: str, **data: Any) -> None:
+        if request.run_logger is not None:
+            request.run_logger.event(event, provider="modal", run_name=run_name, **data)
+
+    enforce_source_sync_policy(request.source_sync_policy, repo_root=REPO_ROOT)
+    emit(
+        "submit_start",
+        config_path=request.config_path,
+        gpu_type=request.runtime.gpu_type,
+        gpu_count=request.runtime.gpu_count,
+    )
+
+    with modal.enable_output():
+        async with trio_asyncio.open_loop():
+            sandbox_handle = await create_modal_sandbox(request)
+            session = ModalExecutionSession(sandbox_handle=sandbox_handle, local_root=REPO_ROOT)
+            sandbox_id = sandbox_handle.sandbox_id
+            emit("modal_sandbox_created", sandbox_id=sandbox_id)
+
+            try:
+                await _verify_modal_gpu(sandbox_handle, sandbox_id=sandbox_id, emit=emit)
+
+                if request.model_name:
+                    cached_snapshot = await get_cached_snapshot(
+                        request.model_name,
+                        request.pruning_recipe,
+                    )
+                    if cached_snapshot:
+                        await mount_cached_weights(sandbox_handle.sandbox, cached_snapshot)
+                    else:
+                        if request.pruning_recipe:
+                            base_snapshot = await get_cached_snapshot(request.model_name, None)
+                            if base_snapshot:
+                                await mount_cached_weights(sandbox_handle.sandbox, base_snapshot)
+                                snapshot = await prune_mounted_model_and_snapshot(
+                                    sandbox_handle.sandbox,
+                                    request.model_name,
+                                    request.pruning_recipe,
+                                )
+                            else:
+                                snapshot = await download_prune_and_snapshot_model(
+                                    sandbox_handle.sandbox,
+                                    request.model_name,
+                                    request.pruning_recipe,
+                                )
+                        else:
+                            snapshot = await download_and_snapshot_model(
+                                sandbox_handle.sandbox,
+                                request.model_name,
+                            )
+                        if snapshot:
+                            await save_snapshot_to_cache(
+                                request.model_name,
+                                snapshot,
+                                request.pruning_recipe,
+                            )
+
+                emit("modal_repo_sync_start", sandbox_id=sandbox_id)
+                workspace = await session.materialize(
+                    WorkspaceMaterializationSpec(
+                        requested_root=getattr(request.materialization, "workspace_root", None)
+                    ),
+                    emit=emit,
+                )
+                emit("modal_repo_synced", sandbox_id=sandbox_id, workspace=workspace.root)
+
+                emit("modal_training_start", sandbox_id=sandbox_id, workspace=workspace.root)
+                process = await session.start_process(
+                    _build_argus_local_process_spec(
+                        workspace=workspace.root,
+                        config_path=request.config_path,
+                        run_name=run_name,
+                        deps=request.runtime.deps,
+                        gpu_type=request.runtime.gpu_type,
+                    ),
+                    name=run_name,
+                    timeout=14400,
+                    emit=emit,
+                    startup_sentinel=WORKLOAD_ENTRYPOINT_SENTINEL,
+                    stdout_event_sentinel=ARGUS_RUN_EVENT_SENTINEL,
+                    stderr_event_sentinel=ARGUS_DIAG_EVENT_SENTINEL,
+                    start_timeout_s=60.0,
+                )
+                result = await process.wait()
+
+                if result.exit_code != 0:
+                    failure_diagnostics = await collect_modal_failure_diagnostics(
+                        sandbox_handle.sandbox,
+                        exit_code=result.exit_code,
+                        emit=emit,
+                    )
+                    emit(
+                        "modal_training_finished",
+                        sandbox_id=sandbox_id,
+                        success=False,
+                        exit_code=result.exit_code,
+                    )
+                    return {
+                        "success": False,
+                        "exit_code": result.exit_code,
+                        "stderr": result.stderr,
+                        "failure_diagnostics": failure_diagnostics,
+                    }
+
+                emit(
+                    "modal_training_finished",
+                    sandbox_id=sandbox_id,
+                    success=True,
+                    exit_code=result.exit_code,
+                )
+                return {"success": True, "exit_code": 0}
+            finally:
+                if request.keep_alive:
+                    emit("modal_sandbox_kept_alive", sandbox_id=sandbox_id)
+                else:
+                    emit("modal_sandbox_terminate_start", sandbox_id=sandbox_id)
+                    await session.terminate()
+                    emit("modal_sandbox_terminated", sandbox_id=sandbox_id)

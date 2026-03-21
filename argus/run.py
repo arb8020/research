@@ -355,6 +355,25 @@ def _modal_workload_tags(config: Any) -> dict[str, str]:
     return tags
 
 
+def _modal_workload_request_fields(config: Any) -> tuple[str | None, str | None]:
+    """Opaque workload fields that affect Modal-side caching/materialization."""
+    model = getattr(config, "model", None)
+    model_name = getattr(model, "name", None)
+
+    pruning_recipe = None
+    recipe_path_value = getattr(model, "pruning_recipe", None)
+    if recipe_path_value:
+        recipe_path = Path(recipe_path_value)
+        if not recipe_path.is_absolute():
+            recipe_path = REPO_ROOT / recipe_path
+        if recipe_path.exists():
+            pruning_recipe = recipe_path.read_text()
+        else:
+            logger.warning("Pruning recipe not found for Modal request: %s", recipe_path)
+
+    return model_name, pruning_recipe
+
+
 def _argus_modal_tags(*, launcher_id: str, run_name: str, config_path: Path) -> dict[str, str]:
     """Control-plane identity tags for Modal sandboxes."""
     return {
@@ -467,7 +486,7 @@ async def _deploy_and_submit(
 
     Returns (bifrost_client, instance, job, run_name, remote_output_dir, workspace, console, local_run_dir).
     """
-    from bifrost import GPUQuery, ProcessSpec, acquire_node
+    from bifrost import GPUQuery, ProcessSpec, ReadinessProbe, ServiceSpec, acquire_node
     from broker import AccountError, ProvisionError
     from broker.types import ProvisionImage
     from pytui import Console
@@ -724,7 +743,11 @@ async def _deploy_and_submit(
 
     log("deploy_start")
     with spinner("Deploying code..."):
-        workspace = bifrost.push("~/.bifrost/workspaces/rollouts-rl", allow_dirty=allow_dirty)
+        workspace_handle = bifrost.materialize_workspace(
+            "~/.bifrost/workspaces/rollouts-rl",
+            allow_dirty=allow_dirty,
+        )
+        workspace = workspace_handle.root
     log("deploy_done", workspace=workspace)
 
     remote_manifest = _read_remote_manifest(bifrost)
@@ -979,19 +1002,34 @@ async def _deploy_and_submit(
     # LogsServer keeps running and can serve the final logs (including tracebacks).
     logs_port = 9100
     logs_dir = f"{workspace}/rollouts/results/rl/{run_name}"
-    logs_session = f"logs-{run_name}"
+    logs_service_name = f"logs-{run_name}"
+    logs_log_file = f"{logs_dir}/logs_server.log"
 
     # Kill any stale LogsServer processes from previous runs
     bifrost.exec(f"fuser -k {logs_port}/tcp 2>/dev/null || true")
     bifrost.exec("pkill -f 'miniray.logs_server' 2>/dev/null || true")
-    bifrost.exec(f"tmux kill-session -t {logs_session} 2>/dev/null || true")
+    bifrost.exec(f"tmux kill-session -t bifrost-server-{logs_service_name} 2>/dev/null || true")
 
-    # Start LogsServer in its own tmux session (survives training crashes)
-    logs_cmd = (
-        f"cd {workspace} && python3 -m miniray.logs_server --port {logs_port} --dir {logs_dir}"
+    logs_service = bifrost.serve_service(
+        ServiceSpec(
+            process=ProcessSpec(
+                command="python3",
+                args=("-m", "miniray.logs_server", "--port", str(logs_port), "--dir", logs_dir),
+                cwd=workspace,
+            ),
+            port=logs_port,
+            readiness_probe=ReadinessProbe(kind="process_alive"),
+        ),
+        name=logs_service_name,
+        log_file=logs_log_file,
+        workspace=workspace,
     )
-    bifrost.exec(f"tmux new-session -d -s {logs_session} '{logs_cmd}'")
-    log("logs_server_started", port=logs_port, session=logs_session)
+    log(
+        "logs_server_started",
+        port=logs_port,
+        session=logs_service.tmux_session,
+        log_file=logs_service.log_file,
+    )
 
     env_vars = {
         "PYTHONUNBUFFERED": "1",
@@ -1496,7 +1534,7 @@ Examples:
                 print(json.dumps(result.to_dict(), indent=2))
             else:
                 # Training run
-                from rollouts.modal_runner import ModalRunConfig, run_modal
+                from bifrost import ModalExecutionRequest, run_modal_request
 
                 timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
                 run_name = f"run_{timestamp}"
@@ -1524,14 +1562,18 @@ Examples:
                     config_path=config_path,
                 )
                 workload_tags = _modal_workload_tags(config_module.config)
+                model_name, pruning_recipe = _modal_workload_request_fields(config_module.config)
                 for reserved_key in modal_tags:
                     workload_tags.pop(reserved_key, None)
-                modal_config = ModalRunConfig(
+                modal_request = ModalExecutionRequest(
                     config_path=str(config_path),
                     runtime=runtime,
                     materialization=materialization,
+                    keep_alive=args.keep_alive,
                     cleanup_scope=args.modal_cleanup_scope,
                     run_name=run_name,
+                    model_name=model_name,
+                    pruning_recipe=pruning_recipe,
                     run_logger=log,
                     source_sync_policy=SourceSyncPolicy.committed_only(
                         dirty_action="warn" if args.force_deploy_committed else "fail"
@@ -1539,7 +1581,7 @@ Examples:
                     tags={**modal_tags, **workload_tags},
                 )
                 log("modal_submit_dispatch")
-                results = trio.run(run_modal, modal_config)
+                results = trio.run(run_modal_request, modal_request)
                 if not results.get("success"):
                     update_job_status(run_name, "failed")
                     log(

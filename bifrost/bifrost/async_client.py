@@ -4,7 +4,7 @@ import logging
 import os
 from collections.abc import AsyncIterator, Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import asyncssh
 import trio
@@ -14,11 +14,19 @@ from infra_utils.validation import validate_ssh_key_path, validate_timeout
 from .types import (
     CopyResult,
     EnvironmentVariables,
+    EventStreamRef,
     ExecResult,
+    ObservedProcessHandle,
+    OutputSink,
+    ProcessOutputLine,
+    ProcessSpec,
+    ProcessState,
     RemoteConfig,
     SSHConnection,
     SSHConnectionError,
     TransferError,
+    WorkspaceHandle,
+    WorkspaceMaterializationSpec,
 )
 from .validation import validate_bootstrap_cmd
 
@@ -108,6 +116,15 @@ class AsyncBifrostClient:
 
         # Track last deployed workspace for smart working_dir defaults
         self._last_workspace: str | None = None
+
+    @property
+    def backend(self) -> str:
+        return "ssh"
+
+    def current_workspace(self) -> WorkspaceHandle | None:
+        if self._last_workspace is None:
+            return None
+        return WorkspaceHandle(root=self._last_workspace, backend=self.backend)
 
     async def _ensure_asyncio_loop(self) -> None:
         """Ensure a trio-asyncio loop exists for asyncssh bridging.
@@ -229,11 +246,24 @@ class AsyncBifrostClient:
 
         return " && ".join(parts)
 
+    async def materialize(self, spec: WorkspaceMaterializationSpec) -> WorkspaceHandle:
+        workspace_root = spec.requested_root or self._last_workspace
+        assert workspace_root is not None, "SSH materialization requires a requested_root"
+        bootstrap_cmd: str | list[str] | None = None
+        if spec.bootstrap_commands:
+            bootstrap_cmd = list(spec.bootstrap_commands)
+        return await self.materialize_workspace(
+            workspace_path=workspace_root,
+            bootstrap_cmd=bootstrap_cmd,
+            allow_dirty=spec.allow_dirty,
+        )
+
     async def exec(
         self,
         command: str,
         env: EnvironmentVariables | dict[str, str] | None = None,
         working_dir: str | None = None,
+        timeout: float | None = None,
     ) -> ExecResult:
         """
         Execute command in remote environment.
@@ -284,7 +314,10 @@ class AsyncBifrostClient:
             full_command = self._build_command_with_env(command, working_dir, env_vars)
 
             # Execute command
-            result = await _trio_wrap(conn.run)(full_command, check=False)
+            run_kwargs: dict[str, Any] = {"check": False}
+            if timeout is not None:
+                run_kwargs["timeout"] = timeout
+            result = await _trio_wrap(conn.run)(full_command, **run_kwargs)
 
             return ExecResult(
                 stdout=result.stdout, stderr=result.stderr, exit_code=result.exit_status or 0
@@ -300,7 +333,7 @@ class AsyncBifrostClient:
         command: str,
         env: EnvironmentVariables | dict[str, str] | None = None,
         working_dir: str | None = None,
-    ) -> AsyncIterator[str]:
+    ) -> AsyncIterator[ProcessOutputLine]:
         """
         Execute command and stream output line-by-line in real-time.
 
@@ -313,7 +346,7 @@ class AsyncBifrostClient:
             working_dir: Working directory (defaults to ~/.bifrost/workspace/ if deployed)
 
         Yields:
-            Lines of output (stdout and stderr interleaved) as they're produced
+            Typed stdout/stderr lines as they're produced
 
         Raises:
             SSHConnectionError: SSH connection failed
@@ -344,21 +377,32 @@ class AsyncBifrostClient:
             # Build command with environment and working directory
             full_command = self._build_command_with_env(command, working_dir, env_vars)
 
-            # Create async process - asyncssh returns AsyncIterator for stdout
-            # Using term_type='ansi' to get a PTY which combines stdout/stderr
-            process = await _trio_wrap(conn.create_process)(full_command, term_type="ansi")
-            try:
-                # Stream output line by line
-                # Can't use 'async for' because asyncssh's async iterator doesn't work with
-                # trio-asyncio's event loop shim. Manual readline() calls work correctly.
-                while True:
-                    try:
-                        line = await _trio_wrap(process.stdout.readline)()
+            process = await _trio_wrap(conn.create_process)(full_command)
+            send_channel, receive_channel = trio.open_memory_channel[ProcessOutputLine](256)
+
+            async def _forward_stream(
+                reader: Any, stream_name: Literal["stdout", "stderr"]
+            ) -> None:
+                async with send_channel.clone() as stream_send:
+                    while True:
+                        try:
+                            line = await _trio_wrap(reader.readline)()
+                        except EOFError:
+                            break
                         if not line:
                             break
-                        yield line.rstrip("\r\n")
-                    except EOFError:
-                        break
+                        await stream_send.send(
+                            ProcessOutputLine(stream=stream_name, text=line.rstrip("\r\n"))
+                        )
+
+            try:
+                async with trio.open_nursery() as nursery:
+                    nursery.start_soon(_forward_stream, process.stdout, "stdout")
+                    nursery.start_soon(_forward_stream, process.stderr, "stderr")
+                    send_channel.close()
+                    async with receive_channel:
+                        async for line in receive_channel:
+                            yield line
             finally:
                 process.close()
 
@@ -367,7 +411,21 @@ class AsyncBifrostClient:
                 raise
             raise SSHConnectionError(f"Streaming execution failed: {e}") from e
 
-    async def push(self, workspace_path: str, bootstrap_cmd: str | list[str] | None = None) -> str:
+    async def stream_exec(
+        self,
+        command: str,
+        env: EnvironmentVariables | dict[str, str] | None = None,
+        working_dir: str | None = None,
+    ) -> AsyncIterator[ProcessOutputLine]:
+        async for line in self.exec_stream(command, env=env, working_dir=working_dir):
+            yield line
+
+    async def push(
+        self,
+        workspace_path: str,
+        bootstrap_cmd: str | list[str] | None = None,
+        allow_dirty: bool = False,
+    ) -> str:
         """Deploy code to remote workspace.
 
         Args:
@@ -403,40 +461,165 @@ class AsyncBifrostClient:
 
         self.logger.debug(f"📁 Deploying to workspace: {workspace_path}")
 
-        # TODO: Implement async git deployment
-        # For now, we'll create a minimal implementation that:
-        # 1. Creates the workspace directory
-        # 2. Syncs code (simplified version)
-        # 3. Runs bootstrap if specified
+        from .client import BifrostClient
+
+        # TODO: The public execution surface is async-first now, but SSH
+        # materialization still tunnels through the legacy sync deploy path in a
+        # worker thread. Replace this with native async deploy/materialization
+        # so SSH stops smuggling sync semantics through the session boundary.
+        root = await trio.to_thread.run_sync(
+            lambda: BifrostClient(
+                ssh_connection=str(self.ssh),
+                ssh_key_path=self.ssh_key_path,
+                timeout=self.timeout,
+                progress_callback=self.progress_callback,
+            ).push(
+                workspace_path=workspace_path,
+                bootstrap_cmd=bootstrap_cmd,
+                allow_dirty=allow_dirty,
+            )
+        )
+        self._last_workspace = root
+        return root
+
+    async def materialize_workspace(
+        self,
+        workspace_path: str,
+        bootstrap_cmd: str | list[str] | None = None,
+        on_bootstrap_step: Callable[[str, int, int], None] | None = None,
+        allow_dirty: bool = False,
+    ) -> WorkspaceHandle:
+        root = await self.push(
+            workspace_path=workspace_path,
+            bootstrap_cmd=bootstrap_cmd,
+            allow_dirty=allow_dirty,
+        )
+        return WorkspaceHandle(root=root, backend=self.backend, requested_root=workspace_path)
+
+    async def run(self, spec: ProcessSpec, timeout: float | None = None) -> ExecResult:
+        working_dir = None if spec.cwd is not None else self._last_workspace or "~"
+        return await self.exec(spec.build_command(), working_dir=working_dir, timeout=timeout)
+
+    async def start_process(
+        self,
+        spec: ProcessSpec,
+        *,
+        name: str | None = None,
+        workspace: WorkspaceHandle | None = None,
+        timeout: float | None = None,
+        log_file: str | None = None,
+    ) -> ObservedProcessHandle:
+        import shlex
+
+        process_name = name or f"process-{int(os.times().elapsed)}"
+        workspace_root = workspace.root if workspace is not None else self._last_workspace
+        effective_spec = spec
+        if effective_spec.cwd is None and workspace_root is not None:
+            effective_spec = ProcessSpec(
+                command=spec.command,
+                args=spec.args,
+                cwd=workspace_root,
+                env=spec.env,
+                cuda_device_ids=spec.cuda_device_ids,
+            )
+        elif effective_spec.cwd and effective_spec.cwd.startswith("~"):
+            effective_spec = ProcessSpec(
+                command=spec.command,
+                args=spec.args,
+                cwd=await self.expand_path(effective_spec.cwd),
+                env=spec.env,
+                cuda_device_ids=spec.cuda_device_ids,
+            )
+
+        if log_file is None:
+            log_file = f"~/.bifrost/logs/{process_name}.attached"
+        if log_file.startswith("~"):
+            log_file = await self.expand_path(log_file)
+        log_dir = str(Path(log_file).parent)
+        await self.exec(f"mkdir -p {shlex.quote(log_dir)}")
+        stdout_log_file = f"{log_file}.stdout.log"
+        stderr_log_file = f"{log_file}.stderr.log"
+        await self.exec(f": > {shlex.quote(stdout_log_file)} && : > {shlex.quote(stderr_log_file)}")
 
         conn = await self._get_connection()
+        full_cmd = effective_spec.build_command()
+        observed_cmd = full_cmd
+        process = await _trio_wrap(conn.create_process)(observed_cmd)
+        stdout_chunks: list[str] = []
+        stderr_chunks: list[str] = []
+        # TODO: This per-chunk remote append is semantically honest but may be
+        # too chatty for very noisy processes. If it becomes a bottleneck,
+        # replace it with a buffered sink abstraction rather than reintroducing
+        # a PTY recorder like `script`.
 
-        # Create workspace directory
-        await _trio_wrap(conn.run)(f"mkdir -p {workspace_path}", check=True)
+        async def _stream_output() -> AsyncIterator[ProcessOutputLine]:
+            send_channel, receive_channel = trio.open_memory_channel[ProcessOutputLine](256)
 
-        # Expand path to absolute (resolves ~ and env vars)
-        expanded_result = await _trio_wrap(conn.run)(f"echo {workspace_path}", check=True)
-        expanded_workspace_path = expanded_result.stdout.strip()
+            async def _forward_stream(
+                reader: Any, stream_name: Literal["stdout", "stderr"]
+            ) -> None:
+                async with send_channel.clone() as stream_send:
+                    while True:
+                        try:
+                            line = await _trio_wrap(reader.readline)()
+                        except EOFError:
+                            break
+                        if not line:
+                            break
+                        if stream_name == "stdout":
+                            stdout_chunks.append(line)
+                            await self.write_text(stdout_log_file, line, append=True)
+                        else:
+                            stderr_chunks.append(line)
+                            await self.write_text(stderr_log_file, line, append=True)
+                        await stream_send.send(
+                            ProcessOutputLine(stream=stream_name, text=line.rstrip("\r\n"))
+                        )
 
-        # Run bootstrap if specified
-        if bootstrap_cmd:
-            # Handle both single string and list of commands
-            commands = [bootstrap_cmd] if isinstance(bootstrap_cmd, str) else bootstrap_cmd
-            for cmd in commands:
-                self.logger.debug(f"Running bootstrap: {cmd}")
-                result = await _trio_wrap(conn.run)(
-                    f"cd {expanded_workspace_path} && {cmd}", check=False
-                )
-                if result.exit_status != 0:
-                    raise RuntimeError(f"Bootstrap command failed: {cmd}\n{result.stderr}")
+            async with trio.open_nursery() as nursery:
+                nursery.start_soon(_forward_stream, process.stdout, "stdout")
+                nursery.start_soon(_forward_stream, process.stderr, "stderr")
+                send_channel.close()
+                async with receive_channel:
+                    async for item in receive_channel:
+                        yield item
 
-        # Assert output
-        assert expanded_workspace_path, "push() returned empty workspace_path"
+        async def _wait() -> ExecResult:
+            exit_status = await _trio_wrap(process.wait)()
+            return ExecResult(
+                stdout="".join(stdout_chunks),
+                stderr="".join(stderr_chunks),
+                exit_code=exit_status or 0,
+            )
 
-        # Track last deployed workspace for smart working_dir defaults
-        self._last_workspace = expanded_workspace_path
+        async def _terminate() -> None:
+            process.close()
 
-        return expanded_workspace_path
+        return ObservedProcessHandle(
+            name=process_name,
+            backend=self.backend,
+            spec=effective_spec,
+            workspace=effective_spec.cwd,
+            output_sink=OutputSink(
+                kind="file",
+                location=stdout_log_file,
+                description=f"stdout mirrored to {stdout_log_file}; stderr mirrored to {stderr_log_file}",
+            ),
+            lifecycle_events=EventStreamRef(
+                kind="unknown",
+                description="Async SSH observed processes do not yet emit a canonical lifecycle event stream",
+            ),
+            state=ProcessState.RUNNING,
+            _stream_output=_stream_output,
+            _wait=_wait,
+            _terminate=_terminate,
+            metadata={
+                "transport": "ssh",
+                "mode": "attached",
+                "stdout_log_file": stdout_log_file,
+                "stderr_log_file": stderr_log_file,
+            },
+        )
 
     async def expand_path(self, path: str) -> str:
         """Expand ~ and environment variables in path to absolute path.

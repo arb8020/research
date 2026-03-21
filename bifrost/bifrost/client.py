@@ -14,15 +14,27 @@ from . import git_sync
 from .types import (
     CopyResult,
     EnvironmentVariables,
+    EventStreamRef,
     ExecResult,
     JobError,
     JobInfo,
+    ObservedProcessHandle,
+    OutputSink,
+    ProcessHandle,
+    ProcessOutputLine,
     ProcessSpec,
+    ProcessState,
+    ReadinessProbe,
     RemoteConfig,
     ServerInfo,
+    ServiceHandle,
+    ServiceSpec,
+    ServiceState,
     SSHConnection,
     SSHConnectionError,
     TransferError,
+    WorkspaceHandle,
+    WorkspaceMaterializationSpec,
 )
 from .validation import generate_job_id, validate_bootstrap_cmd
 
@@ -90,6 +102,33 @@ class BifrostClient:
 
         # Cache remote home directory for tilde expansion (lazy-loaded)
         self._remote_home: str | None = None
+
+    @property
+    def backend(self) -> str:
+        """Execution backend identifier for this session."""
+
+        return "ssh"
+
+    def current_workspace(self) -> WorkspaceHandle | None:
+        """Return the last materialized workspace, if one exists."""
+
+        if self._last_workspace is None:
+            return None
+        return WorkspaceHandle(root=self._last_workspace, backend=self.backend)
+
+    def materialize(self, spec: WorkspaceMaterializationSpec) -> WorkspaceHandle:
+        """Materialize a project snapshot according to a backend-agnostic plan."""
+
+        workspace_root = spec.requested_root or self._last_workspace
+        assert workspace_root is not None, "SSH materialization requires a requested_root"
+        bootstrap_cmd: str | list[str] | None = None
+        if spec.bootstrap_commands:
+            bootstrap_cmd = list(spec.bootstrap_commands)
+        return self.materialize_workspace(
+            workspace_path=workspace_root,
+            bootstrap_cmd=bootstrap_cmd,
+            allow_dirty=spec.allow_dirty,
+        )
 
     @retry(max_attempts=3, delay=2, backoff=2, exceptions=(Exception,))
     def _establish_connection(
@@ -353,6 +392,23 @@ class BifrostClient:
 
         return workspace_path
 
+    def materialize_workspace(
+        self,
+        workspace_path: str,
+        bootstrap_cmd: str | list[str] | None = None,
+        on_bootstrap_step: Callable[[str, int, int], None] | None = None,
+        allow_dirty: bool = False,
+    ) -> WorkspaceHandle:
+        """Materialize a project snapshot into a remote workspace."""
+
+        root = self.push(
+            workspace_path=workspace_path,
+            bootstrap_cmd=bootstrap_cmd,
+            on_bootstrap_step=on_bootstrap_step,
+            allow_dirty=allow_dirty,
+        )
+        return WorkspaceHandle(root=root, backend=self.backend, requested_root=workspace_path)
+
     def exec(
         self,
         command: str,
@@ -428,6 +484,223 @@ class BifrostClient:
             if isinstance(e, SSHConnectionError):
                 raise
             raise SSHConnectionError(f"Execution failed: {e}") from e
+
+    def run(self, spec: ProcessSpec, timeout: float | None = None) -> ExecResult:
+        """Execute a structured one-shot process synchronously."""
+
+        assert spec is not None, "ProcessSpec required"
+        working_dir = None
+        if spec.cwd is None:
+            working_dir = self._last_workspace or "~"
+        return self.exec(command=spec.build_command(), working_dir=working_dir, timeout=timeout)
+
+    def start_process(
+        self,
+        spec: ProcessSpec,
+        *,
+        name: str | None = None,
+        workspace: WorkspaceHandle | None = None,
+        timeout: float | None = None,
+        log_file: str | None = None,
+    ) -> ObservedProcessHandle:
+        """Launch and observe a live attached process over SSH."""
+
+        import shlex
+
+        assert spec is not None, "ProcessSpec required"
+
+        process_name = name or f"process-{int(time.time())}"
+        workspace_root = workspace.root if workspace is not None else self._last_workspace
+
+        effective_spec = spec
+        if effective_spec.cwd is None and workspace_root is not None:
+            effective_spec = ProcessSpec(
+                command=spec.command,
+                args=spec.args,
+                cwd=workspace_root,
+                env=spec.env,
+                cuda_device_ids=spec.cuda_device_ids,
+            )
+        elif effective_spec.cwd and effective_spec.cwd.startswith("~"):
+            effective_spec = ProcessSpec(
+                command=spec.command,
+                args=spec.args,
+                cwd=self.expand_path(effective_spec.cwd),
+                env=spec.env,
+                cuda_device_ids=spec.cuda_device_ids,
+            )
+
+        if log_file is None:
+            log_file = f"~/.bifrost/logs/{process_name}.attached"
+        if log_file.startswith("~"):
+            log_file = self.expand_path(log_file)
+        self.exec(f"mkdir -p $(dirname {shlex.quote(log_file)})")
+        stdout_log_file = f"{log_file}.stdout.log"
+        stderr_log_file = f"{log_file}.stderr.log"
+        self.exec(f": > {shlex.quote(stdout_log_file)} && : > {shlex.quote(stderr_log_file)}")
+
+        ssh_client = self._get_ssh_client()
+        transport = ssh_client.get_transport()
+        if transport is None:
+            raise SSHConnectionError("SSH transport is not available")
+
+        full_cmd = effective_spec.build_command()
+        observed_cmd = full_cmd
+        channel = transport.open_session()
+        if timeout is not None:
+            channel.settimeout(timeout)
+        channel.exec_command(observed_cmd)
+
+        stdout_buffer = ""
+        stderr_buffer = ""
+        stdout_chunks: list[str] = []
+        stderr_chunks: list[str] = []
+        # TODO: This per-chunk remote append is semantically honest but may be
+        # too chatty for very noisy processes. If it becomes a bottleneck,
+        # replace it with a buffered sink abstraction rather than reintroducing
+        # a PTY recorder like `script`.
+        output_consumed = False
+
+        def _stream_output() -> Iterator[ProcessOutputLine]:
+            nonlocal stdout_buffer, stderr_buffer, output_consumed
+            if output_consumed:
+                return iter(())
+            output_consumed = True
+
+            def _emit_buffered_lines(
+                *, stream_name: str, buffer: str
+            ) -> tuple[list[ProcessOutputLine], str]:
+                lines: list[ProcessOutputLine] = []
+                while "\n" in buffer:
+                    line, buffer = buffer.split("\n", 1)
+                    lines.append(ProcessOutputLine(stream=stream_name, text=line.rstrip("\r")))
+                return lines, buffer
+
+            def _generator() -> Iterator[ProcessOutputLine]:
+                nonlocal stdout_buffer, stderr_buffer
+                while True:
+                    try:
+                        made_progress = False
+                        if channel.recv_ready():
+                            chunk = channel.recv(4096)
+                            if chunk:
+                                made_progress = True
+                                text = chunk.decode(errors="replace")
+                                stdout_chunks.append(text)
+                                self.write_text(stdout_log_file, text, append=True)
+                                stdout_buffer += text
+                                lines, stdout_buffer = _emit_buffered_lines(
+                                    stream_name="stdout", buffer=stdout_buffer
+                                )
+                                for line in lines:
+                                    yield line
+
+                        if channel.recv_stderr_ready():
+                            chunk = channel.recv_stderr(4096)
+                            if chunk:
+                                made_progress = True
+                                text = chunk.decode(errors="replace")
+                                stderr_chunks.append(text)
+                                self.write_text(stderr_log_file, text, append=True)
+                                stderr_buffer += text
+                                lines, stderr_buffer = _emit_buffered_lines(
+                                    stream_name="stderr", buffer=stderr_buffer
+                                )
+                                for line in lines:
+                                    yield line
+
+                        if (
+                            channel.exit_status_ready()
+                            and not channel.recv_ready()
+                            and not channel.recv_stderr_ready()
+                        ):
+                            break
+
+                        if not made_progress:
+                            time.sleep(0.1)
+                    except TimeoutError as e:
+                        raise SSHConnectionError(
+                            f"Observed process timed out after {timeout}s: {full_cmd}"
+                        ) from e
+
+                while channel.recv_ready():
+                    chunk = channel.recv(4096)
+                    if not chunk:
+                        break
+                    text = chunk.decode(errors="replace")
+                    stdout_chunks.append(text)
+                    self.write_text(stdout_log_file, text, append=True)
+                    stdout_buffer += text
+                    lines, stdout_buffer = _emit_buffered_lines(
+                        stream_name="stdout", buffer=stdout_buffer
+                    )
+                    for line in lines:
+                        yield line
+
+                while channel.recv_stderr_ready():
+                    chunk = channel.recv_stderr(4096)
+                    if not chunk:
+                        break
+                    text = chunk.decode(errors="replace")
+                    stderr_chunks.append(text)
+                    self.write_text(stderr_log_file, text, append=True)
+                    stderr_buffer += text
+                    lines, stderr_buffer = _emit_buffered_lines(
+                        stream_name="stderr", buffer=stderr_buffer
+                    )
+                    for line in lines:
+                        yield line
+
+                if stdout_buffer:
+                    yield ProcessOutputLine(stream="stdout", text=stdout_buffer.rstrip("\r"))
+                    stdout_buffer = ""
+                if stderr_buffer:
+                    yield ProcessOutputLine(stream="stderr", text=stderr_buffer.rstrip("\r"))
+                    stderr_buffer = ""
+
+            return _generator()
+
+        def _wait() -> ExecResult:
+            try:
+                exit_code = channel.recv_exit_status()
+            except TimeoutError as e:
+                raise SSHConnectionError(
+                    f"Observed process timed out after {timeout}s: {full_cmd}"
+                ) from e
+            return ExecResult(
+                stdout="".join(stdout_chunks),
+                stderr="".join(stderr_chunks),
+                exit_code=exit_code,
+            )
+
+        def _terminate() -> None:
+            channel.close()
+
+        return ObservedProcessHandle(
+            name=process_name,
+            backend=self.backend,
+            spec=effective_spec,
+            workspace=effective_spec.cwd,
+            output_sink=OutputSink(
+                kind="file",
+                location=stdout_log_file,
+                description=f"stdout mirrored to {stdout_log_file}; stderr mirrored to {stderr_log_file}",
+            ),
+            lifecycle_events=EventStreamRef(
+                kind="unknown",
+                description="Observed SSH processes do not yet emit a canonical lifecycle event stream",
+            ),
+            state=ProcessState.LAUNCHING,
+            _stream_output=_stream_output,
+            _wait=_wait,
+            _terminate=_terminate,
+            metadata={
+                "transport": "ssh",
+                "mode": "attached",
+                "stdout_log_file": stdout_log_file,
+                "stderr_log_file": stderr_log_file,
+            },
+        )
 
     def exec_stream(  # noqa: PLR1702 - streaming requires nested try/while/if for proper cleanup
         self,
@@ -584,7 +857,7 @@ class BifrostClient:
         name: str,
         log_file: str | None = None,
         workspace: str | None = None,
-    ) -> JobInfo:
+    ) -> ProcessHandle:
         """Submit a job for execution in a tmux session.
 
         This is the new v2 API that returns a frozen JobInfo.
@@ -682,6 +955,13 @@ class BifrostClient:
             tmux_session=session_name,
             log_file=log_file,
             workspace=workspace,
+            backend="ssh",
+            output_sink=OutputSink(kind="file", location=log_file),
+            lifecycle_events=EventStreamRef(
+                kind="unknown",
+                description="SSH detached jobs do not yet emit a canonical lifecycle event stream",
+            ),
+            initial_state=ProcessState.LAUNCHING,
         )
 
     def serve(
@@ -689,10 +969,10 @@ class BifrostClient:
         spec: ProcessSpec,
         name: str,
         port: int,
-        health_endpoint: str = "/health",
+        health_endpoint: str | None = "/health",
         log_file: str | None = None,
         workspace: str | None = None,
-    ) -> ServerInfo:
+    ) -> ServiceHandle:
         """Start a server process in a tmux session.
 
         This is the new v2 API that returns a frozen ServerInfo.
@@ -796,6 +1076,42 @@ class BifrostClient:
             log_file=log_file,
             port=port,
             health_endpoint=health_endpoint,
+            workspace=workspace,
+            backend="ssh",
+            output_sink=OutputSink(kind="file", location=log_file),
+            lifecycle_events=EventStreamRef(
+                kind="unknown",
+                description="SSH detached services do not yet emit a canonical lifecycle event stream",
+            ),
+            readiness_probe=ReadinessProbe(
+                kind="http" if health_endpoint else "process_alive",
+                target=f"http://localhost:{port}{health_endpoint}"
+                if health_endpoint
+                else session_name,
+            ),
+            initial_state=ServiceState.LAUNCHING,
+        )
+
+    def serve_service(
+        self,
+        service: ServiceSpec,
+        name: str,
+        log_file: str | None = None,
+        workspace: str | None = None,
+    ) -> ServiceHandle:
+        """Launch a long-lived service from an explicit ServiceSpec."""
+
+        assert service is not None, "ServiceSpec required"
+        assert service.port is not None, "ServiceSpec.port is required for SSH service launch"
+        health_endpoint = None
+        if service.readiness_probe.kind == "http" and service.readiness_probe.target:
+            health_endpoint = service.readiness_probe.target
+        return self.serve(
+            spec=service.process,
+            name=name,
+            port=service.port,
+            health_endpoint=health_endpoint,
+            log_file=log_file,
             workspace=workspace,
         )
 

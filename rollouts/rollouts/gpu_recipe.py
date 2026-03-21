@@ -10,10 +10,7 @@ Usage:
     from rollouts.gpu_recipe import GPURecipe, CUDA_124, ROCM_61
 
     # Use a preset
-    config = ModalRunConfig(
-        gpu_type="A10G",
-        recipe=CUDA_124,
-    )
+    recipe = CUDA_124
 
     # Or define a custom recipe
     custom = GPURecipe(
