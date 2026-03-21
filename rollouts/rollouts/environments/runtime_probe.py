@@ -36,6 +36,11 @@ try:
         ninja_available = True
     except Exception:
         ninja_available = False
+    try:
+        import setuptools  # noqa: F401
+        setuptools_available = True
+    except Exception:
+        setuptools_available = False
 
     torch_info = {{
         "available": True,
@@ -43,6 +48,7 @@ try:
         "cuda_available": bool(torch.cuda.is_available()),
         "cuda_version": getattr(torch.version, "cuda", None),
         "ninja_available": ninja_available,
+        "setuptools_available": setuptools_available,
         "thunderkittens_root_exists": os.path.isdir(tk_root),
         "thunderkittens_root": tk_root,
     }}
