@@ -15,9 +15,19 @@ from rollouts.training.types import AttemptResult, ScoringContext, Status
 
 
 class _FakeEnvironment:
-    def __init__(self, *, best_speedup: float, has_correct_kernel: bool) -> None:
+    def __init__(
+        self,
+        *,
+        best_speedup: float,
+        has_correct_kernel: bool,
+        finalize_best_speedup: float | None = None,
+        finalize_has_correct_kernel: bool | None = None,
+    ) -> None:
         self.best_speedup = best_speedup
         self.has_correct_kernel = has_correct_kernel
+        self.finalize_calls = 0
+        self.finalize_best_speedup = finalize_best_speedup
+        self.finalize_has_correct_kernel = finalize_has_correct_kernel
 
     def get_tools(self) -> list[object]:
         return []
@@ -34,6 +44,13 @@ class _FakeEnvironment:
             "has_correct_kernel": self.has_correct_kernel,
             "turn_history": [],
         }
+
+    async def finalize_attempt(self, **_: object) -> None:
+        self.finalize_calls += 1
+        if self.finalize_best_speedup is not None:
+            self.best_speedup = self.finalize_best_speedup
+        if self.finalize_has_correct_kernel is not None:
+            self.has_correct_kernel = self.finalize_has_correct_kernel
 
 
 class _ContextualScorer:
@@ -105,6 +122,69 @@ async def test_evaluate_sample_scores_against_final_environment(
     assert result.metadata["best_speedup"] == 1.25
     assert result.environment_state is not None
     assert result.environment_state["has_correct_kernel"] is True
+
+
+@pytest.mark.trio
+async def test_evaluate_sample_finalizes_environment_before_serialization_and_scoring(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    initial_env = _FakeEnvironment(best_speedup=0.0, has_correct_kernel=False)
+    final_env = _FakeEnvironment(
+        best_speedup=0.0,
+        has_correct_kernel=False,
+        finalize_best_speedup=2.0,
+        finalize_has_correct_kernel=True,
+    )
+
+    stale_trajectory = Trajectory(
+        messages=[Message(role="assistant", content="done")],
+        metadata={},
+    )
+    final_state = AgentState(
+        actor=Actor(trajectory=stale_trajectory, endpoint=None, tools=[]),
+        environment=final_env,
+    )
+
+    async def _fake_run_agent_with_error_handling(
+        initial_state: AgentState,
+        run_config: object,
+        sample_id: str,
+    ) -> _AgentRunResult:
+        del run_config, sample_id
+        return _AgentRunResult(
+            states=[initial_state, replace(final_state, turn_idx=1)],
+            final_trajectory=stale_trajectory,
+        )
+
+    monkeypatch.setattr(
+        "rollouts.eval.native._run_agent_with_error_handling",
+        _fake_run_agent_with_error_handling,
+    )
+
+    config = EvalConfig(
+        endpoint=None,
+        prepare_messages=lambda _: [Message(role="user", content="hi")],
+        scorer=_ContextualScorer(),
+        verbose=False,
+        show_progress=False,
+    )
+    runtime = EvalRuntime(config=config)
+
+    result = await evaluate_sample(
+        sample_data={"name": "sample"},
+        sample_id="sample_0000",
+        runtime=runtime,
+        environment=initial_env,
+    )
+
+    assert final_env.finalize_calls == 1
+    assert result.reward == 2.0
+    assert result.metadata["has_correct_kernel"] is True
+    assert result.metadata["best_speedup"] == 2.0
+    assert result.environment_state == {
+        "best_speedup": 2.0,
+        "has_correct_kernel": True,
+    }
 
 
 @pytest.mark.trio

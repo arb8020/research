@@ -62,6 +62,20 @@ async def _maybe_stop_environment_runtime(environment_or_factory: Any) -> None:
         await stop()
 
 
+async def _maybe_finalize_environment(
+    environment: Any,
+    *,
+    run_config: RunConfig,
+    trajectory: Trajectory | None = None,
+) -> None:
+    finalize_attempt = getattr(environment, "finalize_attempt", None)
+    if not callable(finalize_attempt):
+        return
+    finalized = finalize_attempt(run_config=run_config, trajectory=trajectory)
+    if isawaitable(finalized):
+        await finalized
+
+
 # ── Runtime Context ───────────────────────────────────────────────────────────
 
 
@@ -1114,6 +1128,12 @@ async def evaluate_sample(
         is_provider_error = result.is_provider_error
 
         final_env = states[-1].environment
+        if final_env is not None:
+            await _maybe_finalize_environment(
+                final_env,
+                run_config=run_config,
+                trajectory=final_trajectory,
+            )
         env_state = await _serialize_environment_state(final_env)
 
         problem = ProblemRow(
