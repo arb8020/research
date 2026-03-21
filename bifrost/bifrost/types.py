@@ -1,11 +1,15 @@
 """Bifrost SDK data types and structures."""
 
+import asyncio
 import inspect
 import re
+import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Literal, Optional
+
+import sniffio
 
 
 @dataclass
@@ -504,19 +508,16 @@ class JobInfo:
 
 @dataclass(frozen=True)
 class ServerInfo:
-    """Immutable long-lived service handle.
+    """Generic long-lived service handle with explicit readiness semantics."""
 
-    This is the new v2 ServerInfo that follows the functions-over-classes pattern.
-    It contains stable handle identity plus readiness metadata, not live status.
-    Health and lifecycle state come from server_is_healthy() and related
-    functions.
-
-    Returned by BifrostClient.serve().
-    Used with server_is_healthy(), server_wait_until_healthy(), server_stop() functions.
-    """
+    # TODO(service-events): add a canonical structured lifecycle event stream
+    # for services, not just typed stdout/stderr and backend-local readiness
+    # callbacks. SSH and Modal should emit the same parent-owned event algebra
+    # here so callers stop learning backend-specific lifecycle behavior.
 
     name: str
-    tmux_session: str
+    service_id: str | None = None
+    tmux_session: str | None = None
     log_file: str | None = None
     port: int | None = None
     health_endpoint: str | None = None
@@ -526,11 +527,18 @@ class ServerInfo:
     lifecycle_events: EventStreamRef = EventStreamRef()
     readiness_probe: ReadinessProbe = ReadinessProbe()
     initial_state: ServiceState = ServiceState.CREATED
+    _is_running: Callable[[], Awaitable[bool] | bool] | None = None
+    _is_healthy: Callable[[], Awaitable[bool] | bool] | None = None
+    _stop: Callable[[], Awaitable[None] | None] | None = None
+    _logs: Callable[[int], Awaitable[str] | str] | None = None
+    metadata: dict[str, Any] | None = None
 
     def __post_init__(self) -> None:
         assert self.name, "name cannot be empty"
-        assert self.tmux_session, "tmux_session cannot be empty"
         assert self.backend, "backend cannot be empty"
+        assert self.service_id or self.tmux_session or self.port is not None, (
+            "service handle must expose a stable id, tmux session, or port"
+        )
 
     @property
     def url(self) -> str | None:
@@ -539,8 +547,81 @@ class ServerInfo:
             return f"http://localhost:{self.port}"
         return None
 
+    @property
+    def handle_id(self) -> str | None:
+        """Stable handle identifier for logs and control-plane diagnostics."""
+        return self.service_id or self.tmux_session or self.url
+
+    async def is_running(self) -> bool:
+        if self._is_running is None:
+            return False
+        result = self._is_running()
+        if inspect.isawaitable(result):
+            result = await result
+        return bool(result)
+
+    async def is_healthy(self) -> bool:
+        if self._is_healthy is not None:
+            result = self._is_healthy()
+            if inspect.isawaitable(result):
+                result = await result
+            return bool(result)
+        if self.readiness_probe.kind == "none":
+            return await self.is_running()
+        return False
+
+    async def wait_until_healthy(
+        self,
+        timeout: float = 300,
+        poll_interval: float = 5.0,
+    ) -> bool:
+        assert timeout > 0, "timeout must be positive"
+        assert poll_interval > 0, "poll_interval must be positive"
+        started = time.monotonic()
+        while time.monotonic() - started < timeout:
+            if await self.is_healthy():
+                return True
+            if not await self.is_running():
+                return False
+            await _sleep_current_async_library(poll_interval)
+        return False
+
+    async def logs(self, tail: int = 100) -> str:
+        assert tail > 0, "tail must be positive"
+        if self._logs is None:
+            return ""
+        result = self._logs(tail)
+        if inspect.isawaitable(result):
+            result = await result
+        return str(result)
+
+    async def stop(self) -> None:
+        if self._stop is None:
+            return
+        result = self._stop()
+        if inspect.isawaitable(result):
+            await result
+
 
 # Public handle aliases. Keep the old names for compatibility while making the
 # intended execution semantics explicit.
 ProcessHandle = JobInfo | ObservedProcessHandle
 ServiceHandle = ServerInfo
+
+
+async def _sleep_current_async_library(delay: float) -> None:
+    """Sleep on the current async backend without hardcoding asyncio semantics."""
+
+    # TODO(async-bridge): This backend switch is a stopgap. The cleaner model is
+    # one explicit trio/asyncio bridge at the boundary rather than scattered
+    # runtime dispatch inside handle methods.
+    library = sniffio.current_async_library()
+    if library == "asyncio":
+        await asyncio.sleep(delay)
+        return
+    if library == "trio":
+        import trio
+
+        await trio.sleep(delay)
+        return
+    raise RuntimeError(f"Unsupported async library for service wait: {library}")

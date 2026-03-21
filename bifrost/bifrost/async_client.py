@@ -2,6 +2,10 @@
 
 import logging
 import os
+import shlex
+import subprocess
+import tempfile
+import time
 from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 from typing import Any, Literal
@@ -22,6 +26,11 @@ from .types import (
     ProcessSpec,
     ProcessState,
     RemoteConfig,
+    ServiceHandle,
+    ServiceState,
+    ServiceSpec,
+    ServerInfo,
+    ReadinessProbe,
     SSHConnection,
     SSHConnectionError,
     TransferError,
@@ -55,6 +64,61 @@ async def _close_sftp_client(sftp: object) -> None:
         result = exit_method()
         if hasattr(result, "__await__"):
             await result
+
+
+def _check_dirty_workspace_sync(*, allow_dirty: bool) -> None:
+    """Fail fast if the local git workspace is dirty and allow_dirty is false."""
+
+    if allow_dirty:
+        return
+
+    status = subprocess.run(
+        ["git", "status", "--porcelain"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if status.returncode != 0:
+        return
+
+    dirty_files = [line[3:].strip() for line in status.stdout.splitlines() if line.strip()]
+    if dirty_files:
+        raise RuntimeError(
+            f"Workspace has {len(dirty_files)} uncommitted/untracked file(s). "
+            f"Deploy with allow_dirty=True to proceed anyway. "
+            f"Files: {', '.join(dirty_files[:5])}"
+            + (f" and {len(dirty_files) - 5} more" if len(dirty_files) > 5 else "")
+        )
+
+
+def _create_git_bundle_sync() -> tuple[str, str]:
+    """Create a git bundle for HEAD and return (bundle_path, commit_hash)."""
+
+    hash_result = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    commit_hash = hash_result.stdout.strip()
+    if hash_result.returncode != 0 or not commit_hash:
+        raise RuntimeError("Git rev-parse HEAD failed; are you in a git repository?")
+
+    with tempfile.NamedTemporaryFile(suffix=".bundle", delete=False) as bundle_file:
+        bundle_path = bundle_file.name
+
+    result = subprocess.run(
+        ["git", "bundle", "create", bundle_path, "HEAD"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        os.unlink(bundle_path)
+        raise RuntimeError(
+            f"Git bundle create failed: {result.stderr}\n\nNot in a git repository. Run 'git init' first."
+        )
+    return bundle_path, commit_hash
 
 
 class AsyncBifrostClient:
@@ -424,6 +488,7 @@ class AsyncBifrostClient:
         self,
         workspace_path: str,
         bootstrap_cmd: str | list[str] | None = None,
+        on_bootstrap_step: Callable[[str, int, int], None] | None = None,
         allow_dirty: bool = False,
     ) -> str:
         """Deploy code to remote workspace.
@@ -461,24 +526,76 @@ class AsyncBifrostClient:
 
         self.logger.debug(f"📁 Deploying to workspace: {workspace_path}")
 
-        from .client import BifrostClient
+        await trio.to_thread.run_sync(_check_dirty_workspace_sync, allow_dirty)
+        bundle_path, commit_hash = await trio.to_thread.run_sync(_create_git_bundle_sync)
+        remote_bundle = f"/tmp/bifrost-bundle-{os.getpid()}-{int(time.time())}.bundle"
 
-        # TODO: The public execution surface is async-first now, but SSH
-        # materialization still tunnels through the legacy sync deploy path in a
-        # worker thread. Replace this with native async deploy/materialization
-        # so SSH stops smuggling sync semantics through the session boundary.
-        root = await trio.to_thread.run_sync(
-            lambda: BifrostClient(
-                ssh_connection=str(self.ssh),
-                ssh_key_path=self.ssh_key_path,
-                timeout=self.timeout,
-                progress_callback=self.progress_callback,
-            ).push(
-                workspace_path=workspace_path,
-                bootstrap_cmd=bootstrap_cmd,
-                allow_dirty=allow_dirty,
+        conn = await self._get_connection()
+        sftp = await _trio_wrap(conn.start_sftp_client)()
+        try:
+            if self.progress_callback is None:
+                await _trio_wrap(sftp.put)(bundle_path, remote_bundle)
+            else:
+                await _trio_wrap(sftp.put)(
+                    bundle_path,
+                    remote_bundle,
+                    progress_handler=lambda _src, _dst, transferred, total: self.progress_callback(
+                        remote_bundle, transferred, total
+                    ),
+                )
+        finally:
+            await _close_sftp_client(sftp)
+            await trio.to_thread.run_sync(os.unlink, bundle_path)
+
+        workspace_exists = (
+            await self.exec(f"test -d {shlex.quote(workspace_path)}", working_dir="~")
+        ).exit_code == 0
+        if workspace_exists:
+            update_cmd = (
+                f"cd {shlex.quote(workspace_path)} && "
+                f"git fetch {shlex.quote(remote_bundle)} HEAD && "
+                "git reset --hard FETCH_HEAD && "
+                f"rm {shlex.quote(remote_bundle)}"
             )
+            update_result = await self.exec(update_cmd, working_dir="~")
+            if update_result.exit_code != 0:
+                raise RuntimeError(f"Git update from bundle failed: {update_result.stderr}")
+        else:
+            create_cmd = (
+                f"git clone {shlex.quote(remote_bundle)} {shlex.quote(workspace_path)} && "
+                f"rm {shlex.quote(remote_bundle)}"
+            )
+            create_result = await self.exec(create_cmd, working_dir="~")
+            if create_result.exit_code != 0:
+                raise RuntimeError(f"Git clone from bundle failed: {create_result.stderr}")
+
+        verify_result = await self.exec(
+            f"cd {shlex.quote(workspace_path)} && git rev-parse HEAD",
+            working_dir="~",
         )
+        deployed_hash = verify_result.stdout.strip()
+        if verify_result.exit_code != 0 or not deployed_hash:
+            raise RuntimeError(f"Failed to verify deployed workspace: {verify_result.stderr}")
+        if deployed_hash != commit_hash:
+            logger.warning(
+                "Async SSH deploy hash mismatch: local %s remote %s",
+                commit_hash[:7],
+                deployed_hash[:7],
+            )
+
+        if bootstrap_cmd:
+            bootstrap_steps = [bootstrap_cmd] if isinstance(bootstrap_cmd, str) else list(bootstrap_cmd)
+            total_steps = len(bootstrap_steps)
+            for index, cmd in enumerate(bootstrap_steps):
+                if on_bootstrap_step is not None:
+                    on_bootstrap_step(cmd, index, total_steps)
+                result = await self.exec(cmd, working_dir=workspace_path)
+                if result.exit_code != 0:
+                    raise RuntimeError(
+                        f"Bootstrap step {index + 1}/{total_steps} failed: {cmd}\n{result.stderr}"
+                    )
+
+        root = workspace_path
         self._last_workspace = root
         return root
 
@@ -492,6 +609,7 @@ class AsyncBifrostClient:
         root = await self.push(
             workspace_path=workspace_path,
             bootstrap_cmd=bootstrap_cmd,
+            on_bootstrap_step=on_bootstrap_step,
             allow_dirty=allow_dirty,
         )
         return WorkspaceHandle(root=root, backend=self.backend, requested_root=workspace_path)
@@ -616,6 +734,176 @@ class AsyncBifrostClient:
             metadata={
                 "transport": "ssh",
                 "mode": "attached",
+                "stdout_log_file": stdout_log_file,
+                "stderr_log_file": stderr_log_file,
+            },
+        )
+
+    async def serve_service(
+        self,
+        service: ServiceSpec,
+        *,
+        name: str,
+        workspace: WorkspaceHandle | None = None,
+        log_file: str | None = None,
+    ) -> ServiceHandle:
+        workspace_root = workspace.root if workspace is not None else self._last_workspace
+        assert service is not None, "ServiceSpec required"
+        assert service.port is not None, "ServiceSpec.port is required for SSH service launch"
+        assert name, "service name required"
+
+        if workspace_root is None:
+            workspace_root = "~"
+        if workspace_root.startswith("~"):
+            workspace_root = await self.expand_path(workspace_root)
+
+        if log_file is None:
+            log_file = f"~/.bifrost/logs/{name}.log"
+        if log_file.startswith("~"):
+            log_file = await self.expand_path(log_file)
+
+        effective_spec = service.process
+        if effective_spec.cwd is None and workspace_root is not None:
+            effective_spec = ProcessSpec(
+                command=effective_spec.command,
+                args=effective_spec.args,
+                cwd=workspace_root,
+                env=effective_spec.env,
+                cuda_device_ids=effective_spec.cuda_device_ids,
+            )
+        elif effective_spec.cwd and effective_spec.cwd.startswith("~"):
+            effective_spec = ProcessSpec(
+                command=effective_spec.command,
+                args=effective_spec.args,
+                cwd=await self.expand_path(effective_spec.cwd),
+                env=effective_spec.env,
+                cuda_device_ids=effective_spec.cuda_device_ids,
+            )
+
+        stdout_log_file = f"{log_file}.stdout.log"
+        stderr_log_file = f"{log_file}.stderr.log"
+        pid_file = f"{log_file}.pid"
+        service_id = f"bifrost-service-{name}"
+        await self.exec(
+            " && ".join(
+                (
+                    f"mkdir -p {shlex.quote(str(Path(log_file).parent))}",
+                    f": > {shlex.quote(stdout_log_file)}",
+                    f": > {shlex.quote(stderr_log_file)}",
+                    f"rm -f {shlex.quote(pid_file)}",
+                )
+            ),
+            working_dir="~",
+        )
+
+        full_cmd = effective_spec.build_command()
+        launch_cmd = (
+            f"nohup bash -lc {shlex.quote(full_cmd)} "
+            f">> {shlex.quote(stdout_log_file)} 2>> {shlex.quote(stderr_log_file)} "
+            f"< /dev/null & echo $! > {shlex.quote(pid_file)}"
+        )
+        result = await self.exec(launch_cmd, working_dir="~")
+        if result.exit_code != 0:
+            raise SSHConnectionError(f"Failed to start service {name}: {result.stderr}")
+
+        health_target = service.readiness_probe.target
+
+        async def _is_running() -> bool:
+            result = await self.exec(
+                f"test -f {shlex.quote(pid_file)} && kill -0 $(cat {shlex.quote(pid_file)}) 2>/dev/null",
+                working_dir="~",
+            )
+            return result.exit_code == 0
+
+        async def _is_healthy() -> bool:
+            if not await _is_running():
+                return False
+            if service.readiness_probe.kind in {"none", "process_alive"}:
+                return True
+            if service.readiness_probe.kind == "http":
+                target = health_target or "/health"
+                url = (
+                    target
+                    if target.startswith("http://") or target.startswith("https://")
+                    else f"http://localhost:{service.port}{target}"
+                )
+                result = await self.exec(
+                    f"curl -s -o /dev/null -w '%{{http_code}}' {url} 2>/dev/null || echo 000",
+                    working_dir="~",
+                )
+                return result.stdout.strip() == "200"
+            assert service.readiness_probe.kind == "custom", (
+                f"unsupported readiness probe kind: {service.readiness_probe.kind}"
+            )
+            assert health_target, "custom readiness probe requires target command"
+            result = await self.exec(health_target, working_dir="~")
+            return result.exit_code == 0
+
+        async def _logs(tail: int) -> str:
+            result = await self.exec(
+                " && ".join(
+                    (
+                        f"echo '== stdout ==' && tail -n {tail} {shlex.quote(stdout_log_file)} 2>/dev/null || true",
+                        f"echo '== stderr ==' && tail -n {tail} {shlex.quote(stderr_log_file)} 2>/dev/null || true",
+                    )
+                ),
+                working_dir="~",
+            )
+            return result.stdout
+
+        async def _stop() -> None:
+            await self.exec(
+                " && ".join(
+                    (
+                        f"test -f {shlex.quote(pid_file)} && kill -TERM $(cat {shlex.quote(pid_file)}) 2>/dev/null || true",
+                        f"rm -f {shlex.quote(pid_file)}",
+                    )
+                ),
+                working_dir="~",
+            )
+
+        readiness_target = (
+            health_target
+            if health_target and (
+                health_target.startswith("http://") or health_target.startswith("https://")
+            )
+            else (
+                f"http://localhost:{service.port}{health_target}"
+                if health_target and service.readiness_probe.kind == "http"
+                else service_id
+            )
+        )
+        return ServerInfo(
+            name=name,
+            service_id=service_id,
+            log_file=stdout_log_file,
+            port=service.port,
+            health_endpoint=health_target,
+            workspace=effective_spec.cwd,
+            backend=self.backend,
+            output_sink=OutputSink(
+                kind="file",
+                location=stdout_log_file,
+                description=f"stdout mirrored to {stdout_log_file}; stderr mirrored to {stderr_log_file}",
+            ),
+            lifecycle_events=EventStreamRef(
+                kind="unknown",
+                description="Async SSH detached services do not yet emit a canonical lifecycle event stream",
+            ),
+            readiness_probe=ReadinessProbe(
+                kind=service.readiness_probe.kind,
+                target=readiness_target,
+                timeout_s=service.readiness_probe.timeout_s,
+            ),
+            initial_state=ServiceState.LAUNCHING,
+            _is_running=_is_running,
+            _is_healthy=_is_healthy,
+            _stop=_stop,
+            _logs=_logs,
+            metadata={
+                "transport": "ssh",
+                "mode": "service",
+                "pid_file": pid_file,
                 "stdout_log_file": stdout_log_file,
                 "stderr_log_file": stderr_log_file,
             },

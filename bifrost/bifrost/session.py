@@ -12,6 +12,8 @@ from .types import (
     ObservedProcessHandle,
     ProcessOutputLine,
     ProcessSpec,
+    ServiceHandle,
+    ServiceSpec,
     WorkspaceHandle,
     WorkspaceMaterializationSpec,
 )
@@ -60,6 +62,16 @@ class ExecutionSession(Protocol):
         log_file: str | None = None,
     ) -> ObservedProcessHandle:
         """Launch and observe a live attached process."""
+
+    async def serve_service(
+        self,
+        service: ServiceSpec,
+        *,
+        name: str,
+        workspace: WorkspaceHandle | None = None,
+        log_file: str | None = None,
+    ) -> ServiceHandle:
+        """Launch a long-lived service with explicit readiness semantics."""
 
     async def stream_exec(
         self,

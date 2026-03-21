@@ -1,6 +1,9 @@
 import asyncio
 import inspect
 
+import pytest
+import trio
+
 from bifrost import (
     EventStreamRef,
     ExecutionSession,
@@ -18,6 +21,7 @@ from bifrost import (
     WorkspaceMaterializationSpec,
     connect,
 )
+from bifrost.server import server_is_healthy
 from bifrost.types import ExecResult, JobInfo, ServerInfo
 
 
@@ -34,6 +38,7 @@ def test_job_info_exposes_process_handle_shape() -> None:
 def test_server_info_exposes_service_handle_shape() -> None:
     server = ServerInfo(
         name="sglang",
+        service_id="service-123",
         tmux_session="bifrost-server-sglang",
         port=30000,
         health_endpoint="/health",
@@ -44,6 +49,83 @@ def test_server_info_exposes_service_handle_shape() -> None:
     assert server.readiness_probe == ReadinessProbe()
     assert server.initial_state is ServiceState.CREATED
     assert server.url == "http://localhost:30000"
+
+
+def test_service_handle_exposes_readiness_and_stop_surface() -> None:
+    healthy = True
+    running = True
+    stopped = False
+
+    def _is_running() -> bool:
+        return running
+
+    def _is_healthy() -> bool:
+        return healthy
+
+    def _stop() -> None:
+        nonlocal stopped
+        stopped = True
+
+    def _logs(tail: int) -> str:
+        return f"tail={tail}"
+
+    server = ServerInfo(
+        name="qed-vllm",
+        service_id="modal:sandbox:qed-vllm",
+        backend="modal",
+        readiness_probe=ReadinessProbe(kind="http", target="/health"),
+        _is_running=_is_running,
+        _is_healthy=_is_healthy,
+        _stop=_stop,
+        _logs=_logs,
+    )
+
+    async def _exercise() -> None:
+        assert await server.is_running() is True
+        assert await server.is_healthy() is True
+        assert await server.wait_until_healthy(timeout=0.01, poll_interval=0.001) is True
+        assert await server.logs(7) == "tail=7"
+        await server.stop()
+        assert stopped is True
+
+    asyncio.run(_exercise())
+
+
+def test_service_handle_wait_until_healthy_works_under_trio() -> None:
+    attempts = 0
+
+    def _is_healthy() -> bool:
+        nonlocal attempts
+        attempts += 1
+        return attempts >= 2
+
+    server = ServerInfo(
+        name="slime-sglang",
+        service_id="service-456",
+        readiness_probe=ReadinessProbe(kind="http", target="/health"),
+        _is_running=lambda: True,
+        _is_healthy=_is_healthy,
+    )
+
+    async def _exercise() -> None:
+        assert await server.wait_until_healthy(timeout=0.05, poll_interval=0.001) is True
+
+    trio.run(_exercise)
+
+
+def test_sync_server_helpers_fail_honestly_inside_asyncio_loop() -> None:
+    server = ServerInfo(
+        name="qed-vllm",
+        service_id="service-789",
+        readiness_probe=ReadinessProbe(kind="none"),
+        _is_running=lambda: True,
+    )
+
+    async def _exercise() -> None:
+        with pytest.raises(RuntimeError, match="cannot be called from a running asyncio loop"):
+            server_is_healthy(object(), server)
+
+    asyncio.run(_exercise())
 
 
 def test_workspace_handle_requires_explicit_root() -> None:

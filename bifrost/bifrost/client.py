@@ -896,6 +896,13 @@ class BifrostClient:
         assert spec is not None, "ProcessSpec required"
         assert name, "job name required"
 
+        # TODO(detached-job-parity): When the remote training hot path stops
+        # using this tmux/script wrapper, preserve the real semantics it buys
+        # today: detached lifetime beyond the local launcher, durable remote
+        # logs, explicit exit status, and some stable inspection/reattach story.
+        # The replacement should express those as ProcessHandle/ServiceHandle
+        # capabilities, not by scraping tmux sessions or merged transcripts.
+
         # Default workspace to last pushed or home
         if workspace is None:
             workspace = self._last_workspace or "~"
@@ -973,14 +980,14 @@ class BifrostClient:
         log_file: str | None = None,
         workspace: str | None = None,
     ) -> ServiceHandle:
-        """Start a server process in a tmux session.
+        """Start a detached service process with readiness semantics.
 
         This is the new v2 API that returns a frozen ServerInfo.
         Use with server_is_healthy(), server_wait_until_healthy(), server_stop() functions.
 
         Args:
             spec: ProcessSpec defining the server command
-            name: Server name (used for tmux session name)
+            name: Service name (used for stable handle identity)
             port: Port the server listens on
             health_endpoint: Health check endpoint path (default: /health)
             log_file: Path to log file (default: ~/.bifrost/logs/{name}.log)
@@ -1018,78 +1025,148 @@ class BifrostClient:
         assert name, "server name required"
         assert port > 0, "port must be positive"
 
-        # Default workspace to last pushed or home
+        import shlex
+
         if workspace is None:
             workspace = self._last_workspace or "~"
-
-        # Expand tilde in workspace path - tmux -c doesn't expand ~ like bash does
         if workspace.startswith("~"):
             workspace = self.expand_path(workspace)
 
-        # Default log file
         if log_file is None:
             log_file = f"~/.bifrost/logs/{name}.log"
-
-        # Expand tilde in log_file for the same reason
         if log_file.startswith("~"):
             log_file = self.expand_path(log_file)
 
-        # Ensure log directory exists
-        self.exec(f"mkdir -p $(dirname {log_file})")
-
-        # Build tmux session name
-        session_name = f"bifrost-server-{name}"
-
-        # Kill existing session if present
-        self.exec(f"tmux kill-session -t {session_name} 2>/dev/null || true")
-
-        # Expand tilde in ProcessSpec.cwd if present (ProcessSpec is frozen, so create new one)
-        if spec.cwd and spec.cwd.startswith("~"):
-            expanded_cwd = self.expand_path(spec.cwd)
-            spec = ProcessSpec(
+        effective_spec = spec
+        if effective_spec.cwd is None and workspace is not None:
+            effective_spec = ProcessSpec(
                 command=spec.command,
                 args=spec.args,
-                cwd=expanded_cwd,
+                cwd=workspace,
+                env=spec.env,
+                cuda_device_ids=spec.cuda_device_ids,
+            )
+        elif effective_spec.cwd and effective_spec.cwd.startswith("~"):
+            effective_spec = ProcessSpec(
+                command=spec.command,
+                args=spec.args,
+                cwd=self.expand_path(effective_spec.cwd),
                 env=spec.env,
                 cuda_device_ids=spec.cuda_device_ids,
             )
 
-        # Build command from ProcessSpec
-        full_cmd = spec.build_command()
+        stdout_log_file = f"{log_file}.stdout.log"
+        stderr_log_file = f"{log_file}.stderr.log"
+        pid_file = f"{log_file}.pid"
+        service_id = f"bifrost-service-{name}"
+        self.exec(
+            " && ".join(
+                (
+                    f"mkdir -p {shlex.quote(str(Path(log_file).parent))}",
+                    f": > {shlex.quote(stdout_log_file)}",
+                    f": > {shlex.quote(stderr_log_file)}",
+                    f"rm -f {shlex.quote(pid_file)}",
+                )
+            )
+        )
 
-        # Build tmux command with script for reliable logging
-        escaped_cmd = full_cmd.replace("'", "'\\''")
-        tmux_cmd = f"tmux new-session -d -s {session_name}"
-        if workspace:
-            tmux_cmd += f" -c {workspace}"
-        tmux_cmd += f" 'script -efc \"{escaped_cmd}\" {log_file}'"
-
-        result = self.exec(tmux_cmd)
+        full_cmd = effective_spec.build_command()
+        launch_cmd = (
+            f"nohup bash -lc {shlex.quote(full_cmd)} "
+            f">> {shlex.quote(stdout_log_file)} 2>> {shlex.quote(stderr_log_file)} "
+            f"< /dev/null & echo $! > {shlex.quote(pid_file)}"
+        )
+        result = self.exec(launch_cmd, working_dir="~")
         if result.exit_code != 0:
             raise JobError(f"Failed to start server {name}: {result.stderr}")
 
-        self.logger.info(f"Server started: {name} (session: {session_name}, port: {port})")
+        self.logger.info(f"Server started: {name} (handle: {service_id}, port: {port})")
+
+        def _is_running() -> bool:
+            result = self.exec(
+                f"test -f {shlex.quote(pid_file)} && kill -0 $(cat {shlex.quote(pid_file)}) 2>/dev/null",
+                working_dir="~",
+            )
+            return result.exit_code == 0
+
+        def _is_healthy() -> bool:
+            if not _is_running():
+                return False
+            if not health_endpoint:
+                return True
+            url = (
+                health_endpoint
+                if health_endpoint.startswith("http://") or health_endpoint.startswith("https://")
+                else f"http://localhost:{port}{health_endpoint}"
+            )
+            result = self.exec(
+                f"curl -s -o /dev/null -w '%{{http_code}}' {url} 2>/dev/null || echo 000",
+                working_dir="~",
+            )
+            return result.stdout.strip() == "200"
+
+        def _logs(tail: int) -> str:
+            result = self.exec(
+                " && ".join(
+                    (
+                        f"echo '== stdout ==' && tail -n {tail} {shlex.quote(stdout_log_file)} 2>/dev/null || true",
+                        f"echo '== stderr ==' && tail -n {tail} {shlex.quote(stderr_log_file)} 2>/dev/null || true",
+                    )
+                ),
+                working_dir="~",
+            )
+            return result.stdout
+
+        def _stop() -> None:
+            self.exec(
+                " && ".join(
+                    (
+                        f"test -f {shlex.quote(pid_file)} && kill -TERM $(cat {shlex.quote(pid_file)}) 2>/dev/null || true",
+                        f"rm -f {shlex.quote(pid_file)}",
+                    )
+                ),
+                working_dir="~",
+            )
 
         return ServerInfo(
             name=name,
-            tmux_session=session_name,
-            log_file=log_file,
+            service_id=service_id,
+            log_file=stdout_log_file,
             port=port,
             health_endpoint=health_endpoint,
-            workspace=workspace,
+            workspace=effective_spec.cwd,
             backend="ssh",
-            output_sink=OutputSink(kind="file", location=log_file),
+            output_sink=OutputSink(
+                kind="file",
+                location=stdout_log_file,
+                description=f"stdout mirrored to {stdout_log_file}; stderr mirrored to {stderr_log_file}",
+            ),
             lifecycle_events=EventStreamRef(
                 kind="unknown",
                 description="SSH detached services do not yet emit a canonical lifecycle event stream",
             ),
             readiness_probe=ReadinessProbe(
                 kind="http" if health_endpoint else "process_alive",
-                target=f"http://localhost:{port}{health_endpoint}"
-                if health_endpoint
-                else session_name,
+                target=(
+                    health_endpoint
+                    if health_endpoint and (
+                        health_endpoint.startswith("http://") or health_endpoint.startswith("https://")
+                    )
+                    else (f"http://localhost:{port}{health_endpoint}" if health_endpoint else service_id)
+                ),
             ),
             initial_state=ServiceState.LAUNCHING,
+            _is_running=_is_running,
+            _is_healthy=_is_healthy,
+            _stop=_stop,
+            _logs=_logs,
+            metadata={
+                "transport": "ssh",
+                "mode": "service",
+                "pid_file": pid_file,
+                "stdout_log_file": stdout_log_file,
+                "stderr_log_file": stderr_log_file,
+            },
         )
 
     def serve_service(

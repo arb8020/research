@@ -30,6 +30,10 @@ from .types import (
     ProcessOutputLine,
     ProcessSpec,
     ProcessState,
+    ServerInfo,
+    ServiceHandle,
+    ServiceSpec,
+    ServiceState,
     WorkspaceHandle,
     WorkspaceMaterializationSpec,
 )
@@ -438,6 +442,135 @@ class ModalExecutionSession:
                 "stderr_tail": stderr_tail,
                 "process_state": process_state,
                 "startup_seen": startup_seen,
+            },
+        )
+
+    async def serve_service(
+        self,
+        service: ServiceSpec,
+        *,
+        name: str,
+        workspace: WorkspaceHandle | None = None,
+        log_file: str | None = None,
+    ) -> ServiceHandle:
+        import shlex
+
+        # TODO(service-events): detached services now share the same basic
+        # pid/log/readiness shape across SSH and Modal, but they still do not
+        # emit one canonical parent-owned lifecycle event stream. Add that next
+        # so callers stop learning backend-local service phase behavior.
+        effective_spec = service.process
+        workspace_root = workspace.root if workspace is not None else None
+        if effective_spec.cwd is None and workspace_root is not None:
+            effective_spec = ProcessSpec(
+                command=effective_spec.command,
+                args=effective_spec.args,
+                cwd=workspace_root,
+                env=effective_spec.env,
+                cuda_device_ids=effective_spec.cuda_device_ids,
+            )
+
+        service_name = name
+        if log_file is None:
+            log_file = f"/tmp/bifrost-services/{service_name}"
+        stdout_log = f"{log_file}.stdout.log"
+        stderr_log = f"{log_file}.stderr.log"
+        pid_file = f"{log_file}.pid"
+        await self.exec(
+            " && ".join(
+                (
+                    f"mkdir -p {shlex.quote(str(Path(log_file).parent))}",
+                    f": > {shlex.quote(stdout_log)}",
+                    f": > {shlex.quote(stderr_log)}",
+                    f"rm -f {shlex.quote(pid_file)}",
+                )
+            )
+        )
+
+        wrapped_command = (
+            f"echo $$ > {shlex.quote(pid_file)}; "
+            f"exec bash -lc {shlex.quote(effective_spec.build_command())} "
+            f">> {shlex.quote(stdout_log)} 2>> {shlex.quote(stderr_log)}"
+        )
+        proc = await trio.to_thread.run_sync(
+            lambda: self.sandbox_handle.sandbox.exec("bash", "-lc", wrapped_command, timeout=86400)
+        )
+
+        async def _is_running() -> bool:
+            return await trio.to_thread.run_sync(lambda: proc.poll()) is None
+
+        async def _is_healthy() -> bool:
+            if not await _is_running():
+                return False
+            probe = service.readiness_probe
+            if probe.kind in {"none", "process_alive"}:
+                return True
+            if probe.kind == "http":
+                assert service.port is not None, "HTTP readiness requires service.port"
+                target = probe.target or "/health"
+                url = target if target.startswith("http://") or target.startswith("https://") else (
+                    f"http://localhost:{service.port}{target}"
+                )
+                result = await self.exec(
+                    f"curl -s -o /dev/null -w '%{{http_code}}' {shlex.quote(url)} 2>/dev/null || echo 000"
+                )
+                return result.stdout.strip() == "200"
+            assert probe.kind == "custom", f"unsupported readiness probe kind: {probe.kind}"
+            assert probe.target, "custom readiness probe requires target command"
+            result = await self.exec(probe.target)
+            return result.exit_code == 0
+
+        async def _stop() -> None:
+            await self.exec(
+                f"test -f {shlex.quote(pid_file)} && kill -TERM $(cat {shlex.quote(pid_file)}) "
+                "2>/dev/null || true"
+            )
+
+        async def _logs(tail: int) -> str:
+            return (
+                await self.exec(
+                    " && ".join(
+                        (
+                            f"echo '== stdout ==' && tail -n {tail} {shlex.quote(stdout_log)} 2>/dev/null || true",
+                            f"echo '== stderr ==' && tail -n {tail} {shlex.quote(stderr_log)} 2>/dev/null || true",
+                        )
+                    )
+                )
+            ).stdout
+
+        health_endpoint = None
+        if service.readiness_probe.kind == "http" and service.readiness_probe.target:
+            health_endpoint = service.readiness_probe.target
+        return ServerInfo(
+            name=service_name,
+            service_id=f"{self.sandbox_handle.sandbox_id}:{service_name}",
+            log_file=stdout_log,
+            port=service.port,
+            health_endpoint=health_endpoint,
+            workspace=effective_spec.cwd,
+            backend=self.backend,
+            output_sink=OutputSink(
+                kind="file",
+                location=stdout_log,
+                description=f"stdout mirrored to {stdout_log}; stderr mirrored to {stderr_log}",
+            ),
+            lifecycle_events=EventStreamRef(
+                kind="provider_stream",
+                description="Modal services do not yet emit a canonical lifecycle event stream",
+            ),
+            readiness_probe=service.readiness_probe,
+            initial_state=ServiceState.LAUNCHING,
+            _is_running=_is_running,
+            _is_healthy=_is_healthy,
+            _stop=_stop,
+            _logs=_logs,
+            metadata={
+                "transport": "modal",
+                "mode": "service",
+                "sandbox_id": self.sandbox_handle.sandbox_id,
+                "stdout_log_file": stdout_log,
+                "stderr_log_file": stderr_log,
+                "pid_file": pid_file,
             },
         )
 
@@ -1029,10 +1162,13 @@ def _build_argus_local_process_spec(
 ) -> ProcessSpec:
     """Lower the Modal workload launch into one observed process spec."""
 
-    # TODO: This still launches an inner `argus.run --local` control plane via
-    # the supervisor trampoline. Replace it with a resolved workload entrypoint
-    # so the Modal backend launches the real workload directly and
-    # `rollouts.modal_runner` can disappear.
+    # TODO(workload-staging): This still launches an inner `argus.run --local`
+    # control plane via the supervisor trampoline. Replace it with one resolved
+    # workload launch spec produced by Argus so Modal and RunPod execute the
+    # same denotation and `rollouts.modal_runner` can disappear completely.
+    # If we adopt MiniRay/Heinrich-style worker semantics here, the honest place
+    # is *inside* the sandbox as the local child-process substrate. Modal/Bifrost
+    # should still own provider/session/materialization semantics above it.
     from rollouts.modal_workload import (
         IMAGE_VENV_DIR,
         IMAGE_VENV_PYTHON,

@@ -32,6 +32,8 @@ Example:
 
 from __future__ import annotations
 
+import asyncio
+import inspect
 import logging
 import time
 from typing import TYPE_CHECKING
@@ -43,11 +45,28 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _run_handle_method(method: object, *args: object) -> object:
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        pass
+    else:
+        raise RuntimeError(
+            "bifrost.server sync helpers cannot be called from a running asyncio loop; "
+            "await the ServiceHandle methods directly"
+        )
+
+    result = method(*args)
+    if inspect.isawaitable(result):
+        return asyncio.run(result)
+    return result
+
+
 def server_is_healthy(session: BifrostClient, server: ServerInfo) -> bool:
     """Check if server is responding to health checks.
 
     If health_endpoint is configured, makes HTTP request to check.
-    Otherwise, just checks if tmux session is alive.
+    Otherwise, just checks if the detached service is still running.
 
     Args:
         session: BifrostClient instance (owns SSH connection)
@@ -56,22 +75,8 @@ def server_is_healthy(session: BifrostClient, server: ServerInfo) -> bool:
     Returns:
         True if server is healthy, False otherwise
     """
-    # First check if tmux session is alive
-    result = session.exec(f"tmux has-session -t {server.tmux_session} 2>/dev/null")
-    if result.exit_code != 0:
-        return False  # Server process not running
-
-    # If no health endpoint, just check session is alive
-    if not server.health_endpoint or not server.port:
-        return True
-
-    # Make health check request
-    url = f"http://localhost:{server.port}{server.health_endpoint}"
-    cmd = f"curl -s -o /dev/null -w '%{{http_code}}' {url} 2>/dev/null || echo 000"
-    result = session.exec(cmd)
-
-    status_code = result.stdout.strip()
-    return status_code == "200"
+    del session
+    return bool(_run_handle_method(server.is_healthy))
 
 
 def server_wait_until_healthy(
@@ -100,9 +105,7 @@ def server_wait_until_healthy(
             logger.info(f"Server {server.name} is healthy")
             return True
 
-        # Check if process has crashed
-        result = session.exec(f"tmux has-session -t {server.tmux_session} 2>/dev/null")
-        if result.exit_code != 0:
+        if not server_is_running(session, server):
             logger.error(f"Server {server.name} process has exited")
             return False
 
@@ -123,28 +126,26 @@ def server_logs(session: BifrostClient, server: ServerInfo, tail: int = 100) -> 
     Returns:
         Log content as string, or empty string if no log file
     """
-    if not server.log_file:
-        return ""
-
-    result = session.exec(f"tail -n {tail} {server.log_file} 2>/dev/null || true")
-    return result.stdout
+    del session
+    return str(_run_handle_method(server.logs, tail))
 
 
 def server_stop(session: BifrostClient, server: ServerInfo) -> None:
     """Stop a running server.
 
-    Terminates the tmux session for this server.
+    Terminates the detached service for this server.
 
     Args:
         session: BifrostClient instance
         server: ServerInfo identifier
     """
-    session.exec(f"tmux kill-session -t {server.tmux_session} 2>/dev/null || true")
+    del session
+    _run_handle_method(server.stop)
     logger.info(f"Stopped server: {server.name}")
 
 
 def server_is_running(session: BifrostClient, server: ServerInfo) -> bool:
-    """Check if server process is running (tmux session alive).
+    """Check if server process is running.
 
     Different from server_is_healthy - this just checks if process exists,
     not if it's responding to requests.
@@ -154,7 +155,7 @@ def server_is_running(session: BifrostClient, server: ServerInfo) -> bool:
         server: ServerInfo identifier
 
     Returns:
-        True if tmux session is alive
+        True if the detached service is still alive
     """
-    result = session.exec(f"tmux has-session -t {server.tmux_session} 2>/dev/null")
-    return result.exit_code == 0
+    del session
+    return bool(_run_handle_method(server.is_running))

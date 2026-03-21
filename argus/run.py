@@ -997,9 +997,10 @@ async def _deploy_and_submit(
     bifrost.exec(f"mkdir -p {remote_output_dir}")
     training_log = f"{remote_output_dir}/training.log"
 
-    # Start LogsServer in a separate tmux session BEFORE the training job.
-    # This decouples LogsServer lifetime from the training job — if training crashes,
-    # LogsServer keeps running and can serve the final logs (including tracebacks).
+    # Start LogsServer as a detached service BEFORE the training job. This
+    # decouples LogsServer lifetime from the training job — if training
+    # crashes, LogsServer keeps running and can serve the final logs
+    # (including tracebacks).
     logs_port = 9100
     logs_dir = f"{workspace}/rollouts/results/rl/{run_name}"
     logs_service_name = f"logs-{run_name}"
@@ -1008,7 +1009,6 @@ async def _deploy_and_submit(
     # Kill any stale LogsServer processes from previous runs
     bifrost.exec(f"fuser -k {logs_port}/tcp 2>/dev/null || true")
     bifrost.exec("pkill -f 'miniray.logs_server' 2>/dev/null || true")
-    bifrost.exec(f"tmux kill-session -t bifrost-server-{logs_service_name} 2>/dev/null || true")
 
     logs_service = bifrost.serve_service(
         ServiceSpec(
@@ -1027,7 +1027,7 @@ async def _deploy_and_submit(
     log(
         "logs_server_started",
         port=logs_port,
-        session=logs_service.tmux_session,
+        session=logs_service.handle_id,
         log_file=logs_service.log_file,
     )
 
