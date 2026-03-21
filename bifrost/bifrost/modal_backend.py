@@ -1388,6 +1388,7 @@ def _build_argus_local_process_spec(
         "PYTHONPATH": f"{workspace}:/workspace/research:/root/Megatron-LM:/root",
         "ARGUS_EMIT_STARTUP_SENTINEL": "1",
         "ARGUS_RUN_EVENT_STREAM": "1",
+        "ARGUS_SUPERVISOR_STATUS_FILE": f"{workspace}/results/rl/{run_name}/modal_supervisor_status.json",
         "ROLLOUTS_RUN_NAME": run_name,
         "ROLLOUTS_OUTPUT_DIR": f"results/rl/{run_name}",
     }
