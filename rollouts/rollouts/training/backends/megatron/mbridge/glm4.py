@@ -91,6 +91,9 @@ def _register() -> bool:
         def _build_config(self) -> Any:
             """Build TransformerConfig for GLM-4."""
             return self._build_base_config(
+                # RMSNorm models hit FusedLayerNorm assertions under the
+                # Transformer Engine path in current Megatron-Core.
+                transformer_impl="local",
                 add_qkv_bias=True,
                 qk_layernorm=False,
                 post_mlp_layernorm=True,

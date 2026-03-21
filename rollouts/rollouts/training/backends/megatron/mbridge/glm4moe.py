@@ -119,6 +119,9 @@ def _register() -> bool:
         def _build_config(self) -> Any:
             """Build TransformerConfig for GLM-4.7-Flash MoE."""
             return self._build_base_config(
+                # RMSNorm models hit FusedLayerNorm assertions under the
+                # Transformer Engine path in current Megatron-Core.
+                transformer_impl="local",
                 use_cpu_initialization=False,
                 # MoE specific
                 moe_ffn_hidden_size=self.hf_config.moe_intermediate_size,

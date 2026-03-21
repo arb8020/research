@@ -72,6 +72,9 @@ def _register() -> bool:
                 mla_rope_config.update(rope_scaling)
 
             base_config = {
+                # RMSNorm models hit FusedLayerNorm assertions under the
+                # Transformer Engine path in current Megatron-Core.
+                "transformer_impl": "local",
                 "attention_backend": AttnBackend.fused,
                 "layernorm_epsilon": hf_config.rms_norm_eps,
                 "ffn_hidden_size": hf_config.intermediate_size,
