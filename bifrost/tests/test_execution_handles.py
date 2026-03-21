@@ -24,7 +24,10 @@ from bifrost import (
     create_jsonl_event_stream,
     read_lifecycle_events,
 )
-from bifrost.modal_backend import _normalize_run_logger_event_payload
+from bifrost.modal_backend import (
+    _exception_is_operator_interrupt,
+    _normalize_run_logger_event_payload,
+)
 from bifrost.server import server_is_healthy
 from bifrost.types import ExecResult, JobInfo, ServerInfo
 
@@ -188,6 +191,12 @@ def test_modal_event_payload_normalization_preserves_child_identity() -> None:
         "child_provider": "local",
         "phase": "inference_startup",
     }
+
+
+def test_modal_interrupt_detection_handles_exception_groups() -> None:
+    exc = BaseExceptionGroup("shutdown", [KeyboardInterrupt()])
+
+    assert _exception_is_operator_interrupt(exc) is True
 
 
 def test_observed_process_handle_exposes_live_process_surface() -> None:

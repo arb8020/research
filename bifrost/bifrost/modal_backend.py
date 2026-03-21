@@ -61,6 +61,16 @@ def _normalize_run_logger_event_payload(
     return payload
 
 
+def _exception_is_operator_interrupt(exc: BaseException) -> bool:
+    """Return true when shutdown was initiated by the local operator/runtime."""
+
+    if isinstance(exc, (KeyboardInterrupt, trio.Cancelled)):
+        return True
+    if isinstance(exc, BaseExceptionGroup):
+        return any(_exception_is_operator_interrupt(child) for child in exc.exceptions)
+    return False
+
+
 @dataclass(frozen=True)
 class ModalExecutionRequest:
     """Provider-owned execution request for the current Modal backend."""
@@ -231,6 +241,7 @@ class ModalExecutionSession:
         process_name = name or f"modal-process-{int(time.time())}"
         results: dict[str, Any] = {}
         done = threading.Event()
+        shutdown_requested = threading.Event()
         startup_seen = threading.Event()
         process_started_ts = time.monotonic()
         stdout_tail: deque[str] = deque(maxlen=20)
@@ -275,6 +286,26 @@ class ModalExecutionSession:
                 truncated=len(text) > max_chars,
             )
 
+        def _send_output_line(line: ProcessOutputLine) -> None:
+            try:
+                trio.from_thread.run(
+                    output_send.send,
+                    line,
+                    trio_token=trio_token,
+                )
+            except BaseException as exc:
+                if shutdown_requested.is_set() or _exception_is_operator_interrupt(exc):
+                    return
+                logger.warning("Modal attached output forwarding failed: %s: %s", type(exc).__name__, exc)
+
+        def _close_output_stream() -> None:
+            try:
+                trio.from_thread.run_sync(output_send.close, trio_token=trio_token)
+            except BaseException as exc:
+                if shutdown_requested.is_set() or _exception_is_operator_interrupt(exc):
+                    return
+                logger.warning("Modal attached output close failed: %s: %s", type(exc).__name__, exc)
+
         def _on_started() -> None:
             _emit("remote_entrypoint_invoked")
             _emit("remote_stdout_stream_open")
@@ -302,11 +333,7 @@ class ModalExecutionSession:
             process_state["last_stdout_line"] = stripped
             process_state["last_stdout_elapsed_sec"] = round(_elapsed(), 3)
             stdout_tail.append(stripped)
-            trio.from_thread.run(
-                output_send.send,
-                ProcessOutputLine(stream="stdout", text=stripped),
-                trio_token=trio_token,
-            )
+            _send_output_line(ProcessOutputLine(stream="stdout", text=stripped))
             _emit_stream_line("remote_stdout_line", process_state["stdout_line_count"], stripped)
             if startup_sentinel and startup_sentinel in stripped and not startup_seen.is_set():
                 startup_seen.set()
@@ -328,10 +355,8 @@ class ModalExecutionSession:
                             process_state["last_stderr_line"] = prefix
                             process_state["last_stderr_elapsed_sec"] = round(_elapsed(), 3)
                             stderr_tail.append(prefix)
-                            trio.from_thread.run(
-                                output_send.send,
+                            _send_output_line(
                                 ProcessOutputLine(stream="stderr", text=prefix),
-                                trio_token=trio_token,
                             )
                             _emit_stream_line(
                                 "remote_stderr_line",
@@ -349,10 +374,8 @@ class ModalExecutionSession:
                         process_state["last_stderr_line"] = remaining
                         process_state["last_stderr_elapsed_sec"] = round(_elapsed(), 3)
                         stderr_tail.append(remaining)
-                        trio.from_thread.run(
-                            output_send.send,
+                        _send_output_line(
                             ProcessOutputLine(stream="stderr", text=remaining),
-                            trio_token=trio_token,
                         )
                         _emit_stream_line(
                             "remote_stderr_line",
@@ -367,11 +390,7 @@ class ModalExecutionSession:
             process_state["last_stderr_line"] = stripped
             process_state["last_stderr_elapsed_sec"] = round(_elapsed(), 3)
             stderr_tail.append(stripped)
-            trio.from_thread.run(
-                output_send.send,
-                ProcessOutputLine(stream="stderr", text=stripped),
-                trio_token=trio_token,
-            )
+            _send_output_line(ProcessOutputLine(stream="stderr", text=stripped))
             _emit_stream_line("remote_stderr_line", process_state["stderr_line_count"], stripped)
 
         def _on_heartbeat(elapsed_sec: float, silence_sec: float) -> None:
@@ -395,12 +414,14 @@ class ModalExecutionSession:
                     on_stdout_line=_on_stdout_line,
                     on_stderr_line=_on_stderr_line,
                     on_heartbeat=_on_heartbeat,
+                    stop_requested=shutdown_requested,
                 )
                 results["stdout"] = stdout
                 results["stderr"] = stderr
                 results["exit_code"] = exit_code
             finally:
-                trio.from_thread.run_sync(output_send.close, trio_token=trio_token)
+                shutdown_requested.set()
+                _close_output_stream()
                 done.set()
 
         _emit("remote_entrypoint_invoke_start", command=spec.command)
@@ -412,6 +433,7 @@ class ModalExecutionSession:
             while not done.is_set() and not startup_seen.is_set():
                 if trio.current_time() >= deadline:
                     _emit("workload_entrypoint_start_timeout", timeout_sec=start_timeout_s)
+                    shutdown_requested.set()
                     await trio.to_thread.run_sync(self.sandbox_handle.sandbox.terminate)
                     worker.join(timeout=5.0)
                     results.setdefault(
@@ -424,7 +446,10 @@ class ModalExecutionSession:
                 await trio.sleep(1.0)
 
         def _wait() -> ExecResult:
-            worker.join()
+            while not done.wait(timeout=0.1):
+                pass
+            shutdown_requested.set()
+            worker.join(timeout=1.0)
             stdout = str(results.get("stdout", ""))
             stderr = str(results.get("stderr", ""))
             exit_code = int(results.get("exit_code", 1))
@@ -444,8 +469,10 @@ class ModalExecutionSession:
             return ExecResult(stdout=stdout, stderr=stderr, exit_code=exit_code)
 
         def _terminate() -> None:
+            shutdown_requested.set()
             self.sandbox_handle.sandbox.terminate()
-            worker.join(timeout=5.0)
+            done.wait(timeout=5.0)
+            worker.join(timeout=1.0)
 
         async def _stream_output() -> AsyncIterator[ProcessOutputLine]:
             async with output_receive:
@@ -940,6 +967,7 @@ def exec_modal_command_sync(
     on_stderr_line: Callable[[str], None] | None = None,
     on_heartbeat: Callable[[float, float], None] | None = None,
     heartbeat_interval_s: float = 15.0,
+    stop_requested: threading.Event | None = None,
 ) -> tuple[str, str, int]:
     """Execute a command inside a Modal sandbox with streaming output."""
 
@@ -949,6 +977,7 @@ def exec_modal_command_sync(
 
     stdout_lines: list[str] = []
     stderr_lines: list[str] = []
+    thread_errors: list[BaseException] = []
     stop_heartbeat = threading.Event()
     activity_lock = threading.Lock()
     last_activity_ts = time.monotonic()
@@ -959,22 +988,32 @@ def exec_modal_command_sync(
             last_activity_ts = time.monotonic()
 
     def read_stdout() -> None:
-        for line in proc.stdout:
-            stdout_lines.append(line)
-            mark_activity()
-            if stream_output:
-                logger.info("[sandbox] %s", line.rstrip())
-            if on_stdout_line is not None:
-                on_stdout_line(line)
+        try:
+            for line in proc.stdout:
+                stdout_lines.append(line)
+                mark_activity()
+                if stream_output:
+                    logger.info("[sandbox] %s", line.rstrip())
+                if on_stdout_line is not None:
+                    on_stdout_line(line)
+        except BaseException as exc:
+            if stop_requested is not None and stop_requested.is_set():
+                return
+            thread_errors.append(exc)
 
     def read_stderr() -> None:
-        for line in proc.stderr:
-            stderr_lines.append(line)
-            mark_activity()
-            if stream_output:
-                logger.warning("[sandbox stderr] %s", line.rstrip())
-            if on_stderr_line is not None:
-                on_stderr_line(line)
+        try:
+            for line in proc.stderr:
+                stderr_lines.append(line)
+                mark_activity()
+                if stream_output:
+                    logger.warning("[sandbox stderr] %s", line.rstrip())
+                if on_stderr_line is not None:
+                    on_stderr_line(line)
+        except BaseException as exc:
+            if stop_requested is not None and stop_requested.is_set():
+                return
+            thread_errors.append(exc)
 
     def emit_heartbeats() -> None:
         if on_heartbeat is None:
@@ -998,6 +1037,8 @@ def exec_modal_command_sync(
     proc.wait()
     stop_heartbeat.set()
     heartbeat_thread.join(timeout=1.0)
+    if thread_errors and not (stop_requested is not None and stop_requested.is_set()):
+        raise thread_errors[0]
 
     return "".join(stdout_lines), "".join(stderr_lines), proc.returncode
 
@@ -1013,6 +1054,7 @@ async def exec_modal_command(
     on_stderr_line: Callable[[str], None] | None = None,
     on_heartbeat: Callable[[float, float], None] | None = None,
     heartbeat_interval_s: float = 15.0,
+    stop_requested: threading.Event | None = None,
 ) -> tuple[str, str, int]:
     """Execute a command inside a Modal sandbox."""
 
@@ -1027,6 +1069,7 @@ async def exec_modal_command(
             on_stderr_line=on_stderr_line,
             on_heartbeat=on_heartbeat,
             heartbeat_interval_s=heartbeat_interval_s,
+            stop_requested=stop_requested,
         )
     )
 
@@ -1376,7 +1419,31 @@ async def run_modal_request(request: ModalExecutionRequest) -> dict[str, Any]:
                     stderr_event_sentinel=ARGUS_DIAG_EVENT_SENTINEL,
                     start_timeout_s=60.0,
                 )
-                result = await process.wait()
+                try:
+                    result = await process.wait()
+                except BaseException as exc:
+                    if not _exception_is_operator_interrupt(exc):
+                        raise
+                    emit(
+                        "modal_training_interrupted",
+                        sandbox_id=sandbox_id,
+                        error=f"{type(exc).__name__}: {exc}",
+                    )
+                    with trio.CancelScope(shield=True):
+                        await process.terminate()
+                    emit(
+                        "modal_training_finished",
+                        sandbox_id=sandbox_id,
+                        success=False,
+                        exit_code=130,
+                        cancelled=True,
+                    )
+                    return {
+                        "success": False,
+                        "exit_code": 130,
+                        "stderr": "Interrupted by local operator",
+                        "cancelled": True,
+                    }
 
                 if result.exit_code != 0:
                     failure_diagnostics = await collect_modal_failure_diagnostics(
