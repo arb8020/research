@@ -705,7 +705,6 @@ async def _run_training_preflight(
         runtime_run_logger.event(
             "training_preflight_start",
             **rc,
-            node_id=node_id or rc.get("node_id"),
             backend=config.trainer.backend,
         )
 
@@ -738,7 +737,6 @@ async def _run_training_preflight(
             runtime_run_logger.event(
                 "training_preflight_backend_init_ok",
                 **rc,
-                node_id=node_id or rc.get("node_id"),
                 backend=config.trainer.backend,
             )
 
@@ -762,7 +760,6 @@ async def _run_training_preflight(
                 runtime_run_logger.event(
                     "training_preflight_inference_export_ok",
                     **rc,
-                    node_id=node_id or rc.get("node_id"),
                     backend=config.trainer.backend,
                     tensor_count=export_validation.get("tensor_count"),
                 )
@@ -802,7 +799,6 @@ async def _run_training_preflight(
             runtime_run_logger.event(
                 "training_preflight_synthetic_step_ok",
                 **rc,
-                node_id=node_id or rc.get("node_id"),
                 backend=config.trainer.backend,
                 losses=getattr(fb_result, "losses", {}),
                 optim=optim_result,
