@@ -33,21 +33,11 @@ def _glm4_moe_denotation() -> ModelDenotation:
     )
 
 
-def test_glm4_moe_lowers_to_bridge_gpt_fallback_when_provider_is_unavailable() -> None:
+def test_glm4_moe_lowers_to_custom_spec() -> None:
     lowering = lower_model_to_megatron(
         _glm4_moe_denotation(),
         bridge_supports_provider=False,
     )
 
-    assert lowering.adapter_kind == "bridge_gpt_fallback"
-    assert any("compatibility path" in note for note in lowering.validation_notes)
-
-
-def test_glm4_moe_prefers_provider_when_bridge_supports_it() -> None:
-    lowering = lower_model_to_megatron(
-        _glm4_moe_denotation(),
-        bridge_supports_provider=True,
-    )
-
-    assert lowering.adapter_kind == "provider"
-    assert any("preserves the old Megatron denotation" in note for note in lowering.validation_notes)
+    assert lowering.adapter_kind == "custom_spec"
+    assert any("bridge-native transformer layer spec" in note for note in lowering.validation_notes)

@@ -11,6 +11,7 @@ Ported from SLIME: slime_plugins/mbridge/glm4moe_lite.py
 
 from __future__ import annotations
 
+import re
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -147,6 +148,45 @@ def _register() -> bool:
                 position_embedding_type="rope",
                 rotary_base=self.rope_theta,
             )
+
+        def _weight_name_mapping_mlp(self, name: str) -> list[str]:
+            local_expert_match = re.match(
+                r"decoder\.layers\.(\d+)\.mlp\.experts\.local_experts\.(\d+)\.(linear_fc[12])\.weight",
+                name,
+            )
+            if local_expert_match:
+                layer_number, expert_number, proj = local_expert_match.groups()
+                if proj == "linear_fc1":
+                    return [
+                        f"model.layers.{layer_number}.mlp.experts.{expert_number}.gate_proj.weight",
+                        f"model.layers.{layer_number}.mlp.experts.{expert_number}.up_proj.weight",
+                    ]
+                return [
+                    f"model.layers.{layer_number}.mlp.experts.{expert_number}.down_proj.weight"
+                ]
+
+            shared_expert_match = re.match(
+                r"decoder\.layers\.(\d+)\.mlp\.shared_experts\.(linear_fc[12])\.weight",
+                name,
+            )
+            if shared_expert_match:
+                layer_number, proj = shared_expert_match.groups()
+                if proj == "linear_fc1":
+                    return [
+                        f"model.layers.{layer_number}.mlp.shared_experts.gate_proj.weight",
+                        f"model.layers.{layer_number}.mlp.shared_experts.up_proj.weight",
+                    ]
+                return [f"model.layers.{layer_number}.mlp.shared_experts.down_proj.weight"]
+
+            router_bias_match = re.match(
+                r"decoder\.layers\.(\d+)\.mlp\.router\.expert_bias",
+                name,
+            )
+            if router_bias_match:
+                layer_number = router_bias_match.group(1)
+                return [f"model.layers.{layer_number}.mlp.gate.e_score_correction_bias"]
+
+            return super()._weight_name_mapping_mlp(name)
 
         def _convert_mtp_param(self, name: str) -> list[str]:
             assert self.config.mtp_num_layers == 1, "only support one mtp layer for now"
