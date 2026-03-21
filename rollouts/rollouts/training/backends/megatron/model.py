@@ -249,6 +249,82 @@ class GLMBridgeGPTFallbackMegatronAdapter(RawGPTMegatronAdapter):
         # custom-spec path preserves the same parameter-name semantics during
         # weight loading.
 
+    def build_provider(
+        self,
+        *,
+        denotation: ModelDenotation,
+        runtime_config: MegatronModelConfig,
+        bridge: Any,
+    ) -> Any:
+        del denotation
+        if not hasattr(bridge, "_build_config"):
+            raise AttributeError(
+                "Bridge object does not expose `to_megatron_provider` or `_build_config`. "
+                "This mbridge version cannot construct Megatron models directly. "
+                "Consider using a megatron.bridge build instead."
+            )
+
+        from megatron.core.models.gpt import GPTModel
+        from megatron.core.models.gpt.gpt_layer_specs import (
+            get_gpt_decoder_block_spec,
+            get_gpt_layer_local_spec,
+        )
+
+        hf_config = self.normalize_hf_config(bridge.hf_config)
+        transformer_config = bridge._build_config()
+        _apply_architecture_overrides(transformer_config, runtime_config)
+
+        if hasattr(bridge, "_get_gptmodel_args"):
+            gpt_kwargs = dict(bridge._get_gptmodel_args())
+        else:
+            gpt_kwargs = {}
+
+        _populate_gpt_model_defaults(
+            gpt_kwargs=gpt_kwargs,
+            hf_config=hf_config,
+            runtime_config=runtime_config,
+        )
+
+        num_experts = _infer_num_experts(runtime_config, hf_config)
+
+        def model_provider(
+            pre_process: bool = True,
+            post_process: bool = True,
+            config: Any = None,
+            pg_collection: Any = None,
+            vp_stage: int | None = None,
+        ) -> GPTModel:
+            del config, pg_collection
+            layer_spec_kwargs = _build_layer_spec_kwargs(
+                transformer_config=transformer_config,
+                num_experts=num_experts,
+            )
+            # GLM RMSNorm families need the local layer-spec path here. The
+            # generic decoder-block helper still instantiates FusedLayerNorm for
+            # current Megatron MoE configs, which breaks the legacy bridge+GPT
+            # fallback before weight loading even starts.
+            if vp_stage is None:
+                transformer_layer_spec = get_gpt_layer_local_spec(**layer_spec_kwargs)
+            else:
+                transformer_layer_spec = get_gpt_decoder_block_spec(
+                    transformer_config,
+                    use_transformer_engine=False,
+                    vp_stage=vp_stage,
+                )
+
+            kwargs = dict(gpt_kwargs)
+            kwargs.update({
+                "config": transformer_config,
+                "transformer_layer_spec": transformer_layer_spec,
+                "pre_process": pre_process,
+                "post_process": post_process,
+            })
+            if vp_stage is not None and "vp_stage" not in kwargs:
+                kwargs["vp_stage"] = vp_stage
+            return GPTModel(**kwargs)
+
+        return model_provider
+
 
 class Qwen3CustomSpecMegatronAdapter:
     """Megatron adapter for plain Qwen3 explicit model construction."""
