@@ -222,6 +222,34 @@ class RawGPTMegatronAdapter:
         )
 
 
+class GLMBridgeGPTFallbackMegatronAdapter(RawGPTMegatronAdapter):
+    """Provisional GLM adapter matching the old Megatron+bridge denotation.
+
+    This path still constructs a generic GPTModel from bridge config, but keeps
+    the GLM-specific bridge in charge of checkpoint/config translation. It is a
+    compatibility fallback until the bridge-native GLM custom-spec path has
+    matching weight-name semantics.
+    """
+
+    adapter_name = "bridge_gpt_fallback:glm"
+
+    def validate_support(self, denotation: ModelDenotation, *, backend_name: str) -> None:
+        assert denotation.source, f"{backend_name} model source must be non-empty"
+        if denotation.architecture.family not in {"glm4", "glm4_moe"}:
+            raise ValueError(
+                f"{backend_name} {self.adapter_name} only supports GLM families, got "
+                f"{denotation.architecture.family!r}"
+            )
+        if denotation.architecture.norm != "rmsnorm":
+            raise ValueError(
+                f"{backend_name} {self.adapter_name} expects RMSNorm, got "
+                f"{denotation.architecture.norm!r}"
+            )
+        # TODO: delete this compatibility adapter once the bridge-native GLM
+        # custom-spec path preserves the same parameter-name semantics during
+        # weight loading.
+
+
 class Qwen3CustomSpecMegatronAdapter:
     """Megatron adapter for plain Qwen3 explicit model construction."""
 
@@ -518,6 +546,9 @@ def _adapter_for_lowering(lowering: MegatronModelLowering) -> MegatronModelAdapt
         return BridgeProviderMegatronAdapter()
     if lowering.adapter_kind == "raw_gpt":
         return RawGPTMegatronAdapter()
+    if lowering.adapter_kind == "bridge_gpt_fallback":
+        if lowering.denotation.architecture.family in {"glm4", "glm4_moe"}:
+            return GLMBridgeGPTFallbackMegatronAdapter()
     if lowering.adapter_kind == "custom_spec":
         if lowering.denotation.architecture.family == "qwen3":
             return Qwen3CustomSpecMegatronAdapter()

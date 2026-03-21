@@ -12,7 +12,7 @@ from typing import Any, Literal
 
 from .denotation import ModelDenotation
 
-MegatronAdapterKind = Literal["provider", "raw_gpt", "custom_spec"]
+MegatronAdapterKind = Literal["provider", "raw_gpt", "custom_spec", "bridge_gpt_fallback"]
 MegatronLoaderKind = Literal["bridge_hf", "megatron_dist"]
 NmoeCheckpointKind = Literal["nmoe_native", "hf_import_only"]
 NmoeLoaderKind = Literal["nmoe_native", "hf_bridge_provisional"]
@@ -75,11 +75,21 @@ def lower_model_to_megatron(
             "this family includes linear-attention semantics beyond the generic provider/raw_gpt paths"
         )
     elif family in {"glm4", "glm4_moe"}:
-        adapter_kind = "custom_spec"
-        notes.append(
-            "glm4 lowers through the bridge-native transformer layer spec; "
-            "generic raw_gpt fallback does not honestly preserve GLM layer semantics"
-        )
+        if bridge_supports_provider:
+            adapter_kind = "provider"
+            notes.append(
+                "glm4 uses the bridge/provider path when available; this preserves the old "
+                "Megatron denotation more closely than forcing the incomplete bridge-native "
+                "custom-spec path"
+            )
+        else:
+            adapter_kind = "bridge_gpt_fallback"
+            notes.append(
+                "glm4 currently lowers through a provisional bridge_gpt_fallback path: "
+                "Megatron GPTModel construction plus the GLM custom mbridge config/weight "
+                "mapping. This is a compatibility path, not the final honest GLM-native "
+                "Megatron model."
+            )
     elif bridge_supports_provider:
         adapter_kind: MegatronAdapterKind = "provider"
     elif family == "qwen3":
