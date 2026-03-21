@@ -5,8 +5,8 @@ import { WorkspacePanel } from './WorkspacePanel'
 import { ErrorBoundary } from './ErrorBoundary'
 import { resolvePlugin } from '../plugins/registry'
 import { getSampleHtmlExportUrl } from '../api'
-import { useSampleData } from '../hooks/useSampleData'
-import type { TraceSample } from '../types'
+import { useSampleViewData } from '../hooks/useSampleViewData'
+import type { RunListItem, TraceSample } from '../types'
 
 const SPLIT_KEY = 'rollouts-split-pct'
 const DEFAULT_SPLIT = 54  // left panel % width
@@ -41,6 +41,7 @@ interface RunViewerProps {
   runId: string
   sampleId: string
   evalName?: string
+  liveStatus?: RunListItem['status'] | null
   onBack: () => void
 }
 
@@ -181,14 +182,14 @@ function RunViewerContent({
   )
 }
 
-export function RunViewer({ runId, sampleId, evalName, onBack }: RunViewerProps) {
+export function RunViewer({ runId, sampleId, evalName, liveStatus = null, onBack }: RunViewerProps) {
   const [activeTab, setActiveTab] = useState<TabId>('conversation')
   const [selectedTurn, setSelectedTurn] = useState(0)
   const [splitPct, setSplitPct] = useSplitPct()
   const [checkedTurns, setCheckedTurns] = useState<Set<number>>(new Set())
   const dragging = useRef(false)
   const containerRef = useRef<HTMLDivElement>(null)
-  const sampleState = useSampleData(runId, sampleId)
+  const sampleState = useSampleViewData(runId, sampleId, liveStatus)
 
   const handleFitWidth = useCallback((contentWidthPx: number) => {
     if (!containerRef.current) return
@@ -244,7 +245,9 @@ export function RunViewer({ runId, sampleId, evalName, onBack }: RunViewerProps)
   const workspaceData = sampleState.kind === 'loaded' ? sampleState.workspaceData : null
   const checkedTurnsSorted = useMemo(() => [...checkedTurns].sort((a, b) => a - b), [checkedTurns])
   const hasWorkspace = workspaceData !== null && workspaceData.snapshots.some(s => Object.keys(s.files).length > 0)
-  const plugin = resolvePlugin(evalName, sample)
+  const plugin = sampleState.kind === 'loaded' && sampleState.source === 'artifact'
+    ? resolvePlugin(evalName, sample)
+    : null
   const hasRightPanel = hasWorkspace || plugin !== null
 
   // Header + tabs shared by both layouts
@@ -266,18 +269,32 @@ export function RunViewer({ runId, sampleId, evalName, onBack }: RunViewerProps)
             {runId}
           </p>
         </div>
-        <a
-          href={getSampleHtmlExportUrl(runId, sampleId)}
-          className="ml-auto inline-flex items-center gap-2 rounded px-3 py-2 text-xs font-medium transition-opacity hover:opacity-80"
-          style={{
-            color: 'var(--color-dark-text)',
-            background: 'var(--color-dark-card)',
-            border: '1px solid var(--color-dark-border)',
-          }}
-        >
-          <Download className="h-3.5 w-3.5" />
-          Export HTML
-        </a>
+        {sampleState.kind === 'loaded' && sampleState.source === 'live' && (
+          <span
+            className="ml-auto inline-flex items-center gap-2 rounded px-3 py-2 text-xs font-medium"
+            style={{
+              color: '#22c55e',
+              background: 'var(--color-dark-card)',
+              border: '1px solid var(--color-dark-border)',
+            }}
+          >
+            live
+          </span>
+        )}
+        {sampleState.canExport && (
+          <a
+            href={getSampleHtmlExportUrl(runId, sampleId)}
+            className="ml-auto inline-flex items-center gap-2 rounded px-3 py-2 text-xs font-medium transition-opacity hover:opacity-80"
+            style={{
+              color: 'var(--color-dark-text)',
+              background: 'var(--color-dark-card)',
+              border: '1px solid var(--color-dark-border)',
+            }}
+          >
+            <Download className="h-3.5 w-3.5" />
+            Export HTML
+          </a>
+        )}
       </div>
       <div className="flex gap-1 mb-4" style={{ borderBottom: '1px solid var(--color-dark-border)' }}>
         {tabs.map(tab => (

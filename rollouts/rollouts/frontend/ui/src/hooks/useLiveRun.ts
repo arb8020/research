@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { openRunEvents } from '../api'
-import type { LiveRunState, LiveSample, StreamEvent } from '../types'
+import type { LiveRunState, LiveSample, StreamEvent, TraceSample } from '../types'
 
 function makeInitialState(runId: string, initialStatus: string): LiveRunState {
   return {
@@ -11,6 +11,29 @@ function makeInitialState(runId: string, initialStatus: string): LiveRunState {
     total: null,
     samples: new Map(),
     stdout_lines: [],
+  }
+}
+
+function buildInitialTraceSample(
+  sampleId: string,
+  sampleData?: Record<string, unknown> | null,
+  messages?: TraceSample['trajectory']['messages'],
+): TraceSample {
+  return {
+    id: sampleId,
+    index: null,
+    group_index: null,
+    input: sampleData ?? null,
+    prompt: typeof sampleData?.prompt === 'string' ? sampleData.prompt : '',
+    ground_truth: typeof sampleData?.ground_truth === 'string' ? sampleData.ground_truth : null,
+    trajectory: {
+      completions: [],
+      messages: messages ?? [],
+    },
+    metadata: {
+      status: 'pending',
+      turns_used: 0,
+    },
   }
 }
 
@@ -58,11 +81,23 @@ export function useLiveRun(runId: string, initialStatus: string) {
 function applyEvent(prev: LiveRunState, event: StreamEvent): LiveRunState {
   switch (event.type) {
     case 'eval_start': {
-      return { ...prev, total: event.total }
+      return { ...prev, total: event.total, config_name: event.name }
     }
     case 'sample_start': {
       const samples = new Map(prev.samples)
-      const sample: LiveSample = { id: event.id, name: event.name, status: 'running', turn: 0, score: null, messages: [] }
+      const initialMessages = (event.messages ?? []).map(message => ({
+        ...message,
+        content: message.content ?? '',
+      }))
+      const sample: LiveSample = {
+        id: event.id,
+        name: event.name,
+        status: 'running',
+        turn: 0,
+        score: null,
+        messages: [],
+        sample: buildInitialTraceSample(event.id, event.sample_data, initialMessages),
+      }
       samples.set(event.id, sample)
       return { ...prev, samples }
     }
@@ -70,7 +105,19 @@ function applyEvent(prev: LiveRunState, event: StreamEvent): LiveRunState {
       const samples = new Map(prev.samples)
       const existing = samples.get(event.id)
       if (existing) {
-        samples.set(event.id, { ...existing, turn: event.turn, status: 'running' })
+        samples.set(event.id, {
+          ...existing,
+          turn: event.turn,
+          status: 'running',
+          sample: {
+            ...existing.sample,
+            metadata: {
+              ...existing.sample.metadata,
+              turns_used: event.turn,
+              status: event.status || 'running',
+            },
+          },
+        })
       }
       return { ...prev, samples }
     }
@@ -79,7 +126,29 @@ function applyEvent(prev: LiveRunState, event: StreamEvent): LiveRunState {
       const existing = samples.get(event.sample_id)
       if (existing) {
         const messages = [...existing.messages, { turn: event.turn, content: event.content, timestamp: event.timestamp }]
-        samples.set(event.sample_id, { ...existing, messages })
+        samples.set(event.sample_id, {
+          ...existing,
+          messages,
+          sample: {
+            ...existing.sample,
+            trajectory: {
+              ...existing.sample.trajectory,
+              messages: [
+                ...(existing.sample.trajectory.messages ?? []),
+                {
+                  role: 'assistant',
+                  content: event.content,
+                  timestamp: event.timestamp,
+                },
+              ],
+            },
+            metadata: {
+              ...existing.sample.metadata,
+              turns_used: event.turn,
+              status: 'running',
+            },
+          },
+        })
       }
       return { ...prev, samples }
     }
@@ -87,7 +156,21 @@ function applyEvent(prev: LiveRunState, event: StreamEvent): LiveRunState {
       const samples = new Map(prev.samples)
       const existing = samples.get(event.id)
       if (existing) {
-        samples.set(event.id, { ...existing, status: 'done', score: event.score })
+        samples.set(event.id, {
+          ...existing,
+          status: 'done',
+          score: event.score,
+          sample: {
+            ...existing.sample,
+            reward: event.score ?? undefined,
+            status: 'completed',
+            metadata: {
+              ...existing.sample.metadata,
+              status: 'completed',
+              turns_used: existing.turn,
+            },
+          },
+        })
       }
       return { ...prev, samples }
     }

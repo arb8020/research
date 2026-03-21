@@ -69,6 +69,8 @@ def _normalize_watch_event(raw: dict[str, Any]) -> dict[str, Any]:
     elif event_type == "sample_start":
         out["id"] = raw.get("sample_id", "")
         out["name"] = raw.get("sample_name", "")
+        out["sample_data"] = raw.get("sample_data")
+        out["messages"] = raw.get("messages")
     elif event_type == "turn":
         out["id"] = raw.get("sample_id", "")
         out["turn"] = raw.get("turn", 0)
@@ -100,6 +102,18 @@ def stream_registered_run(handler: Any, run_id: str) -> None:
         events_file_handle = None
         result_dir_found = False
         stdout_buffer = ""
+        existing_output_lines = list(run_data.get("output_lines", []))
+
+        for line in existing_output_lines:
+            _write_sse(handler, {"line": line, "type": "stdout"})
+            if result_dir_found:
+                continue
+            match = re.search(r"📂 Results directory: (.+)", line)
+            if match:
+                result_dir = Path(match.group(1))
+                events_file = result_dir / "events.jsonl"
+                result_dir_found = True
+                run_data["results_dir"] = str(result_dir)
 
         while True:
             char = process.stdout.read(1)
@@ -115,6 +129,7 @@ def stream_registered_run(handler: Any, run_id: str) -> None:
                         result_dir = Path(match.group(1))
                         events_file = result_dir / "events.jsonl"
                         result_dir_found = True
+                        run_data["results_dir"] = str(result_dir)
 
                 append_output_line(run_id, line)
                 _write_sse(handler, {"line": line, "type": "stdout"})
@@ -123,7 +138,6 @@ def stream_registered_run(handler: Any, run_id: str) -> None:
             if result_dir_found and events_file and events_file.exists():
                 if events_file_handle is None:
                     events_file_handle = open(events_file)
-                    events_file_handle.seek(0, 2)
 
                 event_line = events_file_handle.readline()
                 while event_line:
@@ -139,11 +153,21 @@ def stream_registered_run(handler: Any, run_id: str) -> None:
                     assert event_obj.get("message") is not None, (
                         f"Event missing 'message' field: {event_obj}"
                     )
-                    assert "timestamp" in event_obj, (
-                        f"Event missing 'timestamp' field: {event_obj}"
-                    )
-                    _write_sse(handler, event_obj)
+                    assert "timestamp" in event_obj, f"Event missing 'timestamp' field: {event_obj}"
+                    _write_sse(handler, _normalize_watch_event(event_obj))
                     event_line = events_file_handle.readline()
+
+        if result_dir_found and events_file and events_file.exists() and events_file_handle is None:
+            events_file_handle = open(events_file)
+
+        if events_file_handle is not None:
+            event_line = events_file_handle.readline()
+            while event_line:
+                line = event_line.strip()
+                if line:
+                    event_obj = json.loads(line)
+                    _write_sse(handler, _normalize_watch_event(event_obj))
+                event_line = events_file_handle.readline()
 
         if stdout_buffer:
             _write_sse(handler, {"line": stdout_buffer, "type": "stdout"})
@@ -294,9 +318,9 @@ def _stream_external_session(handler: Any, runtime: str, session_id: str) -> Non
                 text = _message_text(getattr(msg, "content", None))
                 if not text.strip():
                     continue
-                timestamp = getattr(msg, "timestamp", None) or datetime.fromtimestamp(
-                    mtime
-                ).isoformat()
+                timestamp = (
+                    getattr(msg, "timestamp", None) or datetime.fromtimestamp(mtime).isoformat()
+                )
                 _write_sse(
                     handler,
                     {

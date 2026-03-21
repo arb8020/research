@@ -3,7 +3,6 @@ import { useRuns } from './hooks/useRuns'
 import { RunsList } from './components/RunsList'
 import { RunDetail } from './components/RunDetail'
 import { RunViewer } from './components/RunViewer'
-import { LiveSampleViewer } from './components/LiveSampleViewer'
 import { ResultsDirPicker } from './components/ResultsDirPicker'
 import { getResultsDirs, setResultsDir } from './api'
 
@@ -11,7 +10,6 @@ type View =
   | { kind: 'runs' }
   | { kind: 'run-detail'; runId: string }
   | { kind: 'sample'; runId: string; sampleId: string }
-  | { kind: 'live-sample'; runId: string; sampleId: string }
 
 type LocationState = {
   resultsDir: string | null
@@ -36,10 +34,10 @@ function parseLocationState(search: string): LocationState {
 function buildLocationSearch(resultsDir: string | null, view: View): string {
   const params = new URLSearchParams()
   if (resultsDir) params.set('results_dir', resultsDir)
-  if (view.kind === 'run-detail' || view.kind === 'sample' || view.kind === 'live-sample') {
+  if (view.kind === 'run-detail' || view.kind === 'sample') {
     params.set('run_id', view.runId)
   }
-  if (view.kind === 'sample' || view.kind === 'live-sample') {
+  if (view.kind === 'sample') {
     params.set('sample_id', view.sampleId)
   }
   const query = params.toString()
@@ -51,7 +49,7 @@ export default function App() {
   const [resultsDir, setCurrentResultsDir] = useState<string | null>(null)
   const { completedRuns, liveRuns, loading, error, refresh, autoPoll, setAutoPoll } = useRuns()
 
-  const isSample = view.kind === 'sample' || view.kind === 'live-sample'
+  const isSample = view.kind === 'sample'
   const liveCount = liveRuns.filter(r => r.status === 'running' || r.status === 'watching').length
 
   const setUrlState = useCallback((nextResultsDir: string | null, nextView: View) => {
@@ -157,7 +155,7 @@ export default function App() {
               className="text-xs hover:opacity-80 transition-opacity font-mono truncate max-w-xs"
               style={{ color: 'var(--color-dark-text-secondary)' }}
             >
-              {view.kind === 'run-detail' || view.kind === 'sample' || view.kind === 'live-sample' ? view.runId : ''}
+              {view.kind === 'run-detail' || view.kind === 'sample' ? view.runId : ''}
             </button>
             {view.kind === 'sample' && (
               <>
@@ -234,7 +232,7 @@ export default function App() {
             loading={loading}
             error={error}
             onSelectRun={runId => navigate({ kind: 'run-detail', runId })}
-            onSelectLiveSample={(runId, sampleId) => navigate({ kind: 'live-sample', runId, sampleId })}
+            onSelectLiveSample={(runId, sampleId) => navigate({ kind: 'sample', runId, sampleId })}
           />
         )}
 
@@ -255,37 +253,12 @@ export default function App() {
             runId={view.runId}
             sampleId={view.sampleId}
             evalName={completedRuns.find(r => r.id === view.runId)?.name}
+            liveStatus={liveRuns.find(r => r.id === view.runId)?.status ?? null}
             onBack={() => {
               if (view.kind === 'sample') {
                 navigate({ kind: 'run-detail', runId: view.runId })
               }
             }}
-          />
-        )}
-
-        {view.kind === 'live-sample' && (
-          <LiveSampleViewer
-            run={liveRuns.find(r => r.id === view.runId) ?? {
-              id: view.runId,
-              name: view.runId,
-              timestamp: 0,
-              total_samples: null,
-              mean_reward: null,
-              status: 'watching',
-              live: true,
-              can_kill: false,
-              tags: {
-                user: {},
-                derived: {
-                  status: 'watching',
-                  live: 'true',
-                  completed: 'false',
-                  successful: 'false',
-                },
-              },
-            }}
-            sampleId={view.sampleId}
-            onBack={() => navigate({ kind: 'runs' })}
           />
         )}
       </div>

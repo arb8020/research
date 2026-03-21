@@ -2,6 +2,10 @@ import { useEffect, useState } from 'react'
 import { getSample, getWorkspace } from '../api'
 import type { TraceSample, WorkspaceData } from '../types'
 
+interface UseSampleDataOptions {
+  enabled?: boolean
+}
+
 type SampleDataState =
   | {
       runId: string
@@ -28,7 +32,12 @@ type SampleDataState =
       error: string
     }
 
-export function useSampleData(runId: string, sampleId: string): SampleDataState {
+export function useSampleData(
+  runId: string,
+  sampleId: string,
+  options: UseSampleDataOptions = {},
+): SampleDataState {
+  const { enabled = true } = options
   const [state, setState] = useState<SampleDataState>({
     runId,
     sampleId,
@@ -39,6 +48,10 @@ export function useSampleData(runId: string, sampleId: string): SampleDataState 
   })
 
   useEffect(() => {
+    if (!enabled) {
+      return
+    }
+
     let cancelled = false
 
     void Promise.all([
@@ -71,7 +84,7 @@ export function useSampleData(runId: string, sampleId: string): SampleDataState 
     return () => {
       cancelled = true
     }
-  }, [runId, sampleId])
+  }, [enabled, runId, sampleId])
 
   if (state.runId !== runId || state.sampleId !== sampleId) {
     return {

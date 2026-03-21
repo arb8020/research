@@ -164,10 +164,22 @@ export interface WorkspaceData {
 
 export type StreamEvent =
   | { type: 'eval_start'; name: string; total: number; timestamp: string }
-  | { type: 'sample_start'; id: string; name: string; timestamp: string }
+  | {
+      type: 'sample_start'
+      id: string
+      name: string
+      timestamp: string
+      sample_data?: Record<string, unknown> | null
+      messages?: Array<{
+        role: string
+        content: string | unknown[]
+        tool_call_id?: string | null
+        [key: string]: unknown
+      }>
+    }
   | { type: 'turn'; id: string; turn: number; status: string; timestamp: string }
   | { type: 'assistant_message'; sample_id: string; turn: number; content: string; timestamp: string }
-  | { type: 'sample_end'; id: string; score: number; timestamp: string }
+  | { type: 'sample_end'; id: string; score: number | null; timestamp: string }
   | { type: 'eval_end'; name: string; total: number; timestamp: string }
   | { type: 'stdout'; line: string; timestamp?: string }
   | { type: 'complete'; exit_code: number; status: string }
@@ -187,6 +199,7 @@ export interface LiveSample {
   turn: number;
   score: number | null;
   messages: LiveMessage[];
+  sample: TraceSample;
 }
 
 export interface LiveRunState {
