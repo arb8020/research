@@ -103,6 +103,7 @@ def reverse_text_score_fn(sample: Any, _context: object) -> Score:
 def train(
     config: GRPOConfig | None = None,
     num_samples: int = 1000,
+    **kwargs: Any,
 ) -> dict[str, Any]:
     """Run GLM RL training."""
     if config is None:
@@ -144,4 +145,5 @@ def train(
         prompts=prompts,
         scorer=FunctionScorer(reverse_text_score_fn),
         environment_cls=BasicEnvironment,
+        **kwargs,
     )
