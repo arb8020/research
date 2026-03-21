@@ -22,6 +22,10 @@ HF_CACHE_DIR = "/root/.cache/huggingface"
 IMAGE_VENV_DIR = "/opt/venvs/rollouts"
 IMAGE_VENV_PYTHON = f"{IMAGE_VENV_DIR}/bin/python"
 WORKLOAD_ENTRYPOINT_SENTINEL = "__ARGUS_WORKLOAD_ENTRYPOINT_STARTED__"
+# TODO(workload-staging): This sentinel currently marks the inner
+# `argus.run --local` trampoline, not the real workload denotation. Replace it
+# with a resolved workload launch spec and explicit child semantic events so the
+# parent stream does not lose meaning at the control-plane handoff.
 ARGUS_DIAG_EVENT_SENTINEL = "__ARGUS_DIAG__"
 MODAL_FAILURE_DIAGNOSTICS_TIMEOUT_S = 30
 MODAL_FAILURE_DIAGNOSTICS_OUTPUT_CHAR_LIMIT = 4000

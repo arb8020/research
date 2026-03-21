@@ -679,6 +679,7 @@ async def _run_training_preflight(
     megatron_workers: list[Any] | None = None,
     node_id: str | None = None,
     run_context: dict[str, Any] | None = None,
+    run_logger: RunLogger | None = None,
 ) -> tuple[Any | None, Callable[[], None] | None]:
     """Initialize the training backend and run one synthetic step.
 
@@ -690,6 +691,7 @@ async def _run_training_preflight(
     from ..training.contract_witnesses import rl_contract_loss
 
     rc = run_context or {}
+    runtime_run_logger = run_logger if isinstance(run_logger, RunLogger) else None
     logger.info(
         "training_preflight_start",
         extra={
@@ -699,6 +701,13 @@ async def _run_training_preflight(
             "backend": config.trainer.backend,
         },
     )
+    if runtime_run_logger is not None:
+        runtime_run_logger.event(
+            "training_preflight_start",
+            **rc,
+            node_id=node_id or rc.get("node_id"),
+            backend=config.trainer.backend,
+        )
 
     dummy_engine = SimpleNamespace(api_base=f"http://127.0.0.1:{config.inference.port}/v1")
     preflight_output_dir = output_dir / "_training_preflight"
@@ -725,6 +734,13 @@ async def _run_training_preflight(
                 "backend": config.trainer.backend,
             },
         )
+        if runtime_run_logger is not None:
+            runtime_run_logger.event(
+                "training_preflight_backend_init_ok",
+                **rc,
+                node_id=node_id or rc.get("node_id"),
+                backend=config.trainer.backend,
+            )
 
         if config.trainer.backend == "megatron":
             validate_inference_export = getattr(backend, "validate_inference_export", None)
@@ -742,6 +758,14 @@ async def _run_training_preflight(
                     "tensor_count": export_validation.get("tensor_count"),
                 },
             )
+            if runtime_run_logger is not None:
+                runtime_run_logger.event(
+                    "training_preflight_inference_export_ok",
+                    **rc,
+                    node_id=node_id or rc.get("node_id"),
+                    backend=config.trainer.backend,
+                    tensor_count=export_validation.get("tensor_count"),
+                )
             preflight_step = getattr(backend, "preflight_step", None)
             assert callable(preflight_step), "Megatron backend must expose preflight_step()"
             fb_result = await preflight_step(_build_megatron_preflight_batch(config)).result()
@@ -774,6 +798,15 @@ async def _run_training_preflight(
                 "optim": optim_result,
             },
         )
+        if runtime_run_logger is not None:
+            runtime_run_logger.event(
+                "training_preflight_synthetic_step_ok",
+                **rc,
+                node_id=node_id or rc.get("node_id"),
+                backend=config.trainer.backend,
+                losses=getattr(fb_result, "losses", {}),
+                optim=optim_result,
+            )
     finally:
         if cleanup is not None:
             cleanup()
@@ -1237,6 +1270,19 @@ async def _grpo_train_async(
 
     config.save(output_dir / "config.json")
     metrics_logger = JSONLLogger(output_dir)
+    runtime_run_logger = (
+        run_logger if isinstance(run_logger, RunLogger) else RunLogger(text_logger=logger)
+    )
+    base_run_context = {
+        "run_name": run_name,
+        "output_dir": str(output_dir),
+        "model_name": config.model.name,
+        "trainer_backend": config.trainer.backend,
+        "inference_backend": config.inference.backend,
+        "inference_realization": config.inference.realization or config.inference.backend,
+        "node_id": os.environ.get("ROLLOUTS_NODE_ID"),
+        "hostname": socket.gethostname(),
+    }
 
     # =========================================================================
     # CRITICAL: Spawn megatron workers BEFORE any CUDA initialization
@@ -1253,6 +1299,12 @@ async def _grpo_train_async(
 
         num_trainer_gpus = len(config.trainer.cuda_device_ids)
         logger.info(f"Spawning {num_trainer_gpus} megatron workers (before CUDA init)...")
+        runtime_run_logger.event(
+            "megatron_worker_spawn_start",
+            **base_run_context,
+            num_workers=num_trainer_gpus,
+            trainer_cuda_device_ids=list(config.trainer.cuda_device_ids),
+        )
 
         lowering = _megatron_lowering(config)
 
@@ -1282,25 +1334,19 @@ async def _grpo_train_async(
             config=megatron_config,
         )
         logger.info(f"Spawned {len(megatron_workers)} megatron workers")
+        runtime_run_logger.event(
+            "megatron_worker_spawn_ok",
+            **base_run_context,
+            num_workers=len(megatron_workers),
+            trainer_cuda_device_ids=list(config.trainer.cuda_device_ids),
+        )
 
     preflight_backend: Any | None = None
     preflight_backend_cleanup: Callable[[], None] | None = None
-    runtime_run_logger = (
-        run_logger if isinstance(run_logger, RunLogger) else RunLogger(text_logger=logger)
-    )
     resource_watchdog = ResourceWatchdog(
         config=config.runtime_watchdog,
         run_logger=runtime_run_logger,
-        run_context={
-            "run_name": run_name,
-            "output_dir": str(output_dir),
-            "model_name": config.model.name,
-            "trainer_backend": config.trainer.backend,
-            "inference_backend": config.inference.backend,
-            "inference_realization": config.inference.realization or config.inference.backend,
-            "node_id": os.environ.get("ROLLOUTS_NODE_ID"),
-            "hostname": socket.gethostname(),
-        },
+        run_context=base_run_context,
     )
     resource_watchdog.start()
 
@@ -1314,16 +1360,8 @@ async def _grpo_train_async(
         logger,
         megatron_workers=megatron_workers,
         node_id=os.environ.get("ROLLOUTS_NODE_ID"),
-        run_context={
-            "run_name": run_name,
-            "output_dir": str(output_dir),
-            "model_name": config.model.name,
-            "trainer_backend": config.trainer.backend,
-            "inference_backend": config.inference.backend,
-            "inference_realization": config.inference.realization or config.inference.backend,
-            "node_id": os.environ.get("ROLLOUTS_NODE_ID"),
-            "hostname": socket.gethostname(),
-        },
+        run_context=base_run_context,
+        run_logger=runtime_run_logger,
     )
 
     # Launch inference engine(s) - multi-engine for higher throughput
@@ -1367,6 +1405,26 @@ async def _grpo_train_async(
             "cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES"),
         },
     )
+    runtime_run_logger.event(
+        "inference_startup_start",
+        **run_context,
+        num_engines=num_engines,
+        ports=list(config.inference.ports),
+        gpu_assignments=[list(gpus) for gpus in config.inference.gpu_assignments],
+        inference_backend=config.inference.backend,
+        inference_realization=inference_runtime.realization.name,
+        inference_sync_realization=(
+            inference_runtime.sync_realization.name
+            if inference_runtime.sync_realization is not None
+            else config.checkpoint.inference_sync_realization
+        ),
+        inference_mem_fraction=config.inference.mem_fraction,
+        inference_tensor_parallel_size=config.inference.tensor_parallel_size,
+        inference_startup_timeout=config.inference.startup_timeout,
+        trainer_cuda_device_ids=list(config.trainer.cuda_device_ids),
+        inference_cuda_device_ids=list(config.inference.cuda_device_ids),
+        cuda_visible_devices=os.environ.get("CUDA_VISIBLE_DEVICES"),
+    )
     resource_watchdog.set_phase(
         "inference_startup",
         num_engines=num_engines,
@@ -1402,6 +1460,19 @@ async def _grpo_train_async(
                 "engine_gpu_memory_utilization": getattr(engine, "gpu_memory_utilization", None),
             },
         )
+        runtime_run_logger.event(
+            "inference_engine_launch",
+            **run_context,
+            engine_index=idx,
+            engine_name=engine.name,
+            engine_port=engine.port,
+            engine_cuda_device_ids=list(engine.cuda_device_ids),
+            engine_launch_cmd=launch_cmd,
+            engine_session_name=session_name,
+            engine_log_path=log_path,
+            engine_mem_fraction=getattr(engine, "mem_fraction", None),
+            engine_gpu_memory_utilization=getattr(engine, "gpu_memory_utilization", None),
+        )
         engine.launch()
         engine.start_log_tailer()
 
@@ -1430,6 +1501,14 @@ async def _grpo_train_async(
                 "teacher_model": config.trainer.teacher_model,
             },
         )
+        runtime_run_logger.event(
+            "teacher_inference_engine_launch",
+            **run_context,
+            engine_name=teacher_engine.name,
+            engine_port=teacher_engine.port,
+            engine_cuda_device_ids=list(teacher_engine.cuda_device_ids),
+            teacher_model=config.trainer.teacher_model,
+        )
         teacher_engine.launch()
         teacher_engine.start_log_tailer()
 
@@ -1448,6 +1527,13 @@ async def _grpo_train_async(
                 "teacher_engine": teacher_engine is not None,
             },
         )
+        runtime_run_logger.event(
+            "inference_healthcheck_start",
+            **run_context,
+            startup_timeout=startup_timeout,
+            num_engines=num_engines,
+            teacher_engine=teacher_engine is not None,
+        )
         async with trio.open_nursery() as startup_nursery:
             for engine in inference_engines:
                 startup_nursery.start_soon(engine.wait_until_ready, startup_timeout)
@@ -1462,6 +1548,12 @@ async def _grpo_train_async(
                 "num_engines": num_engines,
                 "teacher_engine": teacher_engine is not None,
             },
+        )
+        runtime_run_logger.event(
+            "inference_ready",
+            **run_context,
+            num_engines=num_engines,
+            teacher_engine=teacher_engine is not None,
         )
         if teacher_engine is not None:
             logger.info("Teacher engine ready")
@@ -1624,6 +1716,11 @@ async def _grpo_train_async(
 
         # Setup data and rollout generation
         logger.info(f"Dataset: {len(prompts)} prompts")
+        runtime_run_logger.event(
+            "dataset_setup_start",
+            **run_context,
+            prompt_count=len(prompts),
+        )
         resource_watchdog.set_phase("dataset_setup", prompt_count=len(prompts))
         data_buffer = DataBuffer(prompts=prompts)
         _base_generate_fn = _create_generate_fn(
@@ -1741,6 +1838,17 @@ async def _grpo_train_async(
             f"drain_before_publish={weight_visibility_policy.drain_before_publish}, "
             f"pause_on_sync={admission_policy.pause_on_sync}, "
             f"queue_pressure_threshold={overload_policy.queue_pressure_threshold}"
+        )
+        runtime_run_logger.event(
+            "rollout_loop_started",
+            **run_context,
+            pipeline_mode=config.checkpoint.pipeline_mode,
+            staleness_max_lag=staleness_policy.max_version_lag,
+            require_exact_version=staleness_policy.require_exact_version,
+            publish_mode=weight_visibility_policy.publish_mode,
+            drain_before_publish=weight_visibility_policy.drain_before_publish,
+            pause_on_sync=admission_policy.pause_on_sync,
+            queue_pressure_threshold=overload_policy.queue_pressure_threshold,
         )
         resource_watchdog.set_phase("rollout_loop", pipeline_mode=config.checkpoint.pipeline_mode)
 
