@@ -1286,6 +1286,7 @@ async def _verify_modal_gpu(
 ) -> None:
     """Fail loudly if the sandbox cannot see the requested GPU."""
 
+    import trio
     import trio_asyncio
 
     def _emit(event: str, **data: Any) -> None:
@@ -1295,6 +1296,15 @@ async def _verify_modal_gpu(
     _emit("modal_gpu_verify_start", sandbox_id=sandbox_id)
     gpu_verify_attempts = 3
     gpu_verify_retry_delay_s = 3.0
+    exec_spawn_timeout_s = 90.0
+    stream_read_timeout_s = 5.0
+
+    async def _read_stream_best_effort(stream: Any) -> str:
+        with trio.move_on_after(stream_read_timeout_s) as cancel_scope:
+            return await trio_asyncio.aio_as_trio(stream.read.aio())
+        if cancel_scope.cancelled_caught:
+            return ""
+        return ""
 
     for attempt in range(1, gpu_verify_attempts + 1):
         _emit(
@@ -1304,12 +1314,20 @@ async def _verify_modal_gpu(
             timeout_sec=30,
         )
         start = trio.current_time()
-        proc = await trio_asyncio.aio_as_trio(
-            sandbox_handle.sandbox.exec.aio("nvidia-smi", timeout=30)
+        with trio.fail_after(exec_spawn_timeout_s):
+            proc = await trio_asyncio.aio_as_trio(
+                sandbox_handle.sandbox.exec.aio("nvidia-smi", timeout=30)
+            )
+        _emit(
+            "modal_gpu_verify_exec_spawned",
+            sandbox_id=sandbox_id,
+            attempt=attempt,
+            elapsed_sec=round(trio.current_time() - start, 3),
+            exec_spawn_timeout_s=exec_spawn_timeout_s,
         )
-        stdout = await trio_asyncio.aio_as_trio(proc.stdout.read.aio())
-        stderr = await trio_asyncio.aio_as_trio(proc.stderr.read.aio())
         exit_code = await trio_asyncio.aio_as_trio(proc.wait.aio())
+        stdout = await _read_stream_best_effort(proc.stdout)
+        stderr = await _read_stream_best_effort(proc.stderr)
         elapsed = trio.current_time() - start
         if stdout:
             logger.info("[sandbox] %s", stdout)

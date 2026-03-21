@@ -185,6 +185,11 @@ class ResourceWatchdog:
         with self._lock:
             self._phase = phase
             self._phase_data = dict(phase_data)
+        # TODO(watchdog-noise): The run journal currently gets flooded with
+        # repeated resource_watchdog_phase events during long startup/warmup
+        # regimes. Compress unchanged phases or rate-limit phase emission so
+        # the journal stays queryable and the important control-flow edges
+        # remain visually dominant.
         self.run_logger.event(
             "resource_watchdog_phase",
             **self.run_context,
