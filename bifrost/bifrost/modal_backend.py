@@ -71,6 +71,25 @@ def _exception_is_operator_interrupt(exc: BaseException) -> bool:
     return False
 
 
+def _modal_supervisor_exit_code(event_name: str, event_data: dict[str, Any]) -> int | None:
+    """Normalize supervisor child-exit events into the parent-visible exit code.
+
+    The Modal workload supervisor emits `remote_supervisor_child_exit` when the
+    actual training child finishes. That is the real completion boundary for the
+    workload. Detached inference services may still keep inherited stdout/stderr
+    pipes open afterward, so waiting for stream EOF is dishonest here.
+    """
+
+    if event_name != "remote_supervisor_child_exit":
+        return None
+    raw = event_data.get("child_returncode")
+    if not isinstance(raw, int):
+        return 1
+    if raw < 0:
+        return 128 + (-raw)
+    return raw
+
+
 @dataclass(frozen=True)
 class ModalExecutionRequest:
     """Provider-owned execution request for the current Modal backend."""
@@ -244,10 +263,14 @@ class ModalExecutionSession:
         shutdown_requested = threading.Event()
         startup_seen = threading.Event()
         process_started_ts = time.monotonic()
+        stdout_lines: list[str] = []
+        stderr_lines: list[str] = []
         stdout_tail: deque[str] = deque(maxlen=20)
         stderr_tail: deque[str] = deque(maxlen=40)
         output_send, output_receive = trio.open_memory_channel[ProcessOutputLine](256)
         trio_token = trio.lowlevel.current_trio_token()
+        supervisor_completion: dict[str, Any] = {}
+        supervisor_completion_seen = threading.Event()
         lifecycle_events = create_jsonl_event_stream(
             backend=self.backend,
             handle_kind="process",
@@ -332,6 +355,7 @@ class ModalExecutionSession:
             process_state["stdout_line_count"] += 1
             process_state["last_stdout_line"] = stripped
             process_state["last_stdout_elapsed_sec"] = round(_elapsed(), 3)
+            stdout_lines.append(line if line.endswith("\n") else f"{line}\n")
             stdout_tail.append(stripped)
             _send_output_line(ProcessOutputLine(stream="stdout", text=stripped))
             _emit_stream_line("remote_stdout_line", process_state["stdout_line_count"], stripped)
@@ -363,17 +387,25 @@ class ModalExecutionSession:
                                 process_state["stderr_line_count"],
                                 prefix,
                             )
+                            stderr_lines.append(f"{prefix}\n")
                         payload = payload.lstrip()
                         event_data, end_idx = decoder.raw_decode(payload)
                         event_name = event_data.pop("event", None)
                         if event_name:
                             _emit(event_name, **event_data)
+                            exit_code = _modal_supervisor_exit_code(event_name, event_data)
+                            if exit_code is not None:
+                                supervisor_completion["event_name"] = event_name
+                                supervisor_completion["event_data"] = dict(event_data)
+                                supervisor_completion["exit_code"] = exit_code
+                                supervisor_completion_seen.set()
                         remaining = payload[end_idx:].lstrip()
                     if remaining:
                         process_state["stderr_line_count"] += 1
                         process_state["last_stderr_line"] = remaining
                         process_state["last_stderr_elapsed_sec"] = round(_elapsed(), 3)
                         stderr_tail.append(remaining)
+                        stderr_lines.append(f"{remaining}\n")
                         _send_output_line(
                             ProcessOutputLine(stream="stderr", text=remaining),
                         )
@@ -389,6 +421,7 @@ class ModalExecutionSession:
             process_state["stderr_line_count"] += 1
             process_state["last_stderr_line"] = stripped
             process_state["last_stderr_elapsed_sec"] = round(_elapsed(), 3)
+            stderr_lines.append(line if line.endswith("\n") else f"{line}\n")
             stderr_tail.append(stripped)
             _send_output_line(ProcessOutputLine(stream="stderr", text=stripped))
             _emit_stream_line("remote_stderr_line", process_state["stderr_line_count"], stripped)
@@ -453,15 +486,23 @@ class ModalExecutionSession:
                 await trio.sleep(1.0)
 
         def _wait() -> ExecResult:
-            while not done.wait(timeout=0.1):
-                pass
+            while True:
+                if done.wait(timeout=0.1):
+                    break
+                if supervisor_completion_seen.is_set():
+                    break
             shutdown_requested.set()
             worker.join(timeout=1.0)
             if "exception" in results:
                 raise results["exception"]
-            stdout = str(results.get("stdout", ""))
-            stderr = str(results.get("stderr", ""))
-            exit_code = int(results.get("exit_code", 1))
+            if done.is_set():
+                stdout = str(results.get("stdout", ""))
+                stderr = str(results.get("stderr", ""))
+                exit_code = int(results.get("exit_code", 1))
+            else:
+                stdout = "".join(stdout_lines)
+                stderr = "".join(stderr_lines)
+                exit_code = int(supervisor_completion.get("exit_code", 1))
             _emit(
                 "remote_exit_observed",
                 exit_code=exit_code,
@@ -474,6 +515,7 @@ class ModalExecutionSession:
                 last_stderr_elapsed_sec=process_state["last_stderr_elapsed_sec"],
                 stdout_tail=list(stdout_tail),
                 stderr_tail=list(stderr_tail),
+                completion_event=supervisor_completion.get("event_name"),
             )
             return ExecResult(stdout=stdout, stderr=stderr, exit_code=exit_code)
 

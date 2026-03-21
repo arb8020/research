@@ -58,6 +58,11 @@ def job_status(session: BifrostClient, job: JobInfo) -> str:
         "running" if tmux session is alive
         "completed" if session has exited
     """
+    # TODO(job-event-shim): Legacy detached jobs still speak tmux/session/log-marker
+    # semantics instead of the parent-owned lifecycle algebra used by the new
+    # process/service handles. Add a shim that projects these legacy jobs into
+    # LifecycleEvent records so callers can query one event model while the hot
+    # training path is still on submit()/job.py.
     result = session.exec(f"tmux has-session -t {job.tmux_session} 2>/dev/null")
     return "running" if result.exit_code == 0 else "completed"
 

@@ -1597,6 +1597,10 @@ Examples:
             # Remote execution via SSH
             import trio
 
+            # TODO(event-inspection): Make structured event inspection first-class
+            # in argus so `--tail` is optional UI sugar, not the debugging
+            # substrate. The real source of truth should be the run journal plus
+            # bifrost lifecycle JSONL, queryable directly by run/handle id.
             trio.run(
                 run_remote,
                 str(config_path),

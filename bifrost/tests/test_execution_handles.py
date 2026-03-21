@@ -26,6 +26,7 @@ from bifrost import (
 )
 from bifrost.modal_backend import (
     _exception_is_operator_interrupt,
+    _modal_supervisor_exit_code,
     _normalize_run_logger_event_payload,
 )
 from bifrost.server import server_is_healthy
@@ -197,6 +198,13 @@ def test_modal_interrupt_detection_handles_exception_groups() -> None:
     exc = BaseExceptionGroup("shutdown", [KeyboardInterrupt()])
 
     assert _exception_is_operator_interrupt(exc) is True
+
+
+def test_modal_supervisor_exit_code_uses_child_exit_boundary() -> None:
+    assert _modal_supervisor_exit_code("other_event", {"child_returncode": 0}) is None
+    assert _modal_supervisor_exit_code("remote_supervisor_child_exit", {"child_returncode": 0}) == 0
+    assert _modal_supervisor_exit_code("remote_supervisor_child_exit", {"child_returncode": 7}) == 7
+    assert _modal_supervisor_exit_code("remote_supervisor_child_exit", {"child_returncode": -15}) == 143
 
 
 def test_observed_process_handle_exposes_live_process_surface() -> None:
