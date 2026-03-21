@@ -376,11 +376,11 @@ class ModalExecutionSession:
         worker.start()
 
         if start_timeout_s is not None and startup_sentinel:
-            deadline = time.monotonic() + start_timeout_s
+            deadline = trio.current_time() + start_timeout_s
             while not done.is_set() and not startup_seen.is_set():
-                if time.monotonic() >= deadline:
+                if trio.current_time() >= deadline:
                     _emit("workload_entrypoint_start_timeout", timeout_sec=start_timeout_s)
-                    self.sandbox_handle.sandbox.terminate()
+                    await trio.to_thread.run_sync(self.sandbox_handle.sandbox.terminate)
                     worker.join(timeout=5.0)
                     results.setdefault(
                         "stderr",
@@ -389,7 +389,7 @@ class ModalExecutionSession:
                     results.setdefault("stdout", "")
                     results.setdefault("exit_code", 124)
                     break
-                time.sleep(0.1)
+                await trio.sleep(1.0)
 
         def _wait() -> ExecResult:
             worker.join()
