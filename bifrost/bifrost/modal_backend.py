@@ -43,6 +43,24 @@ from .types import (
 logger = logging.getLogger(__name__)
 
 
+def _normalize_run_logger_event_payload(
+    *,
+    run_name: str,
+    provider: str,
+    data: dict[str, Any],
+) -> dict[str, Any]:
+    """Strip reserved outer-run keys while preserving differing child identity."""
+
+    payload = dict(data)
+    child_run_name = payload.pop("run_name", None)
+    child_provider = payload.pop("provider", None)
+    if child_run_name is not None and child_run_name != run_name:
+        payload["child_run_name"] = child_run_name
+    if child_provider is not None and child_provider != provider:
+        payload["child_provider"] = child_provider
+    return payload
+
+
 @dataclass(frozen=True)
 class ModalExecutionRequest:
     """Provider-owned execution request for the current Modal backend."""
@@ -1268,7 +1286,16 @@ async def run_modal_request(request: ModalExecutionRequest) -> dict[str, Any]:
 
     def emit(event: str, **data: Any) -> None:
         if request.run_logger is not None:
-            request.run_logger.event(event, provider="modal", run_name=run_name, **data)
+            request.run_logger.event(
+                event,
+                provider="modal",
+                run_name=run_name,
+                **_normalize_run_logger_event_payload(
+                    run_name=run_name,
+                    provider="modal",
+                    data=data,
+                ),
+            )
 
     enforce_source_sync_policy(request.source_sync_policy, repo_root=REPO_ROOT)
     emit(

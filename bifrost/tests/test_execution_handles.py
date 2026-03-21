@@ -24,6 +24,7 @@ from bifrost import (
     create_jsonl_event_stream,
     read_lifecycle_events,
 )
+from bifrost.modal_backend import _normalize_run_logger_event_payload
 from bifrost.server import server_is_healthy
 from bifrost.types import ExecResult, JobInfo, ServerInfo
 
@@ -169,6 +170,24 @@ def test_process_output_line_preserves_explicit_stream() -> None:
 
     assert line.stream == "stderr"
     assert line.text == "boom"
+
+
+def test_modal_event_payload_normalization_preserves_child_identity() -> None:
+    payload = _normalize_run_logger_event_payload(
+        run_name="outer-run",
+        provider="modal",
+        data={
+            "run_name": "inner-run",
+            "provider": "local",
+            "phase": "inference_startup",
+        },
+    )
+
+    assert payload == {
+        "child_run_name": "inner-run",
+        "child_provider": "local",
+        "phase": "inference_startup",
+    }
 
 
 def test_observed_process_handle_exposes_live_process_surface() -> None:
