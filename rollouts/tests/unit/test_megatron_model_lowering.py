@@ -1,8 +1,3 @@
-import os
-
-from rollouts.training.backends.megatron.runtime_env import (
-    configure_transformer_engine_attention_env,
-)
 from rollouts.training.models.backend_lowering import lower_model_to_megatron
 from rollouts.training.models.denotation import (
     CheckpointSemantics,
@@ -46,28 +41,3 @@ def test_glm4_moe_lowers_to_custom_spec() -> None:
 
     assert lowering.adapter_kind == "custom_spec"
     assert any("bridge-native transformer layer spec" in note for note in lowering.validation_notes)
-
-
-def test_glm4_mla_sets_te_flash_attention_env(monkeypatch) -> None:
-    monkeypatch.delenv("NVTE_FUSED_ATTN", raising=False)
-    monkeypatch.delenv("NVTE_FLASH_ATTN", raising=False)
-
-    updates = configure_transformer_engine_attention_env(_glm4_moe_denotation())
-
-    assert updates == {
-        "NVTE_FUSED_ATTN": "0",
-        "NVTE_FLASH_ATTN": "1",
-    }
-    assert os.environ["NVTE_FUSED_ATTN"] == "0"
-    assert os.environ["NVTE_FLASH_ATTN"] == "1"
-
-
-def test_glm4_mla_respects_existing_te_attention_env(monkeypatch) -> None:
-    monkeypatch.setenv("NVTE_FUSED_ATTN", "1")
-    monkeypatch.setenv("NVTE_FLASH_ATTN", "0")
-
-    updates = configure_transformer_engine_attention_env(_glm4_moe_denotation())
-
-    assert updates == {}
-    assert os.environ["NVTE_FUSED_ATTN"] == "1"
-    assert os.environ["NVTE_FLASH_ATTN"] == "0"

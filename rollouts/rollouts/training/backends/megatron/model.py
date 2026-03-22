@@ -27,9 +27,6 @@ from typing import Any, Protocol
 from rollouts.training.backends.megatron.qwen import build_qwen3_transformer_config
 from rollouts.training.backends.megatron.qwen3_5 import get_qwen3_5_spec
 from rollouts.training.backends.megatron.qwen3_next import get_qwen3_next_spec
-from rollouts.training.backends.megatron.runtime_env import (
-    configure_transformer_engine_attention_env,
-)
 from rollouts.training.models import (
     HFModelSource,
     ModelConstructionAdapter,
@@ -859,13 +856,6 @@ def setup_megatron_model(
     )
     denotation = normalize_hf_model_denotation(source)
     logger.info("Loading model via AutoBridge: %s", denotation.source.name_or_path)
-    te_env_updates = configure_transformer_engine_attention_env(denotation)
-    if te_env_updates:
-        logger.info(
-            "Configured Transformer Engine MLA attention env for %s: %s",
-            denotation.architecture.family,
-            te_env_updates,
-        )
 
     try:
         bridge = AutoBridge.from_pretrained(
