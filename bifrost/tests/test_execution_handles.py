@@ -3,6 +3,7 @@ import inspect
 
 import pytest
 import trio
+import trio_asyncio
 
 from bifrost import (
     EventStreamRef,
@@ -28,6 +29,7 @@ from bifrost.modal_backend import (
     _exception_is_operator_interrupt,
     _modal_supervisor_exit_code,
     _normalize_run_logger_event_payload,
+    _wait_for_modal_exec_ready,
 )
 from bifrost.server import server_is_healthy
 from bifrost.types import ExecResult, JobInfo, ServerInfo
@@ -216,6 +218,90 @@ def test_modal_interrupt_detection_handles_exception_groups() -> None:
     exc = BaseExceptionGroup("shutdown", [KeyboardInterrupt()])
 
     assert _exception_is_operator_interrupt(exc) is True
+
+
+def test_modal_exec_ready_retries_task_id_then_runs_exec_probe(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[tuple[str, dict[str, object]]] = []
+    task_id_calls = 0
+    exec_calls = 0
+
+    class _TaskIdMethod:
+        async def aio(self) -> str:
+            nonlocal task_id_calls
+            task_id_calls += 1
+            if task_id_calls == 1:
+                await trio.sleep(0.02)
+            return "task-123"
+
+    class _Sandbox:
+        _get_task_id = _TaskIdMethod()
+
+    async def _exercise() -> None:
+        nonlocal exec_calls
+        original_fail_after = trio.fail_after
+
+        def _fake_exec_modal_command_sync(
+            sandbox: object,
+            command: str,
+            timeout: int = 300,
+            *,
+            stream_output: bool = True,
+            on_started=None,
+            on_stdout_line=None,
+            on_stderr_line=None,
+            on_heartbeat=None,
+            heartbeat_interval_s: float = 15.0,
+            stop_requested=None,
+        ) -> tuple[str, str, int]:
+            nonlocal exec_calls
+            del (
+                sandbox,
+                timeout,
+                stream_output,
+                on_started,
+                on_stdout_line,
+                on_stderr_line,
+                on_heartbeat,
+                heartbeat_interval_s,
+                stop_requested,
+            )
+            exec_calls += 1
+            assert command == "true"
+            return "", "", 0
+
+        monkeypatch.setattr(
+            "bifrost.modal_backend.exec_modal_command_sync",
+            _fake_exec_modal_command_sync,
+        )
+        monkeypatch.setattr(trio_asyncio, "aio_as_trio", lambda coro: coro)
+
+        with pytest.MonkeyPatch.context() as local_patch:
+            local_patch.setattr(
+                trio, "fail_after", lambda *_args, **_kwargs: original_fail_after(0.01)
+            )
+            await _wait_for_modal_exec_ready(
+                type("Handle", (), {"sandbox": _Sandbox(), "sandbox_id": "sb-test"})(),
+                sandbox_id="sb-test",
+                emit=lambda event, **data: events.append((event, data)),
+            )
+
+    trio.run(_exercise)
+
+    assert task_id_calls == 2
+    assert exec_calls == 1
+    assert [event for event, _ in events] == [
+        "modal_exec_ready_wait_start",
+        "modal_exec_ready_task_id_attempt_start",
+        "modal_exec_ready_task_id_attempt_timeout",
+        "modal_exec_ready_retrying",
+        "modal_exec_ready_task_id_attempt_start",
+        "modal_exec_ready_task_id_ready",
+        "modal_exec_ready_exec_probe_start",
+        "modal_exec_ready_exec_probe_finished",
+        "modal_exec_ready",
+    ]
 
 
 def test_modal_supervisor_exit_code_uses_child_exit_boundary() -> None:

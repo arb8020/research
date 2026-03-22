@@ -1408,6 +1408,141 @@ async def _verify_modal_gpu(
     raise RuntimeError(f"nvidia-smi failed after {gpu_verify_attempts} attempts")
 
 
+async def _wait_for_modal_exec_ready(
+    sandbox_handle: ModalSandboxHandle,
+    *,
+    sandbox_id: str,
+    emit: Callable[[str], None] | None = None,
+) -> None:
+    """Wait until the Modal sandbox can reliably spawn exec commands.
+
+    `sandbox.poll() is None` only proves the keepalive primary is still alive.
+    The actual exec boundary is closer to "Modal has assigned a sandbox task ID
+    and a cheap exec can start promptly".
+    """
+
+    import trio
+    import trio_asyncio
+
+    def _emit(event: str, **data: Any) -> None:
+        if emit is not None:
+            emit(event, **data)
+
+    sandbox = sandbox_handle.sandbox
+    task_id_attempts = 6
+    task_id_timeout_s = 20
+    retry_delay_s = 2.0
+    exec_probe_timeout_s = 10
+
+    _emit("modal_exec_ready_wait_start", sandbox_id=sandbox_id)
+
+    task_id_getter = getattr(getattr(sandbox, "_get_task_id", None), "aio", None)
+    if task_id_getter is not None:
+        # TODO(modal-sdk-boundary): This uses Modal's private `_get_task_id`
+        # because the SDK does not expose a public "wait until exec-ready"
+        # primitive. Replace this with a public readiness boundary if Modal adds
+        # one; until then, this is a more honest proxy than treating `poll() is
+        # None` as proof that exec will start promptly.
+        for attempt in range(1, task_id_attempts + 1):
+            _emit(
+                "modal_exec_ready_task_id_attempt_start",
+                sandbox_id=sandbox_id,
+                attempt=attempt,
+                timeout_sec=task_id_timeout_s,
+            )
+            start = trio.current_time()
+            try:
+                with trio.fail_after(task_id_timeout_s):
+                    task_id = await trio_asyncio.aio_as_trio(task_id_getter())
+            except trio.TooSlowError:
+                elapsed = trio.current_time() - start
+                _emit(
+                    "modal_exec_ready_task_id_attempt_timeout",
+                    sandbox_id=sandbox_id,
+                    attempt=attempt,
+                    elapsed_sec=round(elapsed, 3),
+                    timeout_sec=task_id_timeout_s,
+                )
+                if attempt < task_id_attempts:
+                    _emit(
+                        "modal_exec_ready_retrying",
+                        sandbox_id=sandbox_id,
+                        attempt=attempt,
+                        retry_delay_sec=retry_delay_s,
+                        phase="task_id",
+                    )
+                    await trio.sleep(retry_delay_s)
+                    continue
+                raise RuntimeError(
+                    f"Modal sandbox {sandbox_id} never became exec-ready: task id unavailable"
+                ) from None
+            else:
+                elapsed = trio.current_time() - start
+                _emit(
+                    "modal_exec_ready_task_id_ready",
+                    sandbox_id=sandbox_id,
+                    attempt=attempt,
+                    elapsed_sec=round(elapsed, 3),
+                    task_id=task_id,
+                )
+                break
+
+    _emit(
+        "modal_exec_ready_exec_probe_start",
+        sandbox_id=sandbox_id,
+        timeout_sec=exec_probe_timeout_s,
+    )
+    start = trio.current_time()
+
+    def _run_exec_probe() -> tuple[str, str, int]:
+        return exec_modal_command_sync(
+            sandbox,
+            "true",
+            timeout=exec_probe_timeout_s,
+            stream_output=False,
+        )
+
+    try:
+        with trio.fail_after(exec_probe_timeout_s + 5):
+            stdout, stderr, exit_code = await trio.to_thread.run_sync(
+                _run_exec_probe,
+                abandon_on_cancel=True,
+            )
+    except trio.TooSlowError:
+        elapsed = trio.current_time() - start
+        _emit(
+            "modal_exec_ready_exec_probe_timeout",
+            sandbox_id=sandbox_id,
+            elapsed_sec=round(elapsed, 3),
+            timeout_sec=exec_probe_timeout_s + 5,
+        )
+        raise RuntimeError(
+            f"Modal sandbox {sandbox_id} never became exec-ready: cheap exec probe timed out"
+        ) from None
+
+    elapsed = trio.current_time() - start
+    _emit(
+        "modal_exec_ready_exec_probe_finished",
+        sandbox_id=sandbox_id,
+        elapsed_sec=round(elapsed, 3),
+        exit_code=exit_code,
+    )
+    if exit_code != 0:
+        _emit(
+            "modal_exec_ready_exec_probe_failed",
+            sandbox_id=sandbox_id,
+            elapsed_sec=round(elapsed, 3),
+            exit_code=exit_code,
+            stdout_tail=stdout[-1000:],
+            stderr_tail=stderr[-1000:],
+        )
+        raise RuntimeError(
+            f"Modal sandbox {sandbox_id} failed exec-ready probe with exit code {exit_code}"
+        )
+
+    _emit("modal_exec_ready", sandbox_id=sandbox_id, elapsed_sec=round(elapsed, 3))
+
+
 def _build_argus_local_process_spec(
     *,
     workspace: str,
@@ -1525,6 +1660,7 @@ async def run_modal_request(request: ModalExecutionRequest) -> dict[str, Any]:
             emit("modal_sandbox_created", sandbox_id=sandbox_id)
 
             try:
+                await _wait_for_modal_exec_ready(sandbox_handle, sandbox_id=sandbox_id, emit=emit)
                 await _verify_modal_gpu(sandbox_handle, sandbox_id=sandbox_id, emit=emit)
 
                 if request.model_name:
