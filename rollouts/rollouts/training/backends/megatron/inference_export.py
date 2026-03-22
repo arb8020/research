@@ -184,6 +184,13 @@ def build_megatron_inference_export_from_runtime(
         q_lora_rank=conversion_context["q_lora_rank"],
     )
 
+    runtime_rank = _get_runtime_rank()
+    if not tensors and runtime_rank != 0:
+        return MegatronInferenceExport(
+            tensors=OrderedDict(),
+            dropped_unconverted_keys=tuple(dropped_unconverted_keys),
+        )
+
     if not tensors:
         raise RuntimeError(
             "Megatron runtime inference export produced zero tensors. "
@@ -257,3 +264,13 @@ def _strip_chunk_prefix(name: str) -> str:
     if prefix.startswith("chunk_") and separator and prefix[6:].isdigit():
         return remainder
     return name
+
+
+def _get_runtime_rank() -> int:
+    try:
+        import torch.distributed as dist
+    except Exception:
+        return 0
+    if not dist.is_available() or not dist.is_initialized():
+        return 0
+    return int(dist.get_rank())
