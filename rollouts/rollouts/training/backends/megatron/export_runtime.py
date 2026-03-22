@@ -9,8 +9,8 @@ from typing import Any
 import torch.distributed as dist
 from torch import Tensor
 
+from .export_common import named_params_and_buffers_global
 from .export_iterator import build_runtime_hf_tensors
-from .export_common import all_gather_runtime_param, named_params_and_buffers_global
 from .weight_conversion import convert_megatron_to_hf, remove_padding
 
 logger = logging.getLogger(__name__)
@@ -137,13 +137,13 @@ def _build_megatron_hf_tensors_from_runtime_ep_only(
                 ep_rank=rank,
                 local_experts_per_rank=local_experts_per_rank,
             )
-            local_expert_params.append((global_name, all_gather_runtime_param(global_name, param)))
+            local_expert_params.append((global_name, _materialize_ep_local_param(param)))
             continue
 
         if rank != 0:
             continue
 
-        full_param = all_gather_runtime_param(name, param)
+        full_param = _materialize_ep_local_param(param)
         _convert_runtime_param(
             tensors=tensors,
             dropped_unconverted=dropped_unconverted,
@@ -159,7 +159,9 @@ def _build_megatron_hf_tensors_from_runtime_ep_only(
             q_lora_rank=q_lora_rank,
         )
 
-    gathered_local_experts: list[list[tuple[str, Tensor]] | None] = [None] * world_size if rank == 0 else []
+    gathered_local_experts: list[list[tuple[str, Tensor]] | None] = (
+        [None] * world_size if rank == 0 else []
+    )
     dist.gather_object(local_expert_params, gathered_local_experts if rank == 0 else None, dst=0)
 
     if rank != 0:
@@ -238,3 +240,11 @@ def _globalize_local_expert_name(name: str, *, ep_rank: int, local_experts_per_r
         f".mlp.experts.{global_idx}.",
         1,
     )
+
+
+def _materialize_ep_local_param(param: Tensor) -> Tensor:
+    # EP-only runtime export for the current witness path has TP=1, so every
+    # local param is already complete. Materialize it on CPU directly instead of
+    # paying an unnecessary GPU-side gather/all_gather buffer tax during
+    # validation and sync.
+    return param.detach().cpu()
