@@ -145,8 +145,11 @@ def _register() -> bool:
             return dict(
                 vocab_size=self.hf_config.vocab_size,
                 max_sequence_length=self.hf_config.max_position_embeddings,
-                position_embedding_type="rope",
-                rotary_base=self.rope_theta,
+                # MLA layers consume RoPE internally from the transformer config.
+                # Passing a top-level GPT rotary embedding path causes Megatron to
+                # thread rotary_pos_emb into MultiLatentAttention, which current
+                # Megatron rejects.
+                position_embedding_type="none",
             )
 
         def _weight_name_mapping_mlp(self, name: str) -> list[str]:
@@ -161,9 +164,7 @@ def _register() -> bool:
                         f"model.layers.{layer_number}.mlp.experts.{expert_number}.gate_proj.weight",
                         f"model.layers.{layer_number}.mlp.experts.{expert_number}.up_proj.weight",
                     ]
-                return [
-                    f"model.layers.{layer_number}.mlp.experts.{expert_number}.down_proj.weight"
-                ]
+                return [f"model.layers.{layer_number}.mlp.experts.{expert_number}.down_proj.weight"]
 
             shared_expert_match = re.match(
                 r"decoder\.layers\.(\d+)\.mlp\.shared_experts\.(linear_fc[12])\.weight",
