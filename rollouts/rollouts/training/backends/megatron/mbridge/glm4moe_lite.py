@@ -76,7 +76,11 @@ def _register() -> bool:
                 # RMSNorm models hit FusedLayerNorm assertions under the
                 # Transformer Engine path in current Megatron-Core.
                 "transformer_impl": "local",
-                "attention_backend": AttnBackend.fused,
+                # Current Modal/Megatron/TE builds do not reliably provide a
+                # valid fused/TE dot-product backend for GLM MLA. Prefer the
+                # local backend for now so the model semantics stay live while
+                # we sort out a truthful fast-path choice later.
+                "attention_backend": AttnBackend.local,
                 "layernorm_epsilon": hf_config.rms_norm_eps,
                 "ffn_hidden_size": hf_config.intermediate_size,
                 "qk_layernorm": True,
