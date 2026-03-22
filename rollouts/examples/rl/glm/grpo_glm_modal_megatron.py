@@ -31,7 +31,7 @@ _megatron_modal_deps = default_remote_megatron_training_deps()
 _megatron_modal_deps = replace(
     _megatron_modal_deps,
     runtime_overlay=_megatron_modal_deps.runtime_overlay.extended(
-        env={"PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True"}
+        env={"PYTORCH_ALLOC_CONF": "expandable_segments:True"}
     ),
 )
 
@@ -85,8 +85,10 @@ config = GRPOConfig(
         batch_size=4,
         n_samples_per_prompt=8,
         temperature=0.7,
-        max_seq_len=2048,
-        max_tokens=256,
+        # Keep the Modal Megatron witness under the 80GB A100 cliff. The goal
+        # here is backend liveness, not max-context benchmarking.
+        max_seq_len=1024,
+        max_tokens=128,
     ),
     checkpoint=CheckpointConfig(
         num_steps=50,
