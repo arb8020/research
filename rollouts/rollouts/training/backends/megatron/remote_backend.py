@@ -41,6 +41,7 @@ _CONTROL_MESSAGE_MAX_BYTES = 64 * 1024
 _WITNESS_RESPONSE_TIMEOUT_SEC = 20.0
 _RESPONSE_POLL_INTERVAL_SEC = 0.25
 _RESPONSE_PROGRESS_LOG_INTERVAL_SEC = 5.0
+_PREFLIGHT_TRAIN_STEP_TIMEOUT_SEC = 600.0
 
 
 @dataclass
@@ -259,6 +260,14 @@ class MegatronRemoteBackend:
                 )
                 next_progress_log = now + _RESPONSE_PROGRESS_LOG_INTERVAL_SEC
 
+            workers = self._worker_snapshot()
+            dead_workers = [row["pid"] for row in workers if not row.get("alive", False)]
+            if dead_workers:
+                self._abort_workers(reason="peer_worker_exited_while_waiting", context=context)
+                raise EOFError(
+                    f"Megatron worker peers {dead_workers} exited while waiting for {context}"
+                )
+
             if not worker.is_alive():
                 self._abort_workers(reason="worker_exited_while_waiting", context=context)
                 raise EOFError(f"Megatron worker {worker.pid} exited while waiting for {context}")
@@ -386,7 +395,21 @@ class MegatronRemoteBackend:
         surface exists to give GRPO an honest preflight hook without pretending
         the remote backend supports the contract-native per-call loss API yet.
         """
-        return self.forward_backward(batch)
+        assert self._initialized, "Call initialize() first"
+        serialized_batch = self._serialize_batch(self._normalize_training_batch(batch))
+        self.workers[0].send({
+            "cmd": "train_step",
+            "batch": serialized_batch,
+        })
+        response = self._recv_response_polling(
+            self.workers[0],
+            context="train_step_preflight",
+            max_size=10 * 1024 * 1024,
+            timeout_sec=_PREFLIGHT_TRAIN_STEP_TIMEOUT_SEC,
+        )
+        assert response["status"] == "ok", f"Preflight train step failed: {response}"
+        self._step += 1
+        return ImmediateTrainFuture(response["metrics"], operation="preflight_step")
 
     def validate_inference_export(self) -> TrainFuture[dict[str, Any]]:
         """Validate the Megatron runtime -> inference export boundary.

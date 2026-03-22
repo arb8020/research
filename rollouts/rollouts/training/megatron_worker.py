@@ -901,22 +901,29 @@ def _resume_inference_endpoints(inference_endpoints: list[str]) -> None:
     logger.info("weight_sync_megatron_resume_ok endpoints=%s", inference_endpoints)
 
 
-def _send_rank0_command_error(
+def _emit_command_error_diagnostics(
     handle: Worker,
     *,
     rank: int,
     command_name: str,
     exc: BaseException,
 ) -> None:
-    """Best-effort structured command failure for the control channel."""
-    if rank != 0:
-        return
-
+    """Best-effort structured command failure for the control/logging boundary."""
     import traceback
 
     tb = traceback.format_exc()
     error = f"Worker rank {rank} failed during {command_name}: {type(exc).__name__}: {exc}"
     traceback_tail = tb[-8000:] if tb else ""
+    _emit_argus_diag(
+        "megatron_worker_command_failed",
+        rank=rank,
+        command_name=command_name,
+        error=error,
+        traceback_tail=traceback_tail if traceback_tail else None,
+    )
+    if rank != 0:
+        return
+
     payload = {"status": "error", "error": error}
     if traceback_tail:
         payload["traceback_tail"] = traceback_tail
@@ -1363,7 +1370,7 @@ def _training_loop(
                 type(exc).__name__,
                 exc,
             )
-            _send_rank0_command_error(
+            _emit_command_error_diagnostics(
                 handle,
                 rank=rank,
                 command_name=command_name,
