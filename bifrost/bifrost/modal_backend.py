@@ -7,14 +7,14 @@ here, while Rollouts still owns workload-specific helper code.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
-import json
+import shlex
 import subprocess
 import tempfile
 import threading
 import time
-import shlex
 from collections import deque
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
@@ -25,9 +25,6 @@ from typing import Any
 import trio
 
 from .types import (
-    append_lifecycle_event,
-    create_jsonl_event_stream,
-    EventStreamRef,
     ExecResult,
     ObservedProcessHandle,
     OutputSink,
@@ -40,6 +37,8 @@ from .types import (
     ServiceState,
     WorkspaceHandle,
     WorkspaceMaterializationSpec,
+    append_lifecycle_event,
+    create_jsonl_event_stream,
 )
 
 logger = logging.getLogger(__name__)
@@ -47,19 +46,35 @@ logger = logging.getLogger(__name__)
 
 def _normalize_run_logger_event_payload(
     *,
-    run_name: str,
-    provider: str,
+    run_name: str | None = None,
+    provider: str | None = None,
+    backend: str | None = None,
+    handle_name: str | None = None,
     data: dict[str, Any],
 ) -> dict[str, Any]:
-    """Strip reserved outer-run keys while preserving differing child identity."""
+    """Strip reserved parent keys while preserving differing child identity."""
 
     payload = dict(data)
     child_run_name = payload.pop("run_name", None)
     child_provider = payload.pop("provider", None)
+    child_backend = payload.pop("backend", None)
+    child_handle_name = payload.pop("handle_name", None)
     if child_run_name is not None and child_run_name != run_name:
         payload["child_run_name"] = child_run_name
+    elif child_run_name is not None and run_name is None:
+        payload["run_name"] = child_run_name
     if child_provider is not None and child_provider != provider:
         payload["child_provider"] = child_provider
+    elif child_provider is not None and provider is None:
+        payload["provider"] = child_provider
+    if child_backend is not None and child_backend != backend:
+        payload["child_backend"] = child_backend
+    elif child_backend is not None and backend is None:
+        payload["backend"] = child_backend
+    if child_handle_name is not None and child_handle_name != handle_name:
+        payload["child_handle_name"] = child_handle_name
+    elif child_handle_name is not None and handle_name is None:
+        payload["handle_name"] = child_handle_name
     return payload
 
 
@@ -338,7 +353,9 @@ class ModalExecutionSession:
                 truncated=len(text) > max_chars,
             )
 
-        def _maybe_record_supervisor_completion(event_name: str, event_data: dict[str, Any]) -> None:
+        def _maybe_record_supervisor_completion(
+            event_name: str, event_data: dict[str, Any]
+        ) -> None:
             exit_code = _modal_supervisor_exit_code(event_name, event_data)
             if exit_code is None:
                 return
@@ -376,7 +393,9 @@ class ModalExecutionSession:
             except BaseException as exc:
                 if shutdown_requested.is_set() or _exception_is_operator_interrupt(exc):
                     return
-                logger.warning("Modal attached output forwarding failed: %s: %s", type(exc).__name__, exc)
+                logger.warning(
+                    "Modal attached output forwarding failed: %s: %s", type(exc).__name__, exc
+                )
 
         def _close_output_stream() -> None:
             try:
@@ -384,7 +403,9 @@ class ModalExecutionSession:
             except BaseException as exc:
                 if shutdown_requested.is_set() or _exception_is_operator_interrupt(exc):
                     return
-                logger.warning("Modal attached output close failed: %s: %s", type(exc).__name__, exc)
+                logger.warning(
+                    "Modal attached output close failed: %s: %s", type(exc).__name__, exc
+                )
 
         def _on_started() -> None:
             _emit("remote_entrypoint_invoked")
@@ -405,7 +426,14 @@ class ModalExecutionSession:
                     event_data = json.loads(payload)
                     event_name = event_data.pop("event", None)
                     if event_name:
-                        _emit(event_name, **event_data)
+                        _emit(
+                            event_name,
+                            **_normalize_run_logger_event_payload(
+                                backend=self.backend,
+                                handle_name=process_name,
+                                data=event_data,
+                            ),
+                        )
                 except Exception as exc:
                     _emit("remote_event_stream_parse_failed", error=f"{type(exc).__name__}: {exc}")
                 return
@@ -648,14 +676,12 @@ class ModalExecutionSession:
             readiness_target=service.readiness_probe.target,
         )
         await self.exec(
-            " && ".join(
-                (
-                    f"mkdir -p {shlex.quote(str(Path(log_file).parent))}",
-                    f": > {shlex.quote(stdout_log)}",
-                    f": > {shlex.quote(stderr_log)}",
-                    f"rm -f {shlex.quote(pid_file)}",
-                )
-            )
+            " && ".join((
+                f"mkdir -p {shlex.quote(str(Path(log_file).parent))}",
+                f": > {shlex.quote(stdout_log)}",
+                f": > {shlex.quote(stderr_log)}",
+                f"rm -f {shlex.quote(pid_file)}",
+            ))
         )
 
         wrapped_command = (
@@ -687,8 +713,10 @@ class ModalExecutionSession:
             if probe.kind == "http":
                 assert service.port is not None, "HTTP readiness requires service.port"
                 target = probe.target or "/health"
-                url = target if target.startswith("http://") or target.startswith("https://") else (
-                    f"http://localhost:{service.port}{target}"
+                url = (
+                    target
+                    if target.startswith("http://") or target.startswith("https://")
+                    else (f"http://localhost:{service.port}{target}")
                 )
                 result = await self.exec(
                     f"curl -s -o /dev/null -w '%{{http_code}}' {shlex.quote(url)} 2>/dev/null || echo 000"
@@ -708,12 +736,10 @@ class ModalExecutionSession:
         async def _logs(tail: int) -> str:
             return (
                 await self.exec(
-                    " && ".join(
-                        (
-                            f"echo '== stdout ==' && tail -n {tail} {shlex.quote(stdout_log)} 2>/dev/null || true",
-                            f"echo '== stderr ==' && tail -n {tail} {shlex.quote(stderr_log)} 2>/dev/null || true",
-                        )
-                    )
+                    " && ".join((
+                        f"echo '== stdout ==' && tail -n {tail} {shlex.quote(stdout_log)} 2>/dev/null || true",
+                        f"echo '== stderr ==' && tail -n {tail} {shlex.quote(stderr_log)} 2>/dev/null || true",
+                    ))
                 )
             ).stdout
 

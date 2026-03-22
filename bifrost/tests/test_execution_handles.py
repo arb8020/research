@@ -194,6 +194,24 @@ def test_modal_event_payload_normalization_preserves_child_identity() -> None:
     }
 
 
+def test_modal_event_payload_normalization_protects_parent_lifecycle_keys() -> None:
+    payload = _normalize_run_logger_event_payload(
+        backend="modal",
+        handle_name="attached-train",
+        data={
+            "backend": "megatron",
+            "handle_name": "inner-workload",
+            "phase": "training_preflight",
+        },
+    )
+
+    assert payload == {
+        "child_backend": "megatron",
+        "child_handle_name": "inner-workload",
+        "phase": "training_preflight",
+    }
+
+
 def test_modal_interrupt_detection_handles_exception_groups() -> None:
     exc = BaseExceptionGroup("shutdown", [KeyboardInterrupt()])
 
@@ -204,7 +222,10 @@ def test_modal_supervisor_exit_code_uses_child_exit_boundary() -> None:
     assert _modal_supervisor_exit_code("other_event", {"child_returncode": 0}) is None
     assert _modal_supervisor_exit_code("remote_supervisor_child_exit", {"child_returncode": 0}) == 0
     assert _modal_supervisor_exit_code("remote_supervisor_child_exit", {"child_returncode": 7}) == 7
-    assert _modal_supervisor_exit_code("remote_supervisor_child_exit", {"child_returncode": -15}) == 143
+    assert (
+        _modal_supervisor_exit_code("remote_supervisor_child_exit", {"child_returncode": -15})
+        == 143
+    )
 
 
 def test_observed_process_handle_exposes_live_process_surface() -> None:

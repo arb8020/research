@@ -705,7 +705,6 @@ async def _run_training_preflight(
         runtime_run_logger.event(
             "training_preflight_start",
             **rc,
-            backend=config.trainer.backend,
         )
 
     dummy_engine = SimpleNamespace(api_base=f"http://127.0.0.1:{config.inference.port}/v1")
@@ -737,7 +736,6 @@ async def _run_training_preflight(
             runtime_run_logger.event(
                 "training_preflight_backend_init_ok",
                 **rc,
-                backend=config.trainer.backend,
             )
 
         if config.trainer.backend == "megatron":
@@ -760,7 +758,6 @@ async def _run_training_preflight(
                 runtime_run_logger.event(
                     "training_preflight_inference_export_ok",
                     **rc,
-                    backend=config.trainer.backend,
                     tensor_count=export_validation.get("tensor_count"),
                 )
             preflight_step = getattr(backend, "preflight_step", None)
@@ -799,7 +796,6 @@ async def _run_training_preflight(
             runtime_run_logger.event(
                 "training_preflight_synthetic_step_ok",
                 **rc,
-                backend=config.trainer.backend,
                 losses=getattr(fb_result, "losses", {}),
                 optim=optim_result,
             )
