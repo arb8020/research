@@ -437,6 +437,11 @@ class TrainerConfig:
     recompute_granularity: str = "selective"  # "full", "selective", or "none"
     recompute_method: str = "uniform"  # "uniform" or "block"
     recompute_num_layers: int = 1  # Layers per recompute block
+    # Whether GRPO preflight should force a full Megatron runtime->HF export
+    # before inference startup. Keep this on for stricter backend bringup, but
+    # witnesses can disable it when the later weight-sync witness is the real
+    # contract they care about and the full export is too expensive upfront.
+    validate_inference_export_in_preflight: bool = True
 
     # Backend-neutral realization intent.
     # These strings describe denotational layout/collective intent; backends

@@ -61,6 +61,7 @@ config = GRPOConfig(
         expert_parallel_size=4,
         sequence_parallel=False,
         activation_checkpointing=True,
+        validate_inference_export_in_preflight=False,
     ),
     inference=InferenceConfig(
         backend="sglang",

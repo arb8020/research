@@ -739,27 +739,43 @@ async def _run_training_preflight(
             )
 
         if config.trainer.backend == "megatron":
-            validate_inference_export = getattr(backend, "validate_inference_export", None)
-            assert callable(validate_inference_export), (
-                "Megatron backend must expose validate_inference_export()"
-            )
-            export_validation = await validate_inference_export().result()
-            logger.info(
-                "training_preflight_inference_export_ok",
-                extra={
-                    "event": "training_preflight_inference_export_ok",
-                    **rc,
-                    "node_id": node_id or rc.get("node_id"),
-                    "backend": config.trainer.backend,
-                    "tensor_count": export_validation.get("tensor_count"),
-                },
-            )
-            if runtime_run_logger is not None:
-                runtime_run_logger.event(
-                    "training_preflight_inference_export_ok",
-                    **rc,
-                    tensor_count=export_validation.get("tensor_count"),
+            if config.trainer.validate_inference_export_in_preflight:
+                validate_inference_export = getattr(backend, "validate_inference_export", None)
+                assert callable(validate_inference_export), (
+                    "Megatron backend must expose validate_inference_export()"
                 )
+                export_validation = await validate_inference_export().result()
+                logger.info(
+                    "training_preflight_inference_export_ok",
+                    extra={
+                        "event": "training_preflight_inference_export_ok",
+                        **rc,
+                        "node_id": node_id or rc.get("node_id"),
+                        "backend": config.trainer.backend,
+                        "tensor_count": export_validation.get("tensor_count"),
+                    },
+                )
+                if runtime_run_logger is not None:
+                    runtime_run_logger.event(
+                        "training_preflight_inference_export_ok",
+                        **rc,
+                        tensor_count=export_validation.get("tensor_count"),
+                    )
+            else:
+                logger.info(
+                    "training_preflight_inference_export_skipped",
+                    extra={
+                        "event": "training_preflight_inference_export_skipped",
+                        **rc,
+                        "node_id": node_id or rc.get("node_id"),
+                        "backend": config.trainer.backend,
+                    },
+                )
+                if runtime_run_logger is not None:
+                    runtime_run_logger.event(
+                        "training_preflight_inference_export_skipped",
+                        **rc,
+                    )
             preflight_step = getattr(backend, "preflight_step", None)
             assert callable(preflight_step), "Megatron backend must expose preflight_step()"
             fb_result = await preflight_step(_build_megatron_preflight_batch(config)).result()
