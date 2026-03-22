@@ -1340,7 +1340,33 @@ async def _verify_modal_gpu(
                 stream_output=False,
             )
 
-        stdout, stderr, exit_code = await trio.to_thread.run_sync(_run_nvidia_smi)
+        try:
+            with trio.fail_after(command_timeout_s + 10):
+                stdout, stderr, exit_code = await trio.to_thread.run_sync(
+                    _run_nvidia_smi,
+                    abandon_on_cancel=True,
+                )
+        except trio.TooSlowError:
+            elapsed = trio.current_time() - start
+            _emit(
+                "modal_gpu_verify_attempt_timeout",
+                sandbox_id=sandbox_id,
+                attempt=attempt,
+                elapsed_sec=round(elapsed, 3),
+                timeout_sec=command_timeout_s + 10,
+            )
+            if attempt < gpu_verify_attempts:
+                _emit(
+                    "modal_gpu_verify_retrying",
+                    sandbox_id=sandbox_id,
+                    attempt=attempt,
+                    retry_delay_sec=gpu_verify_retry_delay_s,
+                )
+                await trio.sleep(gpu_verify_retry_delay_s)
+                continue
+            raise RuntimeError(
+                f"nvidia-smi timed out after {gpu_verify_attempts} attempts in sandbox {sandbox_id}"
+            ) from None
         elapsed = trio.current_time() - start
         _emit(
             "modal_gpu_verify_exec_finished",
