@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 import logging
+import re
 from collections import OrderedDict
 from collections.abc import Sequence
 from typing import Any
 
+import torch.distributed as dist
 from torch import Tensor
 
 from .export_iterator import build_runtime_hf_tensors
+from .export_common import all_gather_runtime_param, named_params_and_buffers_global
+from .weight_conversion import convert_megatron_to_hf, remove_padding
 
 logger = logging.getLogger(__name__)
 
@@ -34,19 +38,35 @@ def build_megatron_hf_tensors_from_runtime(
 
     pp_size = mpu.get_pipeline_model_parallel_world_size()
     ep_size = mpu.get_expert_model_parallel_world_size()
+    tp_size = mpu.get_tensor_model_parallel_world_size()
 
-    # TODO(chiraag): Port the full miles/slime PP/EP source-rank exchange path.
-    # The current witness path is TP-only, so reject the broader state space
-    # rather than lying about export completeness.
     if pp_size != 1:
         raise RuntimeError(
             "Megatron inference export from runtime currently only supports "
             f"pipeline_model_parallel_size=1, got {pp_size}."
         )
+
+    # Narrow, explicit witness path for GLM/Qwen MoE on Modal:
+    # PP=1, TP=1, EP>1. This is the smallest honest EP source-rank exchange
+    # slice we need before porting the broader miles/slime export iterator.
     if ep_size != 1:
-        raise RuntimeError(
-            "Megatron inference export from runtime currently only supports "
-            f"expert_model_parallel_size=1, got {ep_size}."
+        if tp_size != 1:
+            raise RuntimeError(
+                "Megatron inference export from runtime currently only supports "
+                "expert-model-parallel MoE export when tensor_model_parallel_size=1, "
+                f"got tp={tp_size}, ep={ep_size}."
+            )
+        return _build_megatron_hf_tensors_from_runtime_ep_only(
+            model_name=model_name,
+            model_chunks=model_chunks,
+            vocab_size=vocab_size,
+            num_layers=num_layers,
+            num_attention_heads=num_attention_heads,
+            hidden_size=hidden_size,
+            num_query_groups=num_query_groups,
+            kv_channels=kv_channels,
+            q_lora_rank=q_lora_rank,
+            ep_size=ep_size,
         )
 
     tensors, dropped_unconverted_keys = build_runtime_hf_tensors(
@@ -69,3 +89,152 @@ def build_megatron_hf_tensors_from_runtime(
         )
 
     return tensors, dropped_unconverted_keys
+
+
+def _build_megatron_hf_tensors_from_runtime_ep_only(
+    *,
+    model_name: str,
+    model_chunks: Sequence[Any],
+    vocab_size: int,
+    num_layers: int,
+    num_attention_heads: int,
+    hidden_size: int,
+    num_query_groups: int | None = None,
+    kv_channels: int | None = None,
+    q_lora_rank: int | None = None,
+    ep_size: int,
+) -> tuple[OrderedDict[str, Tensor], tuple[str, ...]]:
+    rank = dist.get_rank()
+    world_size = dist.get_world_size()
+    assert world_size == ep_size, (
+        "EP runtime export currently assumes the trainer world is exactly one "
+        f"expert-parallel group, got world_size={world_size}, ep_size={ep_size}."
+    )
+
+    local_named_params = dict(named_params_and_buffers_global(model_chunks))
+    tensors: OrderedDict[str, Tensor] = OrderedDict()
+    dropped_unconverted: list[str] = []
+
+    local_expert_indices = sorted({
+        int(match.group(2))
+        for name in local_named_params
+        if (match := _LOCAL_EXPERT_PARAM_PATTERN.match(name)) is not None
+    })
+    local_experts_per_rank = local_expert_indices[-1] + 1 if local_expert_indices else 0
+
+    if local_expert_indices and local_expert_indices != list(range(local_experts_per_rank)):
+        raise RuntimeError(
+            "Megatron EP runtime export expected dense local expert indices, got "
+            f"{local_expert_indices}."
+        )
+
+    local_expert_params: list[tuple[str, Tensor]] = []
+    for name, param in local_named_params.items():
+        local_expert_match = _LOCAL_EXPERT_PARAM_PATTERN.match(name)
+        if local_expert_match is not None:
+            global_name = _globalize_local_expert_name(
+                name,
+                ep_rank=rank,
+                local_experts_per_rank=local_experts_per_rank,
+            )
+            local_expert_params.append((global_name, all_gather_runtime_param(global_name, param)))
+            continue
+
+        if rank != 0:
+            continue
+
+        full_param = all_gather_runtime_param(name, param)
+        _convert_runtime_param(
+            tensors=tensors,
+            dropped_unconverted=dropped_unconverted,
+            model_name=model_name,
+            name=name,
+            param=full_param,
+            vocab_size=vocab_size,
+            num_layers=num_layers,
+            num_attention_heads=num_attention_heads,
+            hidden_size=hidden_size,
+            num_query_groups=num_query_groups,
+            kv_channels=kv_channels,
+            q_lora_rank=q_lora_rank,
+        )
+
+    gathered_local_experts: list[list[tuple[str, Tensor]] | None] = [None] * world_size if rank == 0 else []
+    dist.gather_object(local_expert_params, gathered_local_experts if rank == 0 else None, dst=0)
+
+    if rank != 0:
+        return OrderedDict(), ()
+
+    for expert_shard in gathered_local_experts:
+        if expert_shard is None:
+            continue
+        for name, param in expert_shard:
+            _convert_runtime_param(
+                tensors=tensors,
+                dropped_unconverted=dropped_unconverted,
+                model_name=model_name,
+                name=name,
+                param=param,
+                vocab_size=vocab_size,
+                num_layers=num_layers,
+                num_attention_heads=num_attention_heads,
+                hidden_size=hidden_size,
+                num_query_groups=num_query_groups,
+                kv_channels=kv_channels,
+                q_lora_rank=q_lora_rank,
+            )
+
+    return tensors, tuple(dropped_unconverted)
+
+
+def _convert_runtime_param(
+    *,
+    tensors: OrderedDict[str, Tensor],
+    dropped_unconverted: list[str],
+    model_name: str,
+    name: str,
+    param: Tensor,
+    vocab_size: int,
+    num_layers: int,
+    num_attention_heads: int,
+    hidden_size: int,
+    num_query_groups: int | None,
+    kv_channels: int | None,
+    q_lora_rank: int | None,
+) -> None:
+    try:
+        converted_named_tensors = convert_megatron_to_hf(
+            model_name=model_name,
+            name=name,
+            param=param,
+            vocab_size=vocab_size,
+            num_layers=num_layers,
+            num_attention_heads=num_attention_heads,
+            hidden_size=hidden_size,
+            num_query_groups=num_query_groups,
+            kv_channels=kv_channels,
+            q_lora_rank=q_lora_rank,
+        )
+    except Exception:
+        dropped_unconverted.append(name)
+        return
+
+    for hf_name, hf_param in converted_named_tensors:
+        tensors[hf_name] = remove_padding(hf_name, hf_param, vocab_size)
+
+
+_LOCAL_EXPERT_PARAM_PATTERN = re.compile(
+    r"^(decoder\.layers\.\d+\.mlp\.experts\.local_experts\.(\d+)\..+)$"
+)
+
+
+def _globalize_local_expert_name(name: str, *, ep_rank: int, local_experts_per_rank: int) -> str:
+    match = _LOCAL_EXPERT_PARAM_PATTERN.match(name)
+    assert match is not None, f"expected local expert param name, got {name!r}"
+    local_idx = int(match.group(2))
+    global_idx = ep_rank * local_experts_per_rank + local_idx
+    return name.replace(
+        f".mlp.experts.local_experts.{local_idx}.",
+        f".mlp.experts.{global_idx}.",
+        1,
+    )

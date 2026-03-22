@@ -32,12 +32,14 @@ def convert_deepseekv3_to_hf(
     """
     import torch
 
+    name = _normalize_megatron_name(name)
+
     # Embedding and output layers
-    if name == "module.module.embedding.word_embeddings.weight":
+    if name == "embedding.word_embeddings.weight":
         return [("model.embed_tokens.weight", param)]
-    if name == "module.module.output_layer.weight":
+    if name == "output_layer.weight":
         return [("lm_head.weight", param)]
-    if name == "module.module.decoder.final_layernorm.weight":
+    if name == "decoder.final_layernorm.weight":
         return [("model.norm.weight", param)]
 
     # Compute head dimensions
@@ -52,17 +54,17 @@ def convert_deepseekv3_to_hf(
     value_num_per_group = args.num_attention_heads // args.num_query_groups
 
     # Decoder layers
-    decoder_layers_pattern = r"module\.module\.decoder\.layers\.(\d+)\.(.+)"
+    decoder_layers_pattern = r"decoder\.layers\.(\d+)\.(.+)"
     match = re.match(decoder_layers_pattern, name)
     if match:
         layer_idx, rest = match.groups()
 
         # MoE experts
-        expert_pattern = r"mlp.experts\.(.+)\.weight(\d+)"
+        expert_pattern = r"mlp\.experts\.(?:(?:local_experts|experts)\.)?(\d+)\.(linear_fc[12])\.weight"
         match = re.match(expert_pattern, rest)
         if match:
-            rest, expert_idx = match.groups()
-            if rest == "linear_fc1":
+            expert_idx, proj = match.groups()
+            if proj == "linear_fc1":
                 gate_weight, up_weight = param.chunk(2, dim=0)
                 return [
                     (
@@ -74,7 +76,7 @@ def convert_deepseekv3_to_hf(
                         up_weight,
                     ),
                 ]
-            elif rest == "linear_fc2":
+            elif proj == "linear_fc2":
                 return [
                     (f"model.layers.{layer_idx}.mlp.experts.{expert_idx}.down_proj.weight", param),
                 ]
@@ -178,7 +180,7 @@ def convert_deepseekv3_to_hf(
             return [(f"model.layers.{layer_idx}.mlp.gate.e_score_correction_bias", param)]
 
     # MTP layers (multi-token prediction)
-    mtp_layer_pattern = r"module\.module\.mtp\.layers\.(\d+)\.(.+)"
+    mtp_layer_pattern = r"mtp\.layers\.(\d+)\.(.+)"
     match = re.match(mtp_layer_pattern, name)
     if match:
         layer_idx, rest = match.groups()
@@ -198,3 +200,9 @@ def convert_deepseekv3_to_hf(
             return convert_deepseekv3_to_hf(args, new_name, param)
 
     raise ValueError(f"Unknown parameter name: {name}")
+
+
+def _normalize_megatron_name(name: str) -> str:
+    while name.startswith("module."):
+        name = name[len("module.") :]
+    return name
