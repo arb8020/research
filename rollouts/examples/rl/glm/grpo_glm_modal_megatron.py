@@ -60,7 +60,9 @@ config = GRPOConfig(
         lr=1e-6,
         weight_decay=0.01,
         max_grad_norm=1.0,
-        num_minibatches=4,  # Reduced for 4 GPUs
+        # This witness is a liveness check, not a throughput run. Keep the
+        # effective microbatch at 1 sample to stay well below the 80GB cliff.
+        num_minibatches=8,
         loss_type="vanilla",
         # Split mode: 4 GPUs for training (GPUs 4-7), 4 for inference (GPUs 0-3)
         cuda_device_ids=(4, 5, 6, 7),
@@ -82,17 +84,17 @@ config = GRPOConfig(
         startup_timeout=600.0,
     ),
     rollout=RolloutConfig(
-        batch_size=4,
-        n_samples_per_prompt=8,
+        batch_size=2,
+        n_samples_per_prompt=4,
         temperature=0.7,
         # Keep the Modal Megatron witness under the 80GB A100 cliff. The goal
         # here is backend liveness, not max-context benchmarking.
-        max_seq_len=1024,
-        max_tokens=128,
+        max_seq_len=512,
+        max_tokens=64,
     ),
     checkpoint=CheckpointConfig(
-        num_steps=50,
-        checkpoint_every=10,
+        num_steps=8,
+        checkpoint_every=4,
         sync_weights_every=1,
         weight_sync_mode="nccl",
     ),
