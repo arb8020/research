@@ -623,29 +623,32 @@ class MegatronTrainingBackend:
         Returns:
             Future resolving to {"lr": float, "step": int, "grad_norm": float, ...}
         """
-
-        # Clip gradients
-        grad_norm = None
-        if self.config.clip_grad > 0:
-            grad_norm = self.optimizer.clip_grad_norm(self.config.clip_grad)
-
-        # Optimizer step
-        self.optimizer.step()
+        step_result = self.optimizer.step()
+        assert isinstance(step_result, tuple) and len(step_result) == 3, (
+            "Megatron optimizer.step() must return "
+            "(update_successful, grad_norm, num_zeros_in_grad)"
+        )
+        update_successful, grad_norm, _num_zeros_in_grad = step_result
+        assert isinstance(update_successful, bool), (
+            "Megatron optimizer.step() must return a bool success flag as its first element"
+        )
 
         # Scheduler step
-        if self.opt_param_scheduler is not None:
+        if update_successful and self.opt_param_scheduler is not None:
             self.opt_param_scheduler.step(increment=self.config.global_batch_size)
             primary_group = self.optimizer.param_groups[0]
             lr = self.opt_param_scheduler.get_lr(primary_group)
         else:
             lr = self.optimizer.param_groups[0].get("lr", 0.0)
 
-        self._step += 1
+        if update_successful:
+            self._step += 1
 
         metrics = {
             "step": self._step,
             "lr": float(lr) if not isinstance(lr, list) else float(lr[0]),
             "grad_norm": float(grad_norm) if grad_norm is not None else 0.0,
+            "update_successful": 1.0 if update_successful else 0.0,
         }
 
         return ImmediateTrainFuture(metrics)
