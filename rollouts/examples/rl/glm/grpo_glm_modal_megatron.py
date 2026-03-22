@@ -8,6 +8,8 @@ Run with:
     python -m argus run --config examples/rl/glm/grpo_glm_modal_megatron.py
 """
 
+from dataclasses import replace
+
 from examples.rl.base_config import default_remote_megatron_training_deps
 from examples.rl.glm.base_config import train as _base_train
 from rollouts.training.configs import HardwareConfig
@@ -25,11 +27,19 @@ from rollouts.training.grpo import (
 # Hardware Configuration for Modal (Megatron backend)
 # =============================================================================
 
+_megatron_modal_deps = default_remote_megatron_training_deps()
+_megatron_modal_deps = replace(
+    _megatron_modal_deps,
+    runtime_overlay=_megatron_modal_deps.runtime_overlay.extended(
+        env={"PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True"}
+    ),
+)
+
 hardware = HardwareConfig(
     gpu_type="A100-80GB",
     gpu_count=8,
     provider="modal",
-    deps=default_remote_megatron_training_deps(),
+    deps=_megatron_modal_deps,
     use_torchrun=False,  # Training script handles DDP internally
 )
 
