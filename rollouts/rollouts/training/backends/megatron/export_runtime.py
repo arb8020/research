@@ -6,6 +6,7 @@ from collections import OrderedDict
 from collections.abc import Sequence
 from typing import Any
 
+import torch
 import torch.distributed as dist
 from torch import Tensor
 
@@ -132,12 +133,7 @@ def _build_megatron_hf_tensors_from_runtime_ep_only(
     for name, param in local_named_params.items():
         local_expert_match = _LOCAL_EXPERT_PARAM_PATTERN.match(name)
         if local_expert_match is not None:
-            global_name = _globalize_local_expert_name(
-                name,
-                ep_rank=rank,
-                local_experts_per_rank=local_experts_per_rank,
-            )
-            local_expert_params.append((global_name, _materialize_ep_local_param(param)))
+            local_expert_params.append((name, param))
             continue
 
         if rank != 0:
@@ -159,32 +155,25 @@ def _build_megatron_hf_tensors_from_runtime_ep_only(
             q_lora_rank=q_lora_rank,
         )
 
-    gathered_local_experts: list[list[tuple[str, Tensor]] | None] = (
-        [None] * world_size if rank == 0 else []
+    _collect_ep_local_experts_to_rank0(
+        tensors=tensors,
+        dropped_unconverted=dropped_unconverted,
+        model_name=model_name,
+        local_expert_params=local_expert_params,
+        rank=rank,
+        world_size=world_size,
+        local_experts_per_rank=local_experts_per_rank,
+        vocab_size=vocab_size,
+        num_layers=num_layers,
+        num_attention_heads=num_attention_heads,
+        hidden_size=hidden_size,
+        num_query_groups=num_query_groups,
+        kv_channels=kv_channels,
+        q_lora_rank=q_lora_rank,
     )
-    dist.gather_object(local_expert_params, gathered_local_experts if rank == 0 else None, dst=0)
 
     if rank != 0:
         return OrderedDict(), ()
-
-    for expert_shard in gathered_local_experts:
-        if expert_shard is None:
-            continue
-        for name, param in expert_shard:
-            _convert_runtime_param(
-                tensors=tensors,
-                dropped_unconverted=dropped_unconverted,
-                model_name=model_name,
-                name=name,
-                param=param,
-                vocab_size=vocab_size,
-                num_layers=num_layers,
-                num_attention_heads=num_attention_heads,
-                hidden_size=hidden_size,
-                num_query_groups=num_query_groups,
-                kv_channels=kv_channels,
-                q_lora_rank=q_lora_rank,
-            )
 
     return tensors, tuple(dropped_unconverted)
 
@@ -248,3 +237,80 @@ def _materialize_ep_local_param(param: Tensor) -> Tensor:
     # paying an unnecessary GPU-side gather/all_gather buffer tax during
     # validation and sync.
     return param.detach().cpu()
+
+
+def _collect_ep_local_experts_to_rank0(
+    *,
+    tensors: OrderedDict[str, Tensor],
+    dropped_unconverted: list[str],
+    model_name: str,
+    local_expert_params: Sequence[tuple[str, Tensor]],
+    rank: int,
+    world_size: int,
+    local_experts_per_rank: int,
+    vocab_size: int,
+    num_layers: int,
+    num_attention_heads: int,
+    hidden_size: int,
+    num_query_groups: int | None,
+    kv_channels: int | None,
+    q_lora_rank: int | None,
+) -> None:
+    # TODO: Generalize this once EP runtime export stops assuming identical
+    # dense local-expert layouts on every rank and we have a real shared tensor
+    # transport contract for runtime export beyond this witness path.
+    for src_rank in range(world_size):
+        if src_rank == 0:
+            if rank == 0:
+                for local_name, local_param in local_expert_params:
+                    _convert_runtime_param(
+                        tensors=tensors,
+                        dropped_unconverted=dropped_unconverted,
+                        model_name=model_name,
+                        name=_globalize_local_expert_name(
+                            local_name,
+                            ep_rank=0,
+                            local_experts_per_rank=local_experts_per_rank,
+                        ),
+                        param=_materialize_ep_local_param(local_param),
+                        vocab_size=vocab_size,
+                        num_layers=num_layers,
+                        num_attention_heads=num_attention_heads,
+                        hidden_size=hidden_size,
+                        num_query_groups=num_query_groups,
+                        kv_channels=kv_channels,
+                        q_lora_rank=q_lora_rank,
+                    )
+            dist.barrier()
+            continue
+
+        if rank == src_rank:
+            for _local_name, local_param in local_expert_params:
+                send_tensor = local_param.detach()
+                if not send_tensor.is_contiguous():
+                    send_tensor = send_tensor.contiguous()
+                dist.send(send_tensor, dst=0)
+        elif rank == 0:
+            for local_name, local_param in local_expert_params:
+                recv_tensor = torch.empty_like(local_param.detach())
+                dist.recv(recv_tensor, src=src_rank)
+                _convert_runtime_param(
+                    tensors=tensors,
+                    dropped_unconverted=dropped_unconverted,
+                    model_name=model_name,
+                    name=_globalize_local_expert_name(
+                        local_name,
+                        ep_rank=src_rank,
+                        local_experts_per_rank=local_experts_per_rank,
+                    ),
+                    param=recv_tensor.cpu(),
+                    vocab_size=vocab_size,
+                    num_layers=num_layers,
+                    num_attention_heads=num_attention_heads,
+                    hidden_size=hidden_size,
+                    num_query_groups=num_query_groups,
+                    kv_channels=kv_channels,
+                    q_lora_rank=q_lora_rank,
+                )
+                del recv_tensor
+        dist.barrier()
