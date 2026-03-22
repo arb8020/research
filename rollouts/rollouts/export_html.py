@@ -336,7 +336,9 @@ def run_to_html(
     samples = [normalize_sample_payload(sample) for sample in samples]
     metrics = report.get("summary_metrics", {}) if isinstance(report, dict) else {}
     report_config = report.get("config", {}) if isinstance(report, dict) else {}
-    endpoint = report_config.get("endpoint", {}) if isinstance(report_config, dict) else {}
+    endpoint = report_config.get("endpoint") if isinstance(report_config, dict) else None
+    if not isinstance(endpoint, dict):
+        endpoint = {}
     title = report.get("eval_name") if isinstance(report, dict) else None
     title = title if isinstance(title, str) and title else trace_id
 

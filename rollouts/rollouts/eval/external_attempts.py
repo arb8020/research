@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import inspect
+import json
 import logging
 import os
 import re
@@ -16,13 +17,18 @@ import trio
 
 from ..core import Message, Trajectory
 from ..drivers import ClaudeDriver, CodexDriver, run_driver_to_trajectory
+from ..drivers.claude import _ClaudeEventParser
+from ..drivers.codex import _CodexEventParser
+from ..drivers.runner import _EventAccumulator, _FlushAssistantMessage
 from ..dtypes import StreamChunk
+from ..environments.resources import SandboxWorkspaceResource
 from ..training.types import AttemptResult, ProblemRow, Status
 
 _event_logger = logging.getLogger("rollouts.eval.events")
 
 PromptBuilder = Callable[[dict[str, Any]], str]
 ExternalRuntime = Literal["claude_code", "codex", "openhands"]
+REMOTE_AGENT_USER = "rollouts-agent"
 
 
 def _make_eval_on_event(
@@ -74,6 +80,10 @@ TrajectoryAdapter = Callable[
 ]
 ProjectedTrajectoryAdapter = Callable[
     [str, str, dict[str, Any], Path, Any],
+    Awaitable[ExternalAttemptArtifact],
+]
+RemoteTrajectoryAdapter = Callable[
+    [str, str, dict[str, Any], SandboxWorkspaceResource, str, Any],
     Awaitable[ExternalAttemptArtifact],
 ]
 
@@ -247,6 +257,330 @@ def make_external_trajectory_adapter(
         return artifact_or_trajectory
 
     return projected_adapter
+
+
+def make_remote_external_trajectory_adapter(
+    runtime: ExternalRuntime,
+    **trajectory_kwargs: Any,
+) -> RemoteTrajectoryAdapter:
+    """Build a remote-runtime adapter for real workspace-backed execution.
+
+    TODO(remote-external-runtime): this currently bootstraps Claude Code / Codex
+    inside the remote workspace on demand. Once that path is stable, bake the
+    CLIs into the runtime image instead of doing per-attempt npm installs.
+
+    TODO(remote-external-runtime-streaming): this only reconstructs the final
+    trajectory after the remote process exits. Add true remote stdout streaming
+    over the session boundary so live runs get honest incremental progress.
+    """
+
+    if runtime == "claude_code":
+        return partial(trajectory_from_remote_claude_code, **trajectory_kwargs)
+    if runtime == "codex":
+        return partial(trajectory_from_remote_codex, **trajectory_kwargs)
+    raise ValueError(f"Unsupported remote external runtime: {runtime}")
+
+
+def _sample_id_slug(sample_id: str) -> str:
+    return re.sub(r"[^A-Za-z0-9_.-]+", "-", sample_id).strip("-") or "sample"
+
+
+def _remote_runtime_state_dir(runtime: str, sample_id: str) -> str:
+    return f"/tmp/rollouts-external-runtime/{runtime}/{_sample_id_slug(sample_id)}"
+
+
+def _remote_runtime_cli(runtime: str) -> tuple[str, str]:
+    if runtime == "claude_code":
+        return "claude", "@anthropic-ai/claude-code"
+    if runtime == "codex":
+        return "codex", "@openai/codex"
+    raise ValueError(f"Unsupported remote runtime: {runtime}")
+
+
+def _remote_runtime_env(runtime: str) -> dict[str, str]:
+    if runtime == "claude_code":
+        key = os.environ.get("ANTHROPIC_API_KEY")
+        if not key:
+            raise RuntimeError("ANTHROPIC_API_KEY is required for remote Claude Code runs")
+        return {
+            "ANTHROPIC_API_KEY": key,
+            "CLAUDE_CODE_ENTRYPOINT": "rollouts-remote-eval",
+        }
+    if runtime == "codex":
+        key = os.environ.get("OPENAI_API_KEY")
+        if not key:
+            raise RuntimeError("OPENAI_API_KEY is required for remote Codex runs")
+        return {
+            "OPENAI_API_KEY": key,
+            "CODEX_ENTRYPOINT": "rollouts-remote-eval",
+        }
+    raise ValueError(f"Unsupported remote runtime: {runtime}")
+
+
+def _remote_runtime_bootstrap_command(runtime: str) -> str:
+    cli_name, npm_package = _remote_runtime_cli(runtime)
+    return (
+        "set -euo pipefail\n"
+        'NODE_MAJOR="$(node -p \'process.versions.node.split(".")[0]\' 2>/dev/null || echo 0)"\n'
+        'if ! command -v node >/dev/null 2>&1 || ! command -v npm >/dev/null 2>&1 || [ "${NODE_MAJOR}" -lt 18 ]; then\n'
+        "  apt-get update\n"
+        "  DEBIAN_FRONTEND=noninteractive apt-get install -y curl ca-certificates\n"
+        "  curl -fsSL https://deb.nodesource.com/setup_20.x | bash -\n"
+        "  DEBIAN_FRONTEND=noninteractive apt-get install -y nodejs\n"
+        "fi\n"
+        f"if ! id -u {REMOTE_AGENT_USER} >/dev/null 2>&1; then\n"
+        f"  useradd -m -s /bin/bash {REMOTE_AGENT_USER}\n"
+        "fi\n"
+        f"if ! command -v {cli_name} >/dev/null 2>&1; then\n"
+        f"  npm install -g {npm_package}\n"
+        "fi\n"
+    )
+
+
+async def _ensure_remote_runtime_bootstrap(
+    workspace: SandboxWorkspaceResource,
+    *,
+    runtime: str,
+    cwd: str,
+) -> None:
+    marker_dir = f"/tmp/rollouts-external-runtime/{runtime}"
+    marker_path = f"{marker_dir}/bootstrap-ready"
+    result = await workspace.run(
+        (
+            "set -euo pipefail\n"
+            f"mkdir -p {marker_dir}\n"
+            f"if [ ! -f {marker_path} ]; then\n"
+            f"{_remote_runtime_bootstrap_command(runtime)}"
+            f"  touch {marker_path}\n"
+            "fi\n"
+        ),
+        cwd=cwd,
+        timeout=10 * 60,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"Failed to bootstrap remote {runtime}: {result.stderr or result.stdout}"
+        )
+
+
+async def _build_trajectory_from_remote_jsonl(
+    *,
+    runtime: Literal["claude_code", "codex"],
+    raw_output: str,
+    sample_id: str,
+    run_config: Any | None,
+    driver_name: str,
+) -> tuple[Trajectory, str | None]:
+    parser = _ClaudeEventParser() if runtime == "claude_code" else _CodexEventParser()
+    accumulator = _EventAccumulator()
+    on_event = _make_eval_on_event(sample_id, getattr(run_config, "on_chunk", None))
+    on_raw_line = _make_raw_driver_line_handler(run_config, driver=driver_name)
+
+    for raw_line in raw_output.splitlines():
+        line = raw_line.rstrip("\r")
+        if on_raw_line is not None and line:
+            await on_raw_line(line)
+        try:
+            msg = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        for event in parser.parse(msg):
+            if isinstance(event, _FlushAssistantMessage):
+                accumulator.handle(event)
+                continue
+            await on_event(event)
+            accumulator.handle(event)
+
+    return Trajectory(messages=accumulator.finalize()), getattr(parser, "_session_id", None)
+
+
+async def _run_remote_external_runtime(
+    *,
+    runtime: Literal["claude_code", "codex"],
+    prompt: str,
+    sample_id: str,
+    workspace: SandboxWorkspaceResource,
+    cwd: str,
+    run_config: Any | None,
+    command: list[str],
+    timeout_seconds: float,
+) -> ExternalAttemptArtifact:
+    await _ensure_remote_runtime_bootstrap(workspace, runtime=runtime, cwd=cwd)
+
+    state_dir = _remote_runtime_state_dir(runtime, sample_id)
+    prompt_path = f"{state_dir}/prompt.txt"
+    env_path = f"{state_dir}/env.json"
+    await workspace.run(
+        f"mkdir -p {state_dir}",
+        cwd=cwd,
+        timeout=30.0,
+    )
+    await workspace.write_file(prompt_path, prompt.encode("utf-8"))
+    await workspace.write_file(
+        env_path,
+        json.dumps(_remote_runtime_env(runtime)).encode("utf-8"),
+    )
+    await workspace.run(
+        f"chown -R {REMOTE_AGENT_USER}:{REMOTE_AGENT_USER} {cwd} {state_dir}",
+        cwd=cwd,
+        timeout=30.0,
+    )
+
+    runner = (
+        "python - <<'PY'\n"
+        "import json\n"
+        "import os\n"
+        "import pwd\n"
+        "import subprocess\n"
+        "import sys\n"
+        "from pathlib import Path\n"
+        f"agent = pwd.getpwnam({REMOTE_AGENT_USER!r})\n"
+        "env = dict(os.environ)\n"
+        f"env.update(json.loads(Path({env_path!r}).read_text()))\n"
+        "env.update({\n"
+        '    "HOME": agent.pw_dir,\n'
+        f'    "USER": {REMOTE_AGENT_USER!r},\n'
+        f'    "LOGNAME": {REMOTE_AGENT_USER!r},\n'
+        "})\n"
+        f"prompt = Path({prompt_path!r}).read_text()\n"
+        f"cmd = {command!r}\n"
+        "cmd.append(prompt)\n"
+        "def demote() -> None:\n"
+        "    os.setgid(agent.pw_gid)\n"
+        "    os.setuid(agent.pw_uid)\n"
+        f"proc = subprocess.run(cmd, cwd={cwd!r}, env=env, text=True, capture_output=True, preexec_fn=demote)\n"
+        "sys.stdout.write(proc.stdout)\n"
+        "sys.stderr.write(proc.stderr)\n"
+        "raise SystemExit(proc.returncode)\n"
+        "PY"
+    )
+    result = await workspace.run(
+        runner,
+        cwd=cwd,
+        timeout=timeout_seconds,
+    )
+    await workspace.run(
+        f"rm -rf {state_dir}",
+        cwd=cwd,
+        timeout=30.0,
+    )
+    stdout_text = result.stdout.strip()
+    stderr_text = result.stderr.strip()
+    if result.returncode == -1:
+        detail = stderr_text or "remote command timed out without emitting output"
+        raise RuntimeError(f"Remote {runtime} timed out after {timeout_seconds:.0f}s: {detail}")
+    if result.returncode != 0 and not stdout_text:
+        raise RuntimeError(
+            f"Remote {runtime} failed before producing trajectory output: "
+            f"{stderr_text or result.stdout}"
+        )
+
+    trajectory, session_id = await _build_trajectory_from_remote_jsonl(
+        runtime=runtime,
+        raw_output=result.stdout,
+        sample_id=sample_id,
+        run_config=run_config,
+        driver_name="claude" if runtime == "claude_code" else "codex",
+    )
+    metadata: dict[str, Any] = {
+        "runtime": runtime,
+        "driver": "claude" if runtime == "claude_code" else "codex",
+        "cwd": cwd,
+        "session_id": session_id,
+        "remote_execution": True,
+    }
+    if result.returncode != 0 and not trajectory.messages:
+        detail = stderr_text or "remote runtime returned no usable trajectory output"
+        raise RuntimeError(f"Remote {runtime} failed without a usable trajectory: {detail}")
+    if result.returncode != 0:
+        metadata["remote_stderr"] = result.stderr[-4000:]
+    return ExternalAttemptArtifact(
+        trajectory=trajectory,
+        metadata=metadata,
+    )
+
+
+async def trajectory_from_remote_claude_code(
+    prompt: str,
+    sample_id: str,
+    sample_data: dict[str, Any],
+    workspace: SandboxWorkspaceResource,
+    cwd: str,
+    run_config: Any | None = None,
+    *,
+    model: str = "sonnet",
+    include_partial: bool = True,
+    system_prompt: str | None = None,
+    allowed_tools: list[str] | None = None,
+    timeout_seconds: float = 600.0,
+) -> ExternalAttemptArtifact:
+    del sample_data
+    command = [
+        "claude",
+        "--print",
+        "--verbose",
+        "--output-format",
+        "stream-json",
+        "--dangerously-skip-permissions",
+        "--model",
+        model,
+    ]
+    if include_partial:
+        command.append("--include-partial-messages")
+    if system_prompt:
+        command.extend(["--system-prompt", system_prompt])
+    if allowed_tools:
+        command.extend(["--allowedTools", ",".join(allowed_tools)])
+    artifact = await _run_remote_external_runtime(
+        runtime="claude_code",
+        prompt=prompt,
+        sample_id=sample_id,
+        workspace=workspace,
+        cwd=cwd,
+        run_config=run_config,
+        command=command,
+        timeout_seconds=timeout_seconds,
+    )
+    artifact.metadata["model"] = model
+    return artifact
+
+
+async def trajectory_from_remote_codex(
+    prompt: str,
+    sample_id: str,
+    sample_data: dict[str, Any],
+    workspace: SandboxWorkspaceResource,
+    cwd: str,
+    run_config: Any | None = None,
+    *,
+    model: str = "gpt-5.1-codex-mini",
+    sandbox: str = "read-only",
+    timeout_seconds: float = 600.0,
+) -> ExternalAttemptArtifact:
+    del sample_data
+    command = [
+        "codex",
+        "exec",
+        "--json",
+        "--skip-git-repo-check",
+        "--model",
+        model,
+        "--sandbox",
+        sandbox,
+    ]
+    artifact = await _run_remote_external_runtime(
+        runtime="codex",
+        prompt=prompt,
+        sample_id=sample_id,
+        workspace=workspace,
+        cwd=cwd,
+        run_config=run_config,
+        command=command,
+        timeout_seconds=timeout_seconds,
+    )
+    artifact.metadata["model"] = model
+    artifact.metadata["sandbox"] = sandbox
+    return artifact
 
 
 async def trajectory_from_claude_code(
