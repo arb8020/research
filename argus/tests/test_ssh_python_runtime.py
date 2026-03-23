@@ -21,7 +21,7 @@ def test_ssh_runtime_python_uses_managed_venv_for_managed_runtime() -> None:
         python_executable="python3",
     )
 
-    assert argus_run._ssh_runtime_python(image) == "~/.bifrost/venvs/rollouts-rl/bin/python"
+    assert argus_run._ssh_runtime_python(image) == "/root/.bifrost/venvs/rollouts-rl/bin/python"
 
 
 def test_ssh_runtime_feature_scope_distinguishes_managed_venv() -> None:
@@ -37,10 +37,10 @@ def test_ssh_runtime_feature_scope_distinguishes_managed_venv() -> None:
 def test_uv_pip_install_command_targets_requested_python() -> None:
     command = argus_run._uv_pip_install_command(
         ("torch", "trio"),
-        python_bin="~/.bifrost/venvs/rollouts-rl/bin/python",
+        python_bin="/root/.bifrost/venvs/rollouts-rl/bin/python",
     )
 
-    assert "--python '~/.bifrost/venvs/rollouts-rl/bin/python'" in command
+    assert "--python /root/.bifrost/venvs/rollouts-rl/bin/python" in command
     assert " torch trio" in command
 
 

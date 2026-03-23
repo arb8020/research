@@ -164,7 +164,7 @@ ARGUS_STATE_DIR = Path.home() / ".argus"
 LAUNCHES_DIR = ARGUS_STATE_DIR / "launches"
 REMOTE_SYSTEM_TOOLS_FEATURE = "remote-system-tools-v1"
 REMOTE_UV_FEATURE = "uv"
-SSH_MANAGED_VENV_DIR = "~/.bifrost/venvs/rollouts-rl"
+SSH_MANAGED_VENV_DIR = "/root/.bifrost/venvs/rollouts-rl"
 
 # sys.path hack: make sibling packages (miniray, bifrost, broker, etc.) importable.
 #
