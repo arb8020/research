@@ -192,6 +192,59 @@ def _read_modal_supervisor_status_sync(sandbox: Any, status_file: str) -> dict[s
     return None
 
 
+def _read_modal_text_artifact_sync(sandbox: Any, remote_path: str) -> str | None:
+    """Read a text artifact from the sandbox, if present."""
+
+    proc = sandbox.exec(
+        "bash",
+        "-lc",
+        (
+            f"if [ -f {shlex.quote(remote_path)} ]; then "
+            f"cat {shlex.quote(remote_path)}; "
+            "else exit 2; fi"
+        ),
+        timeout=30,
+    )
+    stdout = "".join(proc.stdout)
+    _ = "".join(proc.stderr)
+    exit_code = proc.wait()
+    if exit_code != 0:
+        return None
+    return stdout
+
+
+async def _copy_modal_text_artifact(
+    sandbox: Any,
+    *,
+    remote_path: str,
+    local_path: Path,
+    emit: Callable[[str], None] | None = None,
+    event_prefix: str = "modal_artifact_copy",
+) -> bool:
+    """Copy a remote text artifact into the local run directory if it exists."""
+
+    def _emit(event: str, **data: Any) -> None:
+        if emit is not None:
+            emit(event, **data)
+
+    _emit(f"{event_prefix}_start", remote_path=remote_path, local_path=str(local_path))
+    contents = await trio.to_thread.run_sync(
+        lambda: _read_modal_text_artifact_sync(sandbox, remote_path)
+    )
+    if contents is None:
+        _emit(f"{event_prefix}_missing", remote_path=remote_path, local_path=str(local_path))
+        return False
+    local_path.parent.mkdir(parents=True, exist_ok=True)
+    local_path.write_text(contents)
+    _emit(
+        f"{event_prefix}_finished",
+        remote_path=remote_path,
+        local_path=str(local_path),
+        bytes=len(contents.encode()),
+    )
+    return True
+
+
 @dataclass(frozen=True)
 class ModalExecutionRequest:
     """Provider-owned execution request for the current Modal backend."""
@@ -1695,6 +1748,11 @@ async def run_modal_request(request: ModalExecutionRequest) -> dict[str, Any]:
 
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     run_name = request.run_name or f"modal_{timestamp}"
+    local_run_dir: Path | None = None
+    emit_event_sink = getattr(request.run_logger, "emit_event", None)
+    local_run_log = getattr(emit_event_sink, "log_file", None)
+    if local_run_log is not None:
+        local_run_dir = Path(local_run_log).parent
 
     def emit(event: str, **data: Any) -> None:
         if request.run_logger is not None:
@@ -1773,6 +1831,8 @@ async def run_modal_request(request: ModalExecutionRequest) -> dict[str, Any]:
                 emit("modal_repo_synced", sandbox_id=sandbox_id, workspace=workspace.root)
 
                 emit("modal_training_start", sandbox_id=sandbox_id, workspace=workspace.root)
+                remote_run_dir = f"{workspace.root}/results/rl/{run_name}"
+                remote_training_jsonl = f"{remote_run_dir}/training.jsonl"
                 process = await session.start_process(
                     _build_argus_local_process_spec(
                         workspace=workspace.root,
@@ -1821,6 +1881,14 @@ async def run_modal_request(request: ModalExecutionRequest) -> dict[str, Any]:
                         exit_code=result.exit_code,
                         emit=emit,
                     )
+                    if local_run_dir is not None:
+                        await _copy_modal_text_artifact(
+                            sandbox_handle.sandbox,
+                            remote_path=remote_training_jsonl,
+                            local_path=local_run_dir / "training.jsonl",
+                            emit=emit,
+                            event_prefix="modal_training_log_copy",
+                        )
                     emit(
                         "modal_training_finished",
                         sandbox_id=sandbox_id,
@@ -1834,6 +1902,14 @@ async def run_modal_request(request: ModalExecutionRequest) -> dict[str, Any]:
                         "failure_diagnostics": failure_diagnostics,
                     }
 
+                if local_run_dir is not None:
+                    await _copy_modal_text_artifact(
+                        sandbox_handle.sandbox,
+                        remote_path=remote_training_jsonl,
+                        local_path=local_run_dir / "training.jsonl",
+                        emit=emit,
+                        event_prefix="modal_training_log_copy",
+                    )
                 emit(
                     "modal_training_finished",
                     sandbox_id=sandbox_id,
