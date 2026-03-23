@@ -68,7 +68,8 @@ class LocalWorkspaceResource:
         return resource
 
     async def start(self) -> None:
-        assert self._tempdir is None, "LocalWorkspaceResource already started"
+        if self._tempdir is not None:
+            return
         assert self.source_dir.is_dir(), f"source_dir does not exist: {self.source_dir}"
 
         def _copy() -> str:
