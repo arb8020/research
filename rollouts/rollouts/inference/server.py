@@ -212,10 +212,55 @@ class EngineThread:
 # Global state for NCCL weight sync (one process group per server)
 _nccl_state: dict[str, Any] = {
     "receiver": None,
+    "backend": None,
     "group_name": None,
+    "master_addr": None,
+    "master_port": None,
     "rank": None,
     "world_size": None,
 }
+
+
+def _nccl_state_contract() -> dict[str, object]:
+    return {
+        "backend": _nccl_state.get("backend"),
+        "group_name": _nccl_state.get("group_name"),
+        "master_addr": _nccl_state.get("master_addr"),
+        "master_port": _nccl_state.get("master_port"),
+        "rank": _nccl_state.get("rank"),
+        "world_size": _nccl_state.get("world_size"),
+    }
+
+
+def _set_nccl_state(
+    *,
+    receiver: object | None,
+    backend: str | None,
+    group_name: str | None,
+    master_addr: str | None,
+    master_port: int | None,
+    rank: int | None,
+    world_size: int | None,
+) -> None:
+    _nccl_state["receiver"] = receiver
+    _nccl_state["backend"] = backend
+    _nccl_state["group_name"] = group_name
+    _nccl_state["master_addr"] = master_addr
+    _nccl_state["master_port"] = master_port
+    _nccl_state["rank"] = rank
+    _nccl_state["world_size"] = world_size
+
+
+def _clear_nccl_state() -> None:
+    _set_nccl_state(
+        receiver=None,
+        backend=None,
+        group_name=None,
+        master_addr=None,
+        master_port=None,
+        rank=None,
+        world_size=None,
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -740,6 +785,16 @@ def create_app(engine: InferenceEngineV2) -> Any:
         backend = request.get("backend", "nccl")
 
         try:
+            requested_contract = {
+                "backend": backend,
+                "group_name": group_name,
+                "master_addr": master_addr,
+                "master_port": master_port,
+                "rank": rank_offset,
+                "world_size": world_size,
+            }
+            existing_receiver = _nccl_state["receiver"]
+            stored_contract = _nccl_state_contract()
             logger.info(
                 "weight_sync_inference_http_init_start backend=%s rank=%s world_size=%s master=%s:%s group=%s",
                 backend,
@@ -761,6 +816,43 @@ def create_app(engine: InferenceEngineV2) -> Any:
 
             if backend != "nccl":
                 raise ValueError(f"unsupported weight-sync backend: {backend}")
+
+            if existing_receiver is not None and stored_contract == requested_contract:
+                logger.info(
+                    "weight_sync_inference_receiver_reuse backend=%s rank=%s world_size=%s master=%s:%s group=%s",
+                    backend,
+                    rank_offset,
+                    world_size,
+                    master_addr,
+                    master_port,
+                    group_name,
+                )
+                _emit_argus_diag(
+                    "weight_sync_inference_receiver_reuse",
+                    **requested_contract,
+                )
+                return {
+                    "status": "ok",
+                    "rank": rank_offset,
+                    "world_size": world_size,
+                    "reused": True,
+                }
+
+            if existing_receiver is not None:
+                logger.info(
+                    "weight_sync_inference_receiver_replace_start stored=%s requested=%s",
+                    stored_contract,
+                    requested_contract,
+                )
+                _emit_argus_diag(
+                    "weight_sync_inference_receiver_replace_start",
+                    stored_contract=stored_contract,
+                    requested_contract=requested_contract,
+                )
+                existing_receiver.cleanup()
+                _clear_nccl_state()
+                logger.info("weight_sync_inference_receiver_replace_ok")
+                _emit_argus_diag("weight_sync_inference_receiver_replace_ok")
 
             logger.info(
                 "weight_sync_inference_receiver_init_start backend=%s rank=%s world_size=%s master=%s:%s",
@@ -804,11 +896,15 @@ def create_app(engine: InferenceEngineV2) -> Any:
                 master_port=master_port,
             )
 
-            # Store state
-            _nccl_state["receiver"] = receiver
-            _nccl_state["group_name"] = group_name
-            _nccl_state["rank"] = rank_offset
-            _nccl_state["world_size"] = world_size
+            _set_nccl_state(
+                receiver=receiver,
+                backend=backend,
+                group_name=group_name,
+                master_addr=master_addr,
+                master_port=master_port,
+                rank=rank_offset,
+                world_size=world_size,
+            )
 
             logger.info(
                 "weight_sync_inference_http_init_ok backend=%s rank=%s world_size=%s group=%s",
@@ -824,7 +920,7 @@ def create_app(engine: InferenceEngineV2) -> Any:
                 world_size=world_size,
                 group=group_name,
             )
-            return {"status": "ok", "rank": rank_offset, "world_size": world_size}
+            return {"status": "ok", "rank": rank_offset, "world_size": world_size, "reused": False}
         except Exception as e:
             logger.exception("Error in /init_weights_update_group")
             _emit_argus_diag(
@@ -855,7 +951,10 @@ def create_app(engine: InferenceEngineV2) -> Any:
         request_weight_version = request.get("weight_version")
         request_flush_cache = request.get("flush_cache")
         receiver = _nccl_state["receiver"]
+        stored_backend = _nccl_state.get("backend")
         stored_group_name = _nccl_state.get("group_name")
+        stored_master_addr = _nccl_state.get("master_addr")
+        stored_master_port = _nccl_state.get("master_port")
         stored_rank = _nccl_state.get("rank")
         stored_world_size = _nccl_state.get("world_size")
         _emit_argus_diag(
@@ -864,7 +963,10 @@ def create_app(engine: InferenceEngineV2) -> Any:
             request_weight_version=request_weight_version,
             request_flush_cache=request_flush_cache,
             receiver_initialized=receiver is not None,
+            stored_backend=stored_backend,
             stored_group=stored_group_name,
+            stored_master_addr=stored_master_addr,
+            stored_master_port=stored_master_port,
             stored_rank=stored_rank,
             stored_world_size=stored_world_size,
         )
@@ -872,7 +974,10 @@ def create_app(engine: InferenceEngineV2) -> Any:
             detail = (
                 "NCCL group not initialized "
                 f"request_group={request_group_name!r} "
+                f"stored_backend={stored_backend!r} "
                 f"stored_group={stored_group_name!r} "
+                f"stored_master_addr={stored_master_addr!r} "
+                f"stored_master_port={stored_master_port!r} "
                 f"stored_rank={stored_rank!r} "
                 f"stored_world_size={stored_world_size!r}"
             )
@@ -881,7 +986,36 @@ def create_app(engine: InferenceEngineV2) -> Any:
                 request_group=request_group_name,
                 request_weight_version=request_weight_version,
                 request_flush_cache=request_flush_cache,
+                stored_backend=stored_backend,
                 stored_group=stored_group_name,
+                stored_master_addr=stored_master_addr,
+                stored_master_port=stored_master_port,
+                stored_rank=stored_rank,
+                stored_world_size=stored_world_size,
+                detail=detail,
+            )
+            raise HTTPException(status_code=400, detail=detail)
+
+        if request_group_name != stored_group_name:
+            detail = (
+                "NCCL update group mismatch "
+                f"request_group={request_group_name!r} "
+                f"stored_group={stored_group_name!r} "
+                f"stored_backend={stored_backend!r} "
+                f"stored_master_addr={stored_master_addr!r} "
+                f"stored_master_port={stored_master_port!r} "
+                f"stored_rank={stored_rank!r} "
+                f"stored_world_size={stored_world_size!r}"
+            )
+            _emit_argus_diag(
+                "weight_sync_inference_http_update_rejected",
+                request_group=request_group_name,
+                request_weight_version=request_weight_version,
+                request_flush_cache=request_flush_cache,
+                stored_backend=stored_backend,
+                stored_group=stored_group_name,
+                stored_master_addr=stored_master_addr,
+                stored_master_port=stored_master_port,
                 stored_rank=stored_rank,
                 stored_world_size=stored_world_size,
                 detail=detail,
@@ -924,7 +1058,10 @@ def create_app(engine: InferenceEngineV2) -> Any:
                 request_group=request_group_name,
                 request_weight_version=request_weight_version,
                 request_flush_cache=request_flush_cache,
+                stored_backend=stored_backend,
                 stored_group=stored_group_name,
+                stored_master_addr=stored_master_addr,
+                stored_master_port=stored_master_port,
                 stored_rank=stored_rank,
                 stored_world_size=stored_world_size,
                 num_tensors=len(names),
@@ -937,7 +1074,10 @@ def create_app(engine: InferenceEngineV2) -> Any:
                 request_group=request_group_name,
                 request_weight_version=request_weight_version,
                 request_flush_cache=request_flush_cache,
+                stored_backend=stored_backend,
                 stored_group=stored_group_name,
+                stored_master_addr=stored_master_addr,
+                stored_master_port=stored_master_port,
                 stored_rank=stored_rank,
                 stored_world_size=stored_world_size,
                 num_tensors=len(names),
@@ -955,10 +1095,7 @@ def create_app(engine: InferenceEngineV2) -> Any:
             if receiver is not None:
                 logger.info(f"Destroying NCCL group: {group_name}")
                 receiver.cleanup()
-                _nccl_state["receiver"] = None
-                _nccl_state["group_name"] = None
-                _nccl_state["rank"] = None
-                _nccl_state["world_size"] = None
+                _clear_nccl_state()
 
             return {"status": "ok"}
         except Exception as e:
