@@ -247,6 +247,176 @@ async def _copy_modal_text_artifact(
     return True
 
 
+def _emit_projected_training_artifact_event(
+    emit: Callable[..., None],
+    data: dict[str, Any],
+    *,
+    projected_by: str,
+) -> None:
+    if data.get("event") != "step_complete":
+        return
+    emit(
+        "step_complete",
+        projected_from_artifact=True,
+        projected_by=projected_by,
+        projection_source="training.jsonl",
+        step=data.get("step"),
+        mean_reward=data.get("mean_reward"),
+        pg_loss=data.get("pg_loss"),
+        entropy=data.get("entropy"),
+        num_samples=data.get("num_samples"),
+        num_groups=data.get("num_groups"),
+        step_total_ms=data.get("step_total_ms"),
+        rollout_step_count=data.get("rollout_step_count"),
+        gpu_allocated_gb=data.get("gpu_allocated_gb"),
+        gpu_reserved_gb=data.get("gpu_reserved_gb"),
+        ram_gb=data.get("ram_gb"),
+    )
+
+
+def _emit_projected_metrics_artifact_event(
+    emit: Callable[..., None],
+    data: dict[str, Any],
+    *,
+    projected_by: str,
+) -> None:
+    emit(
+        "metrics_update",
+        projected_from_artifact=True,
+        projected_by=projected_by,
+        projection_source="metrics.jsonl",
+        step=data.get("step"),
+        mean_reward=data.get("mean_reward"),
+        loss=data.get("loss"),
+        grad_norm=data.get("grad_norm"),
+        pg_loss=data.get("pg_loss"),
+        entropy=data.get("entropy"),
+        rollout_step_count=data.get("rollout_step_count"),
+        rollout_samples_generated=data.get("rollout_samples_generated"),
+        timestamp=data.get("timestamp"),
+    )
+
+
+def _project_modal_artifact_snapshot(
+    *,
+    file_name: str,
+    contents: str,
+    state: dict[str, Any],
+    emit: Callable[..., None],
+    projected_by: str,
+) -> None:
+    if not state.get("ready_announced"):
+        state["ready_announced"] = True
+        emit(
+            "remote_artifact_file_ready",
+            file=file_name,
+            projected_by=projected_by,
+        )
+
+    previous_offset = int(state.get("offset", 0))
+    if len(contents) < previous_offset:
+        state["offset"] = 0
+        state["buffer"] = ""
+        previous_offset = 0
+        emit(
+            "remote_artifact_reset_detected",
+            file=file_name,
+            projected_by=projected_by,
+        )
+
+    chunk = contents[previous_offset:]
+    state["offset"] = len(contents)
+    if not chunk:
+        return
+
+    buffer = f"{state.get('buffer', '')}{chunk}"
+    lines = buffer.splitlines(keepends=True)
+    if lines and not lines[-1].endswith("\n"):
+        state["buffer"] = lines.pop()
+    else:
+        state["buffer"] = ""
+
+    for raw_line in lines:
+        line = raw_line.strip()
+        if not line:
+            continue
+        try:
+            parsed = json.loads(line)
+        except Exception as exc:
+            emit(
+                "remote_artifact_parse_failed",
+                file=file_name,
+                projected_by=projected_by,
+                error=f"{type(exc).__name__}: {exc}",
+                line_preview=line[:400],
+            )
+            continue
+        if not isinstance(parsed, dict):
+            continue
+        if file_name == "training.jsonl":
+            _emit_projected_training_artifact_event(
+                emit,
+                parsed,
+                projected_by=projected_by,
+            )
+        elif file_name == "metrics.jsonl":
+            _emit_projected_metrics_artifact_event(
+                emit,
+                parsed,
+                projected_by=projected_by,
+            )
+
+
+async def _project_modal_run_artifacts(
+    sandbox: Any,
+    run_name: str,
+    emit: Callable[..., None],
+    stop_event: trio.Event,
+    remote_run_dir: str,
+    local_run_dir: Path | None,
+    interval_s: float = 2.0,
+) -> None:
+    """Project remote JSONL artifact milestones into the local run journal."""
+
+    watched_files = ("training.jsonl", "metrics.jsonl")
+    state: dict[str, dict[str, Any]] = {
+        name: {"offset": 0, "buffer": "", "ready_announced": False} for name in watched_files
+    }
+    projected_by = "modal_parent"
+    emit(
+        "remote_artifact_projection_started",
+        run_name=run_name,
+        projected_by=projected_by,
+        files=list(watched_files),
+        interval_s=interval_s,
+        remote_run_dir=remote_run_dir,
+    )
+
+    async def _poll_once() -> None:
+        for file_name in watched_files:
+            remote_path = f"{remote_run_dir}/{file_name}"
+            contents = await trio.to_thread.run_sync(
+                lambda rp=remote_path: _read_modal_text_artifact_sync(sandbox, rp)
+            )
+            if contents is None:
+                continue
+            if local_run_dir is not None:
+                (local_run_dir / file_name).write_text(contents)
+            _project_modal_artifact_snapshot(
+                file_name=file_name,
+                contents=contents,
+                state=state[file_name],
+                emit=emit,
+                projected_by=projected_by,
+            )
+
+    while not stop_event.is_set():
+        await _poll_once()
+        with trio.move_on_after(interval_s):
+            await stop_event.wait()
+    await _poll_once()
+
+
 @dataclass(frozen=True)
 class ModalExecutionRequest:
     """Provider-owned execution request for the current Modal backend."""
@@ -1964,6 +2134,7 @@ async def run_modal_request(request: ModalExecutionRequest) -> dict[str, Any]:
                 emit("modal_training_start", sandbox_id=sandbox_id, workspace=workspace.root)
                 remote_run_dir = f"{workspace.root}/results/rl/{run_name}"
                 remote_training_jsonl = f"{remote_run_dir}/training.jsonl"
+                artifact_poll_stop = trio.Event()
                 process = await session.start_process(
                     _build_argus_local_process_spec(
                         workspace=workspace.root,
@@ -1982,7 +2153,21 @@ async def run_modal_request(request: ModalExecutionRequest) -> dict[str, Any]:
                     start_timeout_s=60.0,
                 )
                 try:
-                    result = await process.wait()
+                    async with trio.open_nursery() as nursery:
+                        nursery.start_soon(
+                            _project_modal_run_artifacts,
+                            sandbox_handle.sandbox,
+                            run_name,
+                            emit,
+                            artifact_poll_stop,
+                            remote_run_dir,
+                            local_run_dir,
+                        )
+                        try:
+                            result = await process.wait()
+                        finally:
+                            artifact_poll_stop.set()
+                            nursery.cancel_scope.cancel()
                 except BaseException as exc:
                     if not _exception_is_operator_interrupt(exc):
                         raise
