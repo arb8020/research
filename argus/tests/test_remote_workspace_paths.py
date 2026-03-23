@@ -33,3 +33,12 @@ def test_remote_materialized_path_uses_absolute_extra_project_root() -> None:
         "/root/.bifrost/workspaces/rollouts-rl/.bifrost-extra/src/charisma/"
         "charisma/configs/kernelbench_v3/demo.py"
     )
+
+
+def test_external_config_projects_carry_primary_workspace_root() -> None:
+    projects = argus_run._external_config_projects(
+        Path("/Users/chiraagbalu/silares_stuff/charisma/charisma/configs/kernelbench_v3/demo.py")
+    )
+
+    assert len(projects) == 1
+    assert projects[0].primary_workspace_local_root == str(argus_run.REPO_ROOT.parent.resolve())

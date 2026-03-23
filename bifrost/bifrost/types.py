@@ -463,6 +463,7 @@ class PythonProjectMaterialization:
 
     local_root: str
     name: str | None = None
+    primary_workspace_local_root: str | None = None
     source_mode: Literal["git_archive_committed"] = "git_archive_committed"
     install_mode: Literal["uv_run_with_editable"] = "uv_run_with_editable"
 
@@ -472,6 +473,10 @@ class PythonProjectMaterialization:
         assert self.install_mode == "uv_run_with_editable", "unsupported install_mode"
         if self.name is not None:
             assert re.match(r"^[A-Za-z0-9_.-]+$", self.name), "invalid extra project name"
+        if self.primary_workspace_local_root is not None:
+            assert Path(self.primary_workspace_local_root).is_absolute(), (
+                "primary_workspace_local_root must be absolute"
+            )
 
     @property
     def resolved_name(self) -> str:

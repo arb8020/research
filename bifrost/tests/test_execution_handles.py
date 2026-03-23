@@ -33,7 +33,7 @@ from bifrost.modal_backend import (
     _normalize_run_logger_event_payload,
     _wait_for_modal_exec_ready,
 )
-from bifrost.path_utils import normalize_remote_workspace_root
+from bifrost.path_utils import build_path_rewrite_map, normalize_remote_workspace_root
 from bifrost.server import server_is_healthy
 from bifrost.service_launch import build_detached_service_launch_command
 from bifrost.types import ExecResult, JobInfo, ServerInfo
@@ -167,6 +167,33 @@ def test_python_project_materialization_derives_remote_source_root() -> None:
     )
 
 
+def test_python_project_materialization_accepts_primary_workspace_root() -> None:
+    project = PythonProjectMaterialization(
+        local_root="/tmp/charisma",
+        primary_workspace_local_root="/Users/chiraagbalu/research",
+    )
+
+    assert project.primary_workspace_local_root == "/Users/chiraagbalu/research"
+
+
+def test_build_path_rewrite_map_rewrites_primary_and_extra_project_roots() -> None:
+    rewrite_map = build_path_rewrite_map(
+        primary_workspace_local_root="/Users/chiraagbalu/research",
+        remote_workspace_root="/root/.bifrost/workspaces/rollouts-rl",
+        extra_project_roots=(
+            (
+                "/Users/chiraagbalu/silares_stuff/charisma",
+                "/root/.bifrost/workspaces/rollouts-rl/.bifrost-extra/src/charisma",
+            ),
+        ),
+    )
+
+    assert rewrite_map["/Users/chiraagbalu/research"] == "/root/.bifrost/workspaces/rollouts-rl"
+    assert rewrite_map["/Users/chiraagbalu/silares_stuff/charisma"] == (
+        "/root/.bifrost/workspaces/rollouts-rl/.bifrost-extra/src/charisma"
+    )
+
+
 def test_workspace_materialization_spec_rejects_duplicate_extra_project_names() -> None:
     with pytest.raises(AssertionError, match="duplicate extra project name"):
         WorkspaceMaterializationSpec(
@@ -212,10 +239,7 @@ def test_normalize_remote_workspace_root_expands_tilde_prefix() -> None:
 
 
 def test_normalize_remote_workspace_root_leaves_absolute_paths_alone() -> None:
-    assert (
-        normalize_remote_workspace_root("/srv/workspace", "/root")
-        == "/srv/workspace"
-    )
+    assert normalize_remote_workspace_root("/srv/workspace", "/root") == "/srv/workspace"
 
 
 def test_connect_returns_execution_session_protocol() -> None:

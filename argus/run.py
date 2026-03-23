@@ -325,7 +325,8 @@ def _external_config_projects(config_path: Path) -> tuple[PythonProjectMateriali
 
         return (
             PythonProjectMaterialization(
-                local_root=str(_find_config_project_root(resolved_config))
+                local_root=str(_find_config_project_root(resolved_config)),
+                primary_workspace_local_root=str(workspace_root),
             ),
         )
     return ()

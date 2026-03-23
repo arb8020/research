@@ -1,5 +1,6 @@
 """Bifrost Async SDK - Trio-based async client for remote GPU execution."""
 
+import json
 import logging
 import os
 import shlex
@@ -16,7 +17,7 @@ import trio_asyncio
 from infra_utils.validation import validate_ssh_key_path, validate_timeout
 
 from . import git_sync
-from .path_utils import normalize_remote_workspace_root
+from .path_utils import build_path_rewrite_map, normalize_remote_workspace_root
 from .service_launch import build_detached_service_launch_command
 from .types import (
     CopyResult,
@@ -339,7 +340,16 @@ class AsyncBifrostClient:
         if not extra_python_projects:
             return
 
-        workspace_root = normalize_remote_workspace_root(workspace_root, await self.expand_path("~"))
+        workspace_root = normalize_remote_workspace_root(
+            workspace_root, await self.expand_path("~")
+        )
+        extra_project_roots = tuple(
+            (
+                str(Path(other.local_root).expanduser().resolve()),
+                other.remote_source_root(workspace_root),
+            )
+            for other in extra_python_projects
+        )
 
         sftp = await _trio_wrap(conn.start_sftp_client)()
         try:
@@ -361,6 +371,12 @@ class AsyncBifrostClient:
                     await trio.to_thread.run_sync(os.unlink, archive_path)
 
                 remote_source_root = project.remote_source_root(workspace_root)
+                rewrite_map = build_path_rewrite_map(
+                    primary_workspace_local_root=project.primary_workspace_local_root,
+                    remote_workspace_root=workspace_root,
+                    extra_project_roots=extra_project_roots,
+                )
+                rewrite_map_json = json.dumps(rewrite_map)
                 result = await self.exec(
                     " && ".join((
                         f"rm -rf {shlex.quote(remote_source_root)}",
@@ -368,6 +384,19 @@ class AsyncBifrostClient:
                         f"tar -xzf {shlex.quote(remote_archive)} -C {shlex.quote(remote_source_root)}",
                         f"rm -f {shlex.quote(remote_archive)}",
                         f"test -f {shlex.quote(remote_source_root + '/pyproject.toml')}",
+                        (
+                            "python3 -c "
+                            + shlex.quote(
+                                "import json, pathlib; "
+                                f"rewrite_map = json.loads({rewrite_map_json!r}); "
+                                f"pyproject = pathlib.Path({remote_source_root + '/pyproject.toml'!r}); "
+                                "text = pyproject.read_text(); "
+                                "original = text; "
+                                "for old, new in sorted(rewrite_map.items(), key=lambda item: len(item[0]), reverse=True): "
+                                "    text = text.replace(old, new); "
+                                "pyproject.write_text(text) if text != original else None"
+                            )
+                        ),
                     )),
                     working_dir="~",
                 )
