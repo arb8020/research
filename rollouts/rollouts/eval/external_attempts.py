@@ -133,6 +133,29 @@ def _make_raw_driver_line_handler(
     return emit
 
 
+def _make_external_progress_emitter(
+    run_config: Any | None,
+    *,
+    driver: str,
+) -> Callable[[str, dict[str, Any]], Awaitable[None]] | None:
+    on_chunk = getattr(run_config, "on_chunk", None)
+    if on_chunk is None:
+        return None
+
+    async def emit(kind: str, payload: dict[str, Any]) -> None:
+        await on_chunk(
+            StreamChunk(
+                kind,
+                {
+                    "driver": driver,
+                    **payload,
+                },
+            )
+        )
+
+    return emit
+
+
 def _result_from_artifact(
     *,
     sample_data: dict[str, Any],
@@ -1319,7 +1342,7 @@ async def trajectory_from_mini_swe_agent(
     environment_class: str | None = None,
     yolo: bool = True,
 ) -> ExternalAttemptArtifact:
-    del sample_data, run_config
+    del sample_data
 
     workdir = Path(cwd or Path.cwd()).resolve()
     output_path = workdir / f".mini-swe-agent-{_sample_id_slug(sample_id)}.traj.json"
@@ -1351,24 +1374,91 @@ async def trajectory_from_mini_swe_agent(
     env.setdefault("MSWEA_CONFIGURED", "true")
     if model is not None:
         env["MSWEA_MODEL_NAME"] = model
+    raw_line_handler = _make_raw_driver_line_handler(run_config, driver="mini_swe_agent")
+    progress_emitter = _make_external_progress_emitter(run_config, driver="mini_swe_agent")
+    stdout_lines: list[str] = []
+    stderr_lines: list[str] = []
+    latest_payload: dict[str, Any] | None = None
+    latest_messages = 0
 
-    try:
-        completed = await trio.to_thread.run_sync(
-            lambda: subprocess.run(
-                cmd,
-                cwd=str(workdir),
-                env=env,
-                text=True,
-                capture_output=True,
-                timeout=timeout_seconds,
-                check=False,
-            )
-        )
-    except subprocess.TimeoutExpired as exc:
-        raise TimeoutError(f"mini-swe-agent run timed out after {timeout_seconds:.1f}s") from exc
+    async def _consume_stream(
+        stream: trio.abc.ReceiveStream | None,
+        *,
+        sink: list[str],
+    ) -> None:
+        if stream is None:
+            return
+        buffer = ""
+        while True:
+            chunk = await stream.receive_some(4096)
+            if not chunk:
+                break
+            buffer += chunk.decode("utf-8", errors="replace")
+            while True:
+                newline = buffer.find("\n")
+                if newline < 0:
+                    break
+                line = buffer[:newline]
+                buffer = buffer[newline + 1 :]
+                sink.append(line)
+                if raw_line_handler is not None:
+                    await raw_line_handler(line)
+        if buffer:
+            sink.append(buffer)
+            if raw_line_handler is not None:
+                await raw_line_handler(buffer)
 
-    stdout_text = completed.stdout
-    stderr_text = completed.stderr
+    async def _poll_output_file() -> None:
+        nonlocal latest_payload, latest_messages
+        last_mtime_ns: int | None = None
+        while True:
+            await trio.sleep(1.0)
+            if not output_path.is_file():
+                continue
+            stat = output_path.stat()
+            if stat.st_mtime_ns == last_mtime_ns:
+                continue
+            last_mtime_ns = stat.st_mtime_ns
+            try:
+                payload = json.loads(output_path.read_text())
+            except (json.JSONDecodeError, OSError):
+                continue
+            if not isinstance(payload, dict):
+                continue
+            latest_payload = payload
+            latest_messages = len(payload.get("messages", []))
+            if progress_emitter is not None:
+                await progress_emitter(
+                    "external_artifact_progress",
+                    {
+                        "trajectory_path": str(output_path),
+                        "messages": latest_messages,
+                        "bytes": stat.st_size,
+                    },
+                )
+
+    proc = await trio.lowlevel.open_process(
+        cmd,
+        cwd=str(workdir),
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+
+    with trio.move_on_after(timeout_seconds) as cancel_scope:
+        async with trio.open_nursery() as nursery:
+            nursery.start_soon(partial(_consume_stream, proc.stdout, sink=stdout_lines))
+            nursery.start_soon(partial(_consume_stream, proc.stderr, sink=stderr_lines))
+            nursery.start_soon(_poll_output_file)
+            await proc.wait()
+
+    if cancel_scope.cancelled_caught:
+        proc.kill()
+        await proc.wait()
+        raise TimeoutError(f"mini-swe-agent run timed out after {timeout_seconds:.1f}s")
+
+    stdout_text = "\n".join(stdout_lines).strip()
+    stderr_text = "\n".join(stderr_lines).strip()
     combined_output = "\n".join(part for part in (stdout_text, stderr_text) if part).strip()
 
     if not output_path.is_file():
@@ -1377,7 +1467,10 @@ async def trajectory_from_mini_swe_agent(
             f"stdout:\n{stdout_text}\n\nstderr:\n{stderr_text}"
         )
 
-    payload = json.loads(output_path.read_text())
+    if latest_payload is None:
+        payload = json.loads(output_path.read_text())
+    else:
+        payload = latest_payload
     trajectory = _mini_swe_agent_output_to_trajectory(payload)
     info = payload.get("info", {})
     metadata: dict[str, Any] = {
@@ -1390,11 +1483,12 @@ async def trajectory_from_mini_swe_agent(
     }
     if model is not None:
         metadata["model"] = model
-    metadata["returncode"] = completed.returncode
+    metadata["returncode"] = proc.returncode
+    metadata["message_count"] = latest_messages or len(payload.get("messages", []))
     if combined_output:
         metadata["mini_swe_agent_output"] = combined_output[-8000:]
 
-    status = Status.COMPLETED if completed.returncode == 0 else Status.ABORTED
+    status = Status.COMPLETED if proc.returncode == 0 else Status.ABORTED
     return ExternalAttemptArtifact(
         trajectory=trajectory,
         metadata=metadata,
