@@ -220,12 +220,17 @@ def create_training_backend_runtime(
 
         _emit("training_preflight_backend_runtime_create_start")
         lowering = build_megatron_lowering(trainer, training_mode=training_mode)
+        megatron_overrides = trainer.megatron_overrides
+        sequence_parallel = trainer.sequence_parallel
+        if megatron_overrides is not None and megatron_overrides.sequence_parallel is not None:
+            sequence_parallel = megatron_overrides.sequence_parallel
         megatron_config = MegatronRemoteConfig(
             model_name=model.name,
             dtype=model.dtype,
             checkpoint_path=model.checkpoint_path,
             lowering=lowering,
-            sequence_parallel=trainer.sequence_parallel,
+            sequence_parallel=sequence_parallel,
+            megatron_overrides=megatron_overrides,
             lr=trainer.lr,
             weight_decay=trainer.weight_decay,
             max_grad_norm=trainer.max_grad_norm,

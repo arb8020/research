@@ -50,6 +50,7 @@ from ..training.configs import (  # noqa: E402
     RolloutConfig,
     TrainerConfig,
     deps_config_from_data,
+    megatron_overrides_from_data,
 )
 from ..training.inference_runtime_factory import create_inference_backend_runtime
 from ..training.runtime_factory import (
@@ -136,6 +137,9 @@ class GRPOConfig:
         trainer_data = dict(data.get("trainer", {}))
         inference_data["deps"] = deps_config_from_data(inference_data.get("deps"))
         trainer_data["deps"] = deps_config_from_data(trainer_data.get("deps"))
+        trainer_data["megatron_overrides"] = megatron_overrides_from_data(
+            trainer_data.get("megatron_overrides")
+        )
         inference = InferenceConfig(**inference_data)
         trainer = TrainerConfig(**trainer_data)
         rollout = RolloutConfig(**data.get("rollout", {}))
@@ -1284,6 +1288,10 @@ async def _grpo_train_async(
         )
 
         lowering = _megatron_lowering(config)
+        megatron_overrides = config.trainer.megatron_overrides
+        sequence_parallel = config.trainer.sequence_parallel
+        if megatron_overrides is not None and megatron_overrides.sequence_parallel is not None:
+            sequence_parallel = megatron_overrides.sequence_parallel
 
         # Create config for worker spawning (full config passed at init time)
         megatron_config = MegatronRemoteConfig(
@@ -1291,7 +1299,8 @@ async def _grpo_train_async(
             dtype=config.model.dtype,
             checkpoint_path=config.model.checkpoint_path,
             lowering=lowering,
-            sequence_parallel=config.trainer.sequence_parallel,
+            sequence_parallel=sequence_parallel,
+            megatron_overrides=megatron_overrides,
             lr=config.trainer.lr,
             weight_decay=config.trainer.weight_decay,
             max_grad_norm=config.trainer.max_grad_norm,

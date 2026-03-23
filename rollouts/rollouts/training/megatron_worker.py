@@ -1047,6 +1047,7 @@ def train(handle: Worker) -> None:
     rank = init_msg["rank"]
     world_size = init_msg["world_size"]
     config = init_msg["config"]
+    megatron_overrides = config.get("megatron_overrides") or {}
     _emit_argus_diag(
         "megatron_worker_init_msg_received",
         rank=rank,
@@ -1071,6 +1072,12 @@ def train(handle: Worker) -> None:
         # Default: use local_rank directly (rank 0 -> GPU 0, rank 1 -> GPU 1, etc.)
         cuda_device = local_rank
     os.environ["CUDA_VISIBLE_DEVICES"] = str(cuda_device)
+    if megatron_overrides.get("allocator_expandable_segments"):
+        current_alloc_conf = os.environ.get("PYTORCH_CUDA_ALLOC_CONF", "").strip()
+        alloc_parts = [part for part in current_alloc_conf.split(",") if part]
+        if "expandable_segments:True" not in alloc_parts:
+            alloc_parts.append("expandable_segments:True")
+        os.environ["PYTORCH_CUDA_ALLOC_CONF"] = ",".join(alloc_parts)
     logger.info("Worker rank %d using CUDA_VISIBLE_DEVICES=%s", rank, cuda_device)
 
     try:

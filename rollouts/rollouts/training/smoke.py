@@ -445,12 +445,17 @@ async def _megatron_checkpoint_resume_smoke_async(
     def create_backend(
         *, checkpoint_dir: Path, checkpoint_path: str | None
     ) -> MegatronRemoteBackend:
+        megatron_overrides = getattr(trainer, "megatron_overrides", None)
+        sequence_parallel = bool(_pick(trainer, "sequence_parallel", default=False))
+        if megatron_overrides is not None and megatron_overrides.sequence_parallel is not None:
+            sequence_parallel = megatron_overrides.sequence_parallel
         remote_config = MegatronRemoteConfig(
             model_name=config.model.name,
             dtype=config.model.dtype,
             checkpoint_path=checkpoint_path,
             lowering=lowering,
-            sequence_parallel=bool(_pick(trainer, "sequence_parallel", default=False)),
+            sequence_parallel=sequence_parallel,
+            megatron_overrides=megatron_overrides,
             lr=float(_pick(trainer, "lr", default=1e-6)),
             weight_decay=float(_pick(trainer, "weight_decay", default=0.0)),
             max_grad_norm=float(_pick(trainer, "max_grad_norm", default=1.0)),

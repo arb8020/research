@@ -1,6 +1,9 @@
 import pytest
 
-from rollouts.training.configs import DistributedConfig, HardwareConfig
+from rollouts.training.backends.megatron.remote_backend import MegatronRemoteConfig
+from rollouts.training.configs import DistributedConfig, HardwareConfig, MegatronOverrides
+from rollouts.training.grpo import GRPOConfig
+from rollouts.training.lowering import MegatronLowering, MegatronProvisioning, RealizationPlan
 from rollouts.training.multi_node import MultiNodeConfig, compute_cluster_allocation
 
 
@@ -33,3 +36,35 @@ def test_multi_node_allocation_reserves_workspace_gpus() -> None:
     assert node.inference_gpus == (0,)
     assert node.trainer_gpus == (1,)
     assert node.workspace_gpus == (2, 3)
+
+
+def test_grpo_config_from_dict_materializes_typed_megatron_overrides() -> None:
+    config = GRPOConfig.from_dict({
+        "trainer": {
+            "backend": "megatron",
+            "megatron_overrides": {
+                "allocator_expandable_segments": True,
+                "sequence_parallel": True,
+            },
+        },
+        "checkpoint": {
+            "weight_sync_mode": "nccl",
+        },
+    })
+
+    assert config.trainer.megatron_overrides == MegatronOverrides(
+        allocator_expandable_segments=True,
+        sequence_parallel=True,
+    )
+
+
+def test_megatron_remote_config_rejects_unlowered_output_materialization() -> None:
+    with pytest.raises(ValueError, match="output_materialization"):
+        MegatronRemoteConfig(
+            model_name="Qwen/Qwen3-0.6B",
+            lowering=MegatronLowering(
+                provisioning=MegatronProvisioning(tp=1, pp=1, ep=1),
+                realization=RealizationPlan(),
+            ),
+            megatron_overrides=MegatronOverrides(output_materialization="chunked_logits"),
+        )

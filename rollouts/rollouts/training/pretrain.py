@@ -132,12 +132,17 @@ def _spawn_megatron_workers(config: PretrainConfig) -> list[Any]:
     )
 
     lowering = build_megatron_lowering(config.trainer, training_mode="supervised")
+    megatron_overrides = config.trainer.megatron_overrides
+    sequence_parallel = config.trainer.sequence_parallel
+    if megatron_overrides is not None and megatron_overrides.sequence_parallel is not None:
+        sequence_parallel = megatron_overrides.sequence_parallel
     megatron_config = MegatronRemoteConfig(
         model_name=config.model.name,
         dtype=config.model.dtype,
         checkpoint_path=config.model.checkpoint_path,
         lowering=lowering,
-        sequence_parallel=config.trainer.sequence_parallel,
+        sequence_parallel=sequence_parallel,
+        megatron_overrides=megatron_overrides,
         lr=config.trainer.lr,
         weight_decay=config.trainer.weight_decay,
         max_grad_norm=config.trainer.max_grad_norm,

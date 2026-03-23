@@ -29,6 +29,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from ...configs import MegatronOverrides
 from ...contracts import TrainingDatum
 from ...lowering import MegatronLowering
 from ...types import ImmediateTrainFuture, TrainFuture
@@ -65,6 +66,7 @@ class MegatronRemoteConfig:
 
     # Backend-native Megatron runtime settings not modeled in RealizationPlan
     sequence_parallel: bool = False
+    megatron_overrides: MegatronOverrides | None = None
 
     # Training
     lr: float = 1e-6
@@ -88,6 +90,20 @@ class MegatronRemoteConfig:
     # GPU assignment (which physical GPUs to use for each rank)
     # If None, workers use rank as GPU index (rank 0 -> GPU 0, etc.)
     cuda_device_ids: tuple[int, ...] | None = None
+
+    def __post_init__(self) -> None:
+        overrides = self.megatron_overrides
+        if overrides is None:
+            return
+        if overrides.output_materialization != "default":
+            raise ValueError(
+                "Megatron override output_materialization is not lowered yet. "
+                "Only 'default' is supported today."
+            )
+        if overrides.lm_head_token_chunk_size is not None:
+            raise ValueError("Megatron override lm_head_token_chunk_size is not lowered yet.")
+        if overrides.max_tokens_per_microbatch is not None:
+            raise ValueError("Megatron override max_tokens_per_microbatch is not lowered yet.")
 
 
 @dataclass
@@ -340,6 +356,25 @@ class MegatronRemoteBackend:
                         },
                     },
                     "sequence_parallel": self.config.sequence_parallel,
+                    "megatron_overrides": (
+                        None
+                        if self.config.megatron_overrides is None
+                        else {
+                            "sequence_parallel": self.config.megatron_overrides.sequence_parallel,
+                            "allocator_expandable_segments": (
+                                self.config.megatron_overrides.allocator_expandable_segments
+                            ),
+                            "output_materialization": (
+                                self.config.megatron_overrides.output_materialization
+                            ),
+                            "lm_head_token_chunk_size": (
+                                self.config.megatron_overrides.lm_head_token_chunk_size
+                            ),
+                            "max_tokens_per_microbatch": (
+                                self.config.megatron_overrides.max_tokens_per_microbatch
+                            ),
+                        }
+                    ),
                     "lr": self.config.lr,
                     "bf16": self.config.dtype == "bfloat16",
                     "loss_type": self.config.loss_type,

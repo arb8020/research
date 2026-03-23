@@ -380,6 +380,39 @@ class ModelConfig:
 
 
 @dataclass(frozen=True)
+class MegatronOverrides:
+    """Temporary Megatron-native escape hatch.
+
+    TODO(denotation): Promote stable fields here into honest training-side
+    batch/output realization semantics, and leave only irreducibly
+    Megatron-native residue behind.
+    """
+
+    sequence_parallel: bool | None = None
+    allocator_expandable_segments: bool = False
+    output_materialization: Literal["default", "chunked_logits"] = "default"
+    lm_head_token_chunk_size: int | None = None
+    max_tokens_per_microbatch: int | None = None
+
+    def __post_init__(self) -> None:
+        if self.lm_head_token_chunk_size is not None:
+            assert self.lm_head_token_chunk_size > 0, "lm_head_token_chunk_size must be positive"
+        if self.max_tokens_per_microbatch is not None:
+            assert self.max_tokens_per_microbatch > 0, "max_tokens_per_microbatch must be positive"
+
+
+def megatron_overrides_from_data(
+    data: MegatronOverrides | dict[str, Any] | None,
+) -> MegatronOverrides | None:
+    if data is None or isinstance(data, MegatronOverrides):
+        return data
+    assert isinstance(data, dict), (
+        f"megatron_overrides must be MegatronOverrides|dict|None, got {type(data)}"
+    )
+    return MegatronOverrides(**data)
+
+
+@dataclass(frozen=True)
 class TrainerConfig:
     """Optimizer and gradient settings.
 
@@ -431,6 +464,9 @@ class TrainerConfig:
     seq_length: int = 4096
     # Micro batch size per GPU (if None, computed from num_minibatches)
     micro_batch_size: int | None = None
+    # Temporary backend-native escape hatch until batch/output realization is
+    # denoted more honestly above the Megatron lowering boundary.
+    megatron_overrides: MegatronOverrides | None = None
     # Memory optimizations (from SLIME)
     optimizer_cpu_offload: bool = False  # Offload Adam states to CPU
     activation_checkpointing: bool = True  # Gradient checkpointing
