@@ -19,7 +19,7 @@ def test_ssh_cuda_reconciliation_keeps_managed_runtime() -> None:
         python_runtime="managed_venv",
     )
 
-    assert argus_run._should_reconcile_ssh_cuda_toolkit(image) is True
+    assert argus_run._should_reconcile_ssh_cuda_toolkit(image) is False
 
 
 def test_ssh_cuda_reconciliation_defaults_true_without_image() -> None:

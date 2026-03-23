@@ -294,14 +294,12 @@ def _runpod_custom_image_docker_args(image_ref: str) -> str | None:
 def _should_reconcile_ssh_cuda_toolkit(custom_image: ImageSpec | None) -> bool:
     """Return whether SSH launch should mutate CUDA toolkit state on the remote.
 
-    `image_owned` means the runtime contract is supposed to come from the image
-    itself. In that case, mutating CUDA from the SSH bootstrap path is the wrong
-    denotation; either the image is valid as-is or it should fail later on its
-    own terms.
+    An explicit image means the system-level CUDA/toolchain contract is already
+    part of the chosen boot substrate. The SSH bootstrap path may still create a
+    managed Python environment on top, but it should not pretend to own or
+    reconcile the image's CUDA toolkit state.
     """
-    if custom_image is None:
-        return True
-    return custom_image.python_runtime != "image_owned"
+    return custom_image is None
 
 
 def _ssh_runtime_python(custom_image: ImageSpec | None) -> str:
