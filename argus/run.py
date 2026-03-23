@@ -412,10 +412,16 @@ class ExecutionSpecOverrides:
 
 def _read_remote_manifest(bifrost: BifrostClient) -> ImageManifest | None:
     """Load a baked or previously bootstrapped manifest from the remote node."""
-    raw = bifrost.exec(
+    result = bifrost.exec(
         "if [ -f /etc/rollouts-image.json ]; then cat /etc/rollouts-image.json; "
         f"elif [ -f {USER_IMAGE_MANIFEST_PATH} ]; then cat {USER_IMAGE_MANIFEST_PATH}; fi"
     )
+    if not result.success:
+        raise RuntimeError(
+            "Remote image manifest probe failed: "
+            f"exit={result.exit_code} stderr={result.stderr.strip()}"
+        )
+    raw = result.stdout
     raw = raw.strip()
     if not raw:
         return None
