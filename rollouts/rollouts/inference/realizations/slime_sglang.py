@@ -53,6 +53,11 @@ def _write_sidecar_event(payload: dict[str, object]) -> None:
 def _should_mirror_to_stderr(event: str) -> bool:
     if _sidecar_trace_path() is None:
         return True
+    if event in {
+        "sglang_weight_sync_request_contract",
+        "sglang_weight_sync_live_model_contract",
+    }:
+        return True
     # TODO(child-event-contract): `rollouts` should declare which engine-local
     # milestones belong in the parent execution event stream and `bifrost`
     # should carry them over a dedicated child-event channel. Until then, keep
@@ -227,6 +232,152 @@ def _method_owner_state(owner: object) -> dict[str, object]:
     if writer_lock is not None:
         payload["writer_lock_type"] = type(writer_lock).__name__
     return payload
+
+
+def _dtype_element_size(dtype_name: str) -> int | None:
+    return {
+        "float16": 2,
+        "bfloat16": 2,
+        "float32": 4,
+        "float64": 8,
+        "int8": 1,
+        "uint8": 1,
+        "int16": 2,
+        "int32": 4,
+        "int64": 8,
+        "bool": 1,
+    }.get(dtype_name)
+
+
+def _extract_weight_update_request_summary(
+    method_name: str, args: tuple[object, ...], kwargs: dict[str, object]
+) -> dict[str, object] | None:
+    request_obj: object | None = None
+    if args:
+        request_obj = args[0]
+    if request_obj is None:
+        request_obj = kwargs.get("request")
+    if request_obj is None:
+        return None
+
+    if method_name == "init_weights_update_group":
+        summary: dict[str, object] = {}
+        for key in (
+            "master_address",
+            "master_port",
+            "rank_offset",
+            "world_size",
+            "group_name",
+            "backend",
+        ):
+            value = None
+            if isinstance(request_obj, dict):
+                value = request_obj.get(key)
+            else:
+                value = getattr(request_obj, key, None)
+            if value is not None:
+                summary[key] = value
+        return summary or None
+
+    if not method_name.startswith("update_weights"):
+        return None
+
+    if isinstance(request_obj, dict):
+        names = request_obj.get("names") or []
+        shapes = request_obj.get("shapes") or []
+        dtypes = request_obj.get("dtypes") or []
+        group_name = request_obj.get("group_name")
+        weight_version = request_obj.get("weight_version")
+    else:
+        names = getattr(request_obj, "names", ()) or ()
+        shapes = getattr(request_obj, "shapes", ()) or ()
+        dtypes = getattr(request_obj, "dtypes", ()) or ()
+        group_name = getattr(request_obj, "group_name", None)
+        weight_version = getattr(request_obj, "weight_version", None)
+
+    dtype_counts: dict[str, int] = {}
+    dtype_total_bytes: dict[str, int] = {}
+    first_tensors: list[dict[str, object]] = []
+    total_bytes = 0
+    for index, (name, shape, dtype_name) in enumerate(zip(names, shapes, dtypes, strict=False)):
+        clean_dtype = str(dtype_name)
+        dtype_counts[clean_dtype] = dtype_counts.get(clean_dtype, 0) + 1
+        element_size = _dtype_element_size(clean_dtype)
+        nbytes = None
+        if element_size is not None:
+            numel = 1
+            for dim in shape:
+                numel *= int(dim)
+            nbytes = int(numel * element_size)
+            total_bytes += nbytes
+            dtype_total_bytes[clean_dtype] = dtype_total_bytes.get(clean_dtype, 0) + nbytes
+        if index < 3:
+            first_tensors.append({
+                "name": name,
+                "shape": [int(dim) for dim in shape],
+                "dtype": clean_dtype,
+                "element_size": element_size,
+                "nbytes": nbytes,
+            })
+
+    return {
+        "group_name": group_name,
+        "weight_version": weight_version,
+        "tensor_count": len(list(names)),
+        "dtype_counts": dtype_counts,
+        "dtype_total_bytes": dtype_total_bytes,
+        "total_bytes": total_bytes,
+        "first_tensors": first_tensors,
+    }
+
+
+def _sample_live_model_contract(owner: object, *, limit: int = 3) -> dict[str, object] | None:
+    def _resolve_path(root: object, path: tuple[str, ...]) -> object | None:
+        current = root
+        for attr in path:
+            current = getattr(current, attr, None)
+            if current is None:
+                return None
+        return current
+
+    candidate_paths = (
+        ("model",),
+        ("model_runner", "model"),
+        ("tp_worker", "model_runner", "model"),
+        ("tp_worker", "model"),
+    )
+    for path in candidate_paths:
+        model = _resolve_path(owner, path)
+        if model is None:
+            continue
+        named_parameters = getattr(model, "named_parameters", None)
+        if callable(named_parameters):
+            try:
+                samples: list[dict[str, object]] = []
+                for index, (name, param) in enumerate(named_parameters()):
+                    if index >= limit:
+                        break
+                    samples.append({
+                        "name": name,
+                        "shape": [int(dim) for dim in param.shape],
+                        "dtype": str(param.dtype).replace("torch.", ""),
+                        "device": str(param.device),
+                        "numel": int(param.numel()),
+                        "element_size": int(param.element_size()),
+                        "nbytes": int(param.numel() * param.element_size()),
+                        "is_contiguous": bool(param.is_contiguous()),
+                    })
+                if samples:
+                    return {
+                        "source_path": ".".join(path),
+                        "sampled_params": samples,
+                    }
+            except Exception as exc:
+                return {
+                    "source_path": ".".join(path),
+                    "error": f"{type(exc).__name__}: {exc}",
+                }
+    return None
 
 
 def _traceback_tail(limit: int = 8) -> list[str]:
@@ -1118,6 +1269,24 @@ def _wrap_runtime_method(owner_cls: type[object], method_name: str) -> None:
                 )
                 if contract is not None:
                     _weight_update_stack()[-1]["contract"] = contract
+            request_summary = _extract_weight_update_request_summary(method_name, args, kwargs)
+            live_model_contract = _sample_live_model_contract(self)
+            if request_summary is not None:
+                _emit_argus_diag(
+                    "sglang_weight_sync_request_contract",
+                    owner_class=owner_cls.__name__,
+                    method=method_name,
+                    weight_sync_contract=contract,
+                    request_summary=request_summary,
+                )
+            if live_model_contract is not None and method_name.startswith("update_weights"):
+                _emit_argus_diag(
+                    "sglang_weight_sync_live_model_contract",
+                    owner_class=owner_cls.__name__,
+                    method=method_name,
+                    weight_sync_contract=contract,
+                    live_model_contract=live_model_contract,
+                )
             _emit_argus_diag(
                 "sglang_runtime_method_enter",
                 owner_class=owner_cls.__name__,
@@ -1227,6 +1396,24 @@ def _wrap_runtime_method(owner_cls: type[object], method_name: str) -> None:
                 )
                 if contract is not None:
                     _weight_update_stack()[-1]["contract"] = contract
+            request_summary = _extract_weight_update_request_summary(method_name, args, kwargs)
+            live_model_contract = _sample_live_model_contract(self)
+            if request_summary is not None:
+                _emit_argus_diag(
+                    "sglang_weight_sync_request_contract",
+                    owner_class=owner_cls.__name__,
+                    method=method_name,
+                    weight_sync_contract=contract,
+                    request_summary=request_summary,
+                )
+            if live_model_contract is not None and method_name.startswith("update_weights"):
+                _emit_argus_diag(
+                    "sglang_weight_sync_live_model_contract",
+                    owner_class=owner_cls.__name__,
+                    method=method_name,
+                    weight_sync_contract=contract,
+                    live_model_contract=live_model_contract,
+                )
             _emit_argus_diag(
                 "sglang_runtime_method_enter",
                 owner_class=owner_cls.__name__,

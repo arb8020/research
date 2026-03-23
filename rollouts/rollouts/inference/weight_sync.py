@@ -85,6 +85,37 @@ def _tensor_sync_metadata(name: str, tensor: Tensor) -> dict[str, object]:
     }
 
 
+def _payload_contract_summary(payload: WeightUpdatePayload, *, limit: int = 3) -> dict[str, object]:
+    dtype_counts: dict[str, int] = {}
+    dtype_total_bytes: dict[str, int] = {}
+    first_tensors: list[dict[str, object]] = []
+    total_bytes = 0
+
+    for index, item in enumerate(payload.tensors):
+        tensor = item.tensor
+        dtype_name = str(tensor.dtype).replace("torch.", "")
+        nbytes = int(tensor.numel() * tensor.element_size())
+        total_bytes += nbytes
+        dtype_counts[dtype_name] = dtype_counts.get(dtype_name, 0) + 1
+        dtype_total_bytes[dtype_name] = dtype_total_bytes.get(dtype_name, 0) + nbytes
+        if index < limit:
+            first_tensors.append({
+                **_tensor_sync_metadata(item.wire_name, tensor),
+                "load_name": item.load_name,
+                "payload_kind": item.payload_kind,
+                "element_size": int(tensor.element_size()),
+                "nbytes": nbytes,
+            })
+
+    return {
+        "total_tensors": len(payload.tensors),
+        "total_bytes": total_bytes,
+        "dtype_counts": dtype_counts,
+        "dtype_total_bytes": dtype_total_bytes,
+        "first_tensors": first_tensors,
+    }
+
+
 def _nccl_env_snapshot() -> dict[str, object]:
     keys = (
         "CUDA_VISIBLE_DEVICES",
@@ -914,18 +945,29 @@ class WeightSyncSender:
                 f"current={current_device} expected={self.device.index}"
             )
 
-        total_tensors = len(payload.tensors)
-        total_bytes = sum(
-            int(item.tensor.numel() * item.tensor.element_size()) for item in payload.tensors
-        )
-        first_items = list(payload.tensors[:3])
+        payload_summary = _payload_contract_summary(payload)
+        total_tensors = int(payload_summary["total_tensors"])
+        total_bytes = int(payload_summary["total_bytes"])
         logger.info(
-            "weight_sync_sender_broadcast_start world_size=%s payload_kind=%s total_tensors=%s total_bytes=%s first_tensors=%s",
+            "weight_sync_sender_broadcast_start world_size=%s payload_kind=%s total_tensors=%s total_bytes=%s dtype_counts=%s dtype_total_bytes=%s first_tensors=%s",
             self.world_size,
             payload.payload_kind,
             total_tensors,
             total_bytes,
-            [_tensor_sync_metadata(item.wire_name, item.tensor) for item in first_items],
+            payload_summary["dtype_counts"],
+            payload_summary["dtype_total_bytes"],
+            payload_summary["first_tensors"],
+        )
+        _emit_argus_diag(
+            "weight_sync_sender_broadcast_contract",
+            payload_kind=payload.payload_kind,
+            total_tensors=total_tensors,
+            total_bytes=total_bytes,
+            dtype_counts=payload_summary["dtype_counts"],
+            dtype_total_bytes=payload_summary["dtype_total_bytes"],
+            first_tensors=payload_summary["first_tensors"],
+            nccl_env=_nccl_env_snapshot(),
+            process_group=_group_summary(self._process_group),
         )
 
         def _broadcast_all(use_async: bool) -> list[Any]:

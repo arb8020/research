@@ -1540,6 +1540,44 @@ def _strip_chunk_prefix(name: str) -> str:
     return name
 
 
+def _summarize_tensor_contract(tensors: dict[str, Any], *, limit: int = 3) -> dict[str, object]:
+    import torch
+
+    dtype_counts: dict[str, int] = {}
+    dtype_total_bytes: dict[str, int] = {}
+    first_tensors: list[dict[str, object]] = []
+    total_bytes = 0
+
+    for index, (name, value) in enumerate(tensors.items()):
+        if not isinstance(value, torch.Tensor):
+            continue
+        dtype_name = str(value.dtype).replace("torch.", "")
+        nbytes = int(value.numel() * value.element_size())
+        total_bytes += nbytes
+        dtype_counts[dtype_name] = dtype_counts.get(dtype_name, 0) + 1
+        dtype_total_bytes[dtype_name] = dtype_total_bytes.get(dtype_name, 0) + nbytes
+        if index < limit:
+            first_tensors.append({
+                "name": name,
+                "shape": [int(dim) for dim in value.shape],
+                "dtype": dtype_name,
+                "device": str(value.device),
+                "numel": int(value.numel()),
+                "element_size": int(value.element_size()),
+                "nbytes": nbytes,
+                "is_contiguous": bool(value.is_contiguous()),
+                "stride": [int(dim) for dim in value.stride()],
+            })
+
+    return {
+        "tensor_count": sum(dtype_counts.values()),
+        "total_bytes": total_bytes,
+        "dtype_counts": dtype_counts,
+        "dtype_total_bytes": dtype_total_bytes,
+        "first_tensors": first_tensors,
+    }
+
+
 def _convert_megatron_state_dict(model_name: str, state_dict: dict[str, Any]) -> dict[str, Any]:
     """Convert Megatron shard names to HuggingFace names for inference sync.
 
@@ -2140,10 +2178,8 @@ def _do_sync_weights_nccl(
                         "group_name": request_group_name,
                         "weight_version": str(request_weight_version),
                     }
-                    total_bytes = sum(
-                        int(tensor.numel() * tensor.element_size())
-                        for tensor in state_dict.values()
-                    )
+                    tensor_contract = _summarize_tensor_contract(state_dict)
+                    total_bytes = int(tensor_contract["total_bytes"])
                     logger.info(
                         "weight_sync_megatron_persistent_update_start group=%s tensors=%s total_bytes=%s payload_kind=%s weight_version=%s",
                         request_group_name,
@@ -2161,11 +2197,24 @@ def _do_sync_weights_nccl(
                         weight_version=request_weight_version,
                     )
                     logger.info(
-                        "weight_sync_megatron_persistent_request_ready group=%s first_names=%s first_shapes=%s first_dtypes=%s",
+                        "weight_sync_megatron_persistent_request_ready group=%s first_names=%s first_shapes=%s first_dtypes=%s dtype_counts=%s dtype_total_bytes=%s first_tensors=%s",
                         request_group_name,
                         request_body["names"][:3],
                         request_body["shapes"][:3],
                         request_body["dtypes"][:3],
+                        tensor_contract["dtype_counts"],
+                        tensor_contract["dtype_total_bytes"],
+                        tensor_contract["first_tensors"],
+                    )
+                    _emit_argus_diag(
+                        "weight_sync_megatron_persistent_request_contract",
+                        group=request_group_name,
+                        weight_version=request_weight_version,
+                        tensor_count=len(param_info),
+                        total_bytes=total_bytes,
+                        dtype_counts=tensor_contract["dtype_counts"],
+                        dtype_total_bytes=tensor_contract["dtype_total_bytes"],
+                        first_tensors=tensor_contract["first_tensors"],
                     )
 
                     def _update_remote_endpoint(endpoint: str) -> dict[str, object]:
