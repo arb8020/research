@@ -405,6 +405,7 @@ class MegatronRemoteBackend:
                         }
                     ),
                     "lr": self.config.lr,
+                    "dtype": self.config.dtype,
                     "bf16": self.config.dtype == "bfloat16",
                     "loss_type": self.config.loss_type,
                     "mask_ratio_low": self.config.mask_ratio_low,

@@ -1388,7 +1388,7 @@ def _training_loop(
                     backend,
                     model_name=config.get("model_name", ""),
                     inference_endpoints=config.get("inference_endpoints", []) if rank == 0 else [],
-                    inference_dtype=config.get("dtype"),
+                    inference_dtype=_inference_dtype_from_worker_config(config),
                     tensor_limit=msg.get("tensor_limit") if rank == 0 else None,
                     witness=bool(msg.get("witness", False)) if rank == 0 else False,
                 )
@@ -1590,6 +1590,15 @@ def _normalize_inference_dtype_name(name: str | None) -> str | None:
     if normalized in {"fp32", "float32"}:
         return "float32"
     return normalized or None
+
+
+def _inference_dtype_from_worker_config(config: dict[str, Any]) -> str | None:
+    dtype = _normalize_inference_dtype_name(config.get("dtype"))
+    if dtype is not None:
+        return dtype
+    if bool(config.get("bf16")):
+        return "bfloat16"
+    return None
 
 
 def _convert_megatron_state_dict(
