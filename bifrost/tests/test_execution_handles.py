@@ -15,6 +15,7 @@ from bifrost import (
     ProcessOutputLine,
     ProcessSpec,
     ProcessState,
+    PythonProjectMaterialization,
     ReadinessProbe,
     ServiceHandle,
     ServiceSpec,
@@ -153,6 +154,25 @@ def test_workspace_materialization_spec_keeps_requested_root_optional() -> None:
     assert spec.requested_root is None
     assert spec.source_mode == "git_bundle_committed"
     assert spec.allow_dirty is True
+
+
+def test_python_project_materialization_derives_remote_source_root() -> None:
+    project = PythonProjectMaterialization(local_root="/tmp/charisma")
+
+    assert project.resolved_name == "charisma"
+    assert project.remote_source_root("/remote/workspace") == (
+        "/remote/workspace/.bifrost-extra/src/charisma"
+    )
+
+
+def test_workspace_materialization_spec_rejects_duplicate_extra_project_names() -> None:
+    with pytest.raises(AssertionError, match="duplicate extra project name"):
+        WorkspaceMaterializationSpec(
+            extra_python_projects=(
+                PythonProjectMaterialization(local_root="/tmp/charisma", name="shared"),
+                PythonProjectMaterialization(local_root="/tmp/other", name="shared"),
+            )
+        )
 
 
 def test_service_spec_preserves_readiness_probe() -> None:

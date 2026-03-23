@@ -7,8 +7,11 @@ All state managed by caller (BifrostClient).
 from __future__ import annotations
 
 import logging
+import os
+import tempfile
 import time
 from collections.abc import Callable
+from pathlib import Path
 
 import paramiko
 from infra_utils.retry import retry
@@ -73,7 +76,7 @@ def _upload_bundle_with_retry(
     logger.info(f"bundle uploaded: {bundle_size:,} bytes in {elapsed:.1f}s ({rate_mbps:.1f} MB/s)")
 
 
-def _check_untracked_files() -> list[str] | None:
+def _check_untracked_files(repo_root: str | None = None) -> list[str] | None:
     """Check for untracked files in the git repo.
 
     Returns:
@@ -83,7 +86,11 @@ def _check_untracked_files() -> list[str] | None:
 
     try:
         result = subprocess.run(
-            ["git", "status", "--porcelain"], capture_output=True, text=True, check=False
+            ["git", "status", "--porcelain"],
+            capture_output=True,
+            text=True,
+            check=False,
+            cwd=repo_root,
         )
 
         if result.returncode != 0:
@@ -103,7 +110,7 @@ def _check_untracked_files() -> list[str] | None:
         return untracked if untracked else None
 
 
-def _check_uncommitted_changes() -> list[str] | None:
+def _check_uncommitted_changes(repo_root: str | None = None) -> list[str] | None:
     """Check for uncommitted changes (modified, staged, or deleted files).
 
     Returns:
@@ -113,7 +120,11 @@ def _check_uncommitted_changes() -> list[str] | None:
 
     try:
         result = subprocess.run(
-            ["git", "status", "--porcelain"], capture_output=True, text=True, check=False
+            ["git", "status", "--porcelain"],
+            capture_output=True,
+            text=True,
+            check=False,
+            cwd=repo_root,
         )
 
         if result.returncode != 0:
@@ -132,6 +143,66 @@ def _check_uncommitted_changes() -> list[str] | None:
         return None  # Git command failed
     else:
         return uncommitted if uncommitted else None
+
+
+def ensure_clean_git_repo(*, repo_root: str, allow_dirty: bool) -> None:
+    """Fail fast if a local git repo is dirty and allow_dirty is false."""
+
+    assert repo_root, "repo_root must be non-empty string"
+    if allow_dirty:
+        return
+
+    untracked = _check_untracked_files(repo_root)
+    uncommitted = _check_uncommitted_changes(repo_root)
+    if untracked or uncommitted:
+        dirty_files = []
+        if untracked:
+            dirty_files.extend(untracked)
+        if uncommitted:
+            dirty_files.extend(uncommitted)
+        raise RuntimeError(
+            f"Workspace has {len(dirty_files)} uncommitted/untracked file(s). "
+            f"Deploy with allow_dirty=True to proceed anyway. "
+            f"Files: {', '.join(dirty_files[:5])}"
+            + (f" and {len(dirty_files) - 5} more" if len(dirty_files) > 5 else "")
+        )
+
+
+def create_git_archive(repo_root: str) -> tuple[str, str]:
+    """Create a committed-only tarball snapshot of HEAD for a git repo."""
+
+    import subprocess
+
+    resolved_root = str(Path(repo_root).expanduser().resolve())
+    assert resolved_root, "repo_root must resolve to a path"
+
+    hash_result = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        capture_output=True,
+        text=True,
+        check=False,
+        cwd=resolved_root,
+    )
+    commit_hash = hash_result.stdout.strip()
+    if hash_result.returncode != 0 or not commit_hash:
+        raise RuntimeError(f"Git rev-parse HEAD failed for {resolved_root}")
+
+    with tempfile.NamedTemporaryFile(suffix=".tar.gz", delete=False) as archive_file:
+        archive_path = archive_file.name
+
+    archive_result = subprocess.run(
+        ["git", "archive", "--format=tar.gz", f"--output={archive_path}", "HEAD"],
+        capture_output=True,
+        text=True,
+        check=False,
+        cwd=resolved_root,
+    )
+    if archive_result.returncode != 0:
+        os.unlink(archive_path)
+        raise RuntimeError(
+            f"git archive failed for {resolved_root}: {archive_result.stderr.strip()}"
+        )
+    return archive_path, commit_hash
 
 
 def deploy_code(
@@ -168,20 +239,7 @@ def deploy_code(
 
     # Check for dirty workspace (uncommitted/untracked changes)
     if not allow_dirty:
-        untracked = _check_untracked_files()
-        uncommitted = _check_uncommitted_changes()
-        if untracked or uncommitted:
-            dirty_files = []
-            if untracked:
-                dirty_files.extend(untracked)
-            if uncommitted:
-                dirty_files.extend(uncommitted)
-            raise RuntimeError(
-                f"Workspace has {len(dirty_files)} uncommitted/untracked file(s). "
-                f"Deploy with allow_dirty=True to proceed anyway. "
-                f"Files: {', '.join(dirty_files[:5])}"
-                + (f" and {len(dirty_files) - 5} more" if len(dirty_files) > 5 else "")
-            )
+        ensure_clean_git_repo(repo_root=os.getcwd(), allow_dirty=allow_dirty)
 
     deploy_start = time.monotonic()
     logger.info(

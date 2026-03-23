@@ -78,8 +78,20 @@ def _quiet_spinner(msg: str) -> Generator[None, None, None]:
     yield None
 
 
+@contextmanager
+def _prepend_sys_path(entries: list[str]) -> Generator[None, None, None]:
+    original_sys_path = list(sys.path)
+    try:
+        for entry in reversed(entries):
+            if entry not in sys.path:
+                sys.path.insert(0, entry)
+        yield None
+    finally:
+        sys.path[:] = original_sys_path
+
+
 if TYPE_CHECKING:
-    from bifrost import BifrostClient
+    from bifrost import BifrostClient, PythonProjectMaterialization
     from broker import ClientGPUInstance
     from rollouts.training.configs import DepsConfig
     from rollouts.training.multi_node import MultiNodeConfig
@@ -174,6 +186,58 @@ def _process_alive(pid: int) -> bool:
 def _new_launcher_id() -> str:
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     return f"launch_{timestamp}_{os.getpid()}_{uuid.uuid4().hex[:8]}"
+
+
+def _find_config_project_root(config_path: Path) -> Path:
+    search_roots = [config_path.parent, *config_path.parents]
+    for candidate in search_roots:
+        if (candidate / "pyproject.toml").exists() or (candidate / ".git").exists():
+            return candidate
+    return config_path.parent
+
+
+def _external_config_project_roots(config_path: Path) -> tuple[Path, ...]:
+    return tuple(Path(project.local_root) for project in _external_config_projects(config_path))
+
+
+def _external_config_projects(config_path: Path) -> tuple[PythonProjectMaterialization, ...]:
+    from bifrost import PythonProjectMaterialization
+
+    workspace_root = REPO_ROOT.parent.resolve()
+    resolved_config = config_path.resolve()
+    try:
+        resolved_config.relative_to(workspace_root)
+    except ValueError:
+        return (
+            PythonProjectMaterialization(
+                local_root=str(_find_config_project_root(resolved_config))
+            ),
+        )
+    return ()
+
+
+def _remote_materialized_path(
+    *,
+    local_path: Path,
+    workspace_root: str,
+    extra_python_projects: tuple[PythonProjectMaterialization, ...],
+) -> str:
+    resolved_local = local_path.resolve()
+    primary_workspace_root = REPO_ROOT.parent.resolve()
+    try:
+        relative_to_primary = resolved_local.relative_to(primary_workspace_root)
+    except ValueError as err:
+        for project in extra_python_projects:
+            project_root = Path(project.local_root).expanduser().resolve()
+            try:
+                project_relative = resolved_local.relative_to(project_root)
+            except ValueError:
+                continue
+            return f"{project.remote_source_root(workspace_root)}/{project_relative.as_posix()}"
+        raise ValueError(
+            f"Path {resolved_local} is not inside the primary workspace or any extra project"
+        ) from err
+    return f"{workspace_root}/{relative_to_primary.as_posix()}"
 
 
 def _active_launches() -> list[dict[str, Any]]:
@@ -300,7 +364,9 @@ def load_config_module(config_path: Path) -> Any:
 
     module = importlib.util.module_from_spec(spec)
     sys.modules["_config"] = module
-    spec.loader.exec_module(module)
+    extra_import_roots = [str(path) for path in _external_config_project_roots(config_path)]
+    with _prepend_sys_path(extra_import_roots):
+        spec.loader.exec_module(module)
     return module
 
 
@@ -481,6 +547,7 @@ async def _deploy_and_submit(
     persistent_volume_location: str | None = None,
     deps: DepsConfig | None = None,
     raw_script: bool = False,
+    extra_python_projects: tuple[PythonProjectMaterialization, ...] = (),
 ) -> tuple:
     """Provision node, deploy code, submit training job.
 
@@ -739,16 +806,26 @@ async def _deploy_and_submit(
                 needs_cuda_upgrade = True
 
     # Deploy code (git sync only, no bootstrap)
-    script_rel_path = Path(script_path).relative_to(REPO_ROOT)
+    local_script_path = Path(script_path).resolve()
 
     log("deploy_start")
     with spinner("Deploying code..."):
-        workspace_handle = bifrost.materialize_workspace(
-            "~/.bifrost/workspaces/rollouts-rl",
-            allow_dirty=allow_dirty,
+        from bifrost import WorkspaceMaterializationSpec
+
+        workspace_handle = bifrost.materialize(
+            WorkspaceMaterializationSpec(
+                requested_root="~/.bifrost/workspaces/rollouts-rl",
+                allow_dirty=allow_dirty,
+                extra_python_projects=extra_python_projects,
+            )
         )
         workspace = workspace_handle.root
     log("deploy_done", workspace=workspace)
+    remote_script_path = _remote_materialized_path(
+        local_path=local_script_path,
+        workspace_root=workspace,
+        extra_python_projects=extra_python_projects,
+    )
 
     remote_manifest = _read_remote_manifest(bifrost)
     if remote_manifest is not None:
@@ -1048,21 +1125,29 @@ async def _deploy_and_submit(
     }
 
     # Submit training job
+    uv_run_args: list[str] = ["run"]
+    for project in extra_python_projects:
+        uv_run_args.extend(["--with-editable", project.remote_source_root(workspace)])
+
     if raw_script:
-        run_args = (
-            "run",
-            "python",
-            str(script_rel_path),
+        run_args = tuple(
+            uv_run_args
+            + [
+                "python",
+                remote_script_path,
+            ]
         )
     else:
-        run_args = (
-            "run",
-            "python",
-            "-m",
-            "argus.run",
-            "--config",
-            str(script_rel_path),
-            "--local",
+        run_args = tuple(
+            uv_run_args
+            + [
+                "python",
+                "-m",
+                "argus.run",
+                "--config",
+                remote_script_path,
+                "--local",
+            ]
         )
 
     log("submit_start")
@@ -1157,6 +1242,7 @@ async def run_remote(
     deps: DepsConfig | None = None,
     raw_script: bool = False,
     block: bool = False,
+    extra_python_projects: tuple[PythonProjectMaterialization, ...] = (),
 ) -> None:
     """Run training script on remote GPU via bifrost."""
     # TODO(argus-run): Move the SSH/bifrost remote training launcher into its
@@ -1187,6 +1273,7 @@ async def run_remote(
         persistent_volume_location=persistent_volume_location,
         deps=deps,
         raw_script=raw_script,
+        extra_python_projects=extra_python_projects,
     )
 
     assert instance is not None, "run_remote requires a provisioned instance"
@@ -1384,6 +1471,8 @@ Examples:
 
     runtime = runtime_contract_from_hardware(hardware)
     materialization = materialization_plan_from_runtime(runtime)
+    extra_python_projects = _external_config_projects(config_path)
+    extra_source_roots = tuple(Path(project.local_root) for project in extra_python_projects)
 
     launch_record = {
         "launcher_id": launcher_id,
@@ -1569,6 +1658,9 @@ Examples:
                     config_path=str(config_path),
                     runtime=runtime,
                     materialization=materialization,
+                    extra_source_roots=tuple(
+                        project.local_root for project in extra_python_projects
+                    ),
                     keep_alive=args.keep_alive,
                     cleanup_scope=args.modal_cleanup_scope,
                     run_name=run_name,
@@ -1580,6 +1672,12 @@ Examples:
                     ),
                     tags={**modal_tags, **workload_tags},
                 )
+                for extra_root in extra_source_roots:
+                    enforce_source_sync_policy(
+                        modal_request.source_sync_policy,
+                        repo_root=extra_root,
+                        stream=sys.stderr,
+                    )
                 log("modal_submit_dispatch")
                 results = trio.run(run_modal_request, modal_request)
                 if not results.get("success"):
@@ -1620,6 +1718,9 @@ Examples:
                 runtime.persistent_volume_mount_path,
                 runtime.persistent_volume_location,
                 runtime.deps,
+                False,  # raw_script
+                False,  # block
+                extra_python_projects,
             )
 
         else:

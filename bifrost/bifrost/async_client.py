@@ -15,29 +15,30 @@ import trio
 import trio_asyncio
 from infra_utils.validation import validate_ssh_key_path, validate_timeout
 
+from . import git_sync
 from .types import (
-    append_lifecycle_event,
     CopyResult,
-    create_jsonl_event_stream,
     EnvironmentVariables,
-    EventStreamRef,
     ExecResult,
     ObservedProcessHandle,
     OutputSink,
     ProcessOutputLine,
     ProcessSpec,
     ProcessState,
-    RemoteConfig,
-    ServiceHandle,
-    ServiceState,
-    ServiceSpec,
-    ServerInfo,
+    PythonProjectMaterialization,
     ReadinessProbe,
+    RemoteConfig,
+    ServerInfo,
+    ServiceHandle,
+    ServiceSpec,
+    ServiceState,
     SSHConnection,
     SSHConnectionError,
     TransferError,
     WorkspaceHandle,
     WorkspaceMaterializationSpec,
+    append_lifecycle_event,
+    create_jsonl_event_stream,
 )
 from .validation import validate_bootstrap_cmd
 
@@ -322,7 +323,63 @@ class AsyncBifrostClient:
             workspace_path=workspace_root,
             bootstrap_cmd=bootstrap_cmd,
             allow_dirty=spec.allow_dirty,
+            extra_python_projects=spec.extra_python_projects,
         )
+
+    async def _materialize_extra_python_projects(
+        self,
+        *,
+        conn: asyncssh.SSHClientConnection,
+        workspace_root: str,
+        extra_python_projects: tuple[PythonProjectMaterialization, ...],
+        allow_dirty: bool,
+    ) -> None:
+        if not extra_python_projects:
+            return
+
+        sftp = await _trio_wrap(conn.start_sftp_client)()
+        try:
+            for project in extra_python_projects:
+                local_root = str(Path(project.local_root).expanduser().resolve())
+                await trio.to_thread.run_sync(
+                    lambda repo_root=local_root: git_sync.ensure_clean_git_repo(
+                        repo_root=repo_root, allow_dirty=allow_dirty
+                    )
+                )
+                archive_path, commit_hash = await trio.to_thread.run_sync(
+                    git_sync.create_git_archive,
+                    local_root,
+                )
+                remote_archive = f"/tmp/bifrost-extra-{project.resolved_name}-{os.getpid()}-{int(time.time())}.tar.gz"
+                try:
+                    await _trio_wrap(sftp.put)(archive_path, remote_archive)
+                finally:
+                    await trio.to_thread.run_sync(os.unlink, archive_path)
+
+                remote_source_root = project.remote_source_root(workspace_root)
+                result = await self.exec(
+                    " && ".join((
+                        f"rm -rf {shlex.quote(remote_source_root)}",
+                        f"mkdir -p {shlex.quote(remote_source_root)}",
+                        f"tar -xzf {shlex.quote(remote_archive)} -C {shlex.quote(remote_source_root)}",
+                        f"rm -f {shlex.quote(remote_archive)}",
+                        f"test -f {shlex.quote(remote_source_root + '/pyproject.toml')}",
+                    )),
+                    working_dir="~",
+                )
+                if result.exit_code != 0:
+                    raise RuntimeError(
+                        f"Failed to materialize extra Python project {project.resolved_name}: "
+                        f"{result.stderr}"
+                    )
+                self.logger.info(
+                    "materialized extra Python project %s @ %s into %s",
+                    project.resolved_name,
+                    commit_hash[:7],
+                    remote_source_root,
+                )
+        finally:
+            await _close_sftp_client(sftp)
 
     async def exec(
         self,
@@ -492,6 +549,7 @@ class AsyncBifrostClient:
         bootstrap_cmd: str | list[str] | None = None,
         on_bootstrap_step: Callable[[str, int, int], None] | None = None,
         allow_dirty: bool = False,
+        extra_python_projects: tuple[PythonProjectMaterialization, ...] = (),
     ) -> str:
         """Deploy code to remote workspace.
 
@@ -584,9 +642,17 @@ class AsyncBifrostClient:
                 commit_hash[:7],
                 deployed_hash[:7],
             )
+        await self._materialize_extra_python_projects(
+            conn=conn,
+            workspace_root=workspace_path,
+            extra_python_projects=extra_python_projects,
+            allow_dirty=allow_dirty,
+        )
 
         if bootstrap_cmd:
-            bootstrap_steps = [bootstrap_cmd] if isinstance(bootstrap_cmd, str) else list(bootstrap_cmd)
+            bootstrap_steps = (
+                [bootstrap_cmd] if isinstance(bootstrap_cmd, str) else list(bootstrap_cmd)
+            )
             total_steps = len(bootstrap_steps)
             for index, cmd in enumerate(bootstrap_steps):
                 if on_bootstrap_step is not None:
@@ -607,12 +673,14 @@ class AsyncBifrostClient:
         bootstrap_cmd: str | list[str] | None = None,
         on_bootstrap_step: Callable[[str, int, int], None] | None = None,
         allow_dirty: bool = False,
+        extra_python_projects: tuple[PythonProjectMaterialization, ...] = (),
     ) -> WorkspaceHandle:
         root = await self.push(
             workspace_path=workspace_path,
             bootstrap_cmd=bootstrap_cmd,
             on_bootstrap_step=on_bootstrap_step,
             allow_dirty=allow_dirty,
+            extra_python_projects=extra_python_projects,
         )
         return WorkspaceHandle(root=root, backend=self.backend, requested_root=workspace_path)
 
@@ -818,14 +886,12 @@ class AsyncBifrostClient:
             readiness_target=service.readiness_probe.target,
         )
         await self.exec(
-            " && ".join(
-                (
-                    f"mkdir -p {shlex.quote(str(Path(log_file).parent))}",
-                    f": > {shlex.quote(stdout_log_file)}",
-                    f": > {shlex.quote(stderr_log_file)}",
-                    f"rm -f {shlex.quote(pid_file)}",
-                )
-            ),
+            " && ".join((
+                f"mkdir -p {shlex.quote(str(Path(log_file).parent))}",
+                f": > {shlex.quote(stdout_log_file)}",
+                f": > {shlex.quote(stderr_log_file)}",
+                f"rm -f {shlex.quote(pid_file)}",
+            )),
             working_dir="~",
         )
 
@@ -882,32 +948,27 @@ class AsyncBifrostClient:
 
         async def _logs(tail: int) -> str:
             result = await self.exec(
-                " && ".join(
-                    (
-                        f"echo '== stdout ==' && tail -n {tail} {shlex.quote(stdout_log_file)} 2>/dev/null || true",
-                        f"echo '== stderr ==' && tail -n {tail} {shlex.quote(stderr_log_file)} 2>/dev/null || true",
-                    )
-                ),
+                " && ".join((
+                    f"echo '== stdout ==' && tail -n {tail} {shlex.quote(stdout_log_file)} 2>/dev/null || true",
+                    f"echo '== stderr ==' && tail -n {tail} {shlex.quote(stderr_log_file)} 2>/dev/null || true",
+                )),
                 working_dir="~",
             )
             return result.stdout
 
         async def _stop() -> None:
             await self.exec(
-                " && ".join(
-                    (
-                        f"test -f {shlex.quote(pid_file)} && kill -TERM $(cat {shlex.quote(pid_file)}) 2>/dev/null || true",
-                        f"rm -f {shlex.quote(pid_file)}",
-                    )
-                ),
+                " && ".join((
+                    f"test -f {shlex.quote(pid_file)} && kill -TERM $(cat {shlex.quote(pid_file)}) 2>/dev/null || true",
+                    f"rm -f {shlex.quote(pid_file)}",
+                )),
                 working_dir="~",
             )
 
         readiness_target = (
             health_target
-            if health_target and (
-                health_target.startswith("http://") or health_target.startswith("https://")
-            )
+            if health_target
+            and (health_target.startswith("http://") or health_target.startswith("https://"))
             else (
                 f"http://localhost:{service.port}{health_target}"
                 if health_target and service.readiness_probe.kind == "http"

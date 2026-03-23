@@ -12,9 +12,7 @@ from infra_utils.validation import validate_ssh_key_path, validate_timeout
 
 from . import git_sync
 from .types import (
-    append_lifecycle_event,
     CopyResult,
-    create_jsonl_event_stream,
     EnvironmentVariables,
     EventStreamRef,
     ExecResult,
@@ -26,6 +24,7 @@ from .types import (
     ProcessOutputLine,
     ProcessSpec,
     ProcessState,
+    PythonProjectMaterialization,
     ReadinessProbe,
     RemoteConfig,
     ServerInfo,
@@ -37,6 +36,8 @@ from .types import (
     TransferError,
     WorkspaceHandle,
     WorkspaceMaterializationSpec,
+    append_lifecycle_event,
+    create_jsonl_event_stream,
 )
 from .validation import generate_job_id, validate_bootstrap_cmd
 
@@ -130,7 +131,56 @@ class BifrostClient:
             workspace_path=workspace_root,
             bootstrap_cmd=bootstrap_cmd,
             allow_dirty=spec.allow_dirty,
+            extra_python_projects=spec.extra_python_projects,
         )
+
+    def _materialize_extra_python_projects(
+        self,
+        *,
+        ssh_client: paramiko.SSHClient,
+        workspace_root: str,
+        extra_python_projects: tuple[PythonProjectMaterialization, ...],
+        allow_dirty: bool,
+    ) -> None:
+        import shlex
+
+        if not extra_python_projects:
+            return
+
+        sftp = ssh_client.open_sftp()
+        try:
+            for project in extra_python_projects:
+                local_root = str(Path(project.local_root).expanduser().resolve())
+                git_sync.ensure_clean_git_repo(repo_root=local_root, allow_dirty=allow_dirty)
+                archive_path, commit_hash = git_sync.create_git_archive(local_root)
+                remote_archive = f"/tmp/bifrost-extra-{project.resolved_name}-{os.getpid()}-{int(time.time())}.tar.gz"
+                try:
+                    self._upload_file(sftp, archive_path, remote_archive)
+                finally:
+                    os.unlink(archive_path)
+
+                remote_source_root = project.remote_source_root(workspace_root)
+                materialize_cmd = " && ".join((
+                    f"rm -rf {shlex.quote(remote_source_root)}",
+                    f"mkdir -p {shlex.quote(remote_source_root)}",
+                    f"tar -xzf {shlex.quote(remote_archive)} -C {shlex.quote(remote_source_root)}",
+                    f"rm -f {shlex.quote(remote_archive)}",
+                    f"test -f {shlex.quote(remote_source_root + '/pyproject.toml')}",
+                ))
+                result = self.exec(materialize_cmd, working_dir="~")
+                if result.exit_code != 0:
+                    raise RuntimeError(
+                        f"Failed to materialize extra Python project {project.resolved_name}: "
+                        f"{result.stderr}"
+                    )
+                self.logger.info(
+                    "materialized extra Python project %s @ %s into %s",
+                    project.resolved_name,
+                    commit_hash[:7],
+                    remote_source_root,
+                )
+        finally:
+            sftp.close()
 
     @retry(max_attempts=3, delay=2, backoff=2, exceptions=(Exception,))
     def _establish_connection(
@@ -321,6 +371,7 @@ class BifrostClient:
         bootstrap_cmd: str | list[str] | None = None,
         on_bootstrap_step: Callable[[str, int, int], None] | None = None,
         allow_dirty: bool = False,
+        extra_python_projects: tuple[PythonProjectMaterialization, ...] = (),
     ) -> str:
         """Deploy code to remote workspace.
 
@@ -375,6 +426,12 @@ class BifrostClient:
             ssh_client, self._remote_config, workspace_path, allow_dirty=allow_dirty
         )
         self.logger.info(f"push: deploy_code took {_time.monotonic() - t0:.1f}s")
+        self._materialize_extra_python_projects(
+            ssh_client=ssh_client,
+            workspace_root=workspace_path,
+            extra_python_projects=extra_python_projects,
+            allow_dirty=allow_dirty,
+        )
 
         # Run bootstrap if specified (pure function)
         if bootstrap_cmd:
@@ -400,6 +457,7 @@ class BifrostClient:
         bootstrap_cmd: str | list[str] | None = None,
         on_bootstrap_step: Callable[[str, int, int], None] | None = None,
         allow_dirty: bool = False,
+        extra_python_projects: tuple[PythonProjectMaterialization, ...] = (),
     ) -> WorkspaceHandle:
         """Materialize a project snapshot into a remote workspace."""
 
@@ -408,6 +466,7 @@ class BifrostClient:
             bootstrap_cmd=bootstrap_cmd,
             on_bootstrap_step=on_bootstrap_step,
             allow_dirty=allow_dirty,
+            extra_python_projects=extra_python_projects,
         )
         return WorkspaceHandle(root=root, backend=self.backend, requested_root=workspace_path)
 
@@ -1092,14 +1151,12 @@ class BifrostClient:
             readiness_probe=health_endpoint or "process_alive",
         )
         self.exec(
-            " && ".join(
-                (
-                    f"mkdir -p {shlex.quote(str(Path(log_file).parent))}",
-                    f": > {shlex.quote(stdout_log_file)}",
-                    f": > {shlex.quote(stderr_log_file)}",
-                    f"rm -f {shlex.quote(pid_file)}",
-                )
-            )
+            " && ".join((
+                f"mkdir -p {shlex.quote(str(Path(log_file).parent))}",
+                f": > {shlex.quote(stdout_log_file)}",
+                f": > {shlex.quote(stderr_log_file)}",
+                f"rm -f {shlex.quote(pid_file)}",
+            ))
         )
 
         full_cmd = effective_spec.build_command()
@@ -1147,24 +1204,20 @@ class BifrostClient:
 
         def _logs(tail: int) -> str:
             result = self.exec(
-                " && ".join(
-                    (
-                        f"echo '== stdout ==' && tail -n {tail} {shlex.quote(stdout_log_file)} 2>/dev/null || true",
-                        f"echo '== stderr ==' && tail -n {tail} {shlex.quote(stderr_log_file)} 2>/dev/null || true",
-                    )
-                ),
+                " && ".join((
+                    f"echo '== stdout ==' && tail -n {tail} {shlex.quote(stdout_log_file)} 2>/dev/null || true",
+                    f"echo '== stderr ==' && tail -n {tail} {shlex.quote(stderr_log_file)} 2>/dev/null || true",
+                )),
                 working_dir="~",
             )
             return result.stdout
 
         def _stop() -> None:
             self.exec(
-                " && ".join(
-                    (
-                        f"test -f {shlex.quote(pid_file)} && kill -TERM $(cat {shlex.quote(pid_file)}) 2>/dev/null || true",
-                        f"rm -f {shlex.quote(pid_file)}",
-                    )
-                ),
+                " && ".join((
+                    f"test -f {shlex.quote(pid_file)} && kill -TERM $(cat {shlex.quote(pid_file)}) 2>/dev/null || true",
+                    f"rm -f {shlex.quote(pid_file)}",
+                )),
                 working_dir="~",
             )
 
@@ -1186,10 +1239,16 @@ class BifrostClient:
                 kind="http" if health_endpoint else "process_alive",
                 target=(
                     health_endpoint
-                    if health_endpoint and (
-                        health_endpoint.startswith("http://") or health_endpoint.startswith("https://")
+                    if health_endpoint
+                    and (
+                        health_endpoint.startswith("http://")
+                        or health_endpoint.startswith("https://")
                     )
-                    else (f"http://localhost:{port}{health_endpoint}" if health_endpoint else service_id)
+                    else (
+                        f"http://localhost:{port}{health_endpoint}"
+                        if health_endpoint
+                        else service_id
+                    )
                 ),
             ),
             initial_state=ServiceState.LAUNCHING,

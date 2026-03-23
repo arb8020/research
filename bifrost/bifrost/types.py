@@ -363,7 +363,9 @@ class LifecycleEvent:
         assert self.handle_name, "lifecycle event handle_name cannot be empty"
 
 
-def create_jsonl_event_stream(*, backend: str, handle_kind: str, handle_name: str) -> EventStreamRef:
+def create_jsonl_event_stream(
+    *, backend: str, handle_kind: str, handle_name: str
+) -> EventStreamRef:
     """Create a canonical local JSONL event stream reference for a handle."""
 
     safe_name = re.sub(r"[^A-Za-z0-9_.-]+", "-", handle_name).strip("-") or "handle"
@@ -391,7 +393,8 @@ def append_lifecycle_event(
     if stream.kind != "jsonl_file" or not stream.location:
         return
     payload = LifecycleEvent(
-        ts=time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime()) + f".{int(time.time_ns() % 1_000_000_000):09d}Z",
+        ts=time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime())
+        + f".{int(time.time_ns() % 1_000_000_000):09d}Z",
         event=event,
         backend=backend,
         handle_name=handle_name,
@@ -455,6 +458,33 @@ class ReadinessProbe:
 
 
 @dataclass(frozen=True)
+class PythonProjectMaterialization:
+    """Extra Python project staged alongside the primary workspace."""
+
+    local_root: str
+    name: str | None = None
+    source_mode: Literal["git_archive_committed"] = "git_archive_committed"
+    install_mode: Literal["uv_run_with_editable"] = "uv_run_with_editable"
+
+    def __post_init__(self) -> None:
+        assert self.local_root, "local_root cannot be empty"
+        assert self.source_mode == "git_archive_committed", "unsupported source_mode"
+        assert self.install_mode == "uv_run_with_editable", "unsupported install_mode"
+        if self.name is not None:
+            assert re.match(r"^[A-Za-z0-9_.-]+$", self.name), "invalid extra project name"
+
+    @property
+    def resolved_name(self) -> str:
+        if self.name is not None:
+            return self.name
+        return Path(self.local_root).expanduser().resolve().name
+
+    def remote_source_root(self, workspace_root: str) -> str:
+        assert workspace_root, "workspace_root cannot be empty"
+        return f"{workspace_root}/.bifrost-extra/src/{self.resolved_name}"
+
+
+@dataclass(frozen=True)
 class WorkspaceMaterializationSpec:
     """Materialization request for a project snapshot on an execution session.
 
@@ -467,9 +497,18 @@ class WorkspaceMaterializationSpec:
     bootstrap_commands: tuple[str, ...] = ()
     source_mode: Literal["git_bundle_committed"] = "git_bundle_committed"
     allow_dirty: bool = False
+    extra_python_projects: tuple[PythonProjectMaterialization, ...] = ()
 
     def __post_init__(self) -> None:
         assert self.source_mode == "git_bundle_committed", "unsupported source_mode"
+        seen_names: set[str] = set()
+        for project in self.extra_python_projects:
+            assert isinstance(project, PythonProjectMaterialization), (
+                "extra_python_projects must contain PythonProjectMaterialization entries"
+            )
+            project_name = project.resolved_name
+            assert project_name not in seen_names, f"duplicate extra project name: {project_name}"
+            seen_names.add(project_name)
 
 
 @dataclass(frozen=True)
