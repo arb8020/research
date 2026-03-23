@@ -84,6 +84,7 @@ class GPUQuery:
     provider: str | None = None  # Filter to specific provider (e.g., "runpod", "vast")
     image: str = "runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04"  # Docker image
     boot_image: ProvisionImage | None = None
+    template_id: str | None = None
     ssh_startup_script: str | None = None
 
     # Provider credentials (optional - falls back to env vars)
@@ -249,6 +250,7 @@ async def acquire_node(
         query,
         image=provision.image,
         boot_image=provision.boot_image,
+        template_id=provision.template_id,
         ssh_startup_script=provision.ssh_startup_script,
         name=provision.name,
         gpu_count=provision.count,

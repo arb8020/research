@@ -193,31 +193,37 @@ def _runpod_image_is_official_ssh_ready(image_ref: str) -> bool:
     return normalized.startswith("runpod/")
 
 
+RUNPOD_DOCS_CUSTOM_IMAGE_SSH_STARTUP_SCRIPT = (
+    "bash -c 'apt update; "
+    "DEBIAN_FRONTEND=noninteractive apt-get install openssh-server -y; "
+    "mkdir -p ~/.ssh; "
+    "cd ~/.ssh; "
+    "chmod 700 ~/.ssh; "
+    'echo "$PUBLIC_KEY" >> authorized_keys; '
+    "chmod 700 authorized_keys; "
+    "service ssh start; "
+    "sleep infinity'"
+)
+
+
+def _runpod_template_id_for_custom_image() -> str | None:
+    template_id = os.getenv("RUNPOD_SSH_TEMPLATE_ID")
+    if template_id is None:
+        return None
+    normalized = template_id.strip()
+    return normalized or None
+
+
 def _runpod_custom_image_ssh_startup_script(image_ref: str) -> str | None:
     if _runpod_image_is_official_ssh_ready(image_ref):
         return None
 
-    # RunPod's public-IP SSH path only becomes real once an SSH daemon is
-    # actually listening inside the container. Official templates/images already
-    # provide that, but custom training images like `slimerl/slime:*` do not
-    # necessarily do so. Keep this provider-specific boot concern in lowering
-    # instead of leaking it into configs.
-    return (
-        "bash -c '"
-        "if ! command -v sshd >/dev/null 2>&1; then "
-        "apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y openssh-server; "
-        "fi; "
-        "mkdir -p /run/sshd ~/.ssh; "
-        "chmod 700 ~/.ssh; "
-        "touch ~/.ssh/authorized_keys; "
-        'if [ -n "$PUBLIC_KEY" ]; then printf "%s\\n" "$PUBLIC_KEY" >> ~/.ssh/authorized_keys; fi; '
-        "chmod 600 ~/.ssh/authorized_keys; "
-        "mkdir -p /etc/ssh/sshd_config.d; "
-        'printf "PermitRootLogin yes\\nPubkeyAuthentication yes\\nPasswordAuthentication no\\n" > '
-        "/etc/ssh/sshd_config.d/99-runpod-root.conf; "
-        "service ssh start || /usr/sbin/sshd -D & "
-        "wait'"
-    )
+    # Keep the exact docs version here for now. It is a provider-specific
+    # lowering concern for custom images, not a frontend config choice.
+    # The docs preconditions are:
+    # - the pod must expose TCP port 22
+    # - PUBLIC_KEY must be injected
+    return RUNPOD_DOCS_CUSTOM_IMAGE_SSH_STARTUP_SCRIPT
 
 
 def _find_config_project_root(config_path: Path) -> Path:
@@ -638,6 +644,7 @@ async def _deploy_and_submit(
     logs_port = 9100
     provision_image = "runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04"
     provision_boot_image: ProvisionImage | None = None
+    provision_template_id: str | None = None
     provision_ssh_startup_script: str | None = None
     resolved_registry_image_ref: str | None = None
     if deps is None:
@@ -674,6 +681,7 @@ async def _deploy_and_submit(
                 },
             )
             if provider == "runpod":
+                provision_template_id = _runpod_template_id_for_custom_image()
                 provision_ssh_startup_script = _runpod_custom_image_ssh_startup_script(
                     provision_image
                 )
@@ -736,6 +744,7 @@ async def _deploy_and_submit(
                         container_disk_gb=container_disk_gb,
                         image=provision_image,
                         boot_image=provision_boot_image,
+                        template_id=provision_template_id,
                         ssh_startup_script=provision_ssh_startup_script,
                         persistent_volume_id=persistent_volume_id,
                         persistent_volume_mount_path=persistent_volume_mount_path,
