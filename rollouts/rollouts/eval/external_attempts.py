@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import re
+import shlex
 import shutil
 import subprocess
 from collections.abc import Awaitable, Callable
@@ -270,8 +271,15 @@ def make_remote_external_trajectory_adapter(
     CLIs into the runtime image instead of doing per-attempt npm installs.
 
     TODO(remote-external-runtime-streaming): this only reconstructs the final
-    trajectory after the remote process exits. Add true remote stdout streaming
-    over the session boundary so live runs get honest incremental progress.
+    trajectory after the remote process exits. Replace _run_remote_external_runtime
+    with a session-file polling approach: launch the CLI in the background inside
+    the sandbox, then poll the native session file it writes
+    (~/.claude/projects/.../session.jsonl or ~/.codex/sessions/.../rollout-*.jsonl)
+    via repeated workspace.run("tail -c +{offset} {path}") calls, feeding each new
+    line through the canonical _ClaudeEventParser / _CodexEventParser from
+    drivers/claude.py and drivers/codex.py. This gives live progress and uses the
+    authoritative session file (which has complete tool arguments) rather than the
+    buffered stdout. Falls back to full stdout parse if the session file is not found.
     """
 
     if runtime == "claude_code":
@@ -363,6 +371,10 @@ async def _ensure_remote_runtime_bootstrap(
         )
 
 
+# TODO(remote-external-runtime-streaming): This function is the fallback for
+# the buffered remote execution path. Once session-file polling lands, this
+# should only be called when polling fails to find the session file (e.g. the
+# CLI crashed before writing anything). The primary path should be live polling.
 async def _build_trajectory_from_remote_jsonl(
     *,
     runtime: Literal["claude_code", "codex"],
@@ -392,6 +404,286 @@ async def _build_trajectory_from_remote_jsonl(
             accumulator.handle(event)
 
     return Trajectory(messages=accumulator.finalize()), getattr(parser, "_session_id", None)
+
+
+def _remote_session_file_discovery_script(runtime: str, agent_home: str, cwd: str) -> str:
+    """Return a shell snippet that prints the session file path to stdout.
+
+    For claude_code: looks in ~/.claude/projects/<escaped-cwd>/ for the newest .jsonl.
+    For codex: looks in ~/.codex/sessions/YYYY/MM/DD/ for the newest rollout-*.jsonl.
+    Prints nothing (exits 0) if not found yet.
+    """
+    if runtime == "claude_code":
+        # Claude Code escapes cwd by replacing / with -
+        # e.g. /workspace -> -workspace
+        # We use Python inline to avoid bash quoting hell with arbitrary cwd paths.
+        return (
+            f'python3 -c "\n'
+            f"import os, pathlib\n"
+            f"cwd = {cwd!r}\n"
+            f"escaped = cwd.replace('/', '-')\n"
+            f"projects = pathlib.Path({agent_home!r}) / '.claude' / 'projects' / escaped\n"
+            f"if not projects.exists():\n"
+            f"    exit(0)\n"
+            f"files = sorted(projects.glob('*.jsonl'), key=lambda p: p.stat().st_mtime)\n"
+            f"if files:\n"
+            f"    print(files[-1])\n"
+            f'"'
+        )
+    if runtime == "codex":
+        return (
+            f'python3 -c "\n'
+            f"import pathlib\n"
+            f"sessions = pathlib.Path({agent_home!r}) / '.codex' / 'sessions'\n"
+            f"if not sessions.exists():\n"
+            f"    exit(0)\n"
+            f"files = sorted(sessions.rglob('rollout-*.jsonl'), key=lambda p: p.stat().st_mtime)\n"
+            f"if files:\n"
+            f"    print(files[-1])\n"
+            f'"'
+        )
+    raise ValueError(f"Unsupported runtime: {runtime}")
+
+
+async def _run_remote_external_runtime_session_file(
+    *,
+    runtime: Literal["claude_code", "codex"],
+    prompt: str,
+    sample_id: str,
+    workspace: SandboxWorkspaceResource,
+    cwd: str,
+    run_config: Any | None,
+    command: list[str],
+    timeout_seconds: float,
+) -> ExternalAttemptArtifact:
+    """Launch the CLI in the background and poll its native session file for progress.
+
+    Gives live per-line visibility into the run as the agent writes its session file,
+    rather than waiting for the process to exit before seeing any output.
+    """
+    from ..drivers.session_adapter import claude_message_to_rollouts, codex_message_to_rollouts
+
+    await _ensure_remote_runtime_bootstrap(workspace, runtime=runtime, cwd=cwd)
+
+    state_dir = _remote_runtime_state_dir(runtime, sample_id)
+    prompt_path = f"{state_dir}/prompt.txt"
+    env_path = f"{state_dir}/env.json"
+    pid_path = f"{state_dir}/agent.pid"
+    stdout_path = f"{state_dir}/agent.stdout"
+    stderr_path = f"{state_dir}/agent.stderr"
+
+    await workspace.run(f"mkdir -p {state_dir}", cwd=cwd, timeout=30.0)
+    await workspace.write_file(prompt_path, prompt.encode("utf-8"))
+    await workspace.write_file(
+        env_path,
+        json.dumps(_remote_runtime_env(runtime)).encode("utf-8"),
+    )
+    await workspace.run(
+        f"chown -R {REMOTE_AGENT_USER}:{REMOTE_AGENT_USER} {cwd} {state_dir}",
+        cwd=cwd,
+        timeout=30.0,
+    )
+
+    # Get the agent user's home directory
+    home_result = await workspace.run(
+        f"getent passwd {REMOTE_AGENT_USER} | cut -d: -f6",
+        cwd=cwd,
+        timeout=10.0,
+    )
+    agent_home = home_result.stdout.strip() or f"/home/{REMOTE_AGENT_USER}"
+
+    # Launch CLI in background as agent user, capturing stdout/stderr to files.
+    # Build the inner command string that su -c will execute:
+    #   ENV=val ... HOME=... <cli> <args> <prompt> >stdout 2>stderr & echo $!
+    env_export = " ".join(f"{k}={shlex.quote(v)}" for k, v in _remote_runtime_env(runtime).items())
+    inner_cmd = (
+        env_export
+        + f" HOME={shlex.quote(agent_home)}"
+        + " "
+        + shlex.join(command + [prompt])
+        + f" >{stdout_path} 2>{stderr_path} & echo $!"
+    )
+    launch_script = f"su -s /bin/bash {REMOTE_AGENT_USER} -c {shlex.quote(inner_cmd)} >{pid_path}"
+    launch_result = await workspace.run(launch_script, cwd=cwd, timeout=30.0)
+    if launch_result.returncode != 0:
+        raise RuntimeError(
+            f"Failed to launch remote {runtime}: {launch_result.stderr or launch_result.stdout}"
+        )
+
+    # Poll for session file and read lines as they appear
+    messages: list[Any] = []
+    session_file: str | None = None
+    session_id: str | None = None
+    poll_interval = 2.0
+    elapsed = 0.0
+    file_offset = 0  # bytes consumed so far
+    assistant_turn = 0
+
+    discovery_script = _remote_session_file_discovery_script(runtime, agent_home, cwd)
+
+    while elapsed < timeout_seconds:
+        await trio.sleep(poll_interval)
+        elapsed += poll_interval
+
+        # Discover session file on first appearance
+        if session_file is None:
+            disc = await workspace.run(discovery_script, cwd=cwd, timeout=10.0)
+            path = disc.stdout.strip()
+            if path:
+                session_file = path
+                _event_logger.info(
+                    "session_file_found",
+                    extra={"runtime": runtime, "sample_id": sample_id, "path": path},
+                )
+
+        # Read new bytes from session file
+        if session_file is not None:
+            read_result = await workspace.run(
+                f"tail -c +{file_offset + 1} {session_file}",
+                cwd=cwd,
+                timeout=10.0,
+            )
+            new_bytes = read_result.stdout
+            if new_bytes:
+                file_offset += len(new_bytes.encode("utf-8", errors="replace"))
+                for raw_line in new_bytes.splitlines():
+                    line = raw_line.strip()
+                    if not line:
+                        continue
+                    try:
+                        entry = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if runtime == "claude_code":
+                        # Session file uses claude_message_to_rollouts format
+                        if session_id is None:
+                            session_id = entry.get("sessionId")
+                        msg = claude_message_to_rollouts(entry)
+                        if msg is not None:
+                            messages.append(msg)
+                            if msg.role == "assistant":
+                                _event_logger.info(
+                                    "turn",
+                                    extra={
+                                        "sample_id": sample_id,
+                                        "turn": assistant_turn,
+                                        "status": "streaming...",
+                                    },
+                                )
+                                assistant_turn += 1
+                            elif msg.role == "tool":
+                                _event_logger.info(
+                                    "turn",
+                                    extra={
+                                        "sample_id": sample_id,
+                                        "turn": assistant_turn,
+                                        "status": "tool done",
+                                    },
+                                )
+                    else:
+                        # Codex session file uses _CodexEventParser format
+                        if session_id is None and entry.get("type") == "session_meta":
+                            session_id = entry.get("payload", {}).get("id")
+                        msg = codex_message_to_rollouts(entry)
+                        if msg is not None:
+                            messages.append(msg)
+                            if msg.role == "assistant":
+                                _event_logger.info(
+                                    "turn",
+                                    extra={
+                                        "sample_id": sample_id,
+                                        "turn": assistant_turn,
+                                        "status": "streaming...",
+                                    },
+                                )
+                                assistant_turn += 1
+
+        # Check if background process has exited
+        alive_result = await workspace.run(
+            f"kill -0 $(cat {pid_path} 2>/dev/null) 2>/dev/null && echo alive || echo dead",
+            cwd=cwd,
+            timeout=10.0,
+        )
+        if alive_result.stdout.strip() == "dead":
+            # One final read to catch any trailing lines written before exit
+            if session_file is not None:
+                final_result = await workspace.run(
+                    f"tail -c +{file_offset + 1} {session_file}",
+                    cwd=cwd,
+                    timeout=10.0,
+                )
+                new_bytes = final_result.stdout
+                if new_bytes:
+                    for raw_line in new_bytes.splitlines():
+                        line = raw_line.strip()
+                        if not line:
+                            continue
+                        try:
+                            entry = json.loads(line)
+                        except json.JSONDecodeError:
+                            continue
+                        if runtime == "claude_code":
+                            if session_id is None:
+                                session_id = entry.get("sessionId")
+                            msg = claude_message_to_rollouts(entry)
+                            if msg is not None:
+                                messages.append(msg)
+                        else:
+                            if session_id is None and entry.get("type") == "session_meta":
+                                session_id = entry.get("payload", {}).get("id")
+                            msg = codex_message_to_rollouts(entry)
+                            if msg is not None:
+                                messages.append(msg)
+            break
+    else:
+        raise RuntimeError(
+            f"Remote {runtime} timed out after {timeout_seconds:.0f}s "
+            f"(session_file={session_file!r})"
+        )
+
+    stdout_result = await workspace.run(
+        f"cat {stdout_path} 2>/dev/null || true", cwd=cwd, timeout=10.0
+    )
+    stderr_result = await workspace.run(
+        f"cat {stderr_path} 2>/dev/null || true", cwd=cwd, timeout=10.0
+    )
+    await workspace.run(f"rm -rf {state_dir}", cwd=cwd, timeout=30.0)
+
+    if not messages:
+        trajectory, fallback_session_id = await _build_trajectory_from_remote_jsonl(
+            runtime=runtime,
+            raw_output=stdout_result.stdout,
+            sample_id=sample_id,
+            run_config=run_config,
+            driver_name="claude" if runtime == "claude_code" else "codex",
+        )
+        if trajectory.messages:
+            return ExternalAttemptArtifact(
+                trajectory=trajectory,
+                metadata={
+                    "runtime": runtime,
+                    "driver": "claude" if runtime == "claude_code" else "codex",
+                    "cwd": cwd,
+                    "session_id": fallback_session_id,
+                    "remote_execution": True,
+                    "source": "stream_json_fallback",
+                },
+            )
+        raise RuntimeError(
+            f"Remote {runtime} exited without producing any messages. "
+            f"stderr: {stderr_result.stdout[-2000:]}"
+        )
+
+    trajectory = Trajectory(messages=list(messages))
+    metadata: dict[str, Any] = {
+        "runtime": runtime,
+        "driver": "claude" if runtime == "claude_code" else "codex",
+        "cwd": cwd,
+        "session_id": session_id,
+        "remote_execution": True,
+        "source": "session_file",
+    }
+    return ExternalAttemptArtifact(trajectory=trajectory, metadata=metadata)
 
 
 async def _run_remote_external_runtime(
@@ -513,6 +805,7 @@ async def trajectory_from_remote_claude_code(
     system_prompt: str | None = None,
     allowed_tools: list[str] | None = None,
     timeout_seconds: float = 600.0,
+    source: Literal["stream_json", "session_file"] = "stream_json",
 ) -> ExternalAttemptArtifact:
     del sample_data
     command = [
@@ -531,16 +824,28 @@ async def trajectory_from_remote_claude_code(
         command.extend(["--system-prompt", system_prompt])
     if allowed_tools:
         command.extend(["--allowedTools", ",".join(allowed_tools)])
-    artifact = await _run_remote_external_runtime(
-        runtime="claude_code",
-        prompt=prompt,
-        sample_id=sample_id,
-        workspace=workspace,
-        cwd=cwd,
-        run_config=run_config,
-        command=command,
-        timeout_seconds=timeout_seconds,
-    )
+    if source == "session_file":
+        artifact = await _run_remote_external_runtime_session_file(
+            runtime="claude_code",
+            prompt=prompt,
+            sample_id=sample_id,
+            workspace=workspace,
+            cwd=cwd,
+            run_config=run_config,
+            command=command,
+            timeout_seconds=timeout_seconds,
+        )
+    else:
+        artifact = await _run_remote_external_runtime(
+            runtime="claude_code",
+            prompt=prompt,
+            sample_id=sample_id,
+            workspace=workspace,
+            cwd=cwd,
+            run_config=run_config,
+            command=command,
+            timeout_seconds=timeout_seconds,
+        )
     artifact.metadata["model"] = model
     return artifact
 
@@ -556,6 +861,7 @@ async def trajectory_from_remote_codex(
     model: str = "gpt-5.1-codex-mini",
     sandbox: str = "read-only",
     timeout_seconds: float = 600.0,
+    source: Literal["stream_json", "session_file"] = "stream_json",
 ) -> ExternalAttemptArtifact:
     del sample_data
     command = [
@@ -568,16 +874,28 @@ async def trajectory_from_remote_codex(
         "--sandbox",
         sandbox,
     ]
-    artifact = await _run_remote_external_runtime(
-        runtime="codex",
-        prompt=prompt,
-        sample_id=sample_id,
-        workspace=workspace,
-        cwd=cwd,
-        run_config=run_config,
-        command=command,
-        timeout_seconds=timeout_seconds,
-    )
+    if source == "session_file":
+        artifact = await _run_remote_external_runtime_session_file(
+            runtime="codex",
+            prompt=prompt,
+            sample_id=sample_id,
+            workspace=workspace,
+            cwd=cwd,
+            run_config=run_config,
+            command=command,
+            timeout_seconds=timeout_seconds,
+        )
+    else:
+        artifact = await _run_remote_external_runtime(
+            runtime="codex",
+            prompt=prompt,
+            sample_id=sample_id,
+            workspace=workspace,
+            cwd=cwd,
+            run_config=run_config,
+            command=command,
+            timeout_seconds=timeout_seconds,
+        )
     artifact.metadata["model"] = model
     artifact.metadata["sandbox"] = sandbox
     return artifact
