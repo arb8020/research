@@ -118,6 +118,38 @@ For custom environments, see [docs/creating_environment.md](docs/creating_enviro
 # Specify working directory
 rollouts --env coding --cwd /path/to/project
 
+## Boundary: what belongs in `rollouts`
+
+`rollouts` should own the parts of an eval/agent run that are general across
+benchmarks:
+
+- agent execution loops and turn control
+- native-API and external-agent runtime plumbing
+- generic environment/resource lifecycle
+- generic workspace/session/tempdir provisioning
+- artifact / trajectory transport and persistence
+- generic config/runner utilities
+
+Benchmark packages layered on top of `rollouts` should own the parts that are
+specific to the benchmark or environment semantics:
+
+- benchmark row normalization into environment state
+- benchmark/task/workspace materials
+- agent-facing task contract for that benchmark
+- submission semantics
+- benchmark-native verification and reward composition
+
+The intended split is:
+
+```python
+rollouts = "make me the sandbox/temp workspace/session and run the agent"
+benchmark_package = "given that resource, what does this benchmark do with it?"
+```
+
+If some benchmark-specific glue repeats enough times, first develop it at the
+benchmark layer, then internalize it into `rollouts` once the abstraction is
+clearly earned.
+
 # Restrict tools (useful for read-only exploration or sub-agents)
 rollouts --env coding --tools readonly    # Just read
 rollouts --env coding --tools no-write    # read, edit, bash (no write)
