@@ -707,12 +707,16 @@ async def _run_training_preflight(
             },
         )
         if runtime_run_logger is not None:
+            event_payload = {
+                **rc,
+                "backend": backend_name,
+                **data,
+            }
+            if "node_id" not in event_payload:
+                event_payload["node_id"] = resolved_node_id
             runtime_run_logger.event(
                 event,
-                **rc,
-                backend=backend_name,
-                node_id=resolved_node_id,
-                **data,
+                **event_payload,
             )
 
     _emit_preflight_event("training_preflight_start")
