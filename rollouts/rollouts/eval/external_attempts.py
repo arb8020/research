@@ -649,7 +649,10 @@ async def _run_remote_external_runtime_session_file(
     )
     await workspace.run(f"rm -rf {state_dir}", cwd=cwd, timeout=30.0)
 
-    if not messages:
+    has_agent_output = any(
+        isinstance(msg, Message) and msg.role in {"assistant", "tool"} for msg in messages
+    )
+    if not has_agent_output:
         trajectory, fallback_session_id = await _build_trajectory_from_remote_jsonl(
             runtime=runtime,
             raw_output=stdout_result.stdout,
@@ -657,7 +660,11 @@ async def _run_remote_external_runtime_session_file(
             run_config=run_config,
             driver_name="claude" if runtime == "claude_code" else "codex",
         )
-        if trajectory.messages:
+        fallback_has_agent_output = any(
+            isinstance(msg, Message) and msg.role in {"assistant", "tool"}
+            for msg in trajectory.messages
+        )
+        if fallback_has_agent_output:
             return ExternalAttemptArtifact(
                 trajectory=trajectory,
                 metadata={
@@ -670,7 +677,7 @@ async def _run_remote_external_runtime_session_file(
                 },
             )
         raise RuntimeError(
-            f"Remote {runtime} exited without producing any messages. "
+            f"Remote {runtime} exited without producing agent output. "
             f"stderr: {stderr_result.stdout[-2000:]}"
         )
 
