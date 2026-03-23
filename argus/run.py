@@ -188,6 +188,38 @@ def _new_launcher_id() -> str:
     return f"launch_{timestamp}_{os.getpid()}_{uuid.uuid4().hex[:8]}"
 
 
+def _runpod_image_is_official_ssh_ready(image_ref: str) -> bool:
+    normalized = image_ref.strip().lower()
+    return normalized.startswith("runpod/")
+
+
+def _runpod_custom_image_ssh_startup_script(image_ref: str) -> str | None:
+    if _runpod_image_is_official_ssh_ready(image_ref):
+        return None
+
+    # RunPod's public-IP SSH path only becomes real once an SSH daemon is
+    # actually listening inside the container. Official templates/images already
+    # provide that, but custom training images like `slimerl/slime:*` do not
+    # necessarily do so. Keep this provider-specific boot concern in lowering
+    # instead of leaking it into configs.
+    return (
+        "bash -c '"
+        "if ! command -v sshd >/dev/null 2>&1; then "
+        "apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y openssh-server; "
+        "fi; "
+        "mkdir -p /run/sshd ~/.ssh; "
+        "chmod 700 ~/.ssh; "
+        "touch ~/.ssh/authorized_keys; "
+        'if [ -n "$PUBLIC_KEY" ]; then printf "%s\\n" "$PUBLIC_KEY" >> ~/.ssh/authorized_keys; fi; '
+        "chmod 600 ~/.ssh/authorized_keys; "
+        "mkdir -p /etc/ssh/sshd_config.d; "
+        'printf "PermitRootLogin yes\\nPubkeyAuthentication yes\\nPasswordAuthentication no\\n" > '
+        "/etc/ssh/sshd_config.d/99-runpod-root.conf; "
+        "service ssh start || /usr/sbin/sshd -D & "
+        "wait'"
+    )
+
+
 def _find_config_project_root(config_path: Path) -> Path:
     search_roots = [config_path.parent, *config_path.parents]
     for candidate in search_roots:
@@ -606,6 +638,7 @@ async def _deploy_and_submit(
     logs_port = 9100
     provision_image = "runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04"
     provision_boot_image: ProvisionImage | None = None
+    provision_ssh_startup_script: str | None = None
     resolved_registry_image_ref: str | None = None
     if deps is None:
         raise ValueError(
@@ -640,6 +673,10 @@ async def _deploy_and_submit(
                     "credentials_ref": registry_image.credentials_ref,
                 },
             )
+            if provider == "runpod":
+                provision_ssh_startup_script = _runpod_custom_image_ssh_startup_script(
+                    provision_image
+                )
 
     # Create console for coordinated spinner + logging output
     # In quiet mode, skip spinners and just use plain logging to stderr
@@ -699,6 +736,7 @@ async def _deploy_and_submit(
                         container_disk_gb=container_disk_gb,
                         image=provision_image,
                         boot_image=provision_boot_image,
+                        ssh_startup_script=provision_ssh_startup_script,
                         persistent_volume_id=persistent_volume_id,
                         persistent_volume_mount_path=persistent_volume_mount_path,
                         persistent_volume_location=persistent_volume_location,

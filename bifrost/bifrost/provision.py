@@ -19,14 +19,14 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from broker.types import PersistentVolumeAttachment, ProvisionImage
 
 logger = logging.getLogger(__name__)
 
 
-def _ssh_not_ready_message(instance, timeout: int, *, node_label: str) -> str:
+def _ssh_not_ready_message(instance: Any, timeout: int, *, node_label: str) -> str:
     """Describe why SSH readiness failed in the current execution stack."""
     if instance.provider == "runpod" and instance.public_ip == "ssh.runpod.io":
         proxy_label = f" as {instance.ssh_username}" if instance.ssh_username else ""
@@ -84,6 +84,7 @@ class GPUQuery:
     provider: str | None = None  # Filter to specific provider (e.g., "runpod", "vast")
     image: str = "runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04"  # Docker image
     boot_image: ProvisionImage | None = None
+    ssh_startup_script: str | None = None
 
     # Provider credentials (optional - falls back to env vars)
     credentials: dict[str, str] = field(default_factory=dict)
@@ -248,6 +249,7 @@ async def acquire_node(
         query,
         image=provision.image,
         boot_image=provision.boot_image,
+        ssh_startup_script=provision.ssh_startup_script,
         name=provision.name,
         gpu_count=provision.count,
         persistent_volume=provision.persistent_volume,
