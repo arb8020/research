@@ -239,13 +239,13 @@ def _external_config_project_roots(config_path: Path) -> tuple[Path, ...]:
 
 
 def _external_config_projects(config_path: Path) -> tuple[PythonProjectMaterialization, ...]:
-    from bifrost import PythonProjectMaterialization
-
     workspace_root = REPO_ROOT.parent.resolve()
     resolved_config = config_path.resolve()
     try:
         resolved_config.relative_to(workspace_root)
     except ValueError:
+        from bifrost import PythonProjectMaterialization
+
         return (
             PythonProjectMaterialization(
                 local_root=str(_find_config_project_root(resolved_config))
