@@ -54,6 +54,14 @@ def _emit_model_diag(event: str, **data: object) -> None:
         return
 
 
+def _te_layer_spec_available() -> bool:
+    try:
+        from megatron.core.models.gpt import gpt_layer_specs
+    except Exception:
+        return False
+    return hasattr(gpt_layer_specs, "TESpecProvider")
+
+
 class MegatronModelAdapter(ModelConstructionAdapter, Protocol):
     """Megatron-specific model construction adapter.
 
@@ -209,7 +217,7 @@ class RawGPTMegatronAdapter:
                     transformer_config=transformer_config,
                     num_experts=num_experts,
                 )
-                if use_te:
+                if use_te and _te_layer_spec_available():
                     transformer_layer_spec = get_gpt_layer_with_transformer_engine_spec(
                         **layer_spec_kwargs,
                     )
@@ -411,7 +419,10 @@ class Qwen3CustomSpecMegatronAdapter:
             transformer_config=transformer_config,
             num_experts=None,
         )
-        use_te = getattr(transformer_config, "transformer_impl", "local") == "transformer_engine"
+        use_te = (
+            getattr(transformer_config, "transformer_impl", "local") == "transformer_engine"
+            and _te_layer_spec_available()
+        )
         if use_te:
             transformer_layer_spec = get_gpt_layer_with_transformer_engine_spec(**layer_spec_kwargs)
         else:
