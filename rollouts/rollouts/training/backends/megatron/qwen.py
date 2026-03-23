@@ -61,6 +61,8 @@ def _disable_te_only_qwen_features_when_unavailable(args: Namespace) -> None:
         return
     if hasattr(args, "apply_rope_fusion"):
         args.apply_rope_fusion = False
+    if hasattr(args, "persist_layer_norm"):
+        args.persist_layer_norm = False
 
 
 def _build_qwen3_cli_args(
