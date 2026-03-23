@@ -55,6 +55,7 @@ class LocalWorkspaceResource:
     """
 
     source_dir: Path
+    logical_working_dir: str | None = None
     _working_dir: str = field(default="", repr=False)
     _tempdir: str | None = field(default=None, repr=False)
     _runtime_description: dict[str, Any] | None = field(default=None, repr=False)
@@ -81,7 +82,7 @@ class LocalWorkspaceResource:
             return tmp
 
         self._tempdir = await trio.to_thread.run_sync(_copy)
-        self._working_dir = self._tempdir
+        self._working_dir = self.logical_working_dir or self._tempdir
 
     async def close(self) -> None:
         if self._tempdir is None:
@@ -98,8 +99,7 @@ class LocalWorkspaceResource:
 
     @property
     def working_dir(self) -> str:
-        assert self._tempdir is not None, "LocalWorkspaceResource not started"
-        return self._working_dir
+        return self._working_dir or self.logical_working_dir or str(self.source_dir)
 
     def resolve_path(self, current_working_dir: str, path: str) -> str:
         if not path:
@@ -109,15 +109,33 @@ class LocalWorkspaceResource:
             return str(p)
         return str(Path(current_working_dir) / p)
 
+    def _host_root(self) -> Path:
+        return Path(self._tempdir) if self._tempdir is not None else self.source_dir
+
+    def _to_host_path(self, path: str) -> str:
+        if self.logical_working_dir is None:
+            return path
+        logical_root = Path(self.logical_working_dir)
+        pure = Path(path)
+        if pure.is_absolute():
+            try:
+                relative = pure.relative_to(logical_root)
+            except ValueError:
+                return str(pure)
+            return str(self._host_root() / relative)
+        return str(self._host_root() / pure)
+
     async def read_file(self, path: str) -> bytes:
         resolved = self.resolve_path(self.working_dir, path)
-        return await trio.to_thread.run_sync(lambda: Path(resolved).read_bytes())
+        host_path = self._to_host_path(resolved)
+        return await trio.to_thread.run_sync(lambda: Path(host_path).read_bytes())
 
     async def write_file(self, path: str, content: bytes) -> None:
         resolved = self.resolve_path(self.working_dir, path)
+        host_path = self._to_host_path(resolved)
 
         def _write() -> None:
-            p = Path(resolved)
+            p = Path(host_path)
             p.parent.mkdir(parents=True, exist_ok=True)
             p.write_bytes(content)
 
@@ -139,7 +157,7 @@ class LocalWorkspaceResource:
         def _run() -> tuple[str, str, int]:
             result = subprocess.run(
                 ["bash", "-lc", command],
-                cwd=cwd,
+                cwd=self._to_host_path(cwd),
                 capture_output=True,
                 text=True,
                 timeout=timeout,
@@ -169,6 +187,7 @@ class LocalWorkspaceResource:
         return {
             "kind": "local_workspace_resource",
             "source_dir": str(self.source_dir),
+            "logical_working_dir": self.logical_working_dir,
             "working_dir": self._working_dir,
             "started": self._tempdir is not None,
             "runtime": self._runtime_description,
@@ -214,6 +233,7 @@ RUNTIME_PROBE_EOF
         return {
             "kind": "local_workspace_resource",
             "source_dir": str(self.source_dir),
+            "logical_working_dir": self.logical_working_dir,
             "working_dir": self._working_dir,
             "tempdir": self._tempdir,
             "runtime": self._runtime_description,
@@ -221,7 +241,10 @@ RUNTIME_PROBE_EOF
 
     @classmethod
     def deserialize_state(cls, data: dict[str, Any]) -> LocalWorkspaceResource:
-        resource = cls(source_dir=Path(data["source_dir"]))
+        resource = cls(
+            source_dir=Path(data["source_dir"]),
+            logical_working_dir=data.get("logical_working_dir"),
+        )
         resource._working_dir = str(data.get("working_dir", ""))
         resource._tempdir = data.get("tempdir")
         resource._runtime_description = data.get("runtime")
