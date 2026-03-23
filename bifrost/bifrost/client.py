@@ -11,6 +11,7 @@ from infra_utils.retry import retry
 from infra_utils.validation import validate_ssh_key_path, validate_timeout
 
 from . import git_sync
+from .service_launch import build_detached_service_launch_command
 from .types import (
     CopyResult,
     EnvironmentVariables,
@@ -1160,10 +1161,11 @@ class BifrostClient:
         )
 
         full_cmd = effective_spec.build_command()
-        launch_cmd = (
-            f"nohup bash -lc {shlex.quote(full_cmd)} "
-            f">> {shlex.quote(stdout_log_file)} 2>> {shlex.quote(stderr_log_file)} "
-            f"< /dev/null & echo $! > {shlex.quote(pid_file)}"
+        launch_cmd = build_detached_service_launch_command(
+            full_cmd=full_cmd,
+            stdout_log_file=stdout_log_file,
+            stderr_log_file=stderr_log_file,
+            pid_file=pid_file,
         )
         result = self.exec(launch_cmd, working_dir="~")
         if result.exit_code != 0:

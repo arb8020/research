@@ -33,6 +33,7 @@ from bifrost.modal_backend import (
     _normalize_run_logger_event_payload,
     _wait_for_modal_exec_ready,
 )
+from bifrost.service_launch import build_detached_service_launch_command
 from bifrost.server import server_is_healthy
 from bifrost.types import ExecResult, JobInfo, ServerInfo
 
@@ -185,6 +186,21 @@ def test_service_spec_preserves_readiness_probe() -> None:
 
     assert service.port == 30000
     assert service.readiness_probe == probe
+
+
+def test_detached_service_launch_command_uses_python_launcher() -> None:
+    command = build_detached_service_launch_command(
+        full_cmd="cd /workspace && python -m service",
+        stdout_log_file="/tmp/service.stdout.log",
+        stderr_log_file="/tmp/service.stderr.log",
+        pid_file="/tmp/service.pid",
+    )
+
+    assert command.startswith("python3 -c ")
+    assert "start_new_session=True" in command
+    assert "/tmp/service.stdout.log" in command
+    assert "/tmp/service.stderr.log" in command
+    assert "/tmp/service.pid" in command
 
 
 def test_connect_returns_execution_session_protocol() -> None:
