@@ -377,6 +377,18 @@ class AsyncBifrostClient:
                     extra_project_roots=extra_project_roots,
                 )
                 rewrite_map_json = json.dumps(rewrite_map)
+                rewrite_script = "\n".join((
+                    "import json",
+                    "import pathlib",
+                    f"rewrite_map = json.loads({rewrite_map_json!r})",
+                    f"pyproject = pathlib.Path({remote_source_root + '/pyproject.toml'!r})",
+                    "text = pyproject.read_text()",
+                    "original = text",
+                    "for old, new in sorted(rewrite_map.items(), key=lambda item: len(item[0]), reverse=True):",
+                    "    text = text.replace(old, new)",
+                    "if text != original:",
+                    "    pyproject.write_text(text)",
+                ))
                 result = await self.exec(
                     " && ".join((
                         f"rm -rf {shlex.quote(remote_source_root)}",
@@ -384,19 +396,7 @@ class AsyncBifrostClient:
                         f"tar -xzf {shlex.quote(remote_archive)} -C {shlex.quote(remote_source_root)}",
                         f"rm -f {shlex.quote(remote_archive)}",
                         f"test -f {shlex.quote(remote_source_root + '/pyproject.toml')}",
-                        (
-                            "python3 -c "
-                            + shlex.quote(
-                                "import json, pathlib; "
-                                f"rewrite_map = json.loads({rewrite_map_json!r}); "
-                                f"pyproject = pathlib.Path({remote_source_root + '/pyproject.toml'!r}); "
-                                "text = pyproject.read_text(); "
-                                "original = text; "
-                                "for old, new in sorted(rewrite_map.items(), key=lambda item: len(item[0]), reverse=True): "
-                                "    text = text.replace(old, new); "
-                                "pyproject.write_text(text) if text != original else None"
-                            )
-                        ),
+                        "python3 -c " + shlex.quote(rewrite_script),
                     )),
                     working_dir="~",
                 )
