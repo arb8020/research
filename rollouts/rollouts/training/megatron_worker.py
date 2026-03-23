@@ -1669,7 +1669,11 @@ def _init_nccl_weight_sync(
 
     master_port, master_port_source = _allocate_tcp_port(master_port)
 
-    group_name = "weight_sync"
+    # Keep the long-lived runtime sync session on its own explicit group name.
+    # SGLang already uses distinct custom group names for successful live
+    # updates; reusing the generic literal "weight_sync" risks colliding with
+    # receiver-side ambient state keyed by that name.
+    group_name = f"weight_sync_session_{master_port}"
     world_size = 1 + len(inference_endpoints)
 
     from rollouts.inference.weight_sync import WeightSyncSender
@@ -1896,6 +1900,7 @@ def _init_nccl_weight_sync(
     backend._nccl_weight_sender = sender
     backend._nccl_master_addr = master_addr
     backend._nccl_master_port = master_port
+    backend._nccl_group_name = group_name
     logger.info(
         "weight_sync_megatron_init_ok master=%s:%s world_size=%s endpoints=%s group=%s",
         master_addr,
@@ -2036,7 +2041,7 @@ def _do_sync_weights_nccl(
         dist.barrier()
         return
 
-    request_group_name = "weight_sync"
+    request_group_name = str(getattr(backend, "_nccl_group_name", "weight_sync"))
     sender = getattr(backend, "_nccl_weight_sender", None) if owns_publication else None
     if owns_publication and not witness and sender is None:
         raise RuntimeError("NCCL sender not initialized. Call init_nccl_weight_sync first.")
@@ -2297,7 +2302,7 @@ def _cleanup_nccl_weight_sync(
                 executor.submit(
                     requests.post,
                     f"{endpoint}/destroy_weights_update_group",
-                    json={"group_name": "weight_sync"},
+                    json={"group_name": str(getattr(backend, "_nccl_group_name", "weight_sync"))},
                     timeout=10.0,
                 )
             )
@@ -2310,3 +2315,4 @@ def _cleanup_nccl_weight_sync(
 
     backend._nccl_weight_sender = None
     backend._nccl_weight_version = 0
+    backend._nccl_group_name = None
