@@ -1915,7 +1915,6 @@ def _do_sync_weights_nccl(
     isolated_master_addr: str | None = None
     isolated_master_port: int | None = None
     isolated_master_port_source: str | None = None
-    bucketed_updates: list[tuple[WeightUpdatePayload, dict[str, object]]] = []
     if witness:
         resolved_host_ip, _ = _resolve_local_host_ip()
         isolated_master_addr = resolved_host_ip
@@ -1923,29 +1922,6 @@ def _do_sync_weights_nccl(
             int(getattr(backend, "_nccl_master_port", 29550))
         )
         request_group_name = f"weight_sync_witness_{isolated_master_port}"
-    else:
-        payload_buckets = _bucket_weight_wire_tensors(
-            payload.tensors,
-            bucket_size_bytes=_MEGATRON_SGLANG_BUCKET_SIZE_BYTES,
-        )
-        bucket_count = len(payload_buckets)
-        bucketed_updates = [
-            _build_flattened_bucket_update(
-                bucket_tensors,
-                payload_kind=payload.payload_kind,
-                version=payload.version,
-                bucket_index=bucket_index,
-                bucket_count=bucket_count,
-            )
-            for bucket_index, bucket_tensors in enumerate(payload_buckets, start=1)
-        ]
-        logger.info(
-            "weight_sync_megatron_bucket_plan buckets=%s bucket_size_bytes=%s total_tensors=%s total_bytes=%s",
-            bucket_count,
-            _MEGATRON_SGLANG_BUCKET_SIZE_BYTES,
-            len(payload.tensors),
-            sum(_weight_wire_tensor_nbytes(item) for item in payload.tensors),
-        )
 
     sender = getattr(backend, "_nccl_weight_sender", None) if owns_publication else None
     if owns_publication and not witness and sender is None:
@@ -1999,7 +1975,6 @@ def _do_sync_weights_nccl(
                     tensors=len(payload.tensors),
                 )
             else:
-                total_buckets = len(bucketed_updates)
                 assert request_weight_version is not None
                 assert sender is not None
                 update_connect_timeout_sec = 5.0
@@ -2008,153 +1983,125 @@ def _do_sync_weights_nccl(
                     max_workers=max(1, len(inference_endpoints))
                 )
                 try:
-                    for bucket_index, (bucket_payload, bucket_request) in enumerate(
-                        bucketed_updates,
-                        start=1,
-                    ):
-                        bucket_names = bucket_request["names"]
-                        assert isinstance(bucket_names, list)
-                        bucket_name_set = set(bucket_names)
-                        bucket_bytes = sum(
-                            _weight_wire_tensor_nbytes(item)
-                            for item in payload.tensors
-                            if item.wire_name in bucket_name_set
+                    request_body = {
+                        "names": [item.wire_name for item in payload.tensors],
+                        "load_names": [item.load_name for item in payload.tensors],
+                        "shapes": [list(item.shape) for item in payload.tensors],
+                        "dtypes": [item.dtype for item in payload.tensors],
+                        "group_name": request_group_name,
+                        "weight_version": str(request_weight_version),
+                    }
+                    total_bytes = sum(_weight_wire_tensor_nbytes(item) for item in payload.tensors)
+                    logger.info(
+                        "weight_sync_megatron_persistent_update_start group=%s tensors=%s total_bytes=%s payload_kind=%s weight_version=%s",
+                        request_group_name,
+                        len(payload.tensors),
+                        total_bytes,
+                        payload.payload_kind,
+                        request_weight_version,
+                    )
+                    _emit_argus_diag(
+                        "weight_sync_megatron_persistent_update_start",
+                        group=request_group_name,
+                        tensors=len(payload.tensors),
+                        total_bytes=total_bytes,
+                        payload_kind=payload.payload_kind,
+                        weight_version=request_weight_version,
+                    )
+                    logger.info(
+                        "weight_sync_megatron_persistent_request_ready group=%s first_names=%s first_load_names=%s first_shapes=%s first_dtypes=%s",
+                        request_group_name,
+                        request_body["names"][:3],
+                        request_body["load_names"][:3],
+                        request_body["shapes"][:3],
+                        request_body["dtypes"][:3],
+                    )
+
+                    def _update_remote_endpoint(endpoint: str) -> dict[str, object]:
+                        started_at = time.monotonic()
+                        response: requests.Response | None = None
+                        try:
+                            response = requests.post(
+                                f"{endpoint}/update_weights_from_distributed",
+                                json=request_body,
+                                timeout=(update_connect_timeout_sec, update_read_timeout_sec),
+                            )
+                            response.raise_for_status()
+                            return {
+                                "endpoint": endpoint,
+                                "status_code": response.status_code,
+                                "elapsed_sec": round(time.monotonic() - started_at, 3),
+                            }
+                        except Exception as exc:
+                            status_code = None
+                            response_text = None
+                            if response is not None:
+                                status_code = response.status_code
+                                try:
+                                    response_text = response.text[:400]
+                                except Exception:
+                                    response_text = "<response text unavailable>"
+                            _emit_argus_diag(
+                                "weight_sync_megatron_persistent_remote_update_failed",
+                                endpoint=endpoint,
+                                group=request_group_name,
+                                version=request_weight_version,
+                                tensor_count=len(payload.tensors),
+                                elapsed_sec=round(time.monotonic() - started_at, 3),
+                                status_code=status_code,
+                                response_text=response_text,
+                                error_type=type(exc).__name__,
+                                error=str(exc),
+                            )
+                            raise RuntimeError(
+                                "Megatron persistent weight update request failed "
+                                f"endpoint={endpoint} group={request_group_name} "
+                                f"tensors={len(payload.tensors)}"
+                            ) from exc
+
+                    logger.info(
+                        "weight_sync_megatron_metadata_requests_sent endpoints=%s count=%s tensors=%s total_bytes=%s transport=%s",
+                        inference_endpoints,
+                        len(inference_endpoints),
+                        len(payload.tensors),
+                        total_bytes,
+                        "persistent_session",
+                    )
+                    futures = [
+                        (
+                            endpoint,
+                            executor.submit(_update_remote_endpoint, endpoint),
+                        )
+                        for endpoint in inference_endpoints
+                    ]
+                    try:
+                        sender.broadcast_payload(
+                            payload,
+                            async_op=True,
+                            advance_version=False,
                         )
                         logger.info(
-                            "weight_sync_megatron_persistent_bucket_start group=%s bucket_index=%s bucket_count=%s bucket_tensors=%s bucket_bytes=%s load_format=%s weight_version=%s",
-                            request_group_name,
-                            bucket_index,
-                            total_buckets,
-                            len(bucket_names),
-                            bucket_bytes,
-                            bucket_request.get("load_format"),
-                            request_weight_version,
-                        )
-                        _emit_argus_diag(
-                            "weight_sync_megatron_persistent_bucket_start",
-                            group=request_group_name,
-                            bucket_index=bucket_index,
-                            bucket_count=total_buckets,
-                            bucket_tensors=len(bucket_names),
-                            bucket_bytes=bucket_bytes,
-                            load_format=bucket_request.get("load_format"),
-                            weight_version=request_weight_version,
-                        )
-                        logger.info(
-                            "weight_sync_megatron_persistent_bucket_request_ready group=%s bucket_index=%s bucket_count=%s first_names=%s first_load_names=%s first_shapes=%s first_dtypes=%s",
-                            request_group_name,
-                            bucket_index,
-                            total_buckets,
-                            list(bucket_request.get("names", []))[:3],
-                            list(bucket_request.get("load_names", []))[:3],
-                            list(bucket_request.get("shapes", []))[:3],
-                            list(bucket_request.get("dtypes", []))[:3],
-                        )
-                        logger.info(
-                            "weight_sync_megatron_metadata_requests_sent endpoints=%s count=%s bucket_index=%s bucket_count=%s bucket_tensors=%s bucket_bytes=%s load_format=%s transport=%s",
-                            inference_endpoints,
-                            len(inference_endpoints),
-                            bucket_index,
-                            total_buckets,
-                            len(bucket_names),
-                            bucket_bytes,
-                            bucket_request.get("load_format"),
+                            "weight_sync_megatron_broadcast_wait_ok tensors=%s transport=%s",
+                            len(payload.tensors),
                             "persistent_session",
                         )
+                    except Exception:
+                        for _endpoint, future in futures:
+                            future.cancel()
+                        raise
 
-                        def _update_remote_endpoint(endpoint: str) -> dict[str, object]:
-                            started_at = time.monotonic()
-                            request_body: dict[str, object] = {
-                                **bucket_request,
-                                "group_name": request_group_name,
-                                "flush_cache": False,
-                                "weight_version": str(request_weight_version),
-                            }
-                            response: requests.Response | None = None
-                            try:
-                                response = requests.post(
-                                    f"{endpoint}/update_weights_from_distributed",
-                                    json=request_body,
-                                    timeout=(update_connect_timeout_sec, update_read_timeout_sec),
-                                )
-                                response.raise_for_status()
-                                return {
-                                    "endpoint": endpoint,
-                                    "status_code": response.status_code,
-                                    "elapsed_sec": round(time.monotonic() - started_at, 3),
-                                }
-                            except Exception as exc:
-                                status_code = None
-                                response_text = None
-                                if response is not None:
-                                    status_code = response.status_code
-                                    try:
-                                        response_text = response.text[:400]
-                                    except Exception:
-                                        response_text = "<response text unavailable>"
-                                _emit_argus_diag(
-                                    "weight_sync_megatron_persistent_remote_update_failed",
-                                    endpoint=endpoint,
-                                    group=request_group_name,
-                                    version=request_weight_version,
-                                    bucket_index=bucket_index,
-                                    bucket_count=total_buckets,
-                                    tensor_count=len(bucket_names),
-                                    load_format=bucket_request.get("load_format"),
-                                    elapsed_sec=round(time.monotonic() - started_at, 3),
-                                    status_code=status_code,
-                                    response_text=response_text,
-                                    error_type=type(exc).__name__,
-                                    error=str(exc),
-                                )
-                                raise RuntimeError(
-                                    "Megatron persistent weight update request failed "
-                                    f"endpoint={endpoint} bucket_index={bucket_index} "
-                                    f"bucket_count={total_buckets} group={request_group_name}"
-                                ) from exc
-
-                        futures = [
-                            (
-                                endpoint,
-                                executor.submit(_update_remote_endpoint, endpoint),
-                            )
-                            for endpoint in inference_endpoints
-                        ]
-                        try:
-                            sender.broadcast_payload(
-                                bucket_payload,
-                                async_op=True,
-                                advance_version=False,
-                            )
-                            logger.info(
-                                "weight_sync_megatron_broadcast_wait_ok tensors=%s bucket_index=%s bucket_count=%s load_format=%s transport=%s",
-                                len(bucket_names),
-                                bucket_index,
-                                total_buckets,
-                                bucket_request.get("load_format"),
-                                "persistent_session",
-                            )
-                        except Exception:
-                            for _endpoint, future in futures:
-                                future.cancel()
-                            raise
-
-                        for endpoint, future in futures:
-                            result = future.result()
-                            logger.info(
-                                "weight_sync_megatron_metadata_response_ok endpoint=%s status=%s elapsed_sec=%.3f bucket_index=%s bucket_count=%s",
-                                endpoint,
-                                result["status_code"],
-                                result["elapsed_sec"],
-                                bucket_index,
-                                total_buckets,
-                            )
+                    for endpoint, future in futures:
+                        result = future.result()
                         logger.info(
-                            "weight_sync_megatron_metadata_responses_ok endpoints=%s bucket_index=%s bucket_count=%s",
-                            inference_endpoints,
-                            bucket_index,
-                            total_buckets,
+                            "weight_sync_megatron_metadata_response_ok endpoint=%s status=%s elapsed_sec=%.3f",
+                            endpoint,
+                            result["status_code"],
+                            result["elapsed_sec"],
                         )
+                    logger.info(
+                        "weight_sync_megatron_metadata_responses_ok endpoints=%s",
+                        inference_endpoints,
+                    )
                 finally:
                     executor.shutdown(wait=False, cancel_futures=True)
                 backend._nccl_weight_version = request_weight_version
