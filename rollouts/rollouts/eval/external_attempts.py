@@ -879,8 +879,7 @@ async def trajectory_from_remote_codex(
         "--skip-git-repo-check",
         "--model",
         model,
-        "--sandbox",
-        sandbox,
+        "--dangerously-bypass-approvals-and-sandbox",
     ]
     if source == "session_file":
         artifact = await _run_remote_external_runtime_session_file(
