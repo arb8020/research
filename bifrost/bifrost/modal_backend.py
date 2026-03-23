@@ -370,7 +370,7 @@ def _project_modal_artifact_snapshot(
 async def _project_modal_run_artifacts(
     sandbox: Any,
     run_name: str,
-    emit: Callable[..., None],
+    journal_event: Callable[..., None],
     stop_event: trio.Event,
     remote_run_dir: str,
     local_run_dir: Path | None,
@@ -383,7 +383,7 @@ async def _project_modal_run_artifacts(
         name: {"offset": 0, "buffer": "", "ready_announced": False} for name in watched_files
     }
     projected_by = "modal_parent"
-    emit(
+    journal_event(
         "remote_artifact_projection_started",
         run_name=run_name,
         projected_by=projected_by,
@@ -406,7 +406,7 @@ async def _project_modal_run_artifacts(
                 file_name=file_name,
                 contents=contents,
                 state=state[file_name],
-                emit=emit,
+                emit=journal_event,
                 projected_by=projected_by,
             )
 
@@ -432,6 +432,28 @@ async def _wait_observed_process_nonblocking(process: ObservedProcessHandle) -> 
         exit_code=result.exit_code,
     )
     return result
+
+
+def _append_run_journal_event(
+    log_path: Path,
+    *,
+    run_name: str,
+    provider: str,
+    event: str,
+    data: dict[str, Any],
+) -> None:
+    payload = {
+        "ts": datetime.now().isoformat(),
+        "event": event,
+        "provider": provider,
+        "run_name": run_name,
+        **data,
+    }
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    with log_path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(payload, sort_keys=False))
+        f.write("\n")
+        f.flush()
 
 
 @dataclass(frozen=True)
@@ -2081,6 +2103,18 @@ async def run_modal_request(request: ModalExecutionRequest) -> dict[str, Any]:
                 ),
             )
 
+    def journal_artifact_event(event: str, **data: Any) -> None:
+        if local_run_log is not None:
+            _append_run_journal_event(
+                Path(local_run_log),
+                run_name=run_name,
+                provider="modal",
+                event=event,
+                data=data,
+            )
+            return
+        emit(event, **data)
+
     enforce_source_sync_policy(request.source_sync_policy, repo_root=REPO_ROOT)
     emit(
         "submit_start",
@@ -2175,7 +2209,7 @@ async def run_modal_request(request: ModalExecutionRequest) -> dict[str, Any]:
                             _project_modal_run_artifacts,
                             sandbox_handle.sandbox,
                             run_name,
-                            emit,
+                            journal_artifact_event,
                             artifact_poll_stop,
                             remote_run_dir,
                             local_run_dir,
