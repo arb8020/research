@@ -1713,6 +1713,42 @@ async def _grpo_train_async(
                         "inference_log_paths": inference_log_paths,
                     },
                 )
+                # The Megatron runtime path keeps a long-lived NCCL sender/session
+                # for live publication. The witness runs through a second,
+                # isolated group on the same receiver process. Re-establish the
+                # runtime session after the witness so the first live sync does
+                # not inherit possibly clobbered receiver-side communicator
+                # state.
+                if config.trainer.backend == "megatron":
+                    cleanup_fn = getattr(backend, "cleanup_nccl_weight_sync", None)
+                    init_fn = getattr(backend, "init_nccl_weight_sync", None)
+                    if callable(cleanup_fn) and callable(init_fn):
+                        resource_watchdog.set_phase("weight_sync_reinit")
+                        logger.info(
+                            "training_preflight_weight_sync_reinit_start",
+                            extra={
+                                "event": "training_preflight_weight_sync_reinit_start",
+                                **run_context,
+                                "node_id": run_context.get("node_id"),
+                                "backend": config.trainer.backend,
+                                "inference_log_paths": inference_log_paths,
+                            },
+                        )
+                        await cleanup_fn()
+                        await init_fn(
+                            inference_endpoints=[e.base_url for e in inference_engines],
+                            master_port=config.checkpoint.nccl_master_port + 50,
+                        )
+                        logger.info(
+                            "training_preflight_weight_sync_reinit_ok",
+                            extra={
+                                "event": "training_preflight_weight_sync_reinit_ok",
+                                **run_context,
+                                "node_id": run_context.get("node_id"),
+                                "backend": config.trainer.backend,
+                                "inference_log_paths": inference_log_paths,
+                            },
+                        )
 
         # Setup data and rollout generation
         logger.info(f"Dataset: {len(prompts)} prompts")
