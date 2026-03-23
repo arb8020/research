@@ -164,10 +164,17 @@ async def agent_rollout_to_sample(
     states = await run_agent(state, run_config)
     final_state = states[-1]
 
-    # 6. Convert trajectory -> attempt row + attached training sample
-    # Enrich metadata with agent execution info (like run_eval.py)
+    # 6. Convert trajectory -> attempt row + attached training sample.
+    # Environment-owned summary metadata currently flows through trajectory.metadata
+    # (for example KernelBench best_speedup / turn_history). Preserve that final
+    # state here so downstream scorers see the same result algebra as eval.
+    #
+    # TODO(training-denotation): Stop treating trajectory.metadata as an ambient
+    # side channel for environment summaries. Project the final environment/eval
+    # summary onto AttemptResult/AttemptRow explicitly at this boundary.
     enriched_metadata = {
         **(metadata or {}),
+        **dict(final_state.actor.trajectory.metadata),
         "turns": final_state.turn_idx,
         "stop_reason": final_state.stop.value if final_state.stop else None,
         "messages": [
