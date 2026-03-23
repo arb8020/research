@@ -70,7 +70,11 @@ def convert_qwen2_to_hf(
             return [(f"model.layers.{layer_idx}.mlp.down_proj.weight", param)]
         if rest == "self_attention.linear_qkv.layer_norm_weight":
             return [(f"model.layers.{layer_idx}.input_layernorm.weight", param)]
+        if rest == "input_layernorm.weight":
+            return [(f"model.layers.{layer_idx}.input_layernorm.weight", param)]
         if rest == "mlp.linear_fc1.layer_norm_weight":
+            return [(f"model.layers.{layer_idx}.post_attention_layernorm.weight", param)]
+        if rest == "pre_mlp_layernorm.weight":
             return [(f"model.layers.{layer_idx}.post_attention_layernorm.weight", param)]
         if rest == "self_attention.q_layernorm.weight":
             return [(f"model.layers.{layer_idx}.self_attn.q_norm.weight", param)]
