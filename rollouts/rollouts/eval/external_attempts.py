@@ -319,6 +319,7 @@ def _remote_runtime_env(runtime: str) -> dict[str, str]:
         if not key:
             raise RuntimeError("OPENAI_API_KEY is required for remote Codex runs")
         return {
+            "CODEX_API_KEY": key,
             "OPENAI_API_KEY": key,
             "CODEX_ENTRYPOINT": "rollouts-remote-eval",
         }
