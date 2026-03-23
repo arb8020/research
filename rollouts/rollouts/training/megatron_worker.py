@@ -1552,18 +1552,13 @@ def _init_nccl_weight_sync(
         logger.info("NCCL weight sync skipped (no inference endpoints)")
         return
 
-    import socket
-
     ambient_master_addr = os.environ.get("MASTER_ADDR")
     resolved_host_ip, resolved_host_ip_source = _resolve_local_host_ip()
     explicit_master_addr = master_addr
     if master_addr is None:
         master_addr = resolved_host_ip
 
-    # Find an available port.
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        sock.bind(("", master_port))
-        master_port = sock.getsockname()[1]
+    master_port, master_port_source = _allocate_tcp_port(master_port)
 
     group_name = "weight_sync"
     world_size = 1 + len(inference_endpoints)
@@ -1573,7 +1568,7 @@ def _init_nccl_weight_sync(
     sender_holder: dict[str, Any] = {}
     errors: list[tuple[str, str]] = []
     logger.info(
-        "weight_sync_megatron_init_start master=%s:%s world_size=%s endpoints=%s group=%s resolved_host_ip=%s resolved_host_ip_source=%s loopback=%s explicit_master_addr=%s hostname=%s",
+        "weight_sync_megatron_init_start master=%s:%s world_size=%s endpoints=%s group=%s resolved_host_ip=%s resolved_host_ip_source=%s loopback=%s explicit_master_addr=%s hostname=%s master_port_source=%s",
         master_addr,
         master_port,
         world_size,
@@ -1583,7 +1578,8 @@ def _init_nccl_weight_sync(
         resolved_host_ip_source,
         "127.0.0.1",
         explicit_master_addr,
-        socket.gethostname(),
+        os.uname().nodename,
+        master_port_source,
     )
     _emit_argus_diag(
         "weight_sync_megatron_init_start",
@@ -1593,8 +1589,9 @@ def _init_nccl_weight_sync(
         loopback_addr="127.0.0.1",
         ambient_master_addr=ambient_master_addr,
         explicit_master_addr=explicit_master_addr,
-        hostname=socket.gethostname(),
+        hostname=os.uname().nodename,
         master_port=master_port,
+        master_port_source=master_port_source,
         world_size=world_size,
         endpoints=inference_endpoints,
         group=group_name,
