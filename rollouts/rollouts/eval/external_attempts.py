@@ -34,7 +34,7 @@ PromptBuilder = Callable[[dict[str, Any]], str]
 # rather than via another benchmark-local wrapper. If more runtimes arrive,
 # consider replacing this Literal with an explicit sum type plus runtime
 # capability metadata instead of growing ad hoc string branching.
-ExternalRuntime = Literal["claude_code", "codex", "openhands"]
+ExternalRuntime = Literal["claude_code", "codex", "openhands", "mini_swe_agent"]
 REMOTE_AGENT_USER = "rollouts-agent"
 
 
@@ -202,6 +202,8 @@ def _trajectory_adapter_for_runtime(runtime: ExternalRuntime) -> TrajectoryAdapt
         return trajectory_from_codex
     if runtime == "openhands":
         return trajectory_from_openhands
+    if runtime == "mini_swe_agent":
+        return trajectory_from_mini_swe_agent
     raise ValueError(f"Unsupported external runtime: {runtime}")
 
 
@@ -1037,6 +1039,297 @@ def _looks_like_session_id(value: str) -> bool:
     return bool(re.fullmatch(r"[0-9a-fA-F-]{16,}", value))
 
 
+def _flatten_openhands_content(value: Any) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        text = value.strip()
+        return text or None
+    if isinstance(value, list):
+        parts: list[str] = []
+        for item in value:
+            if isinstance(item, str):
+                text = item.strip()
+                if text:
+                    parts.append(text)
+                continue
+            if isinstance(item, dict):
+                text = item.get("text")
+                if text is None:
+                    continue
+                normalized = str(text).strip()
+                if normalized:
+                    parts.append(normalized)
+                continue
+            normalized = str(item).strip()
+            if normalized:
+                parts.append(normalized)
+        if not parts:
+            return None
+        return "\n".join(parts)
+    normalized = str(value).strip()
+    return normalized or None
+
+
+def _extract_json_objects_from_marked_output(
+    raw_output: str, *, marker: str
+) -> list[dict[str, Any]]:
+    lines = raw_output.splitlines()
+    payloads: list[dict[str, Any]] = []
+    i = 0
+    while i < len(lines):
+        if lines[i].strip() != marker:
+            i += 1
+            continue
+        i += 1
+        while i < len(lines) and not lines[i].strip():
+            i += 1
+        if i >= len(lines) or lines[i].strip() != "{":
+            continue
+
+        json_lines: list[str] = []
+        depth = 0
+        in_string = False
+        escaped = False
+        while i < len(lines):
+            line = lines[i]
+            json_lines.append(line)
+            for ch in line:
+                if escaped:
+                    escaped = False
+                    continue
+                if ch == "\\":
+                    escaped = True
+                    continue
+                if ch == '"':
+                    in_string = not in_string
+                    continue
+                if in_string:
+                    continue
+                if ch == "{":
+                    depth += 1
+                elif ch == "}":
+                    depth -= 1
+            i += 1
+            if depth == 0 and json_lines:
+                break
+
+        if depth != 0:
+            continue
+        try:
+            payload = json.loads("\n".join(json_lines))
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, dict):
+            payloads.append(payload)
+    return payloads
+
+
+def _trajectory_from_openhands_json_output(raw_output: str) -> Trajectory:
+    events = _extract_json_objects_from_marked_output(raw_output, marker="--JSON Event--")
+    messages: list[Message] = []
+    for event in events:
+        kind = str(event.get("kind") or "")
+        source = str(event.get("source") or "").lower()
+        if kind == "MessageEvent":
+            llm_message = event.get("llm_message")
+            if not isinstance(llm_message, dict):
+                continue
+            raw_role = str(llm_message.get("role") or source or "assistant").lower()
+            role = raw_role if raw_role in {"system", "user", "assistant", "tool"} else "assistant"
+            content = _flatten_openhands_content(llm_message.get("content"))
+            if content is None:
+                continue
+            details = {
+                "openhands_kind": kind,
+                "openhands_source": source or None,
+            }
+            for key in ("id", "timestamp", "llm_response_id"):
+                if event.get(key) is not None:
+                    details[key] = event[key]
+            messages.append(Message(role=role, content=content, details=details))
+            continue
+
+        if kind == "ActionEvent":
+            thought = _flatten_openhands_content(event.get("thought"))
+            action = event.get("action")
+            action_message = None
+            if isinstance(action, dict):
+                action_message = _flatten_openhands_content(action.get("message"))
+            content_parts = [part for part in (thought, action_message) if part]
+            if not content_parts:
+                continue
+            details = {
+                "openhands_kind": kind,
+                "openhands_source": source or None,
+                "action": action,
+                "tool_call": event.get("tool_call"),
+                "tool_name": event.get("tool_name"),
+            }
+            for key in ("id", "timestamp", "summary", "reasoning_content", "tool_call_id"):
+                if event.get(key) is not None:
+                    details[key] = event[key]
+            messages.append(
+                Message(role="assistant", content="\n\n".join(content_parts), details=details)
+            )
+            continue
+
+        if kind == "ObservationEvent":
+            observation = event.get("observation")
+            content = None
+            if isinstance(observation, dict):
+                content = _flatten_openhands_content(observation.get("content"))
+            if content is None:
+                continue
+            details = {
+                "openhands_kind": kind,
+                "openhands_source": source or None,
+                "observation": observation,
+                "tool_name": event.get("tool_name"),
+            }
+            for key in ("id", "timestamp", "action_id", "tool_call_id"):
+                if event.get(key) is not None:
+                    details[key] = event[key]
+            messages.append(
+                Message(
+                    role="tool",
+                    content=content,
+                    tool_call_id=event.get("tool_call_id"),
+                    details=details,
+                )
+            )
+
+    if not messages:
+        raise RuntimeError("OpenHands produced no importable JSON events")
+    return Trajectory(messages=messages)
+
+
+def _mini_swe_agent_output_to_trajectory(payload: dict[str, Any]) -> Trajectory:
+    messages: list[Message] = []
+    for raw_msg in payload.get("messages", []):
+        if not isinstance(raw_msg, dict):
+            continue
+        raw_role = str(raw_msg.get("role") or "").lower()
+        if raw_role == "exit":
+            continue
+        role = raw_role if raw_role in {"system", "user", "assistant", "tool"} else "assistant"
+        raw_content = raw_msg.get("content")
+        if isinstance(raw_content, str) or raw_content is None:
+            content = raw_content
+        else:
+            content = json.dumps(raw_content, ensure_ascii=False)
+        details = {k: v for k, v in raw_msg.items() if k not in {"role", "content", "tool_call_id"}}
+        messages.append(
+            Message(
+                role=role,
+                content=content,
+                tool_call_id=raw_msg.get("tool_call_id"),
+                details=details or None,
+            )
+        )
+
+    if not messages:
+        raise RuntimeError("mini-swe-agent produced no importable messages")
+    return Trajectory(messages=messages)
+
+
+async def trajectory_from_mini_swe_agent(
+    prompt: str,
+    sample_id: str,
+    sample_data: dict[str, Any],
+    *,
+    cwd: Path | None = None,
+    run_config: Any | None = None,
+    model: str | None = None,
+    timeout_seconds: float = 600.0,
+    config_spec: list[str] | None = None,
+    agent_class: str | None = None,
+    environment_class: str | None = None,
+    yolo: bool = True,
+) -> ExternalAttemptArtifact:
+    del sample_data, run_config
+
+    workdir = Path(cwd or Path.cwd()).resolve()
+    output_path = workdir / f".mini-swe-agent-{_sample_id_slug(sample_id)}.traj.json"
+    if output_path.exists():
+        output_path.unlink()
+
+    cli = shutil.which("mini")
+    if cli is not None:
+        cmd = [cli]
+    elif shutil.which("uvx") is not None:
+        cmd = ["uvx", "--from", "mini-swe-agent", "mini"]
+    else:
+        raise RuntimeError("mini-swe-agent CLI not found. Install `mini` or make `uvx` available.")
+
+    cmd.extend(["--task", prompt, "--output", str(output_path)])
+    if model is not None:
+        cmd.extend(["--model", model])
+    if yolo:
+        cmd.append("--yolo")
+    cmd.append("--exit-immediately")
+    for spec in config_spec or ():
+        cmd.extend(["--config", spec])
+    if agent_class:
+        cmd.extend(["--agent-class", agent_class])
+    if environment_class:
+        cmd.extend(["--environment-class", environment_class])
+
+    env = os.environ.copy()
+    env.setdefault("MSWEA_CONFIGURED", "true")
+    if model is not None:
+        env["MSWEA_MODEL_NAME"] = model
+
+    try:
+        completed = await trio.to_thread.run_sync(
+            lambda: subprocess.run(
+                cmd,
+                cwd=str(workdir),
+                env=env,
+                text=True,
+                capture_output=True,
+                timeout=timeout_seconds,
+                check=False,
+            )
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise TimeoutError(f"mini-swe-agent run timed out after {timeout_seconds:.1f}s") from exc
+
+    stdout_text = completed.stdout
+    stderr_text = completed.stderr
+    combined_output = "\n".join(part for part in (stdout_text, stderr_text) if part).strip()
+
+    if not output_path.is_file():
+        raise RuntimeError(
+            "mini-swe-agent did not write a trajectory file.\n"
+            f"stdout:\n{stdout_text}\n\nstderr:\n{stderr_text}"
+        )
+
+    payload = json.loads(output_path.read_text())
+    trajectory = _mini_swe_agent_output_to_trajectory(payload)
+    info = payload.get("info", {})
+    metadata: dict[str, Any] = {
+        "runtime": "mini_swe_agent",
+        "driver": "mini_swe_agent",
+        "cwd": str(workdir),
+        "trajectory_path": str(output_path),
+        "exit_status": info.get("exit_status"),
+        "submission": info.get("submission"),
+    }
+    if model is not None:
+        metadata["model"] = model
+    metadata["returncode"] = completed.returncode
+    if combined_output:
+        metadata["mini_swe_agent_output"] = combined_output[-8000:]
+
+    status = Status.COMPLETED if completed.returncode == 0 else Status.ABORTED
+    return ExternalAttemptArtifact(
+        trajectory=trajectory,
+        metadata=metadata,
+        status=status,
+    )
+
+
 async def trajectory_from_openhands(
     prompt: str,
     sample_id: str,
@@ -1055,14 +1348,6 @@ async def trajectory_from_openhands(
 ) -> ExternalAttemptArtifact:
     del sample_data, run_config
 
-    # TODO(openhands-first-class-driver): OpenHands currently bypasses the
-    # driver layer and reconstructs a trajectory after the CLI exits by
-    # querying the session API. That was expedient, but it means OpenHands is
-    # not yet a real peer of Claude Code / Codex in `rollouts.drivers`.
-    # If we keep supporting it, move it behind a proper driver/runtime
-    # contract so projected workspaces, live event streaming, and future agent
-    # additions like `mini-swe-agent` share one execution model.
-
     if api_key_env_var is not None and not os.environ.get(api_key_env_var):
         raise RuntimeError(f"Required environment variable {api_key_env_var} is not set")
 
@@ -1073,103 +1358,104 @@ async def trajectory_from_openhands(
         )
 
     workdir = Path(cwd or Path.cwd()).resolve()
-    cmd = [
-        cli,
-        "--non-interactive",
-        "--task",
-        prompt,
-        "--model",
-        model or os.environ.get("OPENHANDS_DEFAULT_MODEL", "anthropic/claude-sonnet-4-5"),
-        "--runtime",
-        _normalize_openhands_runtime(runtime),
-        "--workspace",
-        str(workdir),
-    ]
-
-    resolved_environment = _normalize_openhands_environment(
-        environment,
-        allowed_tools=allowed_tools,
-    )
-    if resolved_environment:
-        cmd.extend(["--environment", resolved_environment])
-
-    if agent_cls:
-        cmd.extend(["--agent-cls", agent_cls])
+    if allowed_tools:
+        raise ValueError(
+            "OpenHands CLI no longer accepts benchmark-level allowed tool filtering; "
+            "do not pass `allowed_tools` to `trajectory_from_openhands`."
+        )
+    if agent_cls is not None:
+        raise ValueError(
+            "OpenHands CLI no longer exposes `--agent-cls` on the top-level headless path; "
+            "do not pass `agent_cls` here."
+        )
+    normalized_runtime = _normalize_openhands_runtime(runtime)
+    if normalized_runtime != "docker":
+        raise ValueError(
+            "OpenHands runtime selection is no longer controlled by a top-level CLI flag; "
+            f"got runtime={runtime!r}."
+        )
+    if environment is not None:
+        raise ValueError(
+            "OpenHands environment selection is no longer controlled by a top-level CLI flag; "
+            f"got environment={environment!r}."
+        )
     if max_iterations is not None:
-        cmd.extend(["--max-iterations", str(max_iterations)])
-
-    proc = await trio.lowlevel.open_process(
-        cmd,
-        cwd=str(workdir),
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
-
-    stdout_buffer = bytearray()
-    stderr_buffer = bytearray()
-
-    async def _read_stream(stream: trio.abc.ReceiveStream | None, sink: bytearray) -> None:
-        if stream is None:
-            return
-        while True:
-            chunk = await stream.receive_some(4096)
-            if not chunk:
-                break
-            sink.extend(chunk)
-
-    with trio.move_on_after(timeout_seconds) as cancel_scope:
-        async with trio.open_nursery() as nursery:
-            nursery.start_soon(_read_stream, proc.stdout, stdout_buffer)
-            nursery.start_soon(_read_stream, proc.stderr, stderr_buffer)
-            await proc.wait()
-            nursery.cancel_scope.cancel()
-
-    if cancel_scope.cancelled_caught:
-        proc.kill()
-        raise TimeoutError(f"OpenHands run timed out after {timeout_seconds:.1f}s")
-
-    stdout_text = stdout_buffer.decode("utf-8", errors="replace")
-    stderr_text = stderr_buffer.decode("utf-8", errors="replace")
-    combined_output = "\n".join(part for part in (stdout_text, stderr_text) if part).strip()
-
-    session_id = None
-    for line in reversed(combined_output.splitlines()):
-        candidate = line.strip()
-        if _looks_like_session_id(candidate):
-            session_id = candidate
-            break
-    if session_id is None:
-        raise RuntimeError(
-            "OpenHands did not print a recognizable session id.\n"
-            f"stdout:\n{stdout_text}\n\nstderr:\n{stderr_text}"
+        raise ValueError(
+            "OpenHands max-iteration control is not currently wired through the headless JSON CLI."
         )
 
-    api_url = os.environ.get("OPENHANDS_API_URL", "http://localhost:3000")
-    trajectory = await trio.to_thread.run_sync(
-        _trajectory_from_openhands_session, api_url, session_id
-    )
+    cmd = [
+        cli,
+        "--headless",
+        "--json",
+        "--always-approve",
+        "--override-with-envs",
+        "--task",
+        prompt,
+    ]
+
+    env = os.environ.copy()
+    if model is not None:
+        env["LLM_MODEL"] = model
+    else:
+        env.setdefault(
+            "LLM_MODEL", os.environ.get("OPENHANDS_DEFAULT_MODEL", "anthropic/claude-sonnet-4-5")
+        )
+    if api_key_env_var is not None:
+        env["LLM_API_KEY"] = os.environ[api_key_env_var]
+    elif not env.get("LLM_API_KEY"):
+        for fallback_key in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY"):
+            fallback = env.get(fallback_key)
+            if fallback:
+                env["LLM_API_KEY"] = fallback
+                break
+
+    if not env.get("LLM_API_KEY"):
+        raise RuntimeError(
+            "OpenHands headless JSON mode requires `LLM_API_KEY`; none was provided "
+            "via `api_key_env_var`, `LLM_API_KEY`, `ANTHROPIC_API_KEY`, or `OPENAI_API_KEY`."
+        )
+
+    try:
+        completed = await trio.to_thread.run_sync(
+            lambda: subprocess.run(
+                cmd,
+                cwd=str(workdir),
+                env=env,
+                text=True,
+                capture_output=True,
+                timeout=timeout_seconds,
+                check=False,
+            )
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise TimeoutError(f"OpenHands run timed out after {timeout_seconds:.1f}s") from exc
+
+    stdout_text = completed.stdout
+    stderr_text = completed.stderr
+    combined_output = "\n".join(part for part in (stdout_text, stderr_text) if part).strip()
+    trajectory = _trajectory_from_openhands_json_output(combined_output)
 
     metadata: dict[str, Any] = {
         "runtime": "openhands",
         "driver": "openhands",
-        "session_id": session_id,
-        "api_url": api_url,
         "workspace": str(workdir),
+        "returncode": completed.returncode,
     }
-    if model:
-        metadata["model"] = model
+    if env.get("LLM_MODEL"):
+        metadata["model"] = env["LLM_MODEL"]
     if api_key_env_var is not None:
         metadata["api_key_env_var"] = api_key_env_var
-    if max_iterations is not None:
-        metadata["max_iterations"] = max_iterations
-    if agent_cls:
-        metadata["agent_cls"] = agent_cls
-    if resolved_environment:
-        metadata["environment"] = resolved_environment
-    if proc.returncode is not None:
-        metadata["returncode"] = proc.returncode
+    conversation_id = None
+    for line in reversed(combined_output.splitlines()):
+        match = re.search(r"Conversation ID:\s*([0-9a-fA-F-]{16,})", line)
+        if match:
+            conversation_id = match.group(1)
+            break
+    if conversation_id is not None:
+        metadata["conversation_id"] = conversation_id
 
-    status = Status.COMPLETED if proc.returncode in (None, 0) else Status.ABORTED
+    status = Status.COMPLETED if completed.returncode == 0 else Status.ABORTED
     if combined_output:
         metadata["openhands_output"] = combined_output[-8000:]
 
@@ -1178,51 +1464,3 @@ async def trajectory_from_openhands(
         metadata=metadata,
         status=status,
     )
-
-
-def _trajectory_from_openhands_session(api_url: str, session_id: str) -> Trajectory:
-    import requests
-
-    # TODO(openhands-session-shape): This importer only preserves coarse
-    # message text. If OpenHands remains a supported external runtime, upgrade
-    # this to preserve tool calls / richer event structure the same way the
-    # Claude Code and Codex paths preserve their native session semantics.
-
-    response = requests.get(
-        f"{api_url.rstrip('/')}/api/conversations/{session_id}/events",
-        timeout=30,
-    )
-    response.raise_for_status()
-    payload = response.json()
-    if isinstance(payload, dict) and "events" in payload:
-        events = payload["events"]
-    else:
-        events = payload
-    if not isinstance(events, list):
-        raise TypeError(f"Unexpected OpenHands events payload: {type(events)!r}")
-
-    messages: list[Message] = []
-    for event in events:
-        if not isinstance(event, dict):
-            continue
-        source = str(event.get("source") or event.get("role") or "").lower()
-        content = event.get("message") or event.get("content") or ""
-        if isinstance(content, list):
-            content = "\n".join(str(part) for part in content if part)
-        text = str(content).strip()
-        if not text:
-            continue
-
-        if source in {"user", "task"}:
-            role = "user"
-        elif source in {"assistant", "agent"}:
-            role = "assistant"
-        elif source in {"system"}:
-            role = "system"
-        else:
-            role = "assistant"
-        messages.append(Message(role=role, content=text))
-
-    if not messages:
-        raise RuntimeError(f"OpenHands session {session_id} returned no importable messages")
-    return Trajectory(messages=messages)
