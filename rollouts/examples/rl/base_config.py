@@ -27,6 +27,7 @@ def _rollouts_runtime_packages() -> tuple[str, ...]:
         "trio",
         "httpx",
         "markdownify",
+        "mbridge @ git+https://github.com/ISEEKYAN/mbridge.git",
     )
 
 
