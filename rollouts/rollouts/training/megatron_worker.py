@@ -1388,6 +1388,7 @@ def _training_loop(
                     backend,
                     model_name=config.get("model_name", ""),
                     inference_endpoints=config.get("inference_endpoints", []) if rank == 0 else [],
+                    inference_dtype=config.get("dtype"),
                     tensor_limit=msg.get("tensor_limit") if rank == 0 else None,
                     witness=bool(msg.get("witness", False)) if rank == 0 else False,
                 )
@@ -2017,6 +2018,7 @@ def _do_sync_weights_nccl(
     backend: Any,
     model_name: str,
     inference_endpoints: list[str],
+    inference_dtype: str | None = None,
     tensor_limit: int | None = None,
     witness: bool = False,
 ) -> None:
@@ -2116,7 +2118,6 @@ def _do_sync_weights_nccl(
     else:
         weights_future = backend.get_weights()
         weights = _resolve_train_future(weights_future)
-        inference_dtype = getattr(getattr(backend, "config", None), "dtype", None)
         state_dict = (
             _convert_megatron_state_dict(
                 model_name,
