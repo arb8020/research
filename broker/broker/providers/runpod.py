@@ -615,12 +615,7 @@ async def provision_instance(
     }
     """
 
-    # Build input for the mutation
     env_vars = []
-
-    # Add SSH startup script if provided
-    if ssh_startup_script:
-        env_vars.append({"key": "RUNPOD_STARTUP_SCRIPT", "value": ssh_startup_script})
 
     # Add Jupyter password if provided
     if request.jupyter_password:
@@ -640,6 +635,10 @@ async def provision_instance(
         "startJupyter": request.start_jupyter,  # Auto-start Jupyter Lab
         "env": env_vars,
     }
+
+    docker_args = request.docker_args or ssh_startup_script
+    if docker_args:
+        pod_input["dockerArgs"] = docker_args
 
     # Add CUDA version constraint if specified
     # This ensures the node has a driver compatible with the requested CUDA version

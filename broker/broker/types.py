@@ -357,6 +357,7 @@ class ProvisionRequest:
     provider: str | None = None  # If None, search all providers
     spot_instance: bool = False
     ssh_startup_script: str | None = None  # SSH key injection script
+    docker_args: str | None = None  # Provider-specific container start command
     container_disk_gb: int | None = None  # Container disk size in GB (default: 50)
     volume_disk_gb: int | None = None  # Volume disk size in GB (default: 0)
     memory_gb: int | None = None  # System memory allocation in GB (default: provider minimum)

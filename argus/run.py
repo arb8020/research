@@ -251,7 +251,7 @@ def _runpod_image_is_official_ssh_ready(image_ref: str) -> bool:
     return normalized.startswith("runpod/")
 
 
-RUNPOD_DOCS_CUSTOM_IMAGE_SSH_STARTUP_SCRIPT = (
+RUNPOD_DOCS_CUSTOM_IMAGE_SSH_DOCKER_ARGS = (
     "bash -c 'apt update; "
     "DEBIAN_FRONTEND=noninteractive apt-get install openssh-server -y; "
     "mkdir -p ~/.ssh; "
@@ -272,7 +272,7 @@ def _runpod_template_id_for_custom_image() -> str | None:
     return normalized or None
 
 
-def _runpod_custom_image_ssh_startup_script(image_ref: str) -> str | None:
+def _runpod_custom_image_docker_args(image_ref: str) -> str | None:
     if _runpod_image_is_official_ssh_ready(image_ref):
         return None
 
@@ -281,7 +281,7 @@ def _runpod_custom_image_ssh_startup_script(image_ref: str) -> str | None:
     # The docs preconditions are:
     # - the pod must expose TCP port 22
     # - PUBLIC_KEY must be injected
-    return RUNPOD_DOCS_CUSTOM_IMAGE_SSH_STARTUP_SCRIPT
+    return RUNPOD_DOCS_CUSTOM_IMAGE_SSH_DOCKER_ARGS
 
 
 def _find_config_project_root(config_path: Path) -> Path:
@@ -703,7 +703,7 @@ async def _deploy_and_submit(
     provision_image = "runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04"
     provision_boot_image: ProvisionImage | None = None
     provision_template_id: str | None = None
-    provision_ssh_startup_script: str | None = None
+    provision_docker_args: str | None = None
     resolved_registry_image_ref: str | None = None
     if deps is None:
         raise ValueError(
@@ -740,9 +740,7 @@ async def _deploy_and_submit(
             )
             if provider == "runpod":
                 provision_template_id = _runpod_template_id_for_custom_image()
-                provision_ssh_startup_script = _runpod_custom_image_ssh_startup_script(
-                    provision_image
-                )
+                provision_docker_args = _runpod_custom_image_docker_args(provision_image)
 
     # Create console for coordinated spinner + logging output
     # In quiet mode, skip spinners and just use plain logging to stderr
@@ -803,7 +801,7 @@ async def _deploy_and_submit(
                         image=provision_image,
                         boot_image=provision_boot_image,
                         template_id=provision_template_id,
-                        ssh_startup_script=provision_ssh_startup_script,
+                        docker_args=provision_docker_args,
                         persistent_volume_id=persistent_volume_id,
                         persistent_volume_mount_path=persistent_volume_mount_path,
                         persistent_volume_location=persistent_volume_location,

@@ -86,6 +86,7 @@ class GPUQuery:
     boot_image: ProvisionImage | None = None
     template_id: str | None = None
     ssh_startup_script: str | None = None
+    docker_args: str | None = None
 
     # Provider credentials (optional - falls back to env vars)
     credentials: dict[str, str] = field(default_factory=dict)
@@ -252,6 +253,7 @@ async def acquire_node(
         boot_image=provision.boot_image,
         template_id=provision.template_id,
         ssh_startup_script=provision.ssh_startup_script,
+        docker_args=provision.docker_args,
         name=provision.name,
         gpu_count=provision.count,
         persistent_volume=provision.persistent_volume,
