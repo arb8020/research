@@ -692,20 +692,30 @@ async def _run_training_preflight(
 
     rc = run_context or {}
     runtime_run_logger = run_logger if isinstance(run_logger, RunLogger) else None
-    logger.info(
-        "training_preflight_start",
-        extra={
-            "event": "training_preflight_start",
-            **rc,
-            "node_id": node_id or rc.get("node_id"),
-            "backend": config.trainer.backend,
-        },
-    )
-    if runtime_run_logger is not None:
-        runtime_run_logger.event(
-            "training_preflight_start",
-            **rc,
+    resolved_node_id = node_id or rc.get("node_id")
+    backend_name = config.trainer.backend
+
+    def _emit_preflight_event(event: str, **data: Any) -> None:
+        logger.info(
+            event,
+            extra={
+                "event": event,
+                **rc,
+                "node_id": resolved_node_id,
+                "backend": backend_name,
+                **data,
+            },
         )
+        if runtime_run_logger is not None:
+            runtime_run_logger.event(
+                event,
+                **rc,
+                backend=backend_name,
+                node_id=resolved_node_id,
+                **data,
+            )
+
+    _emit_preflight_event("training_preflight_start")
 
     dummy_engine = SimpleNamespace(api_base=f"http://127.0.0.1:{config.inference.port}/v1")
     preflight_output_dir = output_dir / "_training_preflight"
@@ -716,6 +726,7 @@ async def _run_training_preflight(
     reusable_backend: Any | None = None
     reusable_cleanup: Callable[[], None] | None = None
     try:
+        _emit_preflight_event("training_preflight_backend_init_start")
         backend, _tokenizer, _endpoint, cleanup = _setup_training_backend(
             config,
             preflight_output_dir,
@@ -723,61 +734,25 @@ async def _run_training_preflight(
             megatron_workers=megatron_workers,
         )
 
-        logger.info(
-            "training_preflight_backend_init_ok",
-            extra={
-                "event": "training_preflight_backend_init_ok",
-                **rc,
-                "node_id": node_id or rc.get("node_id"),
-                "backend": config.trainer.backend,
-            },
-        )
-        if runtime_run_logger is not None:
-            runtime_run_logger.event(
-                "training_preflight_backend_init_ok",
-                **rc,
-            )
+        _emit_preflight_event("training_preflight_backend_init_ok")
 
-        if config.trainer.backend == "megatron":
+        if backend_name == "megatron":
             if config.trainer.validate_inference_export_in_preflight:
                 validate_inference_export = getattr(backend, "validate_inference_export", None)
                 assert callable(validate_inference_export), (
                     "Megatron backend must expose validate_inference_export()"
                 )
+                _emit_preflight_event("training_preflight_inference_export_start")
                 export_validation = await validate_inference_export().result()
-                logger.info(
+                _emit_preflight_event(
                     "training_preflight_inference_export_ok",
-                    extra={
-                        "event": "training_preflight_inference_export_ok",
-                        **rc,
-                        "node_id": node_id or rc.get("node_id"),
-                        "backend": config.trainer.backend,
-                        "tensor_count": export_validation.get("tensor_count"),
-                    },
+                    tensor_count=export_validation.get("tensor_count"),
                 )
-                if runtime_run_logger is not None:
-                    runtime_run_logger.event(
-                        "training_preflight_inference_export_ok",
-                        **rc,
-                        tensor_count=export_validation.get("tensor_count"),
-                    )
             else:
-                logger.info(
-                    "training_preflight_inference_export_skipped",
-                    extra={
-                        "event": "training_preflight_inference_export_skipped",
-                        **rc,
-                        "node_id": node_id or rc.get("node_id"),
-                        "backend": config.trainer.backend,
-                    },
-                )
-                if runtime_run_logger is not None:
-                    runtime_run_logger.event(
-                        "training_preflight_inference_export_skipped",
-                        **rc,
-                    )
+                _emit_preflight_event("training_preflight_inference_export_skipped")
             preflight_step = getattr(backend, "preflight_step", None)
             assert callable(preflight_step), "Megatron backend must expose preflight_step()"
+            _emit_preflight_event("training_preflight_synthetic_step_start")
             fb_result = await preflight_step(_build_megatron_preflight_batch(config)).result()
             optim_result = None
             if hasattr(backend, "checkpoint_dir"):
@@ -788,33 +763,21 @@ async def _run_training_preflight(
         else:
             device = f"cuda:{config.trainer.cuda_device_ids[0]}"
             datum = _build_training_preflight_datum(config, device)
+            _emit_preflight_event("training_preflight_synthetic_step_start")
             fb_future = backend.forward_backward(datum, loss_fn=rl_contract_loss)
             fb_result = await fb_future.result()
             optim_future = backend.optim_step()
             optim_result = await optim_future.result()
-            if config.trainer.backend == "torchtitan":
+            if backend_name == "torchtitan":
                 reusable_backend = backend
                 reusable_cleanup = cleanup
                 cleanup = None
 
-        logger.info(
+        _emit_preflight_event(
             "training_preflight_synthetic_step_ok",
-            extra={
-                "event": "training_preflight_synthetic_step_ok",
-                **rc,
-                "node_id": node_id or rc.get("node_id"),
-                "backend": config.trainer.backend,
-                "losses": getattr(fb_result, "losses", {}),
-                "optim": optim_result,
-            },
+            losses=getattr(fb_result, "losses", {}),
+            optim=optim_result,
         )
-        if runtime_run_logger is not None:
-            runtime_run_logger.event(
-                "training_preflight_synthetic_step_ok",
-                **rc,
-                losses=getattr(fb_result, "losses", {}),
-                optim=optim_result,
-            )
     finally:
         if cleanup is not None:
             cleanup()
