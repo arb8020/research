@@ -212,11 +212,12 @@ def _runpod_custom_image_ssh_startup_script(image_ref: str) -> str | None:
         "touch ~/.ssh/authorized_keys; "
         'if [ -n "$PUBLIC_KEY" ]; then printf "%s\\n" "$PUBLIC_KEY" >> ~/.ssh/authorized_keys; fi; '
         "chmod 600 ~/.ssh/authorized_keys; "
+        "ssh-keygen -A; "
         "mkdir -p /etc/ssh/sshd_config.d; "
         'printf "PermitRootLogin yes\\nPubkeyAuthentication yes\\nPasswordAuthentication no\\n" > '
         "/etc/ssh/sshd_config.d/99-runpod-root.conf; "
-        "service ssh start || /usr/sbin/sshd -D & "
-        "wait'"
+        "/usr/sbin/sshd; "
+        "pgrep -x sshd >/dev/null'"
     )
 
 
