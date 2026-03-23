@@ -1034,6 +1034,9 @@ async def _deploy_and_submit(
     image_owned_runtime = custom_image is not None and custom_image.python_runtime == "image_owned"
     runtime_python = _ssh_runtime_python(custom_image)
     runtime_feature_scope = _ssh_runtime_feature_scope(custom_image)
+    managed_venv_ready = True
+    if not image_owned_runtime:
+        managed_venv_ready = bifrost.exec(f"test -x {shlex.quote(runtime_python)}").success
 
     if deps is not None and deps.image is not None:
         logger.info(
@@ -1059,7 +1062,7 @@ async def _deploy_and_submit(
         ))
         manifest_features_applied.append(REMOTE_UV_FEATURE)
 
-    if not image_owned_runtime:
+    if not image_owned_runtime and not managed_venv_ready:
         managed_venv_feature = f"ssh-managed-venv-python-{custom_image.python_version if custom_image is not None else '3.12'}"
         if remote_manifest is None or not remote_manifest.has_feature(managed_venv_feature):
             python_version = custom_image.python_version if custom_image is not None else "3.12"
@@ -1126,7 +1129,11 @@ async def _deploy_and_submit(
             f"image-pip-packages-{runtime_feature_scope}",
             custom_image.pip_packages,
         )
-        if remote_manifest is None or not remote_manifest.has_feature(image_pip_feature):
+        if (
+            not image_owned_runtime
+            or remote_manifest is None
+            or not remote_manifest.has_feature(image_pip_feature)
+        ):
             bootstrap_steps.append((
                 "Installing image Python packages",
                 (
@@ -1181,7 +1188,11 @@ async def _deploy_and_submit(
             f"overlay-pip-packages-{runtime_feature_scope}",
             custom_overlay.pip_packages,
         )
-        if remote_manifest is None or not remote_manifest.has_feature(overlay_pip_feature):
+        if (
+            not image_owned_runtime
+            or remote_manifest is None
+            or not remote_manifest.has_feature(overlay_pip_feature)
+        ):
             bootstrap_steps.append((
                 "Installing runtime Python packages",
                 (
