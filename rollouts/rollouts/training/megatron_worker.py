@@ -1168,11 +1168,21 @@ def train(handle: Worker) -> None:
             rank=rank,
             has_checkpoint=checkpoint_path is not None,
         )
-        model, optimizer, scheduler, checkpoint_iteration = setup_megatron_model(
-            model_config,
-            checkpoint_path=checkpoint_path,
-            save_optimizer_state=config.get("save_optimizer_state", True),
-        )
+        try:
+            model, optimizer, scheduler, checkpoint_iteration = setup_megatron_model(
+                model_config,
+                checkpoint_path=checkpoint_path,
+                save_optimizer_state=config.get("save_optimizer_state", True),
+            )
+        except Exception as exc:
+            logger.exception("Megatron model setup failed")
+            _emit_argus_diag(
+                "megatron_worker_model_setup_failed",
+                rank=rank,
+                error_type=type(exc).__name__,
+                error=str(exc),
+            )
+            raise
         logger.info("Model setup complete")
         _emit_argus_diag(
             "megatron_worker_model_setup_ok",
