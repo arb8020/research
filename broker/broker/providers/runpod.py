@@ -1025,8 +1025,9 @@ async def wait_for_ssh_ready(instance, timeout: int = 900) -> bool:  # noqa: ASY
     if not await _wait_for_direct_ssh_assignment(instance, time.time(), timeout):
         return False
 
-    # Test connectivity
-    return await _test_ssh_connectivity(instance)
+    # Test connectivity until the overall timeout budget is exhausted. Direct
+    # assignment and actual daemon readiness are distinct states on RunPod.
+    return await _wait_for_direct_ssh_connectivity(instance, timeout)
 
 
 async def _wait_until_running(instance, timeout: int) -> bool:  # noqa: ASYNC109
@@ -1178,6 +1179,43 @@ async def _test_ssh_connectivity(instance) -> bool:
             f"SSH connection error for {instance.id} at {instance.public_ip}:{instance.ssh_port}: {e}"
         )
         return False
+
+
+async def _wait_for_direct_ssh_connectivity(instance, timeout: int) -> bool:  # noqa: ASYNC109
+    """Wait until the assigned direct SSH endpoint is actually reachable."""
+    start_time = time.time()
+    next_log_time = start_time + 30
+
+    while time.time() - start_time < timeout:
+        fresh = await get_instance_details(instance.id, api_key=instance.api_key)
+        if fresh:
+            instance.__dict__.update(fresh.__dict__)
+
+        if not _has_direct_ssh(instance):
+            logger.warning(
+                f"instance {instance.id} lost direct ssh assignment while waiting for connectivity"
+            )
+            return False
+
+        if await _test_ssh_connectivity(instance):
+            return True
+
+        current_time = time.time()
+        if current_time >= next_log_time:
+            elapsed = int(current_time - start_time)
+            logger.info(
+                f"instance {instance.id} still waiting for reachable direct ssh at "
+                f"{instance.public_ip}:{instance.ssh_port} ({elapsed}s elapsed)"
+            )
+            next_log_time += 30
+
+        await trio.sleep(15)
+
+    logger.error(
+        f"Timeout waiting for reachable direct ssh on {instance.id} at "
+        f"{instance.public_ip}:{instance.ssh_port}"
+    )
+    return False
 
 
 async def get_fresh_instance(instance_id: str, api_key: str):
