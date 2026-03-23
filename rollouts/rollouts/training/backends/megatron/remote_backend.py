@@ -225,6 +225,8 @@ class MegatronRemoteBackend:
     ) -> dict[str, Any]:
         start = time.monotonic()
         next_progress_log = start + _RESPONSE_PROGRESS_LOG_INTERVAL_SEC
+        if callable(self.phase_callback):
+            self.phase_callback("megatron_remote_response_wait_start")
         logger.info(
             "megatron_remote_response_wait_start",
             extra={
@@ -238,6 +240,8 @@ class MegatronRemoteBackend:
             ready, _, _ = select.select([worker], [], [], _RESPONSE_POLL_INTERVAL_SEC)
             if ready:
                 elapsed = time.monotonic() - start
+                if callable(self.phase_callback):
+                    self.phase_callback("megatron_remote_response_wait_ready")
                 logger.info(
                     "megatron_remote_response_wait_ready",
                     extra={
@@ -251,6 +255,8 @@ class MegatronRemoteBackend:
             now = time.monotonic()
             elapsed = now - start
             if now >= next_progress_log:
+                if callable(self.phase_callback):
+                    self.phase_callback("megatron_remote_response_wait_progress")
                 logger.warning(
                     "megatron_remote_response_wait_progress",
                     extra={
