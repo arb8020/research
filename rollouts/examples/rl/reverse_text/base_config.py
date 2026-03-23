@@ -156,6 +156,12 @@ def train(
     Returns:
         Dict with metrics_history.
     """
+    run_logger = kwargs.get("run_logger")
+
+    def _emit(event: str, **data: Any) -> None:
+        if run_logger is not None:
+            run_logger.event(event, **data)
+
     if config is None:
         from rollouts.training.grpo import (
             CheckpointConfig,
@@ -179,7 +185,20 @@ def train(
         )
 
     # Load Prime's actual RL dataset (not random gibberish!)
+    _emit(
+        "reverse_text_dataset_load_start",
+        dataset_name="PrimeIntellect/Reverse-Text-RL",
+        split="train",
+        requested_samples=num_samples,
+    )
     prompts = load_reverse_text_prompts(max_samples=num_samples)
+    _emit("reverse_text_dataset_load_ok", prompt_count=len(prompts))
+
+    _emit(
+        "reverse_text_grpo_train_start",
+        prompt_count=len(prompts),
+        environment_cls="BasicEnvironment",
+    )
 
     return grpo_train(
         config=config,
