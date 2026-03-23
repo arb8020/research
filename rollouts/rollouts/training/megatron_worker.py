@@ -1578,7 +1578,25 @@ def _summarize_tensor_contract(tensors: dict[str, Any], *, limit: int = 3) -> di
     }
 
 
-def _convert_megatron_state_dict(model_name: str, state_dict: dict[str, Any]) -> dict[str, Any]:
+def _normalize_inference_dtype_name(name: str | None) -> str | None:
+    if name is None:
+        return None
+    normalized = name.strip().lower()
+    if normalized in {"bf16", "bfloat16"}:
+        return "bfloat16"
+    if normalized in {"fp16", "float16", "half"}:
+        return "float16"
+    if normalized in {"fp32", "float32"}:
+        return "float32"
+    return normalized or None
+
+
+def _convert_megatron_state_dict(
+    model_name: str,
+    state_dict: dict[str, Any],
+    *,
+    inference_dtype: str | None = None,
+) -> dict[str, Any]:
     """Convert Megatron shard names to HuggingFace names for inference sync.
 
     The live NCCL publication path can only publish real tensors. Megatron
@@ -1597,6 +1615,30 @@ def _convert_megatron_state_dict(model_name: str, state_dict: dict[str, Any]) ->
     )
 
     convert_logger = logging.getLogger(__name__)
+    target_dtype_name = _normalize_inference_dtype_name(inference_dtype)
+    dtype_map = {
+        "bfloat16": torch.bfloat16,
+        "float16": torch.float16,
+        "float32": torch.float32,
+    }
+    target_dtype = dtype_map.get(target_dtype_name)
+    dropped_metadata_keys: list[str] = []
+    casted_keys: list[str] = []
+
+    def _normalize_value(name: str, value: Any) -> Any | None:
+        clean_name = _strip_chunk_prefix(name)
+        if "_extra_state" in clean_name:
+            dropped_metadata_keys.append(clean_name)
+            return None
+        if not isinstance(value, torch.Tensor):
+            return value
+        if value.numel() == 0:
+            dropped_metadata_keys.append(clean_name)
+            return None
+        if target_dtype is None or not value.is_floating_point() or value.dtype == target_dtype:
+            return value
+        casted_keys.append(clean_name)
+        return value.to(dtype=target_dtype)
 
     def _filter_tensor_state_dict(
         values: dict[str, Any], *, log_drops: bool = True
@@ -1605,8 +1647,9 @@ def _convert_megatron_state_dict(model_name: str, state_dict: dict[str, Any]) ->
         dropped_non_tensors: list[str] = []
         for name, value in values.items():
             clean_name = _strip_chunk_prefix(name)
-            if isinstance(value, torch.Tensor):
-                filtered[clean_name] = value
+            normalized_value = _normalize_value(clean_name, value)
+            if isinstance(normalized_value, torch.Tensor):
+                filtered[clean_name] = normalized_value
             else:
                 dropped_non_tensors.append(clean_name)
         if log_drops and dropped_non_tensors:
@@ -1675,6 +1718,19 @@ def _convert_megatron_state_dict(model_name: str, state_dict: dict[str, Any]) ->
             "Megatron->HF conversion dropped non-tensor entries count=%s first_keys=%s",
             len(dropped_non_tensors),
             dropped_non_tensors[:8],
+        )
+    if dropped_metadata_keys:
+        convert_logger.info(
+            "Megatron inference sync dropped metadata tensors count=%s first_keys=%s",
+            len(dropped_metadata_keys),
+            dropped_metadata_keys[:8],
+        )
+    if casted_keys:
+        convert_logger.info(
+            "Megatron inference sync cast tensors to %s count=%s first_keys=%s",
+            target_dtype_name,
+            len(casted_keys),
+            casted_keys[:8],
         )
     return output
 
@@ -2060,7 +2116,16 @@ def _do_sync_weights_nccl(
     else:
         weights_future = backend.get_weights()
         weights = _resolve_train_future(weights_future)
-        state_dict = _convert_megatron_state_dict(model_name, weights) if weights else {}
+        inference_dtype = getattr(getattr(backend, "config", None), "dtype", None)
+        state_dict = (
+            _convert_megatron_state_dict(
+                model_name,
+                weights,
+                inference_dtype=inference_dtype,
+            )
+            if weights
+            else {}
+        )
         participant_tensor_count = len(state_dict)
         logger.info(
             "weight_sync_megatron_state_dict_ready tensors=%s witness=%s first_names=%s",
