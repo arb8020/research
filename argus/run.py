@@ -350,6 +350,12 @@ def _remote_materialized_path(
     return f"{workspace_root}/{relative_to_primary.as_posix()}"
 
 
+def _normalize_remote_workspace_root(bifrost: BifrostClient, workspace_root: str) -> str:
+    """Expand remote workspace roots before using them as argv values."""
+    assert workspace_root, "workspace_root cannot be empty"
+    return bifrost.expand_path(workspace_root)
+
+
 def _active_launches() -> list[dict[str, Any]]:
     if not LAUNCHES_DIR.exists():
         return []
@@ -965,7 +971,7 @@ async def _deploy_and_submit(
                 extra_python_projects=extra_python_projects,
             )
         )
-        workspace = workspace_handle.root
+        workspace = _normalize_remote_workspace_root(bifrost, workspace_handle.root)
     log("deploy_done", workspace=workspace)
     remote_script_path = _remote_materialized_path(
         local_path=local_script_path,
