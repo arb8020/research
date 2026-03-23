@@ -1046,6 +1046,12 @@ def train(handle: Worker) -> None:
     rank = init_msg["rank"]
     world_size = init_msg["world_size"]
     config = init_msg["config"]
+    _emit_argus_diag(
+        "megatron_worker_init_msg_received",
+        rank=rank,
+        world_size=world_size,
+        has_checkpoint=bool(config.get("checkpoint_path")),
+    )
 
     # Set up logging with rank
     logging.basicConfig(
@@ -1100,6 +1106,7 @@ def train(handle: Worker) -> None:
         _log_import_stage("after_lowering_import")
 
         logger.info("Megatron imports successful")
+        _emit_argus_diag("megatron_worker_imports_ok", rank=rank)
 
         lowering_payload = config["lowering"]
         lowering = MegatronLowering.from_realization(
@@ -1116,6 +1123,7 @@ def train(handle: Worker) -> None:
         )
 
         logger.info("Calling init_megatron...")
+        _emit_argus_diag("megatron_worker_init_megatron_start", rank=rank)
         init_megatron(
             rank=rank,
             world_size=world_size,
@@ -1127,6 +1135,7 @@ def train(handle: Worker) -> None:
             seq_length=config.get("seq_length", 4096),
         )
         logger.info("init_megatron complete")
+        _emit_argus_diag("megatron_worker_init_megatron_ok", rank=rank)
 
         # Phase 3: Create model
         logger.info("Creating model config...")
@@ -1146,12 +1155,22 @@ def train(handle: Worker) -> None:
         checkpoint_dir = Path(checkpoint_dir_raw) if checkpoint_dir_raw else Path("./checkpoints")
 
         logger.info("Setting up Megatron model...")
+        _emit_argus_diag(
+            "megatron_worker_model_setup_start",
+            rank=rank,
+            has_checkpoint=checkpoint_path is not None,
+        )
         model, optimizer, scheduler, checkpoint_iteration = setup_megatron_model(
             model_config,
             checkpoint_path=checkpoint_path,
             save_optimizer_state=config.get("save_optimizer_state", True),
         )
         logger.info("Model setup complete")
+        _emit_argus_diag(
+            "megatron_worker_model_setup_ok",
+            rank=rank,
+            checkpoint_iteration=int(checkpoint_iteration),
+        )
 
         # Create backend
         backend_config = MegatronConfig(
@@ -1182,10 +1201,17 @@ def train(handle: Worker) -> None:
             logger.info("Restored backend step from checkpoint: %s", backend._step)
 
         logger.info("Model initialized, entering training loop")
+        _emit_argus_diag(
+            "megatron_worker_backend_ready",
+            rank=rank,
+            step=int(getattr(backend, "_step", 0)),
+        )
 
         # Rank 0 confirms init complete
         if rank == 0:
+            _emit_argus_diag("megatron_worker_initialized_send_start", rank=rank)
             handle.send({"status": "initialized", "step": int(getattr(backend, "_step", 0))})
+            _emit_argus_diag("megatron_worker_initialized_send_ok", rank=rank)
 
         # Phase 4: Training loop
         _training_loop(handle, backend, rank, config)
