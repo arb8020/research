@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import copy
+import hashlib
 import json
 import logging
 import multiprocessing
@@ -67,6 +68,14 @@ def _emit_argus_diag(event: str, **data: object) -> None:
         sys.stderr.flush()
     except Exception:
         return
+
+
+def _sequence_hash(rows: list[dict[str, object]]) -> str:
+    digest = hashlib.sha256()
+    for row in rows:
+        digest.update(json.dumps(row, sort_keys=True, separators=(",", ":")).encode("utf-8"))
+        digest.update(b"\n")
+    return digest.hexdigest()
 
 
 class Command(IntEnum):
@@ -919,6 +928,7 @@ def _resume_inference_endpoints(inference_endpoints: list[str]) -> None:
 def _emit_command_error_diagnostics(
     handle: Worker,
     *,
+    backend: Any,
     rank: int,
     command_name: str,
     exc: BaseException,
@@ -935,6 +945,7 @@ def _emit_command_error_diagnostics(
         command_name=command_name,
         error=error,
         traceback_tail=traceback_tail if traceback_tail else None,
+        sender_contract=getattr(backend, "_last_weight_sync_sender_contract", None),
     )
     if rank != 0:
         return
@@ -942,6 +953,9 @@ def _emit_command_error_diagnostics(
     payload = {"status": "error", "error": error}
     if traceback_tail:
         payload["traceback_tail"] = traceback_tail
+    sender_contract = getattr(backend, "_last_weight_sync_sender_contract", None)
+    if sender_contract is not None:
+        payload["sender_contract"] = sender_contract
     try:
         handle.send(payload)
     except Exception:
@@ -1433,6 +1447,7 @@ def _training_loop(
             )
             _emit_command_error_diagnostics(
                 handle,
+                backend=backend,
                 rank=rank,
                 command_name=command_name,
                 exc=exc,
@@ -1547,6 +1562,8 @@ def _summarize_tensor_contract(tensors: dict[str, Any], *, limit: int = 3) -> di
     dtype_counts: dict[str, int] = {}
     dtype_total_bytes: dict[str, int] = {}
     first_tensors: list[dict[str, object]] = []
+    last_tensors: list[dict[str, object]] = []
+    sequence_rows: list[dict[str, object]] = []
     total_bytes = 0
 
     for index, (name, value) in enumerate(tensors.items()):
@@ -1557,18 +1574,29 @@ def _summarize_tensor_contract(tensors: dict[str, Any], *, limit: int = 3) -> di
         total_bytes += nbytes
         dtype_counts[dtype_name] = dtype_counts.get(dtype_name, 0) + 1
         dtype_total_bytes[dtype_name] = dtype_total_bytes.get(dtype_name, 0) + nbytes
+        tensor_row = {
+            "name": name,
+            "shape": [int(dim) for dim in value.shape],
+            "dtype": dtype_name,
+            "device": str(value.device),
+            "numel": int(value.numel()),
+            "element_size": int(value.element_size()),
+            "nbytes": nbytes,
+            "is_contiguous": bool(value.is_contiguous()),
+            "stride": [int(dim) for dim in value.stride()],
+        }
+        sequence_rows.append({
+            "index": index,
+            "name": name,
+            "shape": tensor_row["shape"],
+            "dtype": dtype_name,
+            "nbytes": nbytes,
+        })
         if index < limit:
-            first_tensors.append({
-                "name": name,
-                "shape": [int(dim) for dim in value.shape],
-                "dtype": dtype_name,
-                "device": str(value.device),
-                "numel": int(value.numel()),
-                "element_size": int(value.element_size()),
-                "nbytes": nbytes,
-                "is_contiguous": bool(value.is_contiguous()),
-                "stride": [int(dim) for dim in value.stride()],
-            })
+            first_tensors.append(tensor_row)
+        if len(last_tensors) == limit:
+            last_tensors.pop(0)
+        last_tensors.append(tensor_row)
 
     return {
         "tensor_count": sum(dtype_counts.values()),
@@ -1576,6 +1604,8 @@ def _summarize_tensor_contract(tensors: dict[str, Any], *, limit: int = 3) -> di
         "dtype_counts": dtype_counts,
         "dtype_total_bytes": dtype_total_bytes,
         "first_tensors": first_tensors,
+        "last_tensors": last_tensors,
+        "sequence_hash": _sequence_hash(sequence_rows),
     }
 
 
@@ -2255,6 +2285,18 @@ def _do_sync_weights_nccl(
                     }
                     tensor_contract = _summarize_tensor_contract(state_dict)
                     total_bytes = int(tensor_contract["total_bytes"])
+                    sender_contract = {
+                        "group": request_group_name,
+                        "weight_version": request_weight_version,
+                        "tensor_count": len(param_info),
+                        "total_bytes": total_bytes,
+                        "dtype_counts": tensor_contract["dtype_counts"],
+                        "dtype_total_bytes": tensor_contract["dtype_total_bytes"],
+                        "sequence_hash": tensor_contract["sequence_hash"],
+                        "first_tensors": tensor_contract["first_tensors"],
+                        "last_tensors": tensor_contract["last_tensors"],
+                    }
+                    backend._last_weight_sync_sender_contract = sender_contract
                     logger.info(
                         "weight_sync_megatron_persistent_update_start group=%s tensors=%s total_bytes=%s payload_kind=%s weight_version=%s",
                         request_group_name,
@@ -2283,13 +2325,7 @@ def _do_sync_weights_nccl(
                     )
                     _emit_argus_diag(
                         "weight_sync_megatron_persistent_request_contract",
-                        group=request_group_name,
-                        weight_version=request_weight_version,
-                        tensor_count=len(param_info),
-                        total_bytes=total_bytes,
-                        dtype_counts=tensor_contract["dtype_counts"],
-                        dtype_total_bytes=tensor_contract["dtype_total_bytes"],
-                        first_tensors=tensor_contract["first_tensors"],
+                        **sender_contract,
                     )
 
                     def _update_remote_endpoint(endpoint: str) -> dict[str, object]:

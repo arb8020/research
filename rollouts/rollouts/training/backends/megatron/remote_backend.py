@@ -240,9 +240,25 @@ class MegatronRemoteBackend:
         if response.get("status") == "error":
             error = response.get("error")
             traceback_tail = response.get("traceback_tail")
+            sender_contract = response.get("sender_contract")
+            if sender_contract is not None:
+                logger.error(
+                    "megatron_remote_sender_contract",
+                    extra={
+                        "event": "megatron_remote_sender_contract",
+                        "context": context,
+                        "sender_contract": sender_contract,
+                    },
+                )
             if traceback_tail:
+                message = f"Megatron worker failed during {context}: {error}\n{traceback_tail}"
+                if sender_contract is not None:
+                    message += f"\nsender_contract={json.dumps(sender_contract, sort_keys=True)}"
+                raise RuntimeError(message)
+            if sender_contract is not None:
                 raise RuntimeError(
-                    f"Megatron worker failed during {context}: {error}\n{traceback_tail}"
+                    f"Megatron worker failed during {context}: {error}\n"
+                    f"sender_contract={json.dumps(sender_contract, sort_keys=True)}"
                 )
             raise RuntimeError(f"Megatron worker failed during {context}: {error}")
         return response

@@ -10,6 +10,7 @@ Usage:
 from __future__ import annotations
 
 import functools
+import hashlib
 import importlib.util
 import inspect
 import ipaddress
@@ -249,6 +250,14 @@ def _dtype_element_size(dtype_name: str) -> int | None:
     }.get(dtype_name)
 
 
+def _sequence_hash(rows: list[dict[str, object]]) -> str:
+    digest = hashlib.sha256()
+    for row in rows:
+        digest.update(json.dumps(row, sort_keys=True, separators=(",", ":")).encode("utf-8"))
+        digest.update(b"\n")
+    return digest.hexdigest()
+
+
 def _extract_weight_update_request_summary(
     method_name: str, args: tuple[object, ...], kwargs: dict[str, object]
 ) -> dict[str, object] | None:
@@ -298,6 +307,8 @@ def _extract_weight_update_request_summary(
     dtype_counts: dict[str, int] = {}
     dtype_total_bytes: dict[str, int] = {}
     first_tensors: list[dict[str, object]] = []
+    last_tensors: list[dict[str, object]] = []
+    sequence_rows: list[dict[str, object]] = []
     total_bytes = 0
     for index, (name, shape, dtype_name) in enumerate(zip(names, shapes, dtypes, strict=False)):
         clean_dtype = str(dtype_name)
@@ -311,14 +322,25 @@ def _extract_weight_update_request_summary(
             nbytes = int(numel * element_size)
             total_bytes += nbytes
             dtype_total_bytes[clean_dtype] = dtype_total_bytes.get(clean_dtype, 0) + nbytes
+        tensor_row = {
+            "name": name,
+            "shape": [int(dim) for dim in shape],
+            "dtype": clean_dtype,
+            "element_size": element_size,
+            "nbytes": nbytes,
+        }
+        sequence_rows.append({
+            "index": index,
+            "name": name,
+            "shape": tensor_row["shape"],
+            "dtype": clean_dtype,
+            "nbytes": nbytes,
+        })
         if index < 3:
-            first_tensors.append({
-                "name": name,
-                "shape": [int(dim) for dim in shape],
-                "dtype": clean_dtype,
-                "element_size": element_size,
-                "nbytes": nbytes,
-            })
+            first_tensors.append(tensor_row)
+        if len(last_tensors) == 3:
+            last_tensors.pop(0)
+        last_tensors.append(tensor_row)
 
     return {
         "group_name": group_name,
@@ -328,6 +350,8 @@ def _extract_weight_update_request_summary(
         "dtype_total_bytes": dtype_total_bytes,
         "total_bytes": total_bytes,
         "first_tensors": first_tensors,
+        "last_tensors": last_tensors,
+        "sequence_hash": _sequence_hash(sequence_rows),
     }
 
 
