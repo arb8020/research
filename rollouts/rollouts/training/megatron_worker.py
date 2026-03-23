@@ -1791,6 +1791,9 @@ def _do_sync_weights_nccl(
     witness: bool = False,
 ) -> None:
     """NCCL sync path for inference updates."""
+    import concurrent.futures
+
+    import requests
     import torch
     import torch.distributed as dist
 
@@ -1891,6 +1894,7 @@ def _do_sync_weights_nccl(
     isolated_master_addr: str | None = None
     isolated_master_port: int | None = None
     isolated_master_port_source: str | None = None
+    metadata_executor: concurrent.futures.ThreadPoolExecutor | None = None
     if witness:
         resolved_host_ip, _ = _resolve_local_host_ip()
         isolated_master_addr = resolved_host_ip
@@ -1898,6 +1902,10 @@ def _do_sync_weights_nccl(
             int(getattr(backend, "_nccl_master_port", 29550))
         )
         request_group_name = f"weight_sync_witness_{isolated_master_port}"
+    else:
+        metadata_executor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=max(1, len(inference_endpoints))
+        )
     try:
         try:
             if witness:
@@ -1948,8 +1956,9 @@ def _do_sync_weights_nccl(
             else:
                 futures = []
                 for endpoint in inference_endpoints:
+                    assert metadata_executor is not None
                     futures.append(
-                        executor.submit(
+                        metadata_executor.submit(
                             requests.post,
                             f"{endpoint}/update_weights_from_distributed",
                             json={
@@ -1986,6 +1995,8 @@ def _do_sync_weights_nccl(
         except Exception as exc:
             sync_error = exc
     finally:
+        if metadata_executor is not None:
+            metadata_executor.shutdown(wait=False)
         try:
             _resume_inference_endpoints(inference_endpoints)
         except Exception:
