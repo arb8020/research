@@ -287,10 +287,26 @@ class MegatronRemoteBackend:
         if self._initialized:
             return
 
-        logger.info("Initializing %d Megatron workers...", len(self.workers))
+        def _log_init_event(event: str, **data: Any) -> None:
+            logger.info(
+                event,
+                extra={
+                    "event": event,
+                    "num_workers": len(self.workers),
+                    **data,
+                },
+            )
+
+        _log_init_event("megatron_remote_initialize_start")
 
         # Send init command to all workers
+        _log_init_event("megatron_remote_initialize_send_start")
         for rank, worker in enumerate(self.workers):
+            _log_init_event(
+                "megatron_remote_initialize_send_rank",
+                rank=rank,
+                worker_pid=getattr(worker, "pid", None),
+            )
             worker.send({
                 "cmd": "init",
                 "rank": rank,
@@ -330,14 +346,17 @@ class MegatronRemoteBackend:
                     "cuda_device_ids": self.config.cuda_device_ids,
                 },
             })
+        _log_init_event("megatron_remote_initialize_send_complete")
 
         # Wait for rank 0 to confirm initialization
+        _log_init_event("megatron_remote_initialize_wait_start")
         response = self._recv_response_polling(
             self.workers[0],
             context="initialize",
             max_size=_CONTROL_MESSAGE_MAX_BYTES,
             timeout_sec=_INITIALIZE_TIMEOUT_SEC,
         )
+        _log_init_event("megatron_remote_initialize_wait_ready", status=response.get("status"))
         assert response["status"] == "initialized", f"Init failed: {response}"
 
         initialized_step = response.get("step")
@@ -345,9 +364,9 @@ class MegatronRemoteBackend:
             self._step = int(initialized_step)
         else:
             self._restore_local_step_from_checkpoint()
-        logger.info("Megatron remote initialize restored step=%s", self._step)
+        _log_init_event("megatron_remote_initialize_step_restored", step=self._step)
         self._initialized = True
-        logger.info("All workers initialized")
+        _log_init_event("megatron_remote_initialize_ok", step=self._step)
 
     def forward_backward(
         self,
