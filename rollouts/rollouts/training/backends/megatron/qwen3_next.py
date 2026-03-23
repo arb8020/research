@@ -16,6 +16,7 @@ from transformers import AutoConfig
 from transformers.activations import ACT2FN
 
 from .hf_attention import HuggingfaceAttention
+from .qwen import _transformer_engine_available
 
 try:
     from fla.modules import FusedRMSNormGated, ShortConvolution
@@ -181,7 +182,7 @@ def get_qwen3_next_spec(args, config, vp_stage):
     if not args.num_experts:
         config.moe_layer_freq = [0] * config.num_layers
 
-    kwargs = {"use_transformer_engine": True}
+    kwargs = {"use_transformer_engine": _transformer_engine_available()}
     if vp_stage is not None:
         kwargs["vp_stage"] = vp_stage
     transformer_layer_spec = get_gpt_decoder_block_spec(config, **kwargs)

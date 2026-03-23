@@ -8,6 +8,8 @@ from mbridge.core import register_model
 from mbridge.models import Qwen2MoEBridge
 from megatron.core.models.gpt.gpt_layer_specs import get_gpt_mtp_block_spec
 
+from rollouts.training.backends.megatron.qwen import _transformer_engine_available
+
 
 @register_model("qwen3_next")
 class Qwen3NextBridge(Qwen2MoEBridge):
@@ -51,7 +53,7 @@ class Qwen3NextBridge(Qwen2MoEBridge):
             mtp_block_spec = get_gpt_mtp_block_spec(
                 self.config,
                 transformer_layer_spec,
-                use_transformer_engine=True,
+                use_transformer_engine=_transformer_engine_available(),
             )
             ret["mtp_block_spec"] = mtp_block_spec
         return ret
@@ -139,6 +141,7 @@ class Qwen3NextBridge(Qwen2MoEBridge):
         mtp_args = {}
         if hasattr(self.hf_config, "num_nextn_predict_layers"):
             mtp_args["mtp_num_layers"] = self.hf_config.num_nextn_predict_layers
+        use_transformer_engine = _transformer_engine_available()
 
         return self._build_base_config(
             use_cpu_initialization=False,
@@ -150,7 +153,7 @@ class Qwen3NextBridge(Qwen2MoEBridge):
             moe_router_load_balancing_type="none",
             moe_grouped_gemm=True,
             moe_router_score_function="softmax",
-            persist_layer_norm=True,
+            persist_layer_norm=use_transformer_engine,
             bias_activation_fusion=True,
             bias_dropout_fusion=True,
             moe_router_pre_softmax=False,
