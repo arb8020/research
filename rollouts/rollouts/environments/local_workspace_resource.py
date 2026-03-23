@@ -25,6 +25,7 @@ Usage pattern (following the Environment.deserialize convention):
 
 from __future__ import annotations
 
+import json
 import shutil
 import subprocess
 import tempfile
@@ -35,6 +36,7 @@ from typing import Any
 import trio
 
 from .resources import CommandExecutionResult
+from .runtime_probe import build_gpu_runtime_probe_script
 
 
 @dataclass
@@ -55,6 +57,7 @@ class LocalWorkspaceResource:
     source_dir: Path
     _working_dir: str = field(default="", repr=False)
     _tempdir: str | None = field(default=None, repr=False)
+    _runtime_description: dict[str, Any] | None = field(default=None, repr=False)
 
     @classmethod
     async def create(cls, source_dir: Path) -> LocalWorkspaceResource:
@@ -164,15 +167,62 @@ class LocalWorkspaceResource:
 
     def stats(self) -> dict[str, Any]:
         return {
-            "kind": "local_workspace",
+            "kind": "local_workspace_resource",
             "source_dir": str(self.source_dir),
             "working_dir": self._working_dir,
             "started": self._tempdir is not None,
+            "runtime": self._runtime_description,
         }
 
-    def describe_runtime(self) -> dict[str, Any]:
+    async def describe_runtime(self) -> dict[str, Any]:
+        script = build_gpu_runtime_probe_script()
+        command = f"""
+python3 << 'RUNTIME_PROBE_EOF'
+{script}
+RUNTIME_PROBE_EOF
+"""
+        result = await self.run(
+            command,
+            cwd=self.working_dir,
+            timeout=60.0,
+        )
+        if result.returncode != 0:
+            self._runtime_description = {
+                "runtime_ok": False,
+                "error": result.stderr or result.stdout or "runtime probe failed",
+                "errors": [result.stderr or result.stdout or "runtime probe failed"],
+                "kind": "local_workspace_resource",
+                "source_dir": str(self.source_dir),
+                "working_dir": self._working_dir,
+            }
+            return self._runtime_description
+        try:
+            runtime = json.loads(result.stdout)
+        except json.JSONDecodeError:
+            runtime = {
+                "runtime_ok": False,
+                "error": f"invalid runtime probe output: {result.stdout}",
+                "errors": [result.stderr] if result.stderr else [],
+            }
+        runtime.setdefault("kind", "local_workspace_resource")
+        runtime.setdefault("source_dir", str(self.source_dir))
+        runtime.setdefault("working_dir", self._working_dir)
+        self._runtime_description = runtime
+        return runtime
+
+    def serialize_state(self) -> dict[str, Any]:
         return {
-            "kind": "local",
+            "kind": "local_workspace_resource",
             "source_dir": str(self.source_dir),
             "working_dir": self._working_dir,
+            "tempdir": self._tempdir,
+            "runtime": self._runtime_description,
         }
+
+    @classmethod
+    def deserialize_state(cls, data: dict[str, Any]) -> LocalWorkspaceResource:
+        resource = cls(source_dir=Path(data["source_dir"]))
+        resource._working_dir = str(data.get("working_dir", ""))
+        resource._tempdir = data.get("tempdir")
+        resource._runtime_description = data.get("runtime")
+        return resource
