@@ -1774,7 +1774,6 @@ def _build_argus_local_process_spec(
         IMAGE_VENV_DIR,
         IMAGE_VENV_PYTHON,
         REPO_ROOT,
-        sandbox_runtime_artifact_tail_python,
         sandbox_runtime_diag_python,
         sandbox_runtime_supervisor_python,
     )
@@ -1847,7 +1846,6 @@ def _build_argus_local_process_spec(
             workspace,
             image_python,
             sandbox_runtime_diag_python(),
-            sandbox_runtime_artifact_tail_python(),
             remote_config_path,
         ),
         cwd=workspace,

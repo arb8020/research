@@ -345,6 +345,7 @@ import sys
 import time
 
 ARGUS_DIAG_EVENT_SENTINEL = "__ARGUS_DIAG__"
+WATCH_ARTIFACTS = ("training.jsonl", "metrics.jsonl")
 
 
 def emit(event: str, **data: object) -> None:
@@ -426,26 +427,118 @@ def terminate_process(proc: subprocess.Popen[bytes] | None) -> None:
         pass
 
 
+def _project_training_event(data: dict[str, object]) -> None:
+    if data.get("event") != "step_complete":
+        return
+    emit(
+        "step_complete",
+        projected_from_artifact=True,
+        projection_source="training.jsonl",
+        step=data.get("step"),
+        mean_reward=data.get("mean_reward"),
+        pg_loss=data.get("pg_loss"),
+        entropy=data.get("entropy"),
+        num_samples=data.get("num_samples"),
+        num_groups=data.get("num_groups"),
+        step_total_ms=data.get("step_total_ms"),
+        rollout_step_count=data.get("rollout_step_count"),
+        gpu_allocated_gb=data.get("gpu_allocated_gb"),
+        gpu_reserved_gb=data.get("gpu_reserved_gb"),
+        ram_gb=data.get("ram_gb"),
+    )
+
+
+def _project_metrics_event(data: dict[str, object]) -> None:
+    emit(
+        "metrics_update",
+        projected_from_artifact=True,
+        projection_source="metrics.jsonl",
+        step=data.get("step"),
+        mean_reward=data.get("mean_reward"),
+        loss=data.get("loss"),
+        grad_norm=data.get("grad_norm"),
+        pg_loss=data.get("pg_loss"),
+        entropy=data.get("entropy"),
+        rollout_step_count=data.get("rollout_step_count"),
+        rollout_samples_generated=data.get("rollout_samples_generated"),
+        timestamp=data.get("timestamp"),
+    )
+
+
+def _consume_artifact_file(path: str, state: dict[str, object]) -> None:
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            f.seek(int(state["offset"]))
+            chunk = f.read()
+            state["offset"] = f.tell()
+    except FileNotFoundError:
+        return
+
+    if not chunk:
+        return
+
+    buffer = f"{state['buffer']}{chunk}"
+    lines = buffer.splitlines(keepends=True)
+    if lines and not lines[-1].endswith("\n"):
+        state["buffer"] = lines.pop()
+    else:
+        state["buffer"] = ""
+
+    for raw_line in lines:
+        line = raw_line.strip()
+        if not line:
+            continue
+        try:
+            parsed = json.loads(line)
+        except Exception as exc:
+            emit(
+                "remote_artifact_parse_failed",
+                file=os.path.basename(path),
+                error=f"{type(exc).__name__}: {exc}",
+                line_preview=line[:400],
+            )
+            continue
+        if not isinstance(parsed, dict):
+            continue
+        if path.endswith("/training.jsonl"):
+            _project_training_event(parsed)
+        elif path.endswith("/metrics.jsonl"):
+            _project_metrics_event(parsed)
+
+
+def _poll_artifacts(output_dir: str, state: dict[str, dict[str, object]]) -> None:
+    for name in WATCH_ARTIFACTS:
+        path = os.path.join(output_dir, name)
+        file_state = state[name]
+        if os.path.exists(path) and not bool(file_state["ready_announced"]):
+            file_state["ready_announced"] = True
+            emit(
+                "remote_artifact_file_ready",
+                file=name,
+                output_dir=output_dir,
+            )
+        _consume_artifact_file(path, file_state)
+
+
 def main() -> int:
     workspace = sys.argv[1]
     image_python = sys.argv[2]
     diag_python = sys.argv[3]
-    artifact_tail_python = sys.argv[4]
-    config_rel = sys.argv[5]
+    config_rel = sys.argv[4]
     child = None
     diag = None
-    artifact_tail = None
     started_at = time.monotonic()
     env = os.environ.copy()
     status_path = env.get("ARGUS_SUPERVISOR_STATUS_FILE")
     output_dir = env.get("ROLLOUTS_OUTPUT_DIR")
+    artifact_output_dir = None
+    artifact_state = None
 
     def _handle_signal(signum, _frame):
         emit("remote_supervisor_signal", signum=signum)
         write_status(status_path, {"event": "remote_supervisor_signal", "signum": signum})
         terminate_process(child)
         terminate_process(diag)
-        terminate_process(artifact_tail)
         raise SystemExit(128 + signum)
 
     signal.signal(signal.SIGTERM, _handle_signal)
@@ -477,21 +570,35 @@ def main() -> int:
             diag_pid=diag.pid,
         )
         if output_dir:
-            output_path = output_dir
-            if not os.path.isabs(output_path):
-                output_path = os.path.join(workspace, output_path)
-            artifact_tail = subprocess.Popen(
-                [image_python, "-u", "-c", artifact_tail_python, output_path, "0.5"],
-                cwd=workspace,
-                env=env,
-            )
+            artifact_output_dir = output_dir
+            if not os.path.isabs(artifact_output_dir):
+                artifact_output_dir = os.path.join(workspace, artifact_output_dir)
+            artifact_state = {
+                name: {"offset": 0, "buffer": "", "ready_announced": False}
+                for name in WATCH_ARTIFACTS
+            }
             emit(
                 "remote_supervisor_artifact_tail_started",
                 child_pid=child.pid,
-                artifact_pid=artifact_tail.pid,
-                output_dir=output_path,
+                output_dir=artifact_output_dir,
+                projection_mode="supervisor_poll",
             )
-        rc = child.wait()
+            emit(
+                "remote_artifact_tail_started",
+                output_dir=artifact_output_dir,
+                files=list(WATCH_ARTIFACTS),
+                interval_s=0.5,
+                projected_by="supervisor",
+            )
+        while True:
+            if artifact_output_dir is not None and artifact_state is not None:
+                _poll_artifacts(artifact_output_dir, artifact_state)
+            rc = child.poll()
+            if rc is not None:
+                break
+            time.sleep(0.5)
+        if artifact_output_dir is not None and artifact_state is not None:
+            _poll_artifacts(artifact_output_dir, artifact_state)
         emit(
             "remote_supervisor_child_exit",
             child_pid=child.pid,
@@ -517,17 +624,11 @@ def main() -> int:
                 diag.wait(timeout=3.0)
             except subprocess.TimeoutExpired:
                 terminate_process(diag)
-        if artifact_tail is not None and artifact_tail.poll() is None:
-            try:
-                artifact_tail.wait(timeout=3.0)
-            except subprocess.TimeoutExpired:
-                terminate_process(artifact_tail)
         if rc < 0:
             return 128 + (-rc)
         return rc
     finally:
         terminate_process(diag)
-        terminate_process(artifact_tail)
 
 
 if __name__ == "__main__":
