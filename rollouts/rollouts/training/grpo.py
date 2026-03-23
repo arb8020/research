@@ -1311,7 +1311,6 @@ async def _grpo_train_async(
             "megatron_worker_spawn_start",
             **base_run_context,
             num_workers=num_trainer_gpus,
-            trainer_cuda_device_ids=list(config.trainer.cuda_device_ids),
         )
 
         lowering = _megatron_lowering(config)
@@ -1346,7 +1345,6 @@ async def _grpo_train_async(
             "megatron_worker_spawn_ok",
             **base_run_context,
             num_workers=len(megatron_workers),
-            trainer_cuda_device_ids=list(config.trainer.cuda_device_ids),
         )
 
     preflight_backend: Any | None = None
@@ -1846,7 +1844,6 @@ async def _grpo_train_async(
         runtime_run_logger.event(
             "rollout_loop_started",
             **run_context,
-            pipeline_mode=config.checkpoint.pipeline_mode,
             staleness_max_lag=staleness_policy.max_version_lag,
             require_exact_version=staleness_policy.require_exact_version,
             publish_mode=weight_visibility_policy.publish_mode,
