@@ -10,8 +10,10 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import shlex
 import subprocess
+import tarfile
 import tempfile
 import threading
 import time
@@ -258,6 +260,7 @@ class ModalExecutionRequest:
     keep_alive: bool = False
     cleanup_scope: str = "run"
     run_name: str | None = None
+    extra_source_roots: tuple[str, ...] = ()
     model_name: str | None = None
     pruning_recipe: str | None = None
     run_logger: Any = None
@@ -279,6 +282,7 @@ class ModalExecutionSession:
 
     sandbox_handle: ModalSandboxHandle
     local_root: Path
+    extra_source_roots: tuple[Path, ...] = ()
     backend: str = "modal"
     current_workspace_handle: WorkspaceHandle | None = None
 
@@ -291,6 +295,7 @@ class ModalExecutionSession:
         workspace = await materialize_modal_workspace(
             self.sandbox_handle,
             self.local_root,
+            extra_source_roots=self.extra_source_roots,
             emit=emit,
         )
         return WorkspaceHandle(
@@ -1187,11 +1192,17 @@ async def materialize_modal_workspace(
     sandbox: ModalSandboxHandle,
     local_root: Path,
     *,
+    extra_source_roots: tuple[Path, ...] = (),
     emit: Callable[[str], None] | None = None,
 ) -> WorkspaceHandle:
     """Materialize the current repo into a Modal sandbox workspace."""
 
-    workspace = await _sync_code_to_sandbox(sandbox.sandbox, local_root, emit=emit)
+    workspace = await _sync_code_to_sandbox(
+        sandbox.sandbox,
+        local_root,
+        extra_source_roots=extra_source_roots,
+        emit=emit,
+    )
     return WorkspaceHandle(root=workspace, backend="modal")
 
 
@@ -1326,6 +1337,7 @@ async def _sync_code_to_sandbox(
     sandbox: Any,
     local_root: Path,
     *,
+    extra_source_roots: tuple[Path, ...] = (),
     emit: Callable[[str], None] | None = None,
 ) -> str:
     """Sync the local repo into a Modal sandbox workspace via a git bundle."""
@@ -1336,6 +1348,29 @@ async def _sync_code_to_sandbox(
     def _emit_progress(stage: str, **data: Any) -> None:
         if emit is not None:
             emit("modal_repo_sync_progress", stage=stage, **data)
+
+    def _sanitize_mount_name(name: str) -> str:
+        cleaned = re.sub(r"[^A-Za-z0-9._-]+", "-", name).strip("-")
+        return cleaned or "project"
+
+    def _remote_extra_mounts() -> list[tuple[Path, str]]:
+        mounts: list[tuple[Path, str]] = []
+        used_names: set[str] = set()
+        for index, source_root in enumerate(extra_source_roots, start=1):
+            source_name = _sanitize_mount_name(source_root.name)
+            mount_name = source_name
+            if mount_name in used_names:
+                mount_name = f"{source_name}-{index}"
+            used_names.add(mount_name)
+            mounts.append((source_root, f"/workspace/external/{mount_name}"))
+        return mounts
+
+    def _tar_filter(info: tarfile.TarInfo) -> tarfile.TarInfo | None:
+        path = Path(info.name)
+        excluded = {".git", ".venv", "__pycache__", ".pytest_cache", ".mypy_cache", "results"}
+        if any(part in excluded for part in path.parts):
+            return None
+        return info
 
     def _sync() -> None:
         with tempfile.NamedTemporaryFile(suffix=".bundle", delete=False) as f:
@@ -1415,6 +1450,62 @@ async def _sync_code_to_sandbox(
 
             logger.info("Code synced to %s", workspace)
             _emit_progress("sync_finished", workspace=workspace, commit=commit)
+
+            extra_mounts = _remote_extra_mounts()
+            if extra_mounts:
+                exec_modal_command_sync(sandbox, "mkdir -p /workspace/external", timeout=30)
+            for source_root, remote_root in extra_mounts:
+                with tempfile.NamedTemporaryFile(suffix=".tar.gz", delete=False) as extra_file:
+                    archive_path = extra_file.name
+
+                remote_archive = f"/tmp/{Path(remote_root).name}.tar.gz"
+                try:
+                    _emit_progress(
+                        "external_project_archive_start",
+                        local_root=str(source_root),
+                        remote_root=remote_root,
+                    )
+                    with tarfile.open(archive_path, "w:gz") as archive:
+                        archive.add(
+                            str(source_root),
+                            arcname=Path(remote_root).name,
+                            filter=_tar_filter,
+                        )
+                    archive_size = os.path.getsize(archive_path)
+                    _emit_progress(
+                        "external_project_archive_finished",
+                        local_root=str(source_root),
+                        remote_root=remote_root,
+                        archive_size_mb=round(archive_size / 1024 / 1024, 3),
+                    )
+
+                    with open(archive_path, "rb") as archive_handle:
+                        remote_file = sandbox.open(remote_archive, "wb")
+                        remote_file.write(archive_handle.read())
+                        remote_file.close()
+
+                    _emit_progress(
+                        "external_project_upload_finished",
+                        local_root=str(source_root),
+                        remote_root=remote_root,
+                    )
+                    exec_modal_command_sync(
+                        sandbox,
+                        f"mkdir -p {shlex.quote(str(Path(remote_root).parent))} && "
+                        f"tar -xzf {shlex.quote(remote_archive)} -C "
+                        f"{shlex.quote(str(Path(remote_root).parent))}",
+                        timeout=120,
+                    )
+                    _emit_progress(
+                        "external_project_extract_finished",
+                        local_root=str(source_root),
+                        remote_root=remote_root,
+                    )
+                finally:
+                    try:
+                        os.unlink(archive_path)
+                    except FileNotFoundError:
+                        pass
         finally:
             os.unlink(bundle_path)
 
@@ -1665,6 +1756,7 @@ def _build_argus_local_process_spec(
     *,
     workspace: str,
     config_path: str,
+    extra_source_roots: tuple[str, ...] = (),
     run_name: str,
     deps: Any,
     gpu_type: str,
@@ -1682,12 +1774,45 @@ def _build_argus_local_process_spec(
         IMAGE_VENV_DIR,
         IMAGE_VENV_PYTHON,
         REPO_ROOT,
+        sandbox_runtime_artifact_tail_python,
         sandbox_runtime_diag_python,
         sandbox_runtime_supervisor_python,
     )
 
+    def _sanitize_mount_name(name: str) -> str:
+        cleaned = re.sub(r"[^A-Za-z0-9._-]+", "-", name).strip("-")
+        return cleaned or "project"
+
+    remote_extra_roots: list[tuple[Path, str]] = []
+    used_names: set[str] = set()
+    for index, source_root in enumerate(extra_source_roots, start=1):
+        source_path = Path(source_root).resolve()
+        mount_name = _sanitize_mount_name(source_path.name)
+        if mount_name in used_names:
+            mount_name = f"{mount_name}-{index}"
+        used_names.add(mount_name)
+        remote_extra_roots.append((source_path, f"/workspace/external/{mount_name}"))
+
     config_p = Path(config_path)
-    config_rel = config_p.relative_to(REPO_ROOT) if config_p.is_absolute() else config_p
+    if config_p.is_absolute():
+        try:
+            config_rel = config_p.relative_to(REPO_ROOT)
+            remote_config_path = str(config_rel)
+        except ValueError:
+            remote_config_path = None
+            for local_root, remote_root in remote_extra_roots:
+                try:
+                    config_rel = config_p.relative_to(local_root)
+                except ValueError:
+                    continue
+                remote_config_path = f"{remote_root}/{config_rel.as_posix()}"
+                break
+            if remote_config_path is None:
+                raise ValueError(
+                    f"Modal process spec cannot map config path outside staged sources: {config_path}"
+                )
+    else:
+        remote_config_path = str(config_p)
 
     image_python = IMAGE_VENV_PYTHON
     image_path_prefix = f"{IMAGE_VENV_DIR}/bin:/root/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
@@ -1699,10 +1824,13 @@ def _build_argus_local_process_spec(
                 "/root/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
             )
 
+    pythonpath_entries = [workspace, "/workspace/research", "/root/Megatron-LM", "/root"]
+    pythonpath_entries.extend(remote_root for _, remote_root in remote_extra_roots)
+
     env = {
         "PYTHONUNBUFFERED": "1",
         "PATH": image_path_prefix,
-        "PYTHONPATH": f"{workspace}:/workspace/research:/root/Megatron-LM:/root",
+        "PYTHONPATH": ":".join(dict.fromkeys(pythonpath_entries)),
         "ARGUS_EMIT_STARTUP_SENTINEL": "1",
         "ARGUS_RUN_EVENT_STREAM": "1",
         "ARGUS_SUPERVISOR_STATUS_FILE": f"{workspace}/results/rl/{run_name}/modal_supervisor_status.json",
@@ -1719,7 +1847,8 @@ def _build_argus_local_process_spec(
             workspace,
             image_python,
             sandbox_runtime_diag_python(),
-            str(config_rel),
+            sandbox_runtime_artifact_tail_python(),
+            remote_config_path,
         ),
         cwd=workspace,
         env=env,
@@ -1778,7 +1907,11 @@ async def run_modal_request(request: ModalExecutionRequest) -> dict[str, Any]:
     with modal.enable_output():
         async with trio_asyncio.open_loop():
             sandbox_handle = await create_modal_sandbox(request)
-            session = ModalExecutionSession(sandbox_handle=sandbox_handle, local_root=REPO_ROOT)
+            session = ModalExecutionSession(
+                sandbox_handle=sandbox_handle,
+                local_root=REPO_ROOT,
+                extra_source_roots=tuple(Path(root) for root in request.extra_source_roots),
+            )
             sandbox_id = sandbox_handle.sandbox_id
             emit("modal_sandbox_created", sandbox_id=sandbox_id)
 
@@ -1837,6 +1970,7 @@ async def run_modal_request(request: ModalExecutionRequest) -> dict[str, Any]:
                     _build_argus_local_process_spec(
                         workspace=workspace.root,
                         config_path=request.config_path,
+                        extra_source_roots=request.extra_source_roots,
                         run_name=run_name,
                         deps=request.runtime.deps,
                         gpu_type=request.runtime.gpu_type,

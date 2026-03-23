@@ -196,6 +196,128 @@ if __name__ == "__main__":
 """
 
 
+def sandbox_runtime_artifact_tail_python() -> str:
+    """Return a small sibling-process monitor for sandbox-local JSONL artifacts.
+
+    This is a control-plane bridge, not a new source of truth. The workload still
+    owns its local `training.jsonl` / `metrics.jsonl`; this helper only projects
+    selected structured progress back to the parent run journal while remote
+    stdout/stderr remain sparse.
+    """
+    return r"""
+import json
+import os
+import pathlib
+import sys
+import time
+
+SENTINEL = "__ARGUS_DIAG__"
+WATCH_FILES = ("training.jsonl", "metrics.jsonl")
+
+
+def emit(event: str, **data: object) -> None:
+    payload = {"event": event, **data}
+    sys.stderr.write(f"{SENTINEL}{json.dumps(payload, sort_keys=True)}\n")
+    sys.stderr.flush()
+
+
+def _project_training_event(data: dict[str, object]) -> None:
+    event_name = data.get("event")
+    if not isinstance(event_name, str) or not event_name:
+        return
+    payload = dict(data)
+    payload.pop("event", None)
+    emit(
+        event_name,
+        projected_from_artifact=True,
+        projection_source="training.jsonl",
+        **payload,
+    )
+
+
+def _project_metrics_event(data: dict[str, object]) -> None:
+    emit(
+        "metrics_update",
+        projected_from_artifact=True,
+        projection_source="metrics.jsonl",
+        **data,
+    )
+
+
+def _consume_file(path: pathlib.Path, state: dict[str, object]) -> None:
+    try:
+        with path.open("r", encoding="utf-8", errors="replace") as f:
+            f.seek(int(state["offset"]))
+            chunk = f.read()
+            state["offset"] = f.tell()
+    except FileNotFoundError:
+        return
+
+    if not chunk:
+        return
+
+    buffer = f"{state['buffer']}{chunk}"
+    lines = buffer.splitlines(keepends=True)
+    if lines and not lines[-1].endswith("\n"):
+        state["buffer"] = lines.pop()
+    else:
+        state["buffer"] = ""
+
+    for raw_line in lines:
+        line = raw_line.strip()
+        if not line:
+            continue
+        try:
+            parsed = json.loads(line)
+        except Exception as exc:
+            emit(
+                "remote_artifact_parse_failed",
+                file=path.name,
+                error=f"{type(exc).__name__}: {exc}",
+                line_preview=line[:400],
+            )
+            continue
+        if not isinstance(parsed, dict):
+            continue
+        if path.name == "training.jsonl":
+            _project_training_event(parsed)
+        elif path.name == "metrics.jsonl":
+            _project_metrics_event(parsed)
+
+
+def main() -> int:
+    output_dir = pathlib.Path(sys.argv[1])
+    interval_s = float(sys.argv[2])
+    state = {
+        name: {"offset": 0, "buffer": "", "ready_announced": False}
+        for name in WATCH_FILES
+    }
+    emit(
+        "remote_artifact_tail_started",
+        output_dir=str(output_dir),
+        files=list(WATCH_FILES),
+        interval_s=interval_s,
+    )
+    while True:
+        for name in WATCH_FILES:
+            path = output_dir / name
+            file_state = state[name]
+            if path.exists() and not bool(file_state["ready_announced"]):
+                file_state["ready_announced"] = True
+                emit(
+                    "remote_artifact_file_ready",
+                    file=name,
+                    output_dir=str(output_dir),
+                )
+            _consume_file(path, file_state)
+        time.sleep(interval_s)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+"""
+
+
 def sandbox_runtime_supervisor_python() -> str:
     """Return the supervisor for the remote workload process tree."""
     return r"""
@@ -292,18 +414,22 @@ def main() -> int:
     workspace = sys.argv[1]
     image_python = sys.argv[2]
     diag_python = sys.argv[3]
-    config_rel = sys.argv[4]
+    artifact_tail_python = sys.argv[4]
+    config_rel = sys.argv[5]
     child = None
     diag = None
+    artifact_tail = None
     started_at = time.monotonic()
     env = os.environ.copy()
     status_path = env.get("ARGUS_SUPERVISOR_STATUS_FILE")
+    output_dir = env.get("ROLLOUTS_OUTPUT_DIR")
 
     def _handle_signal(signum, _frame):
         emit("remote_supervisor_signal", signum=signum)
         write_status(status_path, {"event": "remote_supervisor_signal", "signum": signum})
         terminate_process(child)
         terminate_process(diag)
+        terminate_process(artifact_tail)
         raise SystemExit(128 + signum)
 
     signal.signal(signal.SIGTERM, _handle_signal)
@@ -334,6 +460,21 @@ def main() -> int:
             child_pid=child.pid,
             diag_pid=diag.pid,
         )
+        if output_dir:
+            output_path = output_dir
+            if not os.path.isabs(output_path):
+                output_path = os.path.join(workspace, output_path)
+            artifact_tail = subprocess.Popen(
+                [image_python, "-u", "-c", artifact_tail_python, output_path, "0.5"],
+                cwd=workspace,
+                env=env,
+            )
+            emit(
+                "remote_supervisor_artifact_tail_started",
+                child_pid=child.pid,
+                artifact_pid=artifact_tail.pid,
+                output_dir=output_path,
+            )
         rc = child.wait()
         emit(
             "remote_supervisor_child_exit",
@@ -360,11 +501,17 @@ def main() -> int:
                 diag.wait(timeout=3.0)
             except subprocess.TimeoutExpired:
                 terminate_process(diag)
+        if artifact_tail is not None and artifact_tail.poll() is None:
+            try:
+                artifact_tail.wait(timeout=3.0)
+            except subprocess.TimeoutExpired:
+                terminate_process(artifact_tail)
         if rc < 0:
             return 128 + (-rc)
         return rc
     finally:
         terminate_process(diag)
+        terminate_process(artifact_tail)
 
 
 if __name__ == "__main__":
