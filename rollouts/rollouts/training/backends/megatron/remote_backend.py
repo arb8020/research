@@ -19,10 +19,12 @@ Architecture:
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import select
 import signal
+import sys
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -124,7 +126,7 @@ class MegatronRemoteBackend:
     workers: list[Worker]
     config: MegatronRemoteConfig
     checkpoint_dir: Path = field(default_factory=lambda: Path("./checkpoints"))
-    phase_callback: Callable[[str], None] | None = None
+    phase_callback: Callable[..., None] | None = None
     _nccl_inference_endpoints: list[str] = field(default_factory=list, init=False)
     _nccl_initialized: bool = field(default=False, init=False)
     weight_version: int = 0
@@ -166,6 +168,10 @@ class MegatronRemoteBackend:
                 continue
             snapshot.append({"pid": pid, "alive": alive})
         return snapshot
+
+    def _emit_phase(self, event: str, **data: Any) -> None:
+        if callable(self.phase_callback):
+            self.phase_callback(event, **data)
 
     def _abort_workers(self, *, reason: str, context: str) -> None:
         before = self._worker_snapshot()
@@ -242,23 +248,31 @@ class MegatronRemoteBackend:
     ) -> dict[str, Any]:
         start = time.monotonic()
         next_progress_log = start + _RESPONSE_PROGRESS_LOG_INTERVAL_SEC
-        if callable(self.phase_callback):
-            self.phase_callback("megatron_remote_response_wait_start")
+        worker_snapshot = self._worker_snapshot()
+        self._emit_phase(
+            "megatron_remote_response_wait_start",
+            context=context,
+            timeout_sec=timeout_sec,
+            workers=worker_snapshot,
+        )
         logger.info(
             "megatron_remote_response_wait_start",
             extra={
                 "event": "megatron_remote_response_wait_start",
                 "context": context,
                 "timeout_sec": timeout_sec,
-                "workers": self._worker_snapshot(),
+                "workers": worker_snapshot,
             },
         )
         while True:
             ready, _, _ = select.select([worker], [], [], _RESPONSE_POLL_INTERVAL_SEC)
             if ready:
                 elapsed = time.monotonic() - start
-                if callable(self.phase_callback):
-                    self.phase_callback("megatron_remote_response_wait_ready")
+                self._emit_phase(
+                    "megatron_remote_response_wait_ready",
+                    context=context,
+                    elapsed_sec=round(elapsed, 3),
+                )
                 logger.info(
                     "megatron_remote_response_wait_ready",
                     extra={
@@ -272,8 +286,14 @@ class MegatronRemoteBackend:
             now = time.monotonic()
             elapsed = now - start
             if now >= next_progress_log:
-                if callable(self.phase_callback):
-                    self.phase_callback("megatron_remote_response_wait_progress")
+                worker_snapshot = self._worker_snapshot()
+                self._emit_phase(
+                    "megatron_remote_response_wait_progress",
+                    context=context,
+                    elapsed_sec=round(elapsed, 3),
+                    timeout_sec=timeout_sec,
+                    workers=worker_snapshot,
+                )
                 logger.warning(
                     "megatron_remote_response_wait_progress",
                     extra={
@@ -281,7 +301,7 @@ class MegatronRemoteBackend:
                         "context": context,
                         "elapsed_sec": round(elapsed, 3),
                         "timeout_sec": timeout_sec,
-                        "workers": self._worker_snapshot(),
+                        "workers": worker_snapshot,
                     },
                 )
                 next_progress_log = now + _RESPONSE_PROGRESS_LOG_INTERVAL_SEC
@@ -313,8 +333,7 @@ class MegatronRemoteBackend:
             return
 
         def _log_init_event(event: str, **data: Any) -> None:
-            if callable(self.phase_callback):
-                self.phase_callback(event)
+            self._emit_phase(event, **data)
             logger.info(
                 event,
                 extra={
@@ -700,14 +719,37 @@ def spawn_megatron_workers(
     # Import work function path
     work_fn_module = "rollouts.training.megatron_worker"
 
+    def _emit_worker_bootstrap_diag(event: str, **data: Any) -> None:
+        try:
+            sys.stderr.write(
+                "__ARGUS_DIAG__" + json.dumps({"event": event, **data}, sort_keys=True) + "\n"
+            )
+            sys.stderr.flush()
+        except Exception:
+            return
+
     def _work_fn(handle: Worker) -> None:
         """Wrapper that imports and calls the actual work function."""
         import importlib
-        import sys
         import traceback
 
         try:
+            _emit_worker_bootstrap_diag(
+                "megatron_worker_wrapper_import_start",
+                module=work_fn_module,
+                pid=os.getpid(),
+            )
             module = importlib.import_module(work_fn_module)
+            _emit_worker_bootstrap_diag(
+                "megatron_worker_wrapper_import_ok",
+                module=work_fn_module,
+                pid=os.getpid(),
+            )
+            _emit_worker_bootstrap_diag(
+                "megatron_worker_wrapper_train_start",
+                module=work_fn_module,
+                pid=os.getpid(),
+            )
             module.train(handle)
         except Exception as e:
             # Print to stderr so we can see the error
