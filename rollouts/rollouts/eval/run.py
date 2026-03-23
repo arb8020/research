@@ -35,7 +35,6 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import logging
-import os
 import signal
 import sys
 from dataclasses import replace
@@ -106,43 +105,6 @@ def _build_stop_handler(run_config: Any) -> Any:
     return _lower_eval_stop_handler(run_config.resolved_stop_handler())
 
 
-def _resolve_endpoint_metadata(provider: str, model: str) -> tuple[str | None, str | None]:
-    """Resolve provider/model against the local registry when available.
-
-    Returns:
-        (base_url, api_format), where either may be None if the provider/model
-        should be treated as a custom runtime endpoint (for example sglang/vllm).
-    """
-    from difflib import get_close_matches
-    from typing import cast
-
-    from rollouts.fuzzy import fuzzy_filter
-    from rollouts.models import MODELS, Provider, get_model
-
-    if provider not in MODELS:
-        return None, None
-
-    provider_models = MODELS[cast("Provider", provider)]
-    if not provider_models:
-        return None, None
-
-    metadata = get_model(cast("Provider", provider), model)
-    if metadata is not None:
-        return metadata.base_url, metadata.api
-
-    model_ids = list(provider_models.keys())
-    suggestions = fuzzy_filter(model_ids, model, lambda x: x)[:3]
-    if not suggestions:
-        suggestions = get_close_matches(model, model_ids, n=3, cutoff=0.5)
-    error_msg = f"Model '{model}' not found for provider '{provider}'."
-    if suggestions:
-        error_msg += "\n\nDid you mean one of these?\n"
-        for suggestion in suggestions:
-            error_msg += f"  - {provider}/{suggestion}\n"
-    error_msg += f"\nSee available models: rollouts --list-models {provider}"
-    raise ValueError(error_msg)
-
-
 def load_config_module(config_path: Path) -> Any:
     """Load a config module from path."""
     spec = importlib.util.spec_from_file_location("_eval_config", config_path)
@@ -176,22 +138,6 @@ def load_tasks_from_module(config_module: Any) -> list[dict[str, Any]]:
     return tasks
 
 
-def get_api_key(provider: str) -> str:
-    """Get API key from environment for provider."""
-    env_vars = {
-        "anthropic": ["ANTHROPIC_API_KEY"],
-        "openai": ["OPENAI_API_KEY"],
-        "google": ["GOOGLE_API_KEY", "GEMINI_API_KEY"],
-    }
-
-    for var in env_vars.get(provider, []):
-        key = os.environ.get(var)
-        if key:
-            return key
-
-    return ""
-
-
 async def run_with_api(
     config_module: Any,
     endpoint_config: Any,
@@ -201,36 +147,13 @@ async def run_with_api(
 ) -> dict[str, Any]:
     """Run eval against an API endpoint."""
     from rollouts.agents import RunConfig as AgentRunConfig
-    from rollouts.core import Endpoint, EvalConfig
+    from rollouts.core import EvalConfig
     from rollouts.eval import evaluate
-    from rollouts.eval.configs import resolve_eval_task_spec
+    from rollouts.eval.configs import materialize_endpoint, resolve_eval_task_spec
 
     eval_task = resolve_eval_task_spec(config_module)
 
-    endpoint = None
-    if endpoint_config is not None:
-        api_key = endpoint_config.api_key or get_api_key(endpoint_config.provider)
-        if not api_key and endpoint_config.provider in ("anthropic", "openai", "google"):
-            raise ValueError(
-                f"No API key found for {endpoint_config.provider}. "
-                f"Set {endpoint_config.provider.upper()}_API_KEY in environment."
-            )
-
-        resolved_base_url, resolved_api_format = _resolve_endpoint_metadata(
-            endpoint_config.provider,
-            endpoint_config.model,
-        )
-
-        endpoint = Endpoint(
-            model=f"{endpoint_config.provider}/{endpoint_config.model}",
-            base_url=endpoint_config.base_url
-            or resolved_base_url
-            or endpoint_config.get_base_url(),
-            api_format=resolved_api_format or endpoint_config.get_api_format(),
-            api_key=api_key,
-            temperature=endpoint_config.temperature,
-            max_tokens=endpoint_config.max_tokens,
-        )
+    endpoint = materialize_endpoint(endpoint_config) if endpoint_config is not None else None
 
     # Load tasks
     tasks = load_tasks_from_module(config_module)

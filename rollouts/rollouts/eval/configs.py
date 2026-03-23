@@ -35,11 +35,17 @@ from typing import TYPE_CHECKING, Any, Literal
 if TYPE_CHECKING:
     from rollouts.agents.types import AgentState
     from rollouts.agents.types import RunConfig as AgentRunConfig
+    from rollouts.core import Endpoint
     from rollouts.eval.external_attempts import ExternalRuntime
     from rollouts.training.types import AttemptResult, Scorer
 
 # Reuse HardwareConfig from training
-from rollouts.training.configs import HardwareConfig
+from rollouts.training.configs import (
+    HardwareConfig,
+    InferenceRole,
+    InferenceWorkerConfig,
+    WorkerTopologyConfig,
+)
 
 __all__ = [
     "AgentRunSpec",
@@ -55,6 +61,10 @@ __all__ = [
     "TokenBudgetStop",
     "CostBudgetStop",
     "WallClockStop",
+    "endpoint_config_from_inference_worker",
+    "server_config_from_inference_worker",
+    "endpoint_and_server_for_role",
+    "materialize_endpoint",
     "resolve_eval_run_spec",
     "resolve_eval_task_spec",
 ]
@@ -218,6 +228,108 @@ class EndpointConfig:
     def requires_server(self) -> bool:
         """True if this endpoint needs an inference server to be launched."""
         return self.provider in ("sglang", "vllm") and self.base_url is None
+
+
+def endpoint_config_from_inference_worker(worker: InferenceWorkerConfig) -> EndpointConfig:
+    """Lower a named inference worker into the current eval endpoint surface.
+
+    This preserves the current runner contract while we migrate evals toward the
+    shared worker-topology model used by RL.
+    """
+
+    return EndpointConfig(
+        provider=worker.resolved_provider,
+        model=worker.model,
+        base_url=worker.base_url,
+        temperature=0.0,
+    )
+
+
+def server_config_from_inference_worker(worker: InferenceWorkerConfig) -> InferenceServerConfig:
+    """Lower a named inference worker into the current local-server settings."""
+
+    return InferenceServerConfig(
+        port=worker.inference.port,
+        mem_fraction=worker.inference.mem_fraction,
+        tensor_parallel_size=worker.inference.tensor_parallel_size,
+        startup_timeout=int(worker.inference.startup_timeout),
+    )
+
+
+def endpoint_and_server_for_role(
+    topology: WorkerTopologyConfig,
+    role: InferenceRole,
+) -> tuple[EndpointConfig, InferenceServerConfig]:
+    # TODO(worker-topology): today's eval runner still auto-realizes one local
+    # inference service. This helper is honest only for the role whose worker is
+    # being launched there. Additional judge/reference workers need either:
+    # - pre-launched base_url endpoints, or
+    # - a multi-worker launch layer above eval.run.
+    worker = topology.get_worker_for_role(role)
+    return (
+        endpoint_config_from_inference_worker(worker),
+        server_config_from_inference_worker(worker),
+    )
+
+
+def materialize_endpoint(endpoint_config: EndpointConfig) -> Endpoint:
+    """Lower an eval EndpointConfig into the core Endpoint type.
+
+    This is the shared endpoint contract for:
+    - native eval execution
+    - scorer-owned LLM judge calls
+    - future multi-role worker bindings
+
+    Keep the provider/model normalization here so examples and scorers do not
+    re-derive API base URLs, wire formats, or credential lookup ad hoc.
+    """
+    from difflib import get_close_matches
+    from typing import cast
+
+    from rollouts.core import Endpoint
+    from rollouts.credentials import get_api_key
+    from rollouts.fuzzy import fuzzy_filter
+    from rollouts.models import MODELS, Provider, get_model
+
+    provider = endpoint_config.provider
+    model = endpoint_config.model
+
+    api_key = endpoint_config.api_key or get_api_key(provider) or ""
+    if not api_key and provider in ("anthropic", "openai", "google"):
+        raise ValueError(
+            f"No API key found for {provider}. Set {provider.upper()}_API_KEY in environment."
+        )
+
+    resolved_base_url: str | None = None
+    resolved_api_format: str | None = None
+    if provider in MODELS:
+        provider_models = MODELS[cast("Provider", provider)]
+        metadata = get_model(cast("Provider", provider), model)
+        if metadata is not None:
+            resolved_base_url = metadata.base_url
+            resolved_api_format = metadata.api
+        elif provider_models:
+            model_ids = list(provider_models.keys())
+            suggestions = fuzzy_filter(model_ids, model, lambda x: x)[:3]
+            if not suggestions:
+                suggestions = get_close_matches(model, model_ids, n=3, cutoff=0.5)
+            error_msg = f"Model '{model}' not found for provider '{provider}'."
+            if suggestions:
+                error_msg += "\n\nDid you mean one of these?\n"
+                for suggestion in suggestions:
+                    error_msg += f"  - {provider}/{suggestion}\n"
+            error_msg += f"\nSee available models: rollouts --list-models {provider}"
+            raise ValueError(error_msg)
+
+    return Endpoint(
+        model=f"{provider}/{model}",
+        base_url=endpoint_config.base_url or resolved_base_url or endpoint_config.get_base_url(),
+        api_format=resolved_api_format or endpoint_config.get_api_format(),
+        api_key=api_key,
+        temperature=endpoint_config.temperature,
+        max_tokens=endpoint_config.max_tokens,
+        reasoning_effort=endpoint_config.reasoning_effort,
+    )
 
 
 @dataclass(frozen=True)

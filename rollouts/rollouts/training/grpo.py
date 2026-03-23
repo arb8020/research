@@ -88,6 +88,14 @@ class GRPOConfig:
 
         # Derive a variant:
         fast = replace(config, trainer=replace(config.trainer, lr=1e-4))
+
+    TODO(worker-topology): `trainer` + `inference` are the current compatibility
+    surface. The cleaner denotation is:
+    - allocate hardware once
+    - realize named inference/training workers on that allocation
+    - bind semantic roles like actor/judge/teacher to those workers
+    Keep new shared authoring surfaces additive until GRPO can consume the
+    worker graph natively without hiding launch ownership in runtime glue.
     """
 
     model: ModelConfig = field(default_factory=ModelConfig)

@@ -586,6 +586,129 @@ class InferenceConfig:
             )
 
 
+InferenceRole = Literal["actor", "judge", "teacher", "reference"]
+
+
+@dataclass(frozen=True)
+class InferenceWorkerConfig:
+    """Named inference worker realized on a slice of the provisioned allocation.
+
+    This is the missing layer between:
+    - workload-level hardware allocation ("give me 4xH100")
+    - role bindings in eval/RL ("actor", "judge", "teacher")
+
+    `InferenceConfig` stays worker-local and concrete: engine/runtime settings,
+    ports, GPU ids, request limits. This wrapper adds the semantic identity that
+    higher-level workloads want to bind to.
+    """
+
+    worker_id: str
+    model: str
+    inference: InferenceConfig = field(default_factory=InferenceConfig)
+    provider: Literal["sglang", "vllm", "openai", "anthropic", "google"] | None = None
+    base_url: str | None = None
+    api_key_env: str | None = None
+    api_format: str | None = None
+
+    def __post_init__(self) -> None:
+        assert self.worker_id, "worker_id cannot be empty"
+        assert self.model, "model cannot be empty"
+
+    @property
+    def resolved_provider(self) -> str:
+        if self.provider is not None:
+            return self.provider
+        if self.inference.backend in {"sglang", "vllm"}:
+            return self.inference.backend
+        raise ValueError(
+            f"InferenceWorkerConfig {self.worker_id!r} needs an explicit provider "
+            f"for backend {self.inference.backend!r}."
+        )
+
+
+@dataclass(frozen=True)
+class TrainingWorkerConfig:
+    """Named training worker realized on a slice of the provisioned allocation."""
+
+    worker_id: str
+    trainer: TrainerConfig = field(default_factory=TrainerConfig)
+
+    def __post_init__(self) -> None:
+        assert self.worker_id, "worker_id cannot be empty"
+
+
+@dataclass(frozen=True)
+class InferenceRoleBinding:
+    """Bind a semantic workload role to a named inference worker."""
+
+    role: InferenceRole
+    worker_id: str
+
+
+@dataclass(frozen=True)
+class WorkerTopologyConfig:
+    """Provisioned allocation plus named workers/services realized on top of it.
+
+    TODO(boundary): this is the direction evals and RL both want:
+    - allocate hardware once
+    - carve it into named inference/training workers
+    - bind semantic roles like actor/judge/teacher to those workers
+
+    Current evals still lower this back into `endpoint + server + hardware`.
+    Current RL configs still use `trainer` + `inference` directly inside
+    `GRPOConfig`. Keep this topology additive until both surfaces are ready to
+    consume it natively.
+    """
+
+    hardware: HardwareConfig
+    inference_workers: tuple[InferenceWorkerConfig, ...] = ()
+    training_workers: tuple[TrainingWorkerConfig, ...] = ()
+    role_bindings: tuple[InferenceRoleBinding, ...] = ()
+
+    def __post_init__(self) -> None:
+        worker_ids = [w.worker_id for w in self.inference_workers] + [
+            w.worker_id for w in self.training_workers
+        ]
+        if len(worker_ids) != len(set(worker_ids)):
+            raise ValueError("WorkerTopologyConfig worker ids must be unique")
+
+        inference_ids = {w.worker_id for w in self.inference_workers}
+        for binding in self.role_bindings:
+            if binding.worker_id not in inference_ids:
+                raise ValueError(
+                    f"Role binding {binding.role!r} references unknown inference worker "
+                    f"{binding.worker_id!r}"
+                )
+
+        allowed_gpu_ids = set(range(self.hardware.gpu_count))
+        for worker in self.inference_workers:
+            for gpu_id in worker.inference.cuda_device_ids:
+                if gpu_id not in allowed_gpu_ids:
+                    raise ValueError(
+                        f"Inference worker {worker.worker_id!r} references gpu_id={gpu_id}, "
+                        f"but hardware.gpu_count={self.hardware.gpu_count}"
+                    )
+        for worker in self.training_workers:
+            for gpu_id in worker.trainer.cuda_device_ids:
+                if gpu_id not in allowed_gpu_ids:
+                    raise ValueError(
+                        f"Training worker {worker.worker_id!r} references gpu_id={gpu_id}, "
+                        f"but hardware.gpu_count={self.hardware.gpu_count}"
+                    )
+
+    def get_inference_worker(self, worker_id: str) -> InferenceWorkerConfig:
+        for worker in self.inference_workers:
+            if worker.worker_id == worker_id:
+                return worker
+        raise KeyError(f"Unknown inference worker: {worker_id!r}")
+
+    def get_worker_for_role(self, role: InferenceRole) -> InferenceWorkerConfig:
+        for binding in self.role_bindings:
+            if binding.role == role:
+                return self.get_inference_worker(binding.worker_id)
+        raise KeyError(f"Unknown inference role: {role!r}")
+
+
 @dataclass(frozen=True)
 class RolloutConfig:
     """Rollout generation settings."""
