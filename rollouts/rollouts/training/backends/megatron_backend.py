@@ -49,6 +49,29 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _split_megatron_batch(
+    batch: dict[str, Any],
+    micro_batch_size: int,
+) -> list[dict[str, Any]]:
+    """Split a backend-native Megatron batch along the example axis."""
+    total_examples = int(batch["input_ids"].shape[0])
+    slices: list[dict[str, Any]] = []
+    for start in range(0, total_examples, micro_batch_size):
+        end = min(start + micro_batch_size, total_examples)
+        chunk: dict[str, Any] = {}
+        for key, value in batch.items():
+            if isinstance(value, torch.Tensor):
+                chunk[key] = value[start:end]
+            elif isinstance(value, list):
+                chunk[key] = value[start:end]
+            elif isinstance(value, tuple):
+                chunk[key] = value[start:end]
+            else:
+                chunk[key] = value
+        slices.append(chunk)
+    return slices
+
+
 def _extract_megatron_logits(output_tensor: Any) -> Any:
     """Normalize Megatron forward output into a logits tensor."""
     if isinstance(output_tensor, tuple):
@@ -507,23 +530,27 @@ class MegatronTrainingBackend:
             model_chunk.zero_grad_buffer()
         self.optimizer.zero_grad()
 
-        # Create data iterator from batch
-        # Megatron expects an iterator that yields batches
+        micro_batch_size = max(1, int(self.config.micro_batch_size))
+        microbatches = _split_megatron_batch(batch, micro_batch_size)
+        runtime_num_microbatches = len(microbatches)
+
+        # Create data iterator from real microbatches.
         class BatchIterator:
-            def __init__(self, batch: dict[str, Any]) -> None:
-                self._batch = batch
-                self._consumed = False
+            def __init__(self, batches: list[dict[str, Any]]) -> None:
+                self._batches = batches
+                self._index = 0
 
             def __iter__(self) -> BatchIterator:
                 return self
 
             def __next__(self) -> dict[str, Any]:
-                if self._consumed:
+                if self._index >= len(self._batches):
                     raise StopIteration
-                self._consumed = True
-                return self._batch
+                batch = self._batches[self._index]
+                self._index += 1
+                return batch
 
-        data_iterator = BatchIterator(batch)
+        data_iterator = BatchIterator(microbatches)
 
         # Forward step function for Megatron pipeline
         def forward_step(data_iter: Any, model: Any) -> Any:
@@ -566,6 +593,7 @@ class MegatronTrainingBackend:
                             loss = loss.float().mean()
 
                 detached_loss = loss.detach()
+                sample_count = int(batch["input_ids"].shape[0])
                 metric_tensors = {
                     "loss": detached_loss.float(),
                     **{
@@ -577,11 +605,11 @@ class MegatronTrainingBackend:
                 }
                 return (
                     loss,
-                    torch.tensor(1, device=detached_loss.device),
+                    torch.tensor(sample_count, device=detached_loss.device),
                     {
                         "keys": list(metric_tensors.keys()),
                         "values": torch.stack([
-                            torch.tensor(1.0, device=detached_loss.device),
+                            torch.tensor(float(sample_count), device=detached_loss.device),
                             *metric_tensors.values(),
                         ]),
                     },
@@ -594,9 +622,9 @@ class MegatronTrainingBackend:
             forward_step_func=forward_step,
             data_iterator=data_iterator,
             model=self.model,
-            num_microbatches=self.config.num_microbatches,
+            num_microbatches=runtime_num_microbatches,
             seq_length=self.config.seq_length,
-            micro_batch_size=self.config.micro_batch_size,
+            micro_batch_size=micro_batch_size,
             forward_only=False,
         )
 
@@ -606,14 +634,22 @@ class MegatronTrainingBackend:
         # Collect metrics from last pipeline stage
         metrics = {"loss": 0.0, "grad_norm": 0.0}
         if mpu.is_pipeline_last_stage():
-            if losses_reduced:
-                first_loss = losses_reduced[0]
-                if isinstance(first_loss, dict) and "keys" in first_loss and "values" in first_loss:
-                    keys = list(first_loss["keys"])
-                    values = first_loss["values"]
-                    count = float(values[0])
-                    for metric_index, key in enumerate(keys, start=1):
-                        metrics[key] = float(values[metric_index]) / max(count, 1.0)
+            aggregate_totals: dict[str, float] = {}
+            aggregate_count = 0.0
+            for reduced in losses_reduced or ():
+                if not (isinstance(reduced, dict) and "keys" in reduced and "values" in reduced):
+                    continue
+                keys = list(reduced["keys"])
+                values = reduced["values"]
+                count = float(values[0])
+                aggregate_count += count
+                for metric_index, key in enumerate(keys, start=1):
+                    aggregate_totals[key] = aggregate_totals.get(key, 0.0) + float(
+                        values[metric_index]
+                    )
+            if aggregate_count > 0:
+                for key, total in aggregate_totals.items():
+                    metrics[key] = total / aggregate_count
 
         return ImmediateTrainFuture(metrics)
 

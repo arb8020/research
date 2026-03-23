@@ -1188,6 +1188,7 @@ def train(handle: Worker) -> None:
             sequence_parallel=parallelism_config.sequence_parallel,
             micro_batch_size=model_config.micro_batch_size,
             global_batch_size=model_config.global_batch_size,
+            num_microbatches=config.get("num_microbatches", 1),
             seq_length=model_config.seq_length,
             save_optimizer_state=config.get("save_optimizer_state", True),
             clip_grad=config.get("clip_grad", 1.0),

@@ -445,10 +445,16 @@ async def _megatron_checkpoint_resume_smoke_async(
     def create_backend(
         *, checkpoint_dir: Path, checkpoint_path: str | None
     ) -> MegatronRemoteBackend:
+        from .runtime_factory import resolve_megatron_batch_realization
+
         megatron_overrides = getattr(trainer, "megatron_overrides", None)
         sequence_parallel = bool(_pick(trainer, "sequence_parallel", default=False))
         if megatron_overrides is not None and megatron_overrides.sequence_parallel is not None:
             sequence_parallel = megatron_overrides.sequence_parallel
+        micro_batch_size, num_microbatches = resolve_megatron_batch_realization(
+            trainer,
+            global_batch_size=global_batch_size,
+        )
         remote_config = MegatronRemoteConfig(
             model_name=config.model.name,
             dtype=config.model.dtype,
@@ -464,6 +470,7 @@ async def _megatron_checkpoint_resume_smoke_async(
             mask_ratio_high=float(_pick(trainer, "mask_ratio_high", default=8.0)),
             micro_batch_size=micro_batch_size,
             global_batch_size=global_batch_size,
+            num_microbatches=num_microbatches,
             seq_length=seq_len,
             save_optimizer_state=bool(getattr(checkpoint, "save_optimizer_state", True)),
             master_port=int(getattr(checkpoint, "nccl_master_port", 29500)),

@@ -77,6 +77,7 @@ class MegatronRemoteConfig:
     mask_ratio_high: float = 8.0
     micro_batch_size: int = 1
     global_batch_size: int = 8
+    num_microbatches: int = 1
     seq_length: int = 4096
     save_optimizer_state: bool = True
 
@@ -382,6 +383,7 @@ class MegatronRemoteBackend:
                     "mask_ratio_high": self.config.mask_ratio_high,
                     "micro_batch_size": self.config.micro_batch_size,
                     "global_batch_size": self.config.global_batch_size,
+                    "num_microbatches": self.config.num_microbatches,
                     "seq_length": self.config.seq_length,
                     "save_optimizer_state": self.config.save_optimizer_state,
                     "clip_grad": self.config.max_grad_norm,

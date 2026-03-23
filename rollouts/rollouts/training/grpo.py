@@ -56,6 +56,7 @@ from ..training.inference_runtime_factory import create_inference_backend_runtim
 from ..training.runtime_factory import (
     build_megatron_lowering,
     create_training_backend_runtime,
+    resolve_megatron_batch_realization,
 )
 from ..training.types import RolloutRuntime
 
@@ -169,6 +170,10 @@ class GRPOConfig:
 
 def _megatron_lowering(config: GRPOConfig) -> Any:
     return build_megatron_lowering(config.trainer, training_mode="rl")
+
+
+def _rl_training_global_batch_size(config: GRPOConfig) -> int:
+    return config.rollout.batch_size * config.rollout.n_samples_per_prompt
 
 
 # ──────────────────────── Training Function ──────────────────────────────────
@@ -377,7 +382,7 @@ def _setup_training_backend(
         checkpoint=config.checkpoint,
         output_dir=output_dir,
         seq_len=config.rollout.max_seq_len,
-        global_batch_size=config.rollout.batch_size,
+        global_batch_size=_rl_training_global_batch_size(config),
         loss_fn=loss_fn,
         training_mode="rl",
         megatron_workers=megatron_workers,
@@ -1292,6 +1297,11 @@ async def _grpo_train_async(
         sequence_parallel = config.trainer.sequence_parallel
         if megatron_overrides is not None and megatron_overrides.sequence_parallel is not None:
             sequence_parallel = megatron_overrides.sequence_parallel
+        global_batch_size = _rl_training_global_batch_size(config)
+        micro_batch_size, num_microbatches = resolve_megatron_batch_realization(
+            config.trainer,
+            global_batch_size=global_batch_size,
+        )
 
         # Create config for worker spawning (full config passed at init time)
         megatron_config = MegatronRemoteConfig(
@@ -1307,8 +1317,9 @@ async def _grpo_train_async(
             loss_type=config.trainer.loss_type,
             mask_ratio_low=config.trainer.mask_ratio_low,
             mask_ratio_high=config.trainer.mask_ratio_high,
-            micro_batch_size=config.trainer.micro_batch_size or 1,
-            global_batch_size=config.rollout.batch_size,
+            micro_batch_size=micro_batch_size,
+            global_batch_size=global_batch_size,
+            num_microbatches=num_microbatches,
             seq_length=config.trainer.seq_length,
             master_port=config.checkpoint.nccl_master_port,
             inference_endpoints=[f"http://localhost:{config.inference.port}"],

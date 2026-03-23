@@ -2,7 +2,12 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from rollouts.training.backends.megatron_backend import MegatronTrainingBackend
+import torch
+
+from rollouts.training.backends.megatron_backend import (
+    MegatronTrainingBackend,
+    _split_megatron_batch,
+)
 
 
 class _FakeMegatronScheduler:
@@ -49,3 +54,18 @@ def test_megatron_optim_step_uses_megatron_step_contract_for_chained_optimizer()
         "grad_norm": 7.5,
         "update_successful": 1.0,
     }
+
+
+def test_split_megatron_batch_slices_example_axis() -> None:
+    batch = {
+        "input_ids": torch.arange(12).reshape(6, 2),
+        "labels": torch.arange(12).reshape(6, 2),
+        "advantages": torch.arange(6),
+        "group_ids": torch.arange(6),
+    }
+
+    chunks = _split_megatron_batch(batch, micro_batch_size=2)
+
+    assert [chunk["input_ids"].shape[0] for chunk in chunks] == [2, 2, 2]
+    assert torch.equal(chunks[0]["advantages"], torch.tensor([0, 1]))
+    assert torch.equal(chunks[2]["group_ids"], torch.tensor([4, 5]))

@@ -8,6 +8,7 @@ the next consumer.
 from __future__ import annotations
 
 import logging
+import math
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any, Literal
@@ -24,6 +25,21 @@ from .lowering import (
 logger = logging.getLogger(__name__)
 
 TrainingMode = Literal["rl", "supervised"]
+
+
+def resolve_megatron_batch_realization(
+    trainer: TrainerConfig,
+    *,
+    global_batch_size: int,
+) -> tuple[int, int]:
+    """Resolve Megatron's actual microbatch realization from trainer intent."""
+    if trainer.micro_batch_size is not None:
+        micro_batch_size = trainer.micro_batch_size
+    else:
+        target_num_minibatches = max(1, trainer.num_minibatches)
+        micro_batch_size = max(1, math.ceil(global_batch_size / target_num_minibatches))
+    num_microbatches = max(1, math.ceil(global_batch_size / micro_batch_size))
+    return micro_batch_size, num_microbatches
 
 
 def trainer_realization_from_config(trainer: TrainerConfig) -> RealizationPlan | None:
@@ -224,6 +240,10 @@ def create_training_backend_runtime(
         sequence_parallel = trainer.sequence_parallel
         if megatron_overrides is not None and megatron_overrides.sequence_parallel is not None:
             sequence_parallel = megatron_overrides.sequence_parallel
+        micro_batch_size, num_microbatches = resolve_megatron_batch_realization(
+            trainer,
+            global_batch_size=global_batch_size,
+        )
         megatron_config = MegatronRemoteConfig(
             model_name=model.name,
             dtype=model.dtype,
@@ -237,8 +257,9 @@ def create_training_backend_runtime(
             loss_type=trainer.loss_type,
             mask_ratio_low=trainer.mask_ratio_low,
             mask_ratio_high=trainer.mask_ratio_high,
-            micro_batch_size=trainer.micro_batch_size or 1,
+            micro_batch_size=micro_batch_size,
             global_batch_size=global_batch_size,
+            num_microbatches=num_microbatches,
             seq_length=seq_len,
             save_optimizer_state=checkpoint.save_optimizer_state,
             master_port=checkpoint.nccl_master_port,

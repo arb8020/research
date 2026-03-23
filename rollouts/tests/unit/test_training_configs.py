@@ -5,6 +5,7 @@ from rollouts.training.configs import DistributedConfig, HardwareConfig, Megatro
 from rollouts.training.grpo import GRPOConfig
 from rollouts.training.lowering import MegatronLowering, MegatronProvisioning, RealizationPlan
 from rollouts.training.multi_node import MultiNodeConfig, compute_cluster_allocation
+from rollouts.training.runtime_factory import resolve_megatron_batch_realization
 
 
 def test_ssh_provider_requires_explicit_deps() -> None:
@@ -68,3 +69,15 @@ def test_megatron_remote_config_rejects_unlowered_output_materialization() -> No
             ),
             megatron_overrides=MegatronOverrides(output_materialization="chunked_logits"),
         )
+
+
+def test_resolve_megatron_batch_realization_uses_num_minibatches_when_unset() -> None:
+    trainer = type("Trainer", (), {"micro_batch_size": None, "num_minibatches": 8})()
+
+    micro_batch_size, num_microbatches = resolve_megatron_batch_realization(
+        trainer,
+        global_batch_size=32,
+    )
+
+    assert micro_batch_size == 4
+    assert num_microbatches == 8

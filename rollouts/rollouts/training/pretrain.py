@@ -14,7 +14,11 @@ import trio
 from .configs import CheckpointConfig, ModelConfig, OutputConfig, TrainerConfig
 from .contract_witnesses import pretrain_batch_to_datum, pretrain_contract_loss
 from .metrics import JSONLLogger
-from .runtime_factory import build_megatron_lowering, create_training_backend_runtime
+from .runtime_factory import (
+    build_megatron_lowering,
+    create_training_backend_runtime,
+    resolve_megatron_batch_realization,
+)
 from .train import TrainResult, train
 
 logger = logging.getLogger(__name__)
@@ -136,6 +140,10 @@ def _spawn_megatron_workers(config: PretrainConfig) -> list[Any]:
     sequence_parallel = config.trainer.sequence_parallel
     if megatron_overrides is not None and megatron_overrides.sequence_parallel is not None:
         sequence_parallel = megatron_overrides.sequence_parallel
+    micro_batch_size, num_microbatches = resolve_megatron_batch_realization(
+        config.trainer,
+        global_batch_size=config.data.batch_size,
+    )
     megatron_config = MegatronRemoteConfig(
         model_name=config.model.name,
         dtype=config.model.dtype,
@@ -149,8 +157,9 @@ def _spawn_megatron_workers(config: PretrainConfig) -> list[Any]:
         loss_type=config.trainer.loss_type,
         mask_ratio_low=config.trainer.mask_ratio_low,
         mask_ratio_high=config.trainer.mask_ratio_high,
-        micro_batch_size=config.trainer.micro_batch_size or 1,
+        micro_batch_size=micro_batch_size,
         global_batch_size=config.data.batch_size,
+        num_microbatches=num_microbatches,
         seq_length=config.data.seq_len,
         master_port=config.checkpoint.nccl_master_port,
         inference_endpoints=[],
