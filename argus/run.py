@@ -207,6 +207,7 @@ from rollouts.image_publisher import build_or_resolve_image
 from rollouts.image_spec import (
     USER_IMAGE_MANIFEST_PATH,
     ImageManifest,
+    ImageSpec,
     image_manifest_for_spec,
     infer_cuda_version,
     manifest_write_command,
@@ -282,6 +283,19 @@ def _runpod_custom_image_docker_args(image_ref: str) -> str | None:
     # - the pod must expose TCP port 22
     # - PUBLIC_KEY must be injected
     return RUNPOD_DOCS_CUSTOM_IMAGE_SSH_DOCKER_ARGS
+
+
+def _should_reconcile_ssh_cuda_toolkit(custom_image: ImageSpec | None) -> bool:
+    """Return whether SSH launch should mutate CUDA toolkit state on the remote.
+
+    `image_owned` means the runtime contract is supposed to come from the image
+    itself. In that case, mutating CUDA from the SSH bootstrap path is the wrong
+    denotation; either the image is valid as-is or it should fail later on its
+    own terms.
+    """
+    if custom_image is None:
+        return True
+    return custom_image.python_runtime != "image_owned"
 
 
 def _find_config_project_root(config_path: Path) -> Path:
@@ -864,6 +878,8 @@ async def _deploy_and_submit(
             print(f"\nError: Provisioning failed: {e}", file=sys.stderr)
         sys.exit(1)
 
+    custom_image = deps.resolved_image(gpu_type) if deps is not None else None
+
     # Check CUDA toolkit version compatibility and auto-upgrade if needed
     # The driver version (nvidia-smi) may be newer than the toolkit (nvcc)
     # FlashInfer/Triton JIT-compile kernels and need nvcc to support the GPU arch
@@ -871,7 +887,8 @@ async def _deploy_and_submit(
 
     cuda_req = get_gpu_cuda_requirement(gpu_type)
     needs_cuda_upgrade = False
-    if cuda_req is not None:
+    should_reconcile_cuda = _should_reconcile_ssh_cuda_toolkit(custom_image)
+    if cuda_req is not None and should_reconcile_cuda:
         sm_version, min_major, min_minor, arch_name = cuda_req
         log(
             "cuda_check_start",
@@ -924,6 +941,15 @@ async def _deploy_and_submit(
                     f"CUDA check failed: {e}. Will attempt toolkit install during bootstrap."
                 )
                 needs_cuda_upgrade = True
+    elif cuda_req is not None:
+        _, min_major, min_minor, arch_name = cuda_req
+        log(
+            "cuda_check_skipped",
+            gpu_type=gpu_type,
+            arch=arch_name,
+            min_cuda=f"{min_major}.{min_minor}",
+            reason="image_owned_runtime",
+        )
 
     # Deploy code (git sync only, no bootstrap)
     local_script_path = Path(script_path).resolve()
@@ -955,7 +981,6 @@ async def _deploy_and_submit(
             installed_groups=list(remote_manifest.installed_groups),
         )
 
-    custom_image = deps.resolved_image(gpu_type) if deps is not None else None
     custom_overlay = deps.resolved_runtime_overlay() if deps is not None else None
 
     if deps is not None and deps.image is not None:
