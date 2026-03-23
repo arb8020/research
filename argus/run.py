@@ -1156,11 +1156,7 @@ async def _deploy_and_submit(
             f"image-pip-packages-{runtime_feature_scope}",
             custom_image.pip_packages,
         )
-        if (
-            not image_owned_runtime
-            or remote_manifest is None
-            or not remote_manifest.has_feature(image_pip_feature)
-        ):
+        if remote_manifest is None or not remote_manifest.has_feature(image_pip_feature):
             bootstrap_steps.append((
                 "Installing image Python packages",
                 (
@@ -1215,11 +1211,7 @@ async def _deploy_and_submit(
             f"overlay-pip-packages-{runtime_feature_scope}",
             custom_overlay.pip_packages,
         )
-        if (
-            not image_owned_runtime
-            or remote_manifest is None
-            or not remote_manifest.has_feature(overlay_pip_feature)
-        ):
+        if remote_manifest is None or not remote_manifest.has_feature(overlay_pip_feature):
             bootstrap_steps.append((
                 "Installing runtime Python packages",
                 (
