@@ -28,6 +28,12 @@ from ..training.types import AttemptResult, ProblemRow, Status
 _event_logger = logging.getLogger("rollouts.eval.events")
 
 PromptBuilder = Callable[[dict[str, Any]], str]
+# TODO(external-runtime-sum-type): "claude_code", "codex", and "openhands" are
+# currently first-class external runtimes. The next likely addition is
+# `mini_swe_agent`, which should enter through this shared runtime surface
+# rather than via another benchmark-local wrapper. If more runtimes arrive,
+# consider replacing this Literal with an explicit sum type plus runtime
+# capability metadata instead of growing ad hoc string branching.
 ExternalRuntime = Literal["claude_code", "codex", "openhands"]
 REMOTE_AGENT_USER = "rollouts-agent"
 
@@ -1049,6 +1055,14 @@ async def trajectory_from_openhands(
 ) -> ExternalAttemptArtifact:
     del sample_data, run_config
 
+    # TODO(openhands-first-class-driver): OpenHands currently bypasses the
+    # driver layer and reconstructs a trajectory after the CLI exits by
+    # querying the session API. That was expedient, but it means OpenHands is
+    # not yet a real peer of Claude Code / Codex in `rollouts.drivers`.
+    # If we keep supporting it, move it behind a proper driver/runtime
+    # contract so projected workspaces, live event streaming, and future agent
+    # additions like `mini-swe-agent` share one execution model.
+
     if api_key_env_var is not None and not os.environ.get(api_key_env_var):
         raise RuntimeError(f"Required environment variable {api_key_env_var} is not set")
 
@@ -1168,6 +1182,11 @@ async def trajectory_from_openhands(
 
 def _trajectory_from_openhands_session(api_url: str, session_id: str) -> Trajectory:
     import requests
+
+    # TODO(openhands-session-shape): This importer only preserves coarse
+    # message text. If OpenHands remains a supported external runtime, upgrade
+    # this to preserve tool calls / richer event structure the same way the
+    # Claude Code and Codex paths preserve their native session semantics.
 
     response = requests.get(
         f"{api_url.rstrip('/')}/api/conversations/{session_id}/events",
