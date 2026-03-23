@@ -29,6 +29,13 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 _ARGUS_DIAG_EVENT_SENTINEL = "__ARGUS_DIAG__"
 _MEGATRON_SGLANG_BUCKET_SIZE_BYTES = 256 * 1024 * 1024
+_ISOLATED_REMOTE_INIT_CONNECT_TIMEOUT_SEC = 5.0
+# The isolated runtime sender creates a fresh custom process group while the
+# inference engine is paused under live training load. The witness path already
+# needed a larger coordinator-side timeout; keep the runtime init read timeout
+# above the old 10s assumption so bucket init does not fail spuriously before
+# the helper itself has a chance to report a real transport error.
+_ISOLATED_REMOTE_INIT_READ_TIMEOUT_SEC = 30.0
 _MEGATRON_BATCH_DTYPES: dict[str, str] = {
     "input_ids": "long",
     "labels": "long",
@@ -382,8 +389,6 @@ def _isolated_weight_sync_sender_main(
             inference_world_size=len(inference_endpoints),
             group_name=group_name,
         )
-        init_connect_timeout_sec = 5.0
-        init_read_timeout_sec = 10.0
 
         def _init_remote_endpoint(endpoint: str, rank_offset: int) -> dict[str, object]:
             started_at = time.monotonic()
@@ -392,8 +397,8 @@ def _isolated_weight_sync_sender_main(
                 endpoint=endpoint,
                 rank_offset=rank_offset,
                 world_size=world_size,
-                connect_timeout_sec=init_connect_timeout_sec,
-                read_timeout_sec=init_read_timeout_sec,
+                connect_timeout_sec=_ISOLATED_REMOTE_INIT_CONNECT_TIMEOUT_SEC,
+                read_timeout_sec=_ISOLATED_REMOTE_INIT_READ_TIMEOUT_SEC,
             )
             response: requests.Response | None = None
             try:
@@ -407,7 +412,10 @@ def _isolated_weight_sync_sender_main(
                 response = requests.post(
                     f"{endpoint}/init_weights_update_group",
                     json=request.to_dict(),
-                    timeout=(init_connect_timeout_sec, init_read_timeout_sec),
+                    timeout=(
+                        _ISOLATED_REMOTE_INIT_CONNECT_TIMEOUT_SEC,
+                        _ISOLATED_REMOTE_INIT_READ_TIMEOUT_SEC,
+                    ),
                 )
                 response.raise_for_status()
                 InitWeightUpdateGroupResponse.from_dict(response.json())
