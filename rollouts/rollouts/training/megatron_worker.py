@@ -1541,9 +1541,16 @@ def _strip_chunk_prefix(name: str) -> str:
 
 
 def _convert_megatron_state_dict(model_name: str, state_dict: dict[str, Any]) -> dict[str, Any]:
-    """Convert Megatron shard names to HuggingFace names for inference sync."""
+    """Convert Megatron shard names to HuggingFace names for inference sync.
+
+    The live NCCL publication path can only publish real tensors. Megatron
+    export/conversion can surface placeholders like ``None`` for entries that
+    are not materialized on this rank, so normalize them out here instead of
+    letting the transport layer discover that too late.
+    """
     import logging
 
+    import torch
     from transformers import AutoConfig
 
     from rollouts.training.backends.megatron.weight_conversion import (
@@ -1553,8 +1560,27 @@ def _convert_megatron_state_dict(model_name: str, state_dict: dict[str, Any]) ->
 
     convert_logger = logging.getLogger(__name__)
 
+    def _filter_tensor_state_dict(
+        values: dict[str, Any], *, log_drops: bool = True
+    ) -> dict[str, torch.Tensor]:
+        filtered: dict[str, torch.Tensor] = {}
+        dropped_non_tensors: list[str] = []
+        for name, value in values.items():
+            clean_name = _strip_chunk_prefix(name)
+            if isinstance(value, torch.Tensor):
+                filtered[clean_name] = value
+            else:
+                dropped_non_tensors.append(clean_name)
+        if log_drops and dropped_non_tensors:
+            convert_logger.warning(
+                "Megatron state dict dropped non-tensor entries count=%s first_keys=%s",
+                len(dropped_non_tensors),
+                dropped_non_tensors[:8],
+            )
+        return filtered
+
     if not model_name:
-        return {_strip_chunk_prefix(name): value for name, value in state_dict.items()}
+        return _filter_tensor_state_dict(state_dict)
 
     try:
         hf_config = AutoConfig.from_pretrained(model_name)
@@ -1569,10 +1595,18 @@ def _convert_megatron_state_dict(model_name: str, state_dict: dict[str, Any]) ->
         q_lora_rank = getattr(hf_config, "q_lora_rank", None)
     except Exception as exc:
         convert_logger.warning("Failed to load HF config for Megatron->HF conversion: %s", exc)
-        return {_strip_chunk_prefix(name): value for name, value in state_dict.items()}
+        return _filter_tensor_state_dict(state_dict)
 
     output: dict[str, Any] = {}
     conversion_attempted = False
+    dropped_non_tensors: list[str] = []
+
+    def _record_output(name: str, value: Any) -> None:
+        filtered = _filter_tensor_state_dict({name: value}, log_drops=False)
+        if filtered:
+            output.update(filtered)
+        else:
+            dropped_non_tensors.append(_strip_chunk_prefix(name))
 
     for name, param in state_dict.items():
         clean_name = _strip_chunk_prefix(name)
@@ -1589,16 +1623,21 @@ def _convert_megatron_state_dict(model_name: str, state_dict: dict[str, Any]) ->
                 kv_channels=kv_channels,
                 q_lora_rank=q_lora_rank,
             ):
-                output[_strip_chunk_prefix(hf_name)] = remove_padding(hf_name, hf_param, vocab_size)
+                _record_output(hf_name, remove_padding(hf_name, hf_param, vocab_size))
             conversion_attempted = True
         except Exception:
-            output[clean_name] = param
+            _record_output(clean_name, param)
 
     if not conversion_attempted:
         convert_logger.warning(
             "Megatron->HF conversion not applied for any tensors; using raw keys."
         )
-
+    if dropped_non_tensors:
+        convert_logger.warning(
+            "Megatron->HF conversion dropped non-tensor entries count=%s first_keys=%s",
+            len(dropped_non_tensors),
+            dropped_non_tensors[:8],
+        )
     return output
 
 
