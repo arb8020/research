@@ -95,21 +95,37 @@ class BrokerBifrostWorkspaceResource:
         await self._ensure_client()
 
     async def close(self) -> None:
-        if self._client is not None:
-            await self._client.close()
-            self._client = None
-        if (
+        close_error: Exception | None = None
+        should_terminate = (
             self._instance is not None
             and self._should_terminate_instance
             and not self.config.keep_instance
-        ):
-            await self._instance.terminate()
-            self._instance = None
-            self._instance_id = None
-            self._provider = None
-            self._ssh_connection = None
-            self._ssh_key_path = None
+        )
+        if self._client is not None:
+            try:
+                # AsyncBifrostClient currently owns a trio_asyncio.open_loop() via
+                # manual __aenter__/__aexit__, which can corrupt Trio teardown on
+                # close(). For disposable instances, terminating the remote instance
+                # is the cleanup fact that matters; drop the local client handle and
+                # avoid the buggy bridge shutdown path.
+                if not should_terminate:
+                    await self._client.close()
+            except Exception as exc:
+                close_error = exc
+            finally:
+                self._client = None
+        if should_terminate:
+            try:
+                await self._instance.terminate()
+            finally:
+                self._instance = None
+                self._instance_id = None
+                self._provider = None
+                self._ssh_connection = None
+                self._ssh_key_path = None
         self._started = False
+        if close_error is not None:
+            raise close_error
 
     async def describe_runtime(self) -> dict[str, Any]:
         client = await self._ensure_client()
@@ -321,6 +337,9 @@ class BrokerBifrostWorkspaceResource:
                 gpu_count=self.config.gpu_count,
             )
             assert instance is not None, "broker create must return an instance"
+            self._instance = instance
+            self._instance_id = instance.id
+            self._provider = instance.provider
             ssh_ready = await instance.wait_until_ssh_ready(
                 timeout=self.config.provision_timeout_seconds
             )

@@ -1059,137 +1059,137 @@ async def evaluate_sample(
         logger.debug(f"Evaluating {sample_id}")
 
     start_time = time.time()
+    final_env = environment
+    try:
+        if config.attempt_executor is not None:
+            sample = await _run_attempt_executor(
+                config.attempt_executor,
+                sample_data=sample_data,
+                sample_id=sample_id,
+                environment=environment,
+                run_config=run_config,
+            )
+            final_trajectory = sample.trajectory
+            assert final_trajectory is not None
+            final_env = environment
+            env_state = (
+                sample.environment_state
+                if sample.environment_state is not None
+                else await _serialize_environment_state(final_env)
+            )
+            if not sample.attempt_id:
+                sample.attempt_id = sample_id
+            if sample.problem is None:
+                sample.problem = ProblemRow(
+                    problem_id=sample_id,
+                    payload=sample_data,
+                    ground_truth=sample_data.get("ground_truth") or sample_data.get("answer"),
+                    metadata=sample_data.get("metadata", {}),
+                )
+            combined_metadata = {
+                **sample_data.get("metadata", {}),
+                **final_trajectory.metadata,
+                **sample.metadata,
+            }
+            if final_env is not None:
+                runtime_metadata = getattr(final_env, "get_runtime_metadata", None)
+                if callable(runtime_metadata):
+                    extra_metadata = runtime_metadata()
+                    if isinstance(extra_metadata, dict):
+                        combined_metadata.update(extra_metadata)
+            sample.environment_state = env_state
+            sample.metadata = combined_metadata
+            exec_metadata = {
+                "turns_used": sample.metadata.get("turns_used", 0),
+                "stop_reason": sample.metadata.get("stop_reason"),
+                "total_tokens": sum(len(m.content or "") for m in final_trajectory.messages),
+                "status": sample.metadata.get("status", "success"),
+            }
+            if sample.metadata.get("error") is not None:
+                exec_metadata["error"] = sample.metadata["error"]
+        else:
+            initial_trajectory = Trajectory(
+                messages=initial_messages,
+                metadata={"sample_data": sample_data},
+            )
 
-    if config.attempt_executor is not None:
-        sample = await _run_attempt_executor(
-            config.attempt_executor,
-            sample_data=sample_data,
-            sample_id=sample_id,
-            environment=environment,
-            run_config=run_config,
-        )
-        final_trajectory = sample.trajectory
-        assert final_trajectory is not None
-        final_env = environment
-        env_state = (
-            sample.environment_state
-            if sample.environment_state is not None
-            else await _serialize_environment_state(final_env)
-        )
-        if not sample.attempt_id:
-            sample.attempt_id = sample_id
-        if sample.problem is None:
-            sample.problem = ProblemRow(
+            actor = Actor(
+                trajectory=initial_trajectory,
+                endpoint=config.endpoint,
+                tools=environment.get_tools() if environment else [],
+            )
+
+            initial_state = AgentState(actor=actor, environment=environment)
+
+            # Run agent with error handling
+            result = await _run_agent_with_error_handling(initial_state, run_config, sample_id)
+            states = result.states
+            final_trajectory = result.final_trajectory
+            error_message = result.error_message
+            is_provider_error = result.is_provider_error
+
+            final_env = states[-1].environment
+            if final_env is not None:
+                await _maybe_finalize_environment(
+                    final_env,
+                    run_config=run_config,
+                    trajectory=final_trajectory,
+                )
+            env_state = await _serialize_environment_state(final_env)
+
+            problem = ProblemRow(
                 problem_id=sample_id,
                 payload=sample_data,
                 ground_truth=sample_data.get("ground_truth") or sample_data.get("answer"),
                 metadata=sample_data.get("metadata", {}),
             )
-        combined_metadata = {
-            **sample_data.get("metadata", {}),
-            **final_trajectory.metadata,
-            **sample.metadata,
-        }
-        if final_env is not None:
-            runtime_metadata = getattr(final_env, "get_runtime_metadata", None)
-            if callable(runtime_metadata):
-                extra_metadata = runtime_metadata()
-                if isinstance(extra_metadata, dict):
-                    combined_metadata.update(extra_metadata)
-        sample.environment_state = env_state
-        sample.metadata = combined_metadata
-        exec_metadata = {
-            "turns_used": sample.metadata.get("turns_used", 0),
-            "stop_reason": sample.metadata.get("stop_reason"),
-            "total_tokens": sum(len(m.content or "") for m in final_trajectory.messages),
-            "status": sample.metadata.get("status", "success"),
-        }
-        if sample.metadata.get("error") is not None:
-            exec_metadata["error"] = sample.metadata["error"]
-    else:
-        initial_trajectory = Trajectory(
-            messages=initial_messages,
-            metadata={"sample_data": sample_data},
-        )
 
-        actor = Actor(
-            trajectory=initial_trajectory,
-            endpoint=config.endpoint,
-            tools=environment.get_tools() if environment else [],
-        )
-
-        initial_state = AgentState(actor=actor, environment=environment)
-
-        # Run agent with error handling
-        result = await _run_agent_with_error_handling(initial_state, run_config, sample_id)
-        states = result.states
-        final_trajectory = result.final_trajectory
-        error_message = result.error_message
-        is_provider_error = result.is_provider_error
-
-        final_env = states[-1].environment
-        if final_env is not None:
-            await _maybe_finalize_environment(
-                final_env,
-                run_config=run_config,
+            combined_metadata = {
+                **sample_data.get("metadata", {}),
+                **final_trajectory.metadata,
+            }
+            if final_env is not None:
+                runtime_metadata = getattr(final_env, "get_runtime_metadata", None)
+                if callable(runtime_metadata):
+                    extra_metadata = runtime_metadata()
+                    if isinstance(extra_metadata, dict):
+                        combined_metadata.update(extra_metadata)
+            sample = AttemptResult(
+                attempt_id=sample_id,
+                problem=problem,
                 trajectory=final_trajectory,
+                environment_state=env_state,
+                metadata=combined_metadata,
             )
-        env_state = await _serialize_environment_state(final_env)
 
-        problem = ProblemRow(
-            problem_id=sample_id,
-            payload=sample_data,
-            ground_truth=sample_data.get("ground_truth") or sample_data.get("answer"),
-            metadata=sample_data.get("metadata", {}),
-        )
+            exec_metadata = {
+                "turns_used": states[-1].turn_idx,
+                "stop_reason": str(states[-1].stop) if states[-1].stop else None,
+                "total_tokens": sum(len(m.content or "") for m in final_trajectory.messages),
+            }
 
-        combined_metadata = {
-            **sample_data.get("metadata", {}),
-            **final_trajectory.metadata,
-        }
-        if final_env is not None:
-            runtime_metadata = getattr(final_env, "get_runtime_metadata", None)
-            if callable(runtime_metadata):
-                extra_metadata = runtime_metadata()
-                if isinstance(extra_metadata, dict):
-                    combined_metadata.update(extra_metadata)
-        sample = AttemptResult(
-            attempt_id=sample_id,
-            problem=problem,
-            trajectory=final_trajectory,
-            environment_state=env_state,
-            metadata=combined_metadata,
-        )
+            final_state = states[-1]
 
-        exec_metadata = {
-            "turns_used": states[-1].turn_idx,
-            "stop_reason": str(states[-1].stop) if states[-1].stop else None,
-            "total_tokens": sum(len(m.content or "") for m in final_trajectory.messages),
-        }
+            if error_message:
+                exec_metadata["error"] = error_message
+                exec_metadata["status"] = "provider_error" if is_provider_error else "failed"
+            elif final_state.error:
+                exec_metadata["error"] = final_state.error
+                exec_metadata["status"] = "failed"
+            elif final_state.stop in (
+                StopReason.ABORTED,
+                StopReason.INTERRUPTED,
+                StopReason.USER_ABORT,
+            ):
+                exec_metadata["status"] = "aborted"
+            else:
+                exec_metadata["status"] = "success"
 
-        final_state = states[-1]
+        assert final_trajectory is not None
+        sample.metadata = {**sample.metadata, **exec_metadata}
+        sample.status = _map_exec_status(exec_metadata["status"])
 
-        if error_message:
-            exec_metadata["error"] = error_message
-            exec_metadata["status"] = "provider_error" if is_provider_error else "failed"
-        elif final_state.error:
-            exec_metadata["error"] = final_state.error
-            exec_metadata["status"] = "failed"
-        elif final_state.stop in (
-            StopReason.ABORTED,
-            StopReason.INTERRUPTED,
-            StopReason.USER_ABORT,
-        ):
-            exec_metadata["status"] = "aborted"
-        else:
-            exec_metadata["status"] = "success"
-
-    assert final_trajectory is not None
-    sample.metadata = {**sample.metadata, **exec_metadata}
-    sample.status = _map_exec_status(exec_metadata["status"])
-
-    score: Score | None = None
-    try:
+        score: Score | None = None
         if exec_metadata["status"] != "aborted":
             score = await _compute_score(
                 sample,
@@ -1197,34 +1197,33 @@ async def evaluate_sample(
                 scoring_context=ScoringContext(environment=final_env),
             )
             attach_score(sample, score)
-    finally:
-        # Close environment after scoring — sandbox/container is no longer needed
-        await _close_environment(final_env, sample_id)
 
-    # Compute duration and log completion
-    duration_seconds = time.time() - start_time
-    exec_metadata["duration_seconds"] = duration_seconds
-    reward = score.reward if score else 0.0
+        # Compute duration and log completion
+        duration_seconds = time.time() - start_time
+        exec_metadata["duration_seconds"] = duration_seconds
+        reward = score.reward if score else 0.0
 
-    _log_sample_completion(
-        sample_id, reward, exec_metadata, final_trajectory, score, config.verbose
-    )
-
-    # Attach derived evaluation to the canonical execution result.
-    if score is not None:
-        sample.evaluation = AttemptEvaluation(reward=score.reward, score=score)
-
-    # Emit sample_end event for frontend live streaming
-    await run_config.on_chunk(
-        StreamChunk(
-            "sample_end",
-            {"sample_id": sample_id, "reward": reward, "metadata": exec_metadata},
+        _log_sample_completion(
+            sample_id, reward, exec_metadata, final_trajectory, score, config.verbose
         )
-    )
 
-    _event_logger.info("sample_end", extra={"sample_id": sample_id, "score": reward})
+        # Attach derived evaluation to the canonical execution result.
+        if score is not None:
+            sample.evaluation = AttemptEvaluation(reward=score.reward, score=score)
 
-    return sample
+        # Emit sample_end event for frontend live streaming
+        await run_config.on_chunk(
+            StreamChunk(
+                "sample_end",
+                {"sample_id": sample_id, "reward": reward, "metadata": exec_metadata},
+            )
+        )
+
+        _event_logger.info("sample_end", extra={"sample_id": sample_id, "score": reward})
+
+        return sample
+    finally:
+        await _close_environment(final_env, sample_id)
 
 
 async def evaluate(

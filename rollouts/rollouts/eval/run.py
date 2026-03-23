@@ -44,6 +44,8 @@ from pathlib import Path
 from types import FrameType
 from typing import TYPE_CHECKING, Any
 
+import trio_asyncio
+
 if TYPE_CHECKING:
     from rollouts.core import Environment
 
@@ -537,7 +539,7 @@ Examples:
 
     signal.signal(signal.SIGINT, _handle_sigint)
     try:
-        results = trio.run(_run)
+        results = trio_asyncio.run(_run)
     except _EvalInterrupted:
         logger.info("Evaluation interrupted")
         return 130
