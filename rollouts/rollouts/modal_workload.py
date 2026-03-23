@@ -223,15 +223,23 @@ def emit(event: str, **data: object) -> None:
 
 def _project_training_event(data: dict[str, object]) -> None:
     event_name = data.get("event")
-    if not isinstance(event_name, str) or not event_name:
+    if event_name != "step_complete":
         return
-    payload = dict(data)
-    payload.pop("event", None)
     emit(
-        event_name,
+        "step_complete",
         projected_from_artifact=True,
         projection_source="training.jsonl",
-        **payload,
+        step=data.get("step"),
+        mean_reward=data.get("mean_reward"),
+        pg_loss=data.get("pg_loss"),
+        entropy=data.get("entropy"),
+        num_samples=data.get("num_samples"),
+        num_groups=data.get("num_groups"),
+        step_total_ms=data.get("step_total_ms"),
+        rollout_step_count=data.get("rollout_step_count"),
+        gpu_allocated_gb=data.get("gpu_allocated_gb"),
+        gpu_reserved_gb=data.get("gpu_reserved_gb"),
+        ram_gb=data.get("ram_gb"),
     )
 
 
@@ -240,7 +248,15 @@ def _project_metrics_event(data: dict[str, object]) -> None:
         "metrics_update",
         projected_from_artifact=True,
         projection_source="metrics.jsonl",
-        **data,
+        step=data.get("step"),
+        mean_reward=data.get("mean_reward"),
+        loss=data.get("loss"),
+        grad_norm=data.get("grad_norm"),
+        pg_loss=data.get("pg_loss"),
+        entropy=data.get("entropy"),
+        rollout_step_count=data.get("rollout_step_count"),
+        rollout_samples_generated=data.get("rollout_samples_generated"),
+        timestamp=data.get("timestamp"),
     )
 
 
