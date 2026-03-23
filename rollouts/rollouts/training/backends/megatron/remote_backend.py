@@ -41,6 +41,7 @@ _CONTROL_MESSAGE_MAX_BYTES = 64 * 1024
 _WITNESS_RESPONSE_TIMEOUT_SEC = 20.0
 _RESPONSE_POLL_INTERVAL_SEC = 0.25
 _RESPONSE_PROGRESS_LOG_INTERVAL_SEC = 5.0
+_INITIALIZE_TIMEOUT_SEC = 600.0
 _PREFLIGHT_TRAIN_STEP_TIMEOUT_SEC = 600.0
 
 
@@ -331,10 +332,11 @@ class MegatronRemoteBackend:
             })
 
         # Wait for rank 0 to confirm initialization
-        response = self._recv_response(
+        response = self._recv_response_polling(
             self.workers[0],
             context="initialize",
             max_size=_CONTROL_MESSAGE_MAX_BYTES,
+            timeout_sec=_INITIALIZE_TIMEOUT_SEC,
         )
         assert response["status"] == "initialized", f"Init failed: {response}"
 
