@@ -1419,7 +1419,6 @@ async def _grpo_train_async(
         num_engines=num_engines,
         ports=list(config.inference.ports),
         gpu_assignments=[list(gpus) for gpus in config.inference.gpu_assignments],
-        inference_backend=config.inference.backend,
         inference_realization=inference_runtime.realization.name,
         inference_sync_realization=(
             inference_runtime.sync_realization.name
