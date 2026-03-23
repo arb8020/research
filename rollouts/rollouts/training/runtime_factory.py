@@ -85,6 +85,7 @@ def create_training_backend_runtime(
     training_mode: TrainingMode = "rl",
     megatron_workers: list[Any] | None = None,
     megatron_inference_endpoints: Sequence[str] = (),
+    emit_phase: Callable[[str], None] | None = None,
 ) -> tuple[Any, Callable[[], None] | None]:
     """Construct a training backend plus optional cleanup.
 
@@ -95,6 +96,10 @@ def create_training_backend_runtime(
 
     cleanup: Callable[[], None] | None = None
     backend_name = trainer.backend
+
+    def _emit(event: str) -> None:
+        if emit_phase is not None:
+            emit_phase(event)
 
     if backend_name == "pytorch":
         if loss_fn is None:
@@ -213,6 +218,7 @@ def create_training_backend_runtime(
                 "Pass megatron_workers to create_training_backend_runtime."
             )
 
+        _emit("training_preflight_backend_runtime_create_start")
         lowering = build_megatron_lowering(trainer, training_mode=training_mode)
         megatron_config = MegatronRemoteConfig(
             model_name=model.name,
@@ -240,7 +246,10 @@ def create_training_backend_runtime(
             config=megatron_config,
             checkpoint_dir=output_dir,
         )
+        _emit("training_preflight_backend_runtime_create_ok")
+        _emit("training_preflight_backend_initialize_start")
         backend.initialize()
+        _emit("training_preflight_backend_initialize_ok")
 
         def _cleanup_megatron() -> None:
             backend.shutdown()

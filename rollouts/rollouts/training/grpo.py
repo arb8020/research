@@ -344,6 +344,7 @@ def _setup_training_backend(
     output_dir: Path,
     inference_engine: Any,
     megatron_workers: list[Any] | None = None,
+    emit_phase: Callable[[str], None] | None = None,
 ) -> tuple[Any, Any, Any, Callable[[], None] | None]:  # (backend, tokenizer, endpoint, cleanup)
     """Setup training backend, tokenizer, and endpoint.
 
@@ -377,6 +378,7 @@ def _setup_training_backend(
         training_mode="rl",
         megatron_workers=megatron_workers,
         megatron_inference_endpoints=(f"http://localhost:{config.inference.port}",),
+        emit_phase=emit_phase,
     )
 
     tokenizer, endpoint = _build_training_client_surface(config, inference_engine)
@@ -736,6 +738,7 @@ async def _run_training_preflight(
             preflight_output_dir,
             dummy_engine,
             megatron_workers=megatron_workers,
+            emit_phase=_emit_preflight_event,
         )
 
         _emit_preflight_event("training_preflight_backend_init_ok")
