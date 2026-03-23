@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import concurrent.futures
+import inspect
 import json
 import logging
 import math
@@ -444,13 +445,17 @@ class ModalSandboxResource:
         from broker.providers import modal as broker_modal
         from broker.types import ProvisionRequest
 
+        request_kwargs: dict[str, Any] = {
+            "gpu_type": self.config.gpu,
+            "gpu_count": 1,
+            "provider": "modal",
+            "name": self.config.app_name,
+            "raw_data": {"deps": self._broker_deps()},
+        }
+        if "max_lifetime_seconds" in inspect.signature(ProvisionRequest).parameters:
+            request_kwargs["max_lifetime_seconds"] = self.config.timeout_seconds
         request = ProvisionRequest(
-            gpu_type=self.config.gpu,
-            gpu_count=1,
-            provider="modal",
-            name=self.config.app_name,
-            max_lifetime_seconds=self.config.timeout_seconds,
-            raw_data={"deps": self._broker_deps()},
+            **request_kwargs,
         )
         instance = await broker_modal.provision_instance(request)
         if instance is None:

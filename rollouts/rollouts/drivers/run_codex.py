@@ -250,6 +250,9 @@ async def _run_codex_turn(
     thread_id = None
     usage = {}
 
+    # TODO(parser-consolidation): This inline Codex NDJSON parser duplicates
+    # _CodexEventParser in drivers/codex.py. Replace with CodexDriver.run() or
+    # import and use _CodexEventParser directly.
     try:
         # Read and parse JSONL events
         while True:

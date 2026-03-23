@@ -51,3 +51,8 @@ The current supported surface is:
 
 That is enough to cover the trainer/runtime space we have actually repaired so
 far without pretending the rest of the matrix is green.
+
+Thin researcher-facing entrypoints for these now live in:
+
+- [configs/trusted/rl/qwen3_0_6b_torchtitan_modal.py](/Users/chiraagbalu/research/rollouts/configs/trusted/rl/qwen3_0_6b_torchtitan_modal.py)
+- [configs/trusted/rl/qwen3_0_6b_megatron_modal.py](/Users/chiraagbalu/research/rollouts/configs/trusted/rl/qwen3_0_6b_megatron_modal.py)

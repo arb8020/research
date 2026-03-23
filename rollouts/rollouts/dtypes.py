@@ -1510,6 +1510,29 @@ class Environment(Protocol):
     `environment.score(...)` when the environment owns the verification oracle.
     """
 
+    # TODO(boundary): keep the runtime protocol small, but make the environment
+    # denotation less ambient. Today too many semantically different cases can
+    # hide behind the same `Environment` surface:
+    # - single-turn judged tasks
+    # - multi-turn tool environments
+    # - persistent workspace environments
+    # - external-agent / attempt-executor flows
+    # - environments that own scoring vs environments scored externally
+    #
+    # We do not necessarily want inheritance here, but we do want clearer
+    # canonical environment families and examples so maintainers can answer
+    # locally:
+    # - what interaction/state model does this environment denote?
+    # - who owns scoring/finalization?
+    # - is state persistent across turns?
+    # - is the agent native to rollouts or projected into an external runtime?
+    #
+    # A useful direction is:
+    # 1. keep this operational protocol minimal
+    # 2. make environment kind/family explicit in data or config
+    # 3. maintain a few reference implementations for the major semantic cases
+    #    instead of letting every benchmark invent its own hidden variant
+
     def get_tools(self) -> list[Tool]:
         """Return available tools for this environment."""
         ...

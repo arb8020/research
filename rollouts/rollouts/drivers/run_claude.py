@@ -488,6 +488,10 @@ class _MessageAccumulator:
         self.tool_calls = []
 
 
+# TODO(parser-consolidation): This is a duplicate of _ClaudeEventParser in
+# drivers/claude.py. The two have diverged (this one has reset(), that one has
+# an extra trust-boundary comment and _content_index). Consolidate into a single
+# canonical _ClaudeEventParser in drivers/claude.py and import it here.
 class _ClaudeEventParser:
     """Parse Claude Code NDJSON messages into StreamEvents."""
 

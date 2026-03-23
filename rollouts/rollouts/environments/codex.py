@@ -276,6 +276,10 @@ class CodexEnvironment:
 
     # ── Core Implementation ───────────────────────────────────────────────────
 
+    # TODO(launch-consolidation): This environment rolls its own asyncio subprocess
+    # launch and inline JSONL parser instead of using CodexDriver from
+    # drivers/codex.py. Consolidate: replace run_task() with CodexDriver.run()
+    # and drop the inline parser below.
     async def run_task(
         self,
         task: str,

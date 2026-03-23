@@ -281,6 +281,11 @@ class ClaudeCodeEnvironment:
 
     # ── Core Implementation ───────────────────────────────────────────────────
 
+    # TODO(launch-consolidation): This environment rolls its own asyncio subprocess
+    # launch and inline NDJSON parser instead of using ClaudeDriver from
+    # drivers/claude.py. Consolidate: replace run_task() with ClaudeDriver.run()
+    # and drop the inline parser below. ClaudeCodeTrajectory can be constructed
+    # from the resulting Trajectory via the _EventAccumulator in drivers/runner.py.
     async def run_task(
         self,
         task: str,
