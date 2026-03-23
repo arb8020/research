@@ -636,6 +636,9 @@ def _setup_run_logging(
         if on_event is not None:
             on_event(event, data)
 
+    # Provider-owned projections sometimes need to append directly to the
+    # canonical parent journal without re-entering this callback path.
+    _emit_event.log_file = log_file  # type: ignore[attr-defined]
     return RunLogger(emit_event=_emit_event)
 
 
