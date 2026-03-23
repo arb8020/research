@@ -64,6 +64,16 @@ def _gradient_accumulation_fusion_available() -> bool:
     return True
 
 
+def _masked_softmax_fusion_available() -> bool:
+    try:
+        import scaled_masked_softmax_cuda  # noqa: F401
+        import scaled_softmax_cuda  # noqa: F401
+        import scaled_upper_triang_masked_softmax_cuda  # noqa: F401
+    except Exception:
+        return False
+    return True
+
+
 def _disable_te_only_qwen_features_when_unavailable(args: Namespace) -> None:
     if _transformer_engine_available():
         return
@@ -88,6 +98,11 @@ def normalize_te_only_megatron_config(transformer_config: Any) -> None:
         te_only_disabled or not _gradient_accumulation_fusion_available()
     ):
         transformer_config.gradient_accumulation_fusion = False
+    if (
+        hasattr(transformer_config, "masked_softmax_fusion")
+        and not _masked_softmax_fusion_available()
+    ):
+        transformer_config.masked_softmax_fusion = False
 
 
 def _build_qwen3_cli_args(

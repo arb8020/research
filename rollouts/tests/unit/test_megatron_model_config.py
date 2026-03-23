@@ -9,6 +9,7 @@ def test_normalize_te_only_transformer_config_fields_clears_local_flags() -> Non
         persist_layer_norm=True,
         apply_rope_fusion=True,
         gradient_accumulation_fusion=True,
+        masked_softmax_fusion=True,
     )
 
     normalize_te_only_megatron_config(config)
@@ -16,3 +17,4 @@ def test_normalize_te_only_transformer_config_fields_clears_local_flags() -> Non
     assert config.persist_layer_norm is False
     assert config.apply_rope_fusion is False
     assert config.gradient_accumulation_fusion is False
+    assert config.masked_softmax_fusion is False
