@@ -128,6 +128,10 @@ def _workspace_pythonpath_entries(
 ) -> list[str]:
     entries = [str(root) for root in _workspace_member_roots(workspace_root)]
     entries.extend(extra_entries)
+    # Keep the workspace root as a last-resort compatibility fallback for
+    # subprocesses that still assume the old monorepo-root import shape. Member
+    # roots stay first so real packages win before namespace-package ambiguity.
+    entries.append(str(workspace_root))
     # Preserve order while deduplicating.
     return list(dict.fromkeys(entries))
 
@@ -143,6 +147,7 @@ def _remote_workspace_pythonpath_entries(
         for root in _workspace_member_roots(local_workspace_root)
     ]
     remote_entries.extend(extra_entries)
+    remote_entries.append(remote_workspace_root)
     return list(dict.fromkeys(remote_entries))
 
 
