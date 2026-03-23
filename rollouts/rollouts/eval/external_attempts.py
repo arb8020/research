@@ -1129,79 +1129,151 @@ def _trajectory_from_openhands_json_output(raw_output: str) -> Trajectory:
     events = _extract_json_objects_from_marked_output(raw_output, marker="--JSON Event--")
     messages: list[Message] = []
     for event in events:
-        kind = str(event.get("kind") or "")
-        source = str(event.get("source") or "").lower()
-        if kind == "MessageEvent":
-            llm_message = event.get("llm_message")
-            if not isinstance(llm_message, dict):
-                continue
-            raw_role = str(llm_message.get("role") or source or "assistant").lower()
-            role = raw_role if raw_role in {"system", "user", "assistant", "tool"} else "assistant"
-            content = _flatten_openhands_content(llm_message.get("content"))
-            if content is None:
-                continue
-            details = {
-                "openhands_kind": kind,
-                "openhands_source": source or None,
-            }
-            for key in ("id", "timestamp", "llm_response_id"):
-                if event.get(key) is not None:
-                    details[key] = event[key]
-            messages.append(Message(role=role, content=content, details=details))
-            continue
-
-        if kind == "ActionEvent":
-            thought = _flatten_openhands_content(event.get("thought"))
-            action = event.get("action")
-            action_message = None
-            if isinstance(action, dict):
-                action_message = _flatten_openhands_content(action.get("message"))
-            content_parts = [part for part in (thought, action_message) if part]
-            if not content_parts:
-                continue
-            details = {
-                "openhands_kind": kind,
-                "openhands_source": source or None,
-                "action": action,
-                "tool_call": event.get("tool_call"),
-                "tool_name": event.get("tool_name"),
-            }
-            for key in ("id", "timestamp", "summary", "reasoning_content", "tool_call_id"):
-                if event.get(key) is not None:
-                    details[key] = event[key]
-            messages.append(
-                Message(role="assistant", content="\n\n".join(content_parts), details=details)
-            )
-            continue
-
-        if kind == "ObservationEvent":
-            observation = event.get("observation")
-            content = None
-            if isinstance(observation, dict):
-                content = _flatten_openhands_content(observation.get("content"))
-            if content is None:
-                continue
-            details = {
-                "openhands_kind": kind,
-                "openhands_source": source or None,
-                "observation": observation,
-                "tool_name": event.get("tool_name"),
-            }
-            for key in ("id", "timestamp", "action_id", "tool_call_id"):
-                if event.get(key) is not None:
-                    details[key] = event[key]
-            messages.append(
-                Message(
-                    role="tool",
-                    content=content,
-                    tool_call_id=event.get("tool_call_id"),
-                    details=details,
-                )
-            )
+        _append_openhands_event(messages, event)
 
     if not messages:
         raise RuntimeError("OpenHands produced no importable JSON events")
     return Trajectory(messages=messages)
+
+
+def _append_openhands_event(messages: list[Message], event: dict[str, Any]) -> None:
+    kind = str(event.get("kind") or "")
+    source = str(event.get("source") or "").lower()
+    if kind == "MessageEvent":
+        llm_message = event.get("llm_message")
+        if not isinstance(llm_message, dict):
+            return
+        raw_role = str(llm_message.get("role") or source or "assistant").lower()
+        role = raw_role if raw_role in {"system", "user", "assistant", "tool"} else "assistant"
+        content = _flatten_openhands_content(llm_message.get("content"))
+        if content is None:
+            return
+        details = {
+            "openhands_kind": kind,
+            "openhands_source": source or None,
+        }
+        for key in ("id", "timestamp", "llm_response_id"):
+            if event.get(key) is not None:
+                details[key] = event[key]
+        messages.append(Message(role=role, content=content, details=details))
+        return
+
+    if kind == "ActionEvent":
+        thought = _flatten_openhands_content(event.get("thought"))
+        action = event.get("action")
+        action_message = None
+        if isinstance(action, dict):
+            action_message = _flatten_openhands_content(action.get("message"))
+        content_parts = [part for part in (thought, action_message) if part]
+        if not content_parts:
+            return
+        details = {
+            "openhands_kind": kind,
+            "openhands_source": source or None,
+            "action": action,
+            "tool_call": event.get("tool_call"),
+            "tool_name": event.get("tool_name"),
+        }
+        for key in ("id", "timestamp", "summary", "reasoning_content", "tool_call_id"):
+            if event.get(key) is not None:
+                details[key] = event[key]
+        messages.append(
+            Message(role="assistant", content="\n\n".join(content_parts), details=details)
+        )
+        return
+
+    if kind == "ObservationEvent":
+        observation = event.get("observation")
+        content = None
+        if isinstance(observation, dict):
+            content = _flatten_openhands_content(observation.get("content"))
+        if content is None:
+            return
+        details = {
+            "openhands_kind": kind,
+            "openhands_source": source or None,
+            "observation": observation,
+            "tool_name": event.get("tool_name"),
+        }
+        for key in ("id", "timestamp", "action_id", "tool_call_id"):
+            if event.get(key) is not None:
+                details[key] = event[key]
+        messages.append(
+            Message(
+                role="tool",
+                content=content,
+                tool_call_id=event.get("tool_call_id"),
+                details=details,
+            )
+        )
+
+
+class _OpenHandsJsonEventStreamParser:
+    def __init__(self) -> None:
+        self._awaiting_marker = True
+        self._awaiting_object_start = False
+        self._json_lines: list[str] = []
+        self._depth = 0
+        self._in_string = False
+        self._escaped = False
+
+    def feed_line(self, line: str) -> list[dict[str, Any]]:
+        payloads: list[dict[str, Any]] = []
+        stripped = line.strip()
+        if self._awaiting_marker:
+            if stripped == "--JSON Event--":
+                self._awaiting_marker = False
+                self._awaiting_object_start = True
+            return payloads
+
+        if self._awaiting_object_start:
+            if not stripped:
+                return payloads
+            if stripped != "{":
+                self._awaiting_marker = True
+                self._awaiting_object_start = False
+                return payloads
+            self._awaiting_object_start = False
+            self._json_lines = []
+            self._depth = 0
+            self._in_string = False
+            self._escaped = False
+
+        self._json_lines.append(line)
+        for ch in line:
+            if self._escaped:
+                self._escaped = False
+                continue
+            if ch == "\\":
+                self._escaped = True
+                continue
+            if ch == '"':
+                self._in_string = not self._in_string
+                continue
+            if self._in_string:
+                continue
+            if ch == "{":
+                self._depth += 1
+            elif ch == "}":
+                self._depth -= 1
+
+        if self._depth != 0:
+            return payloads
+
+        try:
+            payload = json.loads("\n".join(self._json_lines))
+        except json.JSONDecodeError:
+            payload = None
+
+        self._awaiting_marker = True
+        self._awaiting_object_start = False
+        self._json_lines = []
+        self._depth = 0
+        self._in_string = False
+        self._escaped = False
+        if isinstance(payload, dict):
+            payloads.append(payload)
+        return payloads
 
 
 def _mini_swe_agent_output_to_trajectory(payload: dict[str, Any]) -> Trajectory:
@@ -1346,7 +1418,7 @@ async def trajectory_from_openhands(
     runtime: str = "docker",
     environment: str | None = None,
 ) -> ExternalAttemptArtifact:
-    del sample_data, run_config
+    del sample_data
 
     if api_key_env_var is not None and not os.environ.get(api_key_env_var):
         raise RuntimeError(f"Required environment variable {api_key_env_var} is not set")
@@ -1416,46 +1488,101 @@ async def trajectory_from_openhands(
             "via `api_key_env_var`, `LLM_API_KEY`, `ANTHROPIC_API_KEY`, or `OPENAI_API_KEY`."
         )
 
-    try:
-        completed = await trio.to_thread.run_sync(
-            lambda: subprocess.run(
-                cmd,
-                cwd=str(workdir),
-                env=env,
-                text=True,
-                capture_output=True,
-                timeout=timeout_seconds,
-                check=False,
-            )
-        )
-    except subprocess.TimeoutExpired as exc:
-        raise TimeoutError(f"OpenHands run timed out after {timeout_seconds:.1f}s") from exc
+    raw_line_handler = _make_raw_driver_line_handler(run_config, driver="openhands")
+    parser = _OpenHandsJsonEventStreamParser()
+    messages: list[Message] = []
+    stdout_lines: list[str] = []
+    stderr_lines: list[str] = []
+    conversation_id: str | None = None
 
-    stdout_text = completed.stdout
-    stderr_text = completed.stderr
+    async def _consume_stream(
+        stream: trio.abc.ReceiveStream | None,
+        *,
+        sink: list[str],
+        parse_events: bool,
+    ) -> None:
+        nonlocal conversation_id
+        if stream is None:
+            return
+        buffer = ""
+        while True:
+            chunk = await stream.receive_some(4096)
+            if not chunk:
+                break
+            buffer += chunk.decode("utf-8", errors="replace")
+            while True:
+                newline = buffer.find("\n")
+                if newline < 0:
+                    break
+                line = buffer[:newline]
+                buffer = buffer[newline + 1 :]
+                sink.append(line)
+                if parse_events:
+                    if raw_line_handler is not None:
+                        await raw_line_handler(line)
+                    for event in parser.feed_line(line):
+                        _append_openhands_event(messages, event)
+                    if conversation_id is None:
+                        match = re.search(r"Conversation ID:\s*([0-9a-fA-F-]{16,})", line)
+                        if match:
+                            conversation_id = match.group(1)
+        if buffer:
+            sink.append(buffer)
+            if parse_events:
+                if raw_line_handler is not None:
+                    await raw_line_handler(buffer)
+                for event in parser.feed_line(buffer):
+                    _append_openhands_event(messages, event)
+                if conversation_id is None:
+                    match = re.search(r"Conversation ID:\s*([0-9a-fA-F-]{16,})", buffer)
+                    if match:
+                        conversation_id = match.group(1)
+
+    proc = await trio.lowlevel.open_process(
+        cmd,
+        cwd=str(workdir),
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+
+    with trio.move_on_after(timeout_seconds) as cancel_scope:
+        async with trio.open_nursery() as nursery:
+            nursery.start_soon(
+                partial(_consume_stream, proc.stdout, sink=stdout_lines, parse_events=True)
+            )
+            nursery.start_soon(
+                partial(_consume_stream, proc.stderr, sink=stderr_lines, parse_events=False)
+            )
+            await proc.wait()
+
+    if cancel_scope.cancelled_caught:
+        proc.kill()
+        await proc.wait()
+        raise TimeoutError(f"OpenHands run timed out after {timeout_seconds:.1f}s")
+
+    stdout_text = "\n".join(stdout_lines).strip()
+    stderr_text = "\n".join(stderr_lines).strip()
     combined_output = "\n".join(part for part in (stdout_text, stderr_text) if part).strip()
-    trajectory = _trajectory_from_openhands_json_output(combined_output)
+    if not messages:
+        trajectory = _trajectory_from_openhands_json_output(combined_output)
+    else:
+        trajectory = Trajectory(messages=messages)
 
     metadata: dict[str, Any] = {
         "runtime": "openhands",
         "driver": "openhands",
         "workspace": str(workdir),
-        "returncode": completed.returncode,
+        "returncode": proc.returncode,
     }
     if env.get("LLM_MODEL"):
         metadata["model"] = env["LLM_MODEL"]
     if api_key_env_var is not None:
         metadata["api_key_env_var"] = api_key_env_var
-    conversation_id = None
-    for line in reversed(combined_output.splitlines()):
-        match = re.search(r"Conversation ID:\s*([0-9a-fA-F-]{16,})", line)
-        if match:
-            conversation_id = match.group(1)
-            break
     if conversation_id is not None:
         metadata["conversation_id"] = conversation_id
 
-    status = Status.COMPLETED if completed.returncode == 0 else Status.ABORTED
+    status = Status.COMPLETED if proc.returncode == 0 else Status.ABORTED
     if combined_output:
         metadata["openhands_output"] = combined_output[-8000:]
 
