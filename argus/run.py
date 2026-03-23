@@ -479,6 +479,19 @@ def _uv_pip_install_command(
     return " ".join(parts)
 
 
+def _uv_pip_install_editable_command(
+    project_roots: tuple[str, ...],
+    *,
+    extra_options: str | None = None,
+) -> str:
+    quoted_projects = " ".join(f"-e {shlex.quote(project_root)}" for project_root in project_roots)
+    parts = ["~/.local/bin/uv", "pip", "install", "--upgrade"]
+    if extra_options:
+        parts.append(extra_options)
+    parts.append(quoted_projects)
+    return " ".join(parts)
+
+
 def _apt_install_command(packages: tuple[str, ...]) -> str:
     quoted_packages = " ".join(shlex.quote(package) for package in packages)
     return f"apt-get update && apt-get install -y {quoted_packages}"
@@ -994,6 +1007,7 @@ async def _deploy_and_submit(
         )
 
     custom_overlay = deps.resolved_runtime_overlay() if deps is not None else None
+    image_owned_runtime = custom_image is not None and custom_image.python_runtime == "image_owned"
 
     if deps is not None and deps.image is not None:
         logger.info(
@@ -1158,6 +1172,19 @@ async def _deploy_and_submit(
         manifest_features_applied.extend(custom_overlay.features)
         manifest_groups_applied.extend(custom_overlay.installed_groups)
 
+    if image_owned_runtime and extra_python_projects:
+        extra_project_roots = tuple(
+            project.remote_source_root(workspace) for project in extra_python_projects
+        )
+        bootstrap_steps.append((
+            "Installing extra project Python packages",
+            (
+                f"{_uv_pip_install_editable_command(extra_project_roots)} && "
+                f"{python_install_probe_command('extra-python-projects')} && "
+                f"{python_runtime_contract_snapshot_command('extra-python-projects')}"
+            ),
+        ))
+
     for label, cmd in bootstrap_steps:
         log("bootstrap_step_start", label=label)
         with spinner(f"{label}..."):
@@ -1270,6 +1297,12 @@ async def _deploy_and_submit(
         remote_workspace_root=workspace,
         extra_entries=("/root/Megatron-LM",),
     )
+    remote_extra_project_entries = [
+        project.remote_source_root(workspace) for project in extra_python_projects
+    ]
+    pythonpath_entries = list(dict.fromkeys(
+        [*remote_extra_project_entries, *remote_workspace_member_entries]
+    ))
 
     env_vars = {
         "PYTHONUNBUFFERED": "1",
@@ -1278,9 +1311,10 @@ async def _deploy_and_submit(
         "ROLLOUTS_JSON_LOGS": "true",
         "HF_HOME": hf_cache_dir,
         # PYTHONPATH includes:
+        # - staged extra project roots for external configs like charisma
         # - each workspace member root for sibling package imports
         # - /root/Megatron-LM for megatron.core imports
-        "PYTHONPATH": ":".join(remote_workspace_member_entries),
+        "PYTHONPATH": ":".join(pythonpath_entries),
         # NCCL settings for multi-GPU training
         "CUDA_DEVICE_MAX_CONNECTIONS": "1",
         **(custom_image.env if custom_image is not None else {}),
@@ -1288,36 +1322,51 @@ async def _deploy_and_submit(
     }
 
     # Submit training job
-    uv_run_args: list[str] = ["run"]
-    for project in extra_python_projects:
-        uv_run_args.extend(["--with-editable", project.remote_source_root(workspace)])
-
-    if raw_script:
-        run_args = tuple(
-            uv_run_args
-            + [
-                "python",
-                remote_script_path,
-            ]
-        )
-    else:
-        run_args = tuple(
-            uv_run_args
-            + [
-                "python",
+    process_command = "/root/.local/bin/uv"
+    if image_owned_runtime:
+        assert custom_image is not None
+        process_command = custom_image.python_executable
+        if raw_script:
+            run_args = (remote_script_path,)
+        else:
+            run_args = (
                 "-m",
                 "argus.run",
                 "--config",
                 remote_script_path,
                 "--local",
-            ]
-        )
+            )
+    else:
+        uv_run_args: list[str] = ["run"]
+        for project in extra_python_projects:
+            uv_run_args.extend(["--with-editable", project.remote_source_root(workspace)])
+
+        if raw_script:
+            run_args = tuple(
+                uv_run_args
+                + [
+                    "python",
+                    remote_script_path,
+                ]
+            )
+        else:
+            run_args = tuple(
+                uv_run_args
+                + [
+                    "python",
+                    "-m",
+                    "argus.run",
+                    "--config",
+                    remote_script_path,
+                    "--local",
+                ]
+            )
 
     log("submit_start")
     with spinner(f"Starting {run_name}...") as spin:
         job = bifrost.submit(
             ProcessSpec(
-                command="/root/.local/bin/uv",
+                command=process_command,
                 args=run_args,
                 cwd=f"{workspace}/rollouts",
                 env=env_vars,
