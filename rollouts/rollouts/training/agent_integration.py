@@ -163,6 +163,12 @@ async def agent_rollout_to_sample(
     run_config = _silent_run_config(max_turns=max_turns)
     states = await run_agent(state, run_config)
     final_state = states[-1]
+    if final_state.environment is not None:
+        await _maybe_finalize_environment(
+            final_state.environment,
+            run_config=run_config,
+            trajectory=final_state.actor.trajectory,
+        )
 
     # 6. Convert trajectory -> attempt row + attached training sample.
     # Environment-owned summary metadata currently flows through trajectory.metadata
@@ -182,6 +188,9 @@ async def agent_rollout_to_sample(
             for m in final_state.actor.trajectory.messages
         ],
     }
+    runtime_metadata = _get_environment_runtime_metadata(final_state.environment)
+    if runtime_metadata is not None:
+        enriched_metadata.update(runtime_metadata)
 
     problem_row = ProblemRow(
         problem_id=(sample_data or {}).get("id", ""),
@@ -200,6 +209,30 @@ async def agent_rollout_to_sample(
     assert sample.response, "response should not be empty after agent execution"
 
     return sample
+
+
+async def _maybe_finalize_environment(
+    environment: "Environment",
+    *,
+    run_config: RunConfig,
+    trajectory: Trajectory,
+) -> None:
+    finalize_attempt = getattr(environment, "finalize_attempt", None)
+    if not callable(finalize_attempt):
+        return
+    await finalize_attempt(run_config=run_config, trajectory=trajectory)
+
+
+def _get_environment_runtime_metadata(environment: "Environment | None") -> dict[str, Any] | None:
+    if environment is None:
+        return None
+    runtime_metadata = getattr(environment, "get_runtime_metadata", None)
+    if not callable(runtime_metadata):
+        return None
+    metadata = runtime_metadata()
+    if not isinstance(metadata, dict):
+        return None
+    return metadata
 
 
 def _resolve_environment_factory(
