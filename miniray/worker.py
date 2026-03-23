@@ -36,6 +36,56 @@ from typing import Any, Literal
 
 logger = logging.getLogger(__name__)
 
+
+def _ipc_trace_payload(msg: Any) -> dict[str, object] | None:
+    if not isinstance(msg, dict):
+        return None
+    if "cmd" in msg:
+        cmd = msg.get("cmd")
+        if cmd not in {"init", "shutdown"}:
+            return None
+        payload: dict[str, object] = {"kind": "cmd", "cmd": str(cmd)}
+        for key in ("rank", "world_size"):
+            if key in msg:
+                payload[key] = msg[key]
+        config = msg.get("config")
+        if isinstance(config, dict):
+            payload["config_keys"] = sorted(config.keys())
+            payload["model_name"] = config.get("model_name")
+        return payload
+    if "status" in msg:
+        status = msg.get("status")
+        if status not in {"initialized", "error"}:
+            return None
+        payload = {"kind": "status", "status": str(status)}
+        if "step" in msg:
+            payload["step"] = msg["step"]
+        if "error" in msg:
+            payload["error"] = msg["error"]
+        return payload
+    return None
+
+
+def _ipc_trace(direction: str, *, pid: int, payload: dict[str, object], text_len: int) -> None:
+    try:
+        sys.stderr.write(
+            "[MINIRAY_IPC] "
+            + json.dumps(
+                {
+                    "direction": direction,
+                    "pid": pid,
+                    "text_len": text_len,
+                    **payload,
+                },
+                sort_keys=True,
+            )
+            + "\n"
+        )
+        sys.stderr.flush()
+    except Exception:
+        return
+
+
 # ============================================================================
 # PDEATHSIG - Child dies when parent dies (Linux only)
 # ============================================================================
@@ -274,6 +324,13 @@ class Worker:
         assert max_size > 0, f"max_size must be > 0, got {max_size}"
         assert max_size <= 100 * 1024 * 1024, f"max_size too large: {max_size} (max 100MB)"
 
+        payload = {
+            "kind": "control",
+            "op": "recv",
+            "max_size": max_size,
+        }
+        _ipc_trace("recv_start", pid=self.pid, payload=payload, text_len=0)
+
         # TODO: Add timeout support with select.select()
         line = self.r.readline(max_size)
 
@@ -283,7 +340,11 @@ class Worker:
         if not line:
             raise EOFError(f"Worker {self.pid} closed connection")
 
-        return _deserialize(line.rstrip("\n"), self._format)
+        message = _deserialize(line.rstrip("\n"), self._format)
+        payload = _ipc_trace_payload(message)
+        if payload is not None:
+            _ipc_trace("recv", pid=self.pid, payload=payload, text_len=len(line))
+        return message
 
     def send(self, msg: Any) -> None:
         """Send message to worker (non-blocking).
@@ -302,9 +363,16 @@ class Worker:
         assert self.w is not None, "Worker not initialized properly"
 
         text = _serialize(msg, self._format)
+        payload = _ipc_trace_payload(msg)
+        if payload is not None:
+            _ipc_trace("send_start", pid=self.pid, payload=payload, text_len=len(text))
         self.w.write(text)
         self.w.write("\n")
+        if payload is not None:
+            _ipc_trace("send_write_ok", pid=self.pid, payload=payload, text_len=len(text))
         self.w.flush()
+        if payload is not None:
+            _ipc_trace("send_ok", pid=self.pid, payload=payload, text_len=len(text))
 
     def fileno(self) -> int:
         """Return socket file descriptor for use with select().

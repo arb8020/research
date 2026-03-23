@@ -1040,6 +1040,7 @@ def train(handle: Worker) -> None:
     import traceback
 
     # Phase 1: Wait for init message
+    _emit_argus_diag("megatron_worker_waiting_for_init")
     init_msg = handle.recv(max_size=10 * 1024 * 1024)  # 10MB for config
     assert init_msg["cmd"] == "init", f"Expected init, got {init_msg['cmd']}"
 
