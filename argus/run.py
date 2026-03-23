@@ -60,7 +60,7 @@ import os
 import shlex
 import sys
 import uuid
-from collections.abc import Generator
+from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
@@ -553,7 +553,11 @@ def _argus_modal_tags(*, launcher_id: str, run_name: str, config_path: Path) -> 
     }
 
 
-def _setup_run_logging(run_dir: Path) -> _RunLogger:
+def _setup_run_logging(
+    run_dir: Path,
+    *,
+    on_event: Callable[[str, dict[str, Any]], None] | None = None,
+) -> _RunLogger:
     """Create run directory and return the canonical structured run logger.
 
     Workload code should use this one object for structured run events. Argus
@@ -562,7 +566,14 @@ def _setup_run_logging(run_dir: Path) -> _RunLogger:
     """
     run_dir.mkdir(parents=True, exist_ok=True)
     log_file = run_dir / "run.jsonl"
-    return RunLogger(emit_event=JsonlEventSink(log_file))
+    jsonl_sink = JsonlEventSink(log_file)
+
+    def _emit_event(event: str, **data: Any) -> None:
+        jsonl_sink(event, **data)
+        if on_event is not None:
+            on_event(event, data)
+
+    return RunLogger(emit_event=_emit_event)
 
 
 def _spawn_eval_subprocess(
@@ -1743,7 +1754,24 @@ Examples:
                 timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
                 run_name = f"run_{timestamp}"
                 local_run_dir = REPO_ROOT / "results" / "rl" / run_name
-                log = _setup_run_logging(local_run_dir)
+                register_job(
+                    job_id=run_name,
+                    provider="modal",
+                    node_id="pending",
+                    config_path=str(config_path),
+                    log_path=f"results/rl/{run_name}",
+                )
+                from rollouts.jobs import update_job_node
+
+                def _project_modal_event(event: str, data: dict[str, Any]) -> None:
+                    if event == "modal_sandbox_created":
+                        sandbox_id = data.get("sandbox_id")
+                        if sandbox_id:
+                            update_job_node(run_name, "modal", str(sandbox_id))
+                    elif event == "modal_training_start":
+                        update_job_status(run_name, "running")
+
+                log = _setup_run_logging(local_run_dir, on_event=_project_modal_event)
                 log(
                     "run_start",
                     launcher_id=launcher_id,
@@ -1751,13 +1779,6 @@ Examples:
                     config=str(config_path),
                     gpu_count=runtime.gpu_count,
                     gpu_type=runtime.gpu_type,
-                )
-                register_job(
-                    job_id=run_name,
-                    provider="modal",
-                    node_id="pending",
-                    config_path=str(config_path),
-                    log_path=f"results/rl/{run_name}",
                 )
 
                 modal_tags = _argus_modal_tags(
