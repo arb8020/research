@@ -38,6 +38,21 @@ from rollouts.training.models.backend_lowering import MegatronModelLowering
 
 logger = logging.getLogger(__name__)
 
+_MEGATRON_MODEL_DIAG_SENTINEL = "__ARGUS_DIAG__"
+
+
+def _emit_model_diag(event: str, **data: object) -> None:
+    try:
+        import json
+        import sys
+
+        sys.stderr.write(
+            f"{_MEGATRON_MODEL_DIAG_SENTINEL}{json.dumps({'event': event, **data}, sort_keys=True)}\n"
+        )
+        sys.stderr.flush()
+    except Exception:
+        return
+
 
 class MegatronModelAdapter(ModelConstructionAdapter, Protocol):
     """Megatron-specific model construction adapter.
@@ -856,6 +871,7 @@ def setup_megatron_model(
     )
     denotation = normalize_hf_model_denotation(source)
     logger.info("Loading model via AutoBridge: %s", denotation.source.name_or_path)
+    _emit_model_diag("megatron_model_autobridge_start", model_name=denotation.source.name_or_path)
 
     try:
         bridge = AutoBridge.from_pretrained(
@@ -869,6 +885,7 @@ def setup_megatron_model(
             f"Supported: Llama, Qwen, DeepseekV3, GLM-4, GLM-4.7-Flash. "
             f"Original error: {e}"
         ) from e
+    _emit_model_diag("megatron_model_autobridge_ok", model_name=denotation.source.name_or_path)
 
     model_lowering = lower_model_to_megatron(
         denotation,
@@ -887,21 +904,32 @@ def setup_megatron_model(
         denotation.architecture.family,
         denotation.variant,
     )
+    _emit_model_diag(
+        "megatron_model_provider_build_start",
+        adapter=adapter.adapter_name,
+        family=denotation.architecture.family,
+        variant=denotation.variant,
+    )
     provider = adapter.build_provider(
         denotation=denotation,
         runtime_config=config,
         bridge=bridge,
     )
+    _emit_model_diag("megatron_model_provider_build_ok", adapter=adapter.adapter_name)
 
+    _emit_model_diag("megatron_model_get_model_start", wrap_with_ddp=True)
     model = get_model(
         model_provider_func=provider,
         model_type=ModelType.encoder_or_decoder,
         wrap_with_ddp=True,
     )
+    _emit_model_diag("megatron_model_get_model_ok", model_chunks=len(model))
 
     # Load weights from HuggingFace checkpoint
     logger.info("Loading weights from: %s", denotation.source.name_or_path)
+    _emit_model_diag("megatron_model_weight_load_start", model_name=denotation.source.name_or_path)
     adapter.load_weights(bridge=bridge, model=model, denotation=denotation)
+    _emit_model_diag("megatron_model_weight_load_ok", model_name=denotation.source.name_or_path)
 
     logger.info("Model created: %d chunks", len(model))
 
@@ -922,6 +950,7 @@ def setup_megatron_model(
         config=optimizer_config,
         model_chunks=model,
     )
+    _emit_model_diag("megatron_model_optimizer_ok", optimizer_type=type(optimizer).__name__)
 
     logger.info("Optimizer created: %s", type(optimizer).__name__)
 
