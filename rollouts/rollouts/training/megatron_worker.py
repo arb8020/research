@@ -36,6 +36,13 @@ _ISOLATED_REMOTE_INIT_CONNECT_TIMEOUT_SEC = 5.0
 # above the old 10s assumption so bucket init does not fail spuriously before
 # the helper itself has a chance to report a real transport error.
 _ISOLATED_REMOTE_INIT_READ_TIMEOUT_SEC = 30.0
+# This helper wraps the whole isolated runtime publication lifecycle: start the
+# subprocess, stand up rank 0's NCCL group, let the receiver join, ship the
+# bucket, tear the group down, then unwind. The receiver-side init request
+# already advertises a 300s timeout, so a fixed 60s outer wall-clock budget is
+# too small and can kill an otherwise in-flight update. Keep this explicit and
+# well below the receiver-side ceiling until it becomes a config-owned contract.
+_ISOLATED_WEIGHT_SYNC_HELPER_TIMEOUT_SEC = 180.0
 _MEGATRON_BATCH_DTYPES: dict[str, str] = {
     "input_ids": "long",
     "labels": "long",
@@ -748,7 +755,7 @@ def _run_isolated_weight_sync_sender(
     inference_endpoints: list[str],
     group_name: str,
     updates: list[dict[str, object]],
-    timeout_sec: float = 60.0,
+    timeout_sec: float = _ISOLATED_WEIGHT_SYNC_HELPER_TIMEOUT_SEC,
 ) -> None:
     ctx = multiprocessing.get_context("spawn")
     result_queue = ctx.Queue(maxsize=64)
