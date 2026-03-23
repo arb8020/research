@@ -48,6 +48,21 @@ def _parse_megatron_args(argv: list[str]) -> Namespace:
         sys.argv = original_argv
 
 
+def _transformer_engine_available() -> bool:
+    try:
+        import transformer_engine  # noqa: F401
+    except Exception:
+        return False
+    return True
+
+
+def _disable_te_only_qwen_features_when_unavailable(args: Namespace) -> None:
+    if _transformer_engine_available():
+        return
+    if hasattr(args, "apply_rope_fusion"):
+        args.apply_rope_fusion = False
+
+
 def _build_qwen3_cli_args(
     denotation: ModelDenotation,
     *,
@@ -183,4 +198,5 @@ def build_qwen3_transformer_config(
             params_dtype = torch.float32
     args.params_dtype = params_dtype
     args.main_params_dtype = params_dtype
+    _disable_te_only_qwen_features_when_unavailable(args)
     return core_transformer_config_from_args(args)
