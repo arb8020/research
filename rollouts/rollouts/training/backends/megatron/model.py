@@ -24,7 +24,10 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Protocol
 
-from rollouts.training.backends.megatron.qwen import build_qwen3_transformer_config
+from rollouts.training.backends.megatron.qwen import (
+    build_qwen3_transformer_config,
+    normalize_te_only_megatron_config,
+)
 from rollouts.training.backends.megatron.qwen3_5 import get_qwen3_5_spec
 from rollouts.training.backends.megatron.qwen3_next import get_qwen3_next_spec
 from rollouts.training.models import (
@@ -403,6 +406,7 @@ class Qwen3CustomSpecMegatronAdapter:
             fp16=runtime_config.fp16,
         )
         _apply_architecture_overrides(transformer_config, runtime_config)
+        normalize_te_only_megatron_config(transformer_config)
 
         hf_config = self.normalize_hf_config(bridge.hf_config)
         gpt_kwargs = {}

@@ -65,6 +65,17 @@ def _disable_te_only_qwen_features_when_unavailable(args: Namespace) -> None:
         args.persist_layer_norm = False
 
 
+def normalize_te_only_megatron_config(transformer_config: Any) -> None:
+    """Clear TE-only flags when the runtime is on the local torch path."""
+    transformer_impl = getattr(transformer_config, "transformer_impl", "local")
+    if transformer_impl == "transformer_engine" and _transformer_engine_available():
+        return
+    if hasattr(transformer_config, "persist_layer_norm"):
+        transformer_config.persist_layer_norm = False
+    if hasattr(transformer_config, "apply_rope_fusion"):
+        transformer_config.apply_rope_fusion = False
+
+
 def _build_qwen3_cli_args(
     denotation: ModelDenotation,
     *,
