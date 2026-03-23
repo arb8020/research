@@ -245,6 +245,7 @@ def create_training_backend_runtime(
             workers=megatron_workers,
             config=megatron_config,
             checkpoint_dir=output_dir,
+            phase_callback=emit_phase,
         )
         _emit("training_preflight_backend_runtime_create_ok")
         _emit("training_preflight_backend_initialize_start")

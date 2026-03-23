@@ -24,6 +24,7 @@ import os
 import select
 import signal
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -106,6 +107,7 @@ class MegatronRemoteBackend:
     workers: list[Worker]
     config: MegatronRemoteConfig
     checkpoint_dir: Path = field(default_factory=lambda: Path("./checkpoints"))
+    phase_callback: Callable[[str], None] | None = None
     _nccl_inference_endpoints: list[str] = field(default_factory=list, init=False)
     _nccl_initialized: bool = field(default=False, init=False)
     weight_version: int = 0
@@ -288,6 +290,8 @@ class MegatronRemoteBackend:
             return
 
         def _log_init_event(event: str, **data: Any) -> None:
+            if callable(self.phase_callback):
+                self.phase_callback(event)
             logger.info(
                 event,
                 extra={
