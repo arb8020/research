@@ -33,8 +33,9 @@ from bifrost.modal_backend import (
     _normalize_run_logger_event_payload,
     _wait_for_modal_exec_ready,
 )
-from bifrost.service_launch import build_detached_service_launch_command
+from bifrost.path_utils import normalize_remote_workspace_root
 from bifrost.server import server_is_healthy
+from bifrost.service_launch import build_detached_service_launch_command
 from bifrost.types import ExecResult, JobInfo, ServerInfo
 
 
@@ -201,6 +202,20 @@ def test_detached_service_launch_command_uses_python_launcher() -> None:
     assert "/tmp/service.stdout.log" in command
     assert "/tmp/service.stderr.log" in command
     assert "/tmp/service.pid" in command
+
+
+def test_normalize_remote_workspace_root_expands_tilde_prefix() -> None:
+    assert (
+        normalize_remote_workspace_root("~/.bifrost/workspaces/rollouts-rl", "/root")
+        == "/root/.bifrost/workspaces/rollouts-rl"
+    )
+
+
+def test_normalize_remote_workspace_root_leaves_absolute_paths_alone() -> None:
+    assert (
+        normalize_remote_workspace_root("/srv/workspace", "/root")
+        == "/srv/workspace"
+    )
 
 
 def test_connect_returns_execution_session_protocol() -> None:

@@ -16,6 +16,7 @@ import trio_asyncio
 from infra_utils.validation import validate_ssh_key_path, validate_timeout
 
 from . import git_sync
+from .path_utils import normalize_remote_workspace_root
 from .service_launch import build_detached_service_launch_command
 from .types import (
     CopyResult,
@@ -337,6 +338,8 @@ class AsyncBifrostClient:
     ) -> None:
         if not extra_python_projects:
             return
+
+        workspace_root = normalize_remote_workspace_root(workspace_root, await self.expand_path("~"))
 
         sftp = await _trio_wrap(conn.start_sftp_client)()
         try:

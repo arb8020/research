@@ -11,6 +11,7 @@ from infra_utils.retry import retry
 from infra_utils.validation import validate_ssh_key_path, validate_timeout
 
 from . import git_sync
+from .path_utils import normalize_remote_workspace_root
 from .service_launch import build_detached_service_launch_command
 from .types import (
     CopyResult,
@@ -147,6 +148,8 @@ class BifrostClient:
 
         if not extra_python_projects:
             return
+
+        workspace_root = normalize_remote_workspace_root(workspace_root, self.expand_path("~"))
 
         sftp = ssh_client.open_sftp()
         try:
