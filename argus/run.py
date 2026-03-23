@@ -523,6 +523,7 @@ def _uv_pip_install_editable_command(
     *,
     python_bin: str | None = None,
     system: bool = False,
+    no_deps: bool = False,
     extra_options: str | None = None,
 ) -> str:
     quoted_projects = " ".join(f"-e {shlex.quote(project_root)}" for project_root in project_roots)
@@ -531,6 +532,8 @@ def _uv_pip_install_editable_command(
         parts.append("--system")
     elif python_bin is not None:
         parts.extend(["--python", shlex.quote(python_bin)])
+    if no_deps:
+        parts.append("--no-deps")
     if extra_options:
         parts.append(extra_options)
     parts.append(quoted_projects)
@@ -1266,7 +1269,7 @@ async def _deploy_and_submit(
         bootstrap_steps.append((
             "Installing extra project Python packages",
             (
-                f"{_uv_pip_install_editable_command(extra_project_roots, python_bin=None if image_owned_runtime else runtime_python, system=image_owned_runtime)} && "
+                f"{_uv_pip_install_editable_command(extra_project_roots, python_bin=None if image_owned_runtime else runtime_python, system=image_owned_runtime, no_deps=True)} && "
                 f"{python_install_probe_command('extra-python-projects', python_bin=runtime_python)} && "
                 f"{python_runtime_contract_snapshot_command('extra-python-projects', python_bin=runtime_python)}"
             ),

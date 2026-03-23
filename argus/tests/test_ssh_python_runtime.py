@@ -52,3 +52,15 @@ def test_uv_pip_install_editable_command_supports_system_installs() -> None:
 
     assert "--system" in command
     assert "-e /tmp/charisma" in command
+
+
+def test_uv_pip_install_editable_command_can_skip_deps() -> None:
+    command = argus_run._uv_pip_install_editable_command(
+        ("/tmp/charisma",),
+        python_bin="/root/.bifrost/venvs/rollouts-rl/bin/python",
+        no_deps=True,
+    )
+
+    assert "--python /root/.bifrost/venvs/rollouts-rl/bin/python" in command
+    assert "--no-deps" in command
+    assert "-e /tmp/charisma" in command
