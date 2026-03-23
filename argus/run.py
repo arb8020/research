@@ -151,6 +151,27 @@ def _remote_workspace_pythonpath_entries(
     return list(dict.fromkeys(remote_entries))
 
 
+def _remote_broker_credentials_env() -> dict[str, str]:
+    """Project active broker credentials onto the remote job env.
+
+    Some remote workloads legitimately provision nested broker-backed resources,
+    for example KernelBench codeblock evaluators that need their own workspace
+    GPU host. Keep that dependency explicit at the launch boundary instead of
+    making remote workload code rediscover local credential state.
+    """
+    from broker.credentials import ENV_VAR_MAP, get_credentials
+
+    provider_credentials = get_credentials()
+    env_var_by_provider = {provider: env_var for env_var, provider in ENV_VAR_MAP.items()}
+    forwarded: dict[str, str] = {}
+    for provider, api_key in provider_credentials.items():
+        env_var = env_var_by_provider.get(provider)
+        if env_var is None:
+            continue
+        forwarded[env_var] = api_key
+    return forwarded
+
+
 if TYPE_CHECKING:
     from bifrost import BifrostClient, PythonProjectMaterialization
     from broker import ClientGPUInstance
@@ -1385,6 +1406,7 @@ async def _deploy_and_submit(
         "CUDA_DEVICE_MAX_CONNECTIONS": "1",
         **(custom_image.env if custom_image is not None else {}),
         **(custom_overlay.env if custom_overlay is not None else {}),
+        **_remote_broker_credentials_env(),
     }
 
     # Submit training job
