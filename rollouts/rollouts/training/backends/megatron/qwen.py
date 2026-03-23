@@ -56,6 +56,14 @@ def _transformer_engine_available() -> bool:
     return True
 
 
+def _gradient_accumulation_fusion_available() -> bool:
+    try:
+        import fused_weight_gradient_mlp_cuda  # noqa: F401
+    except Exception:
+        return False
+    return True
+
+
 def _disable_te_only_qwen_features_when_unavailable(args: Namespace) -> None:
     if _transformer_engine_available():
         return
@@ -69,11 +77,17 @@ def normalize_te_only_megatron_config(transformer_config: Any) -> None:
     """Clear TE-only flags when the runtime is on the local torch path."""
     transformer_impl = getattr(transformer_config, "transformer_impl", "local")
     if transformer_impl == "transformer_engine" and _transformer_engine_available():
-        return
-    if hasattr(transformer_config, "persist_layer_norm"):
-        transformer_config.persist_layer_norm = False
-    if hasattr(transformer_config, "apply_rope_fusion"):
-        transformer_config.apply_rope_fusion = False
+        te_only_disabled = False
+    else:
+        te_only_disabled = True
+        if hasattr(transformer_config, "persist_layer_norm"):
+            transformer_config.persist_layer_norm = False
+        if hasattr(transformer_config, "apply_rope_fusion"):
+            transformer_config.apply_rope_fusion = False
+    if hasattr(transformer_config, "gradient_accumulation_fusion") and (
+        te_only_disabled or not _gradient_accumulation_fusion_available()
+    ):
+        transformer_config.gradient_accumulation_fusion = False
 
 
 def _build_qwen3_cli_args(
