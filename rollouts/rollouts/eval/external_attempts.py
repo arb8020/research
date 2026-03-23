@@ -1451,6 +1451,7 @@ async def trajectory_from_mini_swe_agent(
             nursery.start_soon(partial(_consume_stream, proc.stderr, sink=stderr_lines))
             nursery.start_soon(_poll_output_file)
             await proc.wait()
+            nursery.cancel_scope.cancel()
 
     if cancel_scope.cancelled_caught:
         proc.kill()
@@ -1649,6 +1650,7 @@ async def trajectory_from_openhands(
                 partial(_consume_stream, proc.stderr, sink=stderr_lines, parse_events=False)
             )
             await proc.wait()
+            nursery.cancel_scope.cancel()
 
     if cancel_scope.cancelled_caught:
         proc.kill()
