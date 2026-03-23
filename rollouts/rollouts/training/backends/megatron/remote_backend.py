@@ -42,7 +42,16 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _CONTROL_MESSAGE_MAX_BYTES = 64 * 1024
-_WITNESS_RESPONSE_TIMEOUT_SEC = 20.0
+# The isolated NCCL witness is intentionally tiny, but the end-to-end response
+# still includes: quiescing inference, standing up a fresh custom process
+# group, completing one distributed weight update, destroying the group, then
+# resuming inference before rank 0 replies to the coordinator.
+#
+# Recent Modal A100 witness artifacts have completed anywhere from ~5s to
+# ~17.4s on the same trusted config. A 20s hard cutoff makes the witness path
+# flaky rather than informative, so keep the timeout comfortably above the
+# observed success envelope until this becomes a config-owned contract.
+_WITNESS_RESPONSE_TIMEOUT_SEC = 60.0
 _RESPONSE_POLL_INTERVAL_SEC = 0.25
 _RESPONSE_PROGRESS_LOG_INTERVAL_SEC = 5.0
 _INITIALIZE_TIMEOUT_SEC = 600.0
