@@ -477,8 +477,14 @@ class ModalExecutionSession:
                         event_data, end_idx = decoder.raw_decode(payload)
                         event_name = event_data.pop("event", None)
                         if event_name:
-                            _emit(event_name, **event_data)
-                            _maybe_record_supervisor_completion(event_name, event_data)
+                            normalized_event_data = _normalize_run_logger_event_payload(
+                                provider=self.backend,
+                                backend=self.backend,
+                                handle_name=process_name,
+                                data=event_data,
+                            )
+                            _emit(event_name, **normalized_event_data)
+                            _maybe_record_supervisor_completion(event_name, normalized_event_data)
                         remaining = payload[end_idx:].lstrip()
                     if remaining:
                         process_state["stderr_line_count"] += 1
