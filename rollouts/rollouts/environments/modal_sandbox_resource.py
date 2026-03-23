@@ -95,6 +95,10 @@ class ModalSandboxResource:
     _provision_duration_ms: float | None = field(default=None, repr=False)
     _last_error: str | None = field(default=None, repr=False)
     _runtime_description: dict[str, Any] | None = field(default=None, repr=False)
+    # TODO(lifecycle): broker-backed resources can be checked out-of-band with
+    # GPUClient.list_instances(). Add equivalent low-friction Modal sandbox
+    # leak/introspection support near creation/termination so cross-provider
+    # cleanup verification does not depend on provider-specific tribal knowledge.
 
     def __post_init__(self) -> None:
         if self.working_dir == DEFAULT_WORKSPACE_DIR:

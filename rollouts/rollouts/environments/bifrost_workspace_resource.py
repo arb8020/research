@@ -81,6 +81,10 @@ class BrokerBifrostWorkspaceResource:
     _client: Any | None = field(default=None, repr=False)
     _instance: Any | None = field(default=None, repr=False)
     _should_terminate_instance: bool = field(default=True, repr=False)
+    # TODO(lifecycle): broker-backed resources are easy to inspect for leaks via
+    # GPUClient.list_instances(). Modal-backed resources do not yet have an
+    # equivalent lightweight "what is still live?" check, so leak verification
+    # across providers is asymmetric today.
 
     @property
     def working_dir(self) -> str:
