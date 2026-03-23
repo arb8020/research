@@ -1850,6 +1850,7 @@ async def _wait_for_modal_exec_ready(
     task_id_attempts = 6
     task_id_timeout_s = 20
     retry_delay_s = 2.0
+    exec_probe_attempts = 3
     exec_probe_timeout_s = 10
 
     _emit("modal_exec_ready_wait_start", sandbox_id=sandbox_id)
@@ -1905,13 +1906,6 @@ async def _wait_for_modal_exec_ready(
                 )
                 break
 
-    _emit(
-        "modal_exec_ready_exec_probe_start",
-        sandbox_id=sandbox_id,
-        timeout_sec=exec_probe_timeout_s,
-    )
-    start = trio.current_time()
-
     def _run_exec_probe() -> tuple[str, str, int]:
         return exec_modal_command_sync(
             sandbox,
@@ -1920,45 +1914,78 @@ async def _wait_for_modal_exec_ready(
             stream_output=False,
         )
 
-    try:
-        with trio.fail_after(exec_probe_timeout_s + 5):
-            stdout, stderr, exit_code = await trio.to_thread.run_sync(
-                _run_exec_probe,
-                abandon_on_cancel=True,
+    for attempt in range(1, exec_probe_attempts + 1):
+        _emit(
+            "modal_exec_ready_exec_probe_start",
+            sandbox_id=sandbox_id,
+            attempt=attempt,
+            timeout_sec=exec_probe_timeout_s,
+        )
+        start = trio.current_time()
+
+        try:
+            with trio.fail_after(exec_probe_timeout_s + 5):
+                stdout, stderr, exit_code = await trio.to_thread.run_sync(
+                    _run_exec_probe,
+                    abandon_on_cancel=True,
+                )
+        except trio.TooSlowError:
+            elapsed = trio.current_time() - start
+            _emit(
+                "modal_exec_ready_exec_probe_timeout",
+                sandbox_id=sandbox_id,
+                attempt=attempt,
+                elapsed_sec=round(elapsed, 3),
+                timeout_sec=exec_probe_timeout_s + 5,
             )
-    except trio.TooSlowError:
+            if attempt < exec_probe_attempts:
+                _emit(
+                    "modal_exec_ready_retrying",
+                    sandbox_id=sandbox_id,
+                    attempt=attempt,
+                    retry_delay_sec=retry_delay_s,
+                    phase="exec_probe",
+                )
+                await trio.sleep(retry_delay_s)
+                continue
+            raise RuntimeError(
+                f"Modal sandbox {sandbox_id} never became exec-ready: cheap exec probe timed out"
+            ) from None
+
         elapsed = trio.current_time() - start
         _emit(
-            "modal_exec_ready_exec_probe_timeout",
+            "modal_exec_ready_exec_probe_finished",
             sandbox_id=sandbox_id,
+            attempt=attempt,
             elapsed_sec=round(elapsed, 3),
-            timeout_sec=exec_probe_timeout_s + 5,
+            exit_code=exit_code,
         )
-        raise RuntimeError(
-            f"Modal sandbox {sandbox_id} never became exec-ready: cheap exec probe timed out"
-        ) from None
+        if exit_code == 0:
+            _emit("modal_exec_ready", sandbox_id=sandbox_id, elapsed_sec=round(elapsed, 3))
+            return
 
-    elapsed = trio.current_time() - start
-    _emit(
-        "modal_exec_ready_exec_probe_finished",
-        sandbox_id=sandbox_id,
-        elapsed_sec=round(elapsed, 3),
-        exit_code=exit_code,
-    )
-    if exit_code != 0:
         _emit(
             "modal_exec_ready_exec_probe_failed",
             sandbox_id=sandbox_id,
+            attempt=attempt,
             elapsed_sec=round(elapsed, 3),
             exit_code=exit_code,
             stdout_tail=stdout[-1000:],
             stderr_tail=stderr[-1000:],
         )
+        if attempt < exec_probe_attempts:
+            _emit(
+                "modal_exec_ready_retrying",
+                sandbox_id=sandbox_id,
+                attempt=attempt,
+                retry_delay_sec=retry_delay_s,
+                phase="exec_probe",
+            )
+            await trio.sleep(retry_delay_s)
+            continue
         raise RuntimeError(
             f"Modal sandbox {sandbox_id} failed exec-ready probe with exit code {exit_code}"
         )
-
-    _emit("modal_exec_ready", sandbox_id=sandbox_id, elapsed_sec=round(elapsed, 3))
 
 
 def _build_argus_local_process_spec(
