@@ -1419,7 +1419,6 @@ async def _grpo_train_async(
         num_engines=num_engines,
         ports=list(config.inference.ports),
         gpu_assignments=[list(gpus) for gpus in config.inference.gpu_assignments],
-        inference_realization=inference_runtime.realization.name,
         inference_sync_realization=(
             inference_runtime.sync_realization.name
             if inference_runtime.sync_realization is not None
@@ -1428,8 +1427,6 @@ async def _grpo_train_async(
         inference_mem_fraction=config.inference.mem_fraction,
         inference_tensor_parallel_size=config.inference.tensor_parallel_size,
         inference_startup_timeout=config.inference.startup_timeout,
-        trainer_cuda_device_ids=list(config.trainer.cuda_device_ids),
-        inference_cuda_device_ids=list(config.inference.cuda_device_ids),
         cuda_visible_devices=os.environ.get("CUDA_VISIBLE_DEVICES"),
     )
     resource_watchdog.set_phase(
