@@ -962,6 +962,22 @@ def _emit_command_error_diagnostics(
         pass
 
 
+def _send_progress_event(
+    handle: Worker | None,
+    *,
+    event: str,
+    **data: object,
+) -> None:
+    """Best-effort non-terminal control-plane event for rank-0 worker progress."""
+    _emit_argus_diag(event, **data)
+    if handle is None:
+        return
+    try:
+        handle.send({"status": "event", "event": event, **data})
+    except Exception:
+        pass
+
+
 def _torch_dtype_from_name(name: str) -> Any:
     import torch
 
@@ -1400,6 +1416,7 @@ def _training_loop(
             elif cmd_id == Command.SYNC_WEIGHTS_NCCL:
                 _do_sync_weights_nccl(
                     backend,
+                    handle if rank == 0 else None,
                     model_name=config.get("model_name", ""),
                     inference_endpoints=config.get("inference_endpoints", []) if rank == 0 else [],
                     inference_dtype=_inference_dtype_from_worker_config(config),
@@ -2055,6 +2072,7 @@ def _init_nccl_weight_sync(
 
 def _do_sync_weights_nccl(
     backend: Any,
+    handle: Worker | None,
     model_name: str,
     inference_endpoints: list[str],
     inference_dtype: str | None = None,
@@ -2326,6 +2344,12 @@ def _do_sync_weights_nccl(
                     _emit_argus_diag(
                         "weight_sync_megatron_persistent_request_contract",
                         **sender_contract,
+                    )
+                    _send_progress_event(
+                        handle,
+                        event="megatron_remote_sender_contract",
+                        context="sync_weights_nccl",
+                        sender_contract=sender_contract,
                     )
 
                     def _update_remote_endpoint(endpoint: str) -> dict[str, object]:

@@ -236,32 +236,46 @@ class MegatronRemoteBackend:
         )
 
     def _recv_response(self, worker: Worker, *, context: str, max_size: int) -> dict[str, Any]:
-        response = worker.recv(max_size=max_size)
-        if response.get("status") == "error":
-            error = response.get("error")
-            traceback_tail = response.get("traceback_tail")
-            sender_contract = response.get("sender_contract")
-            if sender_contract is not None:
-                logger.error(
-                    "megatron_remote_sender_contract",
-                    extra={
-                        "event": "megatron_remote_sender_contract",
-                        "context": context,
-                        "sender_contract": sender_contract,
-                    },
+        while True:
+            response = worker.recv(max_size=max_size)
+            status = response.get("status")
+            if status == "event":
+                event_name = str(response.get("event") or "megatron_remote_worker_event")
+                event_payload = {k: v for k, v in response.items() if k not in {"status", "event"}}
+                event_payload.setdefault("context", context)
+                logger.info(
+                    event_name,
+                    extra={"event": event_name, **event_payload},
                 )
-            if traceback_tail:
-                message = f"Megatron worker failed during {context}: {error}\n{traceback_tail}"
+                self._emit_phase(event_name, **event_payload)
+                continue
+            if status == "error":
+                error = response.get("error")
+                traceback_tail = response.get("traceback_tail")
+                sender_contract = response.get("sender_contract")
                 if sender_contract is not None:
-                    message += f"\nsender_contract={json.dumps(sender_contract, sort_keys=True)}"
-                raise RuntimeError(message)
-            if sender_contract is not None:
-                raise RuntimeError(
-                    f"Megatron worker failed during {context}: {error}\n"
-                    f"sender_contract={json.dumps(sender_contract, sort_keys=True)}"
-                )
-            raise RuntimeError(f"Megatron worker failed during {context}: {error}")
-        return response
+                    logger.error(
+                        "megatron_remote_sender_contract",
+                        extra={
+                            "event": "megatron_remote_sender_contract",
+                            "context": context,
+                            "sender_contract": sender_contract,
+                        },
+                    )
+                if traceback_tail:
+                    message = f"Megatron worker failed during {context}: {error}\n{traceback_tail}"
+                    if sender_contract is not None:
+                        message += (
+                            f"\nsender_contract={json.dumps(sender_contract, sort_keys=True)}"
+                        )
+                    raise RuntimeError(message)
+                if sender_contract is not None:
+                    raise RuntimeError(
+                        f"Megatron worker failed during {context}: {error}\n"
+                        f"sender_contract={json.dumps(sender_contract, sort_keys=True)}"
+                    )
+                raise RuntimeError(f"Megatron worker failed during {context}: {error}")
+            return response
 
     def _recv_response_polling(
         self,
