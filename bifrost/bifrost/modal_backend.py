@@ -417,6 +417,23 @@ async def _project_modal_run_artifacts(
     await _poll_once()
 
 
+async def _wait_observed_process_nonblocking(process: ObservedProcessHandle) -> ExecResult:
+    """Wait for a provider process without blocking sibling Trio tasks."""
+
+    assert process._wait is not None, "process wait is unavailable"
+    wait_fn = process._wait
+    result = await trio.to_thread.run_sync(wait_fn)
+    process.state = ProcessState.EXITED
+    append_lifecycle_event(
+        process.lifecycle_events,
+        event="process_exit_observed",
+        backend=process.backend,
+        handle_name=process.name,
+        exit_code=result.exit_code,
+    )
+    return result
+
+
 @dataclass(frozen=True)
 class ModalExecutionRequest:
     """Provider-owned execution request for the current Modal backend."""
@@ -2164,7 +2181,7 @@ async def run_modal_request(request: ModalExecutionRequest) -> dict[str, Any]:
                             local_run_dir,
                         )
                         try:
-                            result = await process.wait()
+                            result = await _wait_observed_process_nonblocking(process)
                         finally:
                             artifact_poll_stop.set()
                             nursery.cancel_scope.cancel()
