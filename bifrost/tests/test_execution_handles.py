@@ -26,6 +26,7 @@ from bifrost import (
     read_lifecycle_events,
 )
 from bifrost.modal_backend import (
+    _consume_modal_diag_stream_chunk,
     _exception_is_operator_interrupt,
     _modal_supervisor_exit_code,
     _normalize_run_logger_event_payload,
@@ -301,6 +302,41 @@ def test_modal_exec_ready_retries_task_id_then_runs_exec_probe(
         "modal_exec_ready_exec_probe_start",
         "modal_exec_ready_exec_probe_finished",
         "modal_exec_ready",
+    ]
+
+
+def test_modal_diag_stream_parser_reassembles_split_json_event() -> None:
+    sentinel = "__ARGUS_DIAG__"
+    first = f'{sentinel}{{"event":"sglang_runtime_method_ok","trace_source":"sidecar","backend":"sg'
+    second = 'lang","ts":"2026-03-23T03:18:39.994587+00:00"}'
+
+    plain, events, pending, parse_error = _consume_modal_diag_stream_chunk(
+        existing_buffer="",
+        chunk=first,
+        sentinel=sentinel,
+    )
+    assert plain == []
+    assert events == []
+    assert pending.startswith(sentinel)
+    assert parse_error is None
+
+    plain, events, pending, parse_error = _consume_modal_diag_stream_chunk(
+        existing_buffer=pending,
+        chunk=second,
+        sentinel=sentinel,
+    )
+    assert plain == []
+    assert pending == ""
+    assert parse_error is None
+    assert events == [
+        (
+            "sglang_runtime_method_ok",
+            {
+                "trace_source": "sidecar",
+                "backend": "sglang",
+                "ts": "2026-03-23T03:18:39.994587+00:00",
+            },
+        )
     ]
 
 

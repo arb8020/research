@@ -44,6 +44,68 @@ from .types import (
 logger = logging.getLogger(__name__)
 
 
+def _json_decode_maybe_incomplete(payload: str, exc: json.JSONDecodeError) -> bool:
+    """Return true when a JSON decode failure likely reflects a split chunk.
+
+    Modal's stream callbacks can hand us very large stderr payloads in pieces.
+    Child-side event JSON should stay on the event channel, not degrade into a
+    parse failure plus raw stderr tail just because the SDK split the line.
+    """
+
+    stripped = payload.rstrip()
+    if not stripped:
+        return True
+    if exc.msg.startswith("Unterminated string"):
+        return True
+    if exc.pos >= max(len(payload) - 1, 0):
+        return True
+    return stripped[-1] not in {"}", "]"}
+
+
+def _consume_modal_diag_stream_chunk(
+    *,
+    existing_buffer: str,
+    chunk: str,
+    sentinel: str,
+) -> tuple[list[str], list[tuple[str, dict[str, Any]]], str, str | None]:
+    """Split mixed stderr into plain text and child events.
+
+    This keeps partially delivered sentinel JSON buffered until the next chunk
+    arrives, instead of spuriously emitting parse failures and journaling the
+    tail as generic stderr payload.
+    """
+
+    decoder = json.JSONDecoder()
+    buffer = f"{existing_buffer}{chunk}"
+    plain_fragments: list[str] = []
+    parsed_events: list[tuple[str, dict[str, Any]]] = []
+
+    while buffer:
+        sentinel_idx = buffer.find(sentinel)
+        if sentinel_idx == -1:
+            plain_fragments.append(buffer)
+            return plain_fragments, parsed_events, "", None
+
+        prefix = buffer[:sentinel_idx]
+        if prefix:
+            plain_fragments.append(prefix)
+
+        payload = buffer[sentinel_idx + len(sentinel) :].lstrip()
+        try:
+            event_data, end_idx = decoder.raw_decode(payload)
+        except json.JSONDecodeError as exc:
+            if _json_decode_maybe_incomplete(payload, exc):
+                return plain_fragments, parsed_events, f"{sentinel}{payload}", None
+            return plain_fragments, parsed_events, "", f"{type(exc).__name__}: {exc}"
+
+        event_name = event_data.pop("event", None)
+        if isinstance(event_name, str) and event_name:
+            parsed_events.append((event_name, event_data))
+        buffer = payload[end_idx:].lstrip()
+
+    return plain_fragments, parsed_events, "", None
+
+
 def _normalize_run_logger_event_payload(
     *,
     run_name: str | None = None,
@@ -327,6 +389,7 @@ class ModalExecutionSession:
             "last_stderr_line": None,
             "last_stdout_elapsed_sec": None,
             "last_stderr_elapsed_sec": None,
+            "stderr_event_buffer": "",
         }
 
         def _elapsed() -> float:
@@ -450,67 +513,55 @@ class ModalExecutionSession:
 
         def _on_stderr_line(line: str) -> None:
             stripped = line.rstrip()
-            if stderr_event_sentinel and stderr_event_sentinel in stripped:
-                try:
-                    import json
 
-                    decoder = json.JSONDecoder()
-                    remaining = stripped
-                    while stderr_event_sentinel in remaining:
-                        prefix, payload = remaining.split(stderr_event_sentinel, 1)
-                        prefix = prefix.rstrip()
-                        if prefix:
-                            process_state["stderr_line_count"] += 1
-                            process_state["last_stderr_line"] = prefix
-                            process_state["last_stderr_elapsed_sec"] = round(_elapsed(), 3)
-                            stderr_tail.append(prefix)
-                            _send_output_line(
-                                ProcessOutputLine(stream="stderr", text=prefix),
-                            )
-                            _emit_stream_line(
-                                "remote_stderr_line",
-                                process_state["stderr_line_count"],
-                                prefix,
-                            )
-                            stderr_lines.append(f"{prefix}\n")
-                        payload = payload.lstrip()
-                        event_data, end_idx = decoder.raw_decode(payload)
-                        event_name = event_data.pop("event", None)
-                        if event_name:
-                            normalized_event_data = _normalize_run_logger_event_payload(
-                                provider=self.backend,
-                                backend=self.backend,
-                                handle_name=process_name,
-                                data=event_data,
-                            )
-                            _emit(event_name, **normalized_event_data)
-                            _maybe_record_supervisor_completion(event_name, normalized_event_data)
-                        remaining = payload[end_idx:].lstrip()
-                    if remaining:
-                        process_state["stderr_line_count"] += 1
-                        process_state["last_stderr_line"] = remaining
-                        process_state["last_stderr_elapsed_sec"] = round(_elapsed(), 3)
-                        stderr_tail.append(remaining)
-                        stderr_lines.append(f"{remaining}\n")
-                        _send_output_line(
-                            ProcessOutputLine(stream="stderr", text=remaining),
-                        )
-                        _emit_stream_line(
-                            "remote_stderr_line",
-                            process_state["stderr_line_count"],
-                            remaining,
-                        )
-                except Exception as exc:
-                    _emit("remote_diag_stream_parse_failed", error=f"{type(exc).__name__}: {exc}")
-                return
+            def _record_stderr_text(text: str) -> None:
+                for fragment in text.splitlines():
+                    fragment = fragment.rstrip()
+                    if not fragment:
+                        continue
+                    process_state["stderr_line_count"] += 1
+                    process_state["last_stderr_line"] = fragment
+                    process_state["last_stderr_elapsed_sec"] = round(_elapsed(), 3)
+                    stderr_lines.append(f"{fragment}\n")
+                    stderr_tail.append(fragment)
+                    _send_output_line(ProcessOutputLine(stream="stderr", text=fragment))
+                    _emit_stream_line(
+                        "remote_stderr_line",
+                        process_state["stderr_line_count"],
+                        fragment,
+                    )
 
-            process_state["stderr_line_count"] += 1
-            process_state["last_stderr_line"] = stripped
-            process_state["last_stderr_elapsed_sec"] = round(_elapsed(), 3)
-            stderr_lines.append(line if line.endswith("\n") else f"{line}\n")
-            stderr_tail.append(stripped)
-            _send_output_line(ProcessOutputLine(stream="stderr", text=stripped))
-            _emit_stream_line("remote_stderr_line", process_state["stderr_line_count"], stripped)
+            if stderr_event_sentinel:
+                # TODO(child-event-contract): `rollouts` should declare the
+                # child semantic event algebra explicitly and `bifrost` should
+                # carry it over a dedicated channel. Until then, keep bulky
+                # service-local payload logs out of the parent lifecycle path
+                # and only normalize small typed milestones here.
+                plain_fragments, parsed_events, pending_buffer, parse_error = (
+                    _consume_modal_diag_stream_chunk(
+                        existing_buffer=str(process_state["stderr_event_buffer"]),
+                        chunk=line,
+                        sentinel=stderr_event_sentinel,
+                    )
+                )
+                process_state["stderr_event_buffer"] = pending_buffer
+                for fragment in plain_fragments:
+                    _record_stderr_text(fragment)
+                for event_name, event_data in parsed_events:
+                    normalized_event_data = _normalize_run_logger_event_payload(
+                        provider=self.backend,
+                        backend=self.backend,
+                        handle_name=process_name,
+                        data=event_data,
+                    )
+                    _emit(event_name, **normalized_event_data)
+                    _maybe_record_supervisor_completion(event_name, normalized_event_data)
+                if parse_error is not None:
+                    _emit("remote_diag_stream_parse_failed", error=parse_error)
+                if pending_buffer or parsed_events:
+                    return
+
+            _record_stderr_text(stripped)
 
         def _on_heartbeat(elapsed_sec: float, silence_sec: float) -> None:
             _emit(
@@ -578,6 +629,14 @@ class ModalExecutionSession:
                     break
                 if supervisor_completion_seen.is_set():
                     break
+            pending_stderr_event = str(process_state.get("stderr_event_buffer", "")).strip()
+            if pending_stderr_event:
+                _emit(
+                    "remote_diag_stream_parse_failed",
+                    error="JSONDecodeError: modal stderr event stream ended with incomplete payload",
+                    pending_chars=len(pending_stderr_event),
+                )
+                process_state["stderr_event_buffer"] = ""
             shutdown_requested.set()
             worker.join(timeout=1.0)
             if "exception" in results:

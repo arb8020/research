@@ -53,7 +53,12 @@ def _write_sidecar_event(payload: dict[str, object]) -> None:
 def _should_mirror_to_stderr(event: str) -> bool:
     if _sidecar_trace_path() is None:
         return True
-    return not event.startswith("sglang_runtime_")
+    # TODO(child-event-contract): `rollouts` should declare which engine-local
+    # milestones belong in the parent execution event stream and `bifrost`
+    # should carry them over a dedicated child-event channel. Until then, keep
+    # high-volume runtime introspection in the sidecar JSONL and only mirror
+    # concise failure-class diagnostics to stderr.
+    return event.endswith("_failed")
 
 
 def _patch_transformers() -> None:
