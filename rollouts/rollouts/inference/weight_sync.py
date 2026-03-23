@@ -792,10 +792,15 @@ class WeightSyncSender:
         os.environ.setdefault("NCCL_DEBUG", "INFO")
         os.environ.setdefault("NCCL_DEBUG_SUBSYS", "INIT,COLL")
         os.environ.setdefault("NCCL_IB_DISABLE", "1")
-        # Do not force-disable P2P here. The SGLang receiver side initializes
-        # normal NCCL P2P/IPC transport for the custom update group, and
-        # asymmetrically disabling it on the trainer creates a dishonest
-        # sender/receiver contract.
+        # Keep the persistent sender on the same explicit NCCL env contract as
+        # the previously green isolated sender and the live SGLang receiver.
+        # The persistent path is failing inside NCCL bootstrap, so it should not
+        # silently diverge from the known-good sender/receiver transport shape.
+        os.environ.setdefault("NCCL_SHM_DISABLE", "1")
+        os.environ.setdefault("NCCL_CUMEM_ENABLE", "0")
+        os.environ.setdefault("NCCL_ASYNC_ERROR_HANDLING", "1")
+        os.environ.setdefault("NCCL_P2P_DISABLE", "1")
+        os.environ.setdefault("TORCH_DISABLE_SHARE_RDZV_TCP_STORE", "1")
         socket_ifname, socket_ifname_source = _apply_socket_ifname_defaults()
         logger.info(
             "weight_sync_sender_init_start world_size=%s master=%s:%s device=%s group=%s socket_ifname=%s socket_ifname_source=%s nccl_env=%s",
