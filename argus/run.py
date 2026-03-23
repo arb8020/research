@@ -164,6 +164,7 @@ ARGUS_STATE_DIR = Path.home() / ".argus"
 LAUNCHES_DIR = ARGUS_STATE_DIR / "launches"
 REMOTE_SYSTEM_TOOLS_FEATURE = "remote-system-tools-v1"
 REMOTE_UV_FEATURE = "uv"
+SSH_MANAGED_VENV_DIR = "~/.bifrost/venvs/rollouts-rl"
 
 # sys.path hack: make sibling packages (miniray, bifrost, broker, etc.) importable.
 #
@@ -301,6 +302,19 @@ def _should_reconcile_ssh_cuda_toolkit(custom_image: ImageSpec | None) -> bool:
     if custom_image is None:
         return True
     return custom_image.python_runtime != "image_owned"
+
+
+def _ssh_runtime_python(custom_image: ImageSpec | None) -> str:
+    if custom_image is not None and custom_image.python_runtime == "image_owned":
+        return custom_image.python_executable
+    return f"{SSH_MANAGED_VENV_DIR}/bin/python"
+
+
+def _ssh_runtime_feature_scope(custom_image: ImageSpec | None) -> str:
+    if custom_image is not None and custom_image.python_runtime == "image_owned":
+        return "image-owned"
+    python_version = custom_image.python_version if custom_image is not None else "3.12"
+    return f"managed-venv-python-{python_version}"
 
 
 def _find_config_project_root(config_path: Path) -> Path:
@@ -460,6 +474,8 @@ def _read_remote_manifest(bifrost: BifrostClient) -> ImageManifest | None:
 def _uv_pip_install_command(
     packages: tuple[str, ...],
     *,
+    python_bin: str | None = None,
+    system: bool = False,
     index_url: str | None = None,
     extra_index_url: str | None = None,
     pre: bool = False,
@@ -467,6 +483,10 @@ def _uv_pip_install_command(
 ) -> str:
     quoted_packages = " ".join(shlex.quote(package) for package in packages)
     parts = ["~/.local/bin/uv", "pip", "install", "--upgrade"]
+    if system:
+        parts.append("--system")
+    elif python_bin is not None:
+        parts.extend(["--python", shlex.quote(python_bin)])
     if index_url:
         parts.extend(["--index-url", shlex.quote(index_url)])
     if extra_index_url:
@@ -482,10 +502,16 @@ def _uv_pip_install_command(
 def _uv_pip_install_editable_command(
     project_roots: tuple[str, ...],
     *,
+    python_bin: str | None = None,
+    system: bool = False,
     extra_options: str | None = None,
 ) -> str:
     quoted_projects = " ".join(f"-e {shlex.quote(project_root)}" for project_root in project_roots)
     parts = ["~/.local/bin/uv", "pip", "install", "--upgrade"]
+    if system:
+        parts.append("--system")
+    elif python_bin is not None:
+        parts.extend(["--python", shlex.quote(python_bin)])
     if extra_options:
         parts.append(extra_options)
     parts.append(quoted_projects)
@@ -1008,6 +1034,8 @@ async def _deploy_and_submit(
 
     custom_overlay = deps.resolved_runtime_overlay() if deps is not None else None
     image_owned_runtime = custom_image is not None and custom_image.python_runtime == "image_owned"
+    runtime_python = _ssh_runtime_python(custom_image)
+    runtime_feature_scope = _ssh_runtime_feature_scope(custom_image)
 
     if deps is not None and deps.image is not None:
         logger.info(
@@ -1032,6 +1060,20 @@ async def _deploy_and_submit(
             "curl -LsSf https://astral.sh/uv/install.sh | sh && source ~/.local/bin/env",
         ))
         manifest_features_applied.append(REMOTE_UV_FEATURE)
+
+    if not image_owned_runtime:
+        managed_venv_feature = f"ssh-managed-venv-python-{custom_image.python_version if custom_image is not None else '3.12'}"
+        if remote_manifest is None or not remote_manifest.has_feature(managed_venv_feature):
+            python_version = custom_image.python_version if custom_image is not None else "3.12"
+            bootstrap_steps.append((
+                "Creating managed Python runtime",
+                (
+                    f"~/.local/bin/uv python install {shlex.quote(python_version)} && "
+                    f"~/.local/bin/uv venv {shlex.quote(SSH_MANAGED_VENV_DIR)} "
+                    f"--python {shlex.quote(python_version)}"
+                ),
+            ))
+            manifest_features_applied.append(managed_venv_feature)
 
     # Add CUDA toolkit upgrade if needed (must happen before Python packages that compile CUDA code)
     if needs_cuda_upgrade and cuda_req is not None:
@@ -1082,7 +1124,10 @@ async def _deploy_and_submit(
         # TODO: Mirror the Modal path here by creating an image-owned uv venv / runtime
         # contract and keeping heavy Python deps out of per-run reconciliation entirely.
         # This SSH/bootstrap path should eventually verify that runtime, not redefine it.
-        image_pip_feature = stable_feature_name("image-pip-packages", custom_image.pip_packages)
+        image_pip_feature = stable_feature_name(
+            f"image-pip-packages-{runtime_feature_scope}",
+            custom_image.pip_packages,
+        )
         if remote_manifest is None or not remote_manifest.has_feature(image_pip_feature):
             bootstrap_steps.append((
                 "Installing image Python packages",
@@ -1090,28 +1135,31 @@ async def _deploy_and_submit(
                     f"{
                         _uv_pip_install_command(
                             custom_image.pip_packages,
+                            python_bin=None if image_owned_runtime else runtime_python,
+                            system=image_owned_runtime,
                             index_url=custom_image.pip_index_url,
                             extra_index_url=custom_image.pip_extra_index_url,
                             pre=custom_image.pip_prerelease,
                         )
                     } && "
-                    f"{python_install_probe_command('image-pip-packages')} && "
-                    f"{python_runtime_contract_snapshot_command('image-pip-packages')}"
+                    f"{python_install_probe_command('image-pip-packages', python_bin=runtime_python)} && "
+                    f"{python_runtime_contract_snapshot_command('image-pip-packages', python_bin=runtime_python)}"
                 ),
             ))
             manifest_features_applied.append(image_pip_feature)
 
     if custom_image is not None and custom_image.build_commands:
         image_build_feature = stable_feature_name(
-            "image-build-commands", custom_image.build_commands
+            f"image-build-commands-{runtime_feature_scope}",
+            custom_image.build_commands,
         )
         if remote_manifest is None or not remote_manifest.has_feature(image_build_feature):
             for idx, command in enumerate(custom_image.build_commands, start=1):
                 if command_looks_like_install(command):
                     command = (
                         f"{command} && "
-                        f"{python_install_probe_command(f'image-build-command-{idx}')} && "
-                        f"{python_runtime_contract_verify_command(f'image-build-command-{idx}')}"
+                        f"{python_install_probe_command(f'image-build-command-{idx}', python_bin=runtime_python)} && "
+                        f"{python_runtime_contract_verify_command(f'image-build-command-{idx}', python_bin=runtime_python)}"
                     )
                 bootstrap_steps.append((f"Running image build command {idx}", command))
             manifest_features_applied.append(image_build_feature)
@@ -1132,7 +1180,8 @@ async def _deploy_and_submit(
 
     if custom_overlay is not None and custom_overlay.pip_packages:
         overlay_pip_feature = stable_feature_name(
-            "overlay-pip-packages", custom_overlay.pip_packages
+            f"overlay-pip-packages-{runtime_feature_scope}",
+            custom_overlay.pip_packages,
         )
         if remote_manifest is None or not remote_manifest.has_feature(overlay_pip_feature):
             bootstrap_steps.append((
@@ -1141,6 +1190,8 @@ async def _deploy_and_submit(
                     f"{
                         _uv_pip_install_command(
                             custom_overlay.pip_packages,
+                            python_bin=None if image_owned_runtime else runtime_python,
+                            system=image_owned_runtime,
                             index_url=custom_overlay.pip_index_url
                             or (custom_image.pip_index_url if custom_image else None),
                             extra_index_url=custom_overlay.pip_extra_index_url
@@ -1149,21 +1200,24 @@ async def _deploy_and_submit(
                             or (custom_image.pip_prerelease if custom_image else False),
                         )
                     } && "
-                    f"{python_install_probe_command('overlay-pip-packages')} && "
-                    f"{python_runtime_contract_snapshot_command('overlay-pip-packages')}"
+                    f"{python_install_probe_command('overlay-pip-packages', python_bin=runtime_python)} && "
+                    f"{python_runtime_contract_snapshot_command('overlay-pip-packages', python_bin=runtime_python)}"
                 ),
             ))
             manifest_features_applied.append(overlay_pip_feature)
 
     if custom_overlay is not None and custom_overlay.commands:
-        overlay_cmd_feature = stable_feature_name("overlay-commands", custom_overlay.commands)
+        overlay_cmd_feature = stable_feature_name(
+            f"overlay-commands-{runtime_feature_scope}",
+            custom_overlay.commands,
+        )
         if remote_manifest is None or not remote_manifest.has_feature(overlay_cmd_feature):
             for idx, command in enumerate(custom_overlay.commands, start=1):
                 if command_looks_like_install(command):
                     command = (
                         f"{command} && "
-                        f"{python_install_probe_command(f'overlay-command-{idx}')} && "
-                        f"{python_runtime_contract_verify_command(f'overlay-command-{idx}')}"
+                        f"{python_install_probe_command(f'overlay-command-{idx}', python_bin=runtime_python)} && "
+                        f"{python_runtime_contract_verify_command(f'overlay-command-{idx}', python_bin=runtime_python)}"
                     )
                 bootstrap_steps.append((f"Running runtime overlay command {idx}", command))
             manifest_features_applied.append(overlay_cmd_feature)
@@ -1172,16 +1226,16 @@ async def _deploy_and_submit(
         manifest_features_applied.extend(custom_overlay.features)
         manifest_groups_applied.extend(custom_overlay.installed_groups)
 
-    if image_owned_runtime and extra_python_projects:
+    if extra_python_projects:
         extra_project_roots = tuple(
             project.remote_source_root(workspace) for project in extra_python_projects
         )
         bootstrap_steps.append((
             "Installing extra project Python packages",
             (
-                f"{_uv_pip_install_editable_command(extra_project_roots)} && "
-                f"{python_install_probe_command('extra-python-projects')} && "
-                f"{python_runtime_contract_snapshot_command('extra-python-projects')}"
+                f"{_uv_pip_install_editable_command(extra_project_roots, python_bin=None if image_owned_runtime else runtime_python, system=image_owned_runtime)} && "
+                f"{python_install_probe_command('extra-python-projects', python_bin=runtime_python)} && "
+                f"{python_runtime_contract_snapshot_command('extra-python-projects', python_bin=runtime_python)}"
             ),
         ))
 
@@ -1300,9 +1354,9 @@ async def _deploy_and_submit(
     remote_extra_project_entries = [
         project.remote_source_root(workspace) for project in extra_python_projects
     ]
-    pythonpath_entries = list(dict.fromkeys(
-        [*remote_extra_project_entries, *remote_workspace_member_entries]
-    ))
+    pythonpath_entries = list(
+        dict.fromkeys([*remote_extra_project_entries, *remote_workspace_member_entries])
+    )
 
     env_vars = {
         "PYTHONUNBUFFERED": "1",
@@ -1322,45 +1376,17 @@ async def _deploy_and_submit(
     }
 
     # Submit training job
-    process_command = "/root/.local/bin/uv"
-    if image_owned_runtime:
-        assert custom_image is not None
-        process_command = custom_image.python_executable
-        if raw_script:
-            run_args = (remote_script_path,)
-        else:
-            run_args = (
-                "-m",
-                "argus.run",
-                "--config",
-                remote_script_path,
-                "--local",
-            )
+    process_command = runtime_python
+    if raw_script:
+        run_args = (remote_script_path,)
     else:
-        uv_run_args: list[str] = ["run"]
-        for project in extra_python_projects:
-            uv_run_args.extend(["--with-editable", project.remote_source_root(workspace)])
-
-        if raw_script:
-            run_args = tuple(
-                uv_run_args
-                + [
-                    "python",
-                    remote_script_path,
-                ]
-            )
-        else:
-            run_args = tuple(
-                uv_run_args
-                + [
-                    "python",
-                    "-m",
-                    "argus.run",
-                    "--config",
-                    remote_script_path,
-                    "--local",
-                ]
-            )
+        run_args = (
+            "-m",
+            "argus.run",
+            "--config",
+            remote_script_path,
+            "--local",
+        )
 
     log("submit_start")
     with spinner(f"Starting {run_name}...") as spin:
