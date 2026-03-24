@@ -1209,6 +1209,22 @@ class WeightSyncSender:
         advance_version: bool = True,
     ) -> list[Any] | None:
         """Backward-compatible wrapper for raw tensor dictionaries."""
+        # TODO(weight-sync-contract): This raw dict wrapper preserves Python
+        # iteration order, but it does not make that order part of a receiver-
+        # checked contract. That is fine for the isolated explicit payload path,
+        # but risky for the persistent HTTP+NCCL path.
+        #
+        # Upstream references:
+        # - Slime publishes names/dtypes/shapes and broadcasts tensors from the
+        #   same converted_named_tensors list:
+        #   /tmp/slime/slime/backends/megatron_utils/update_weight/update_weight_from_distributed.py:320
+        # - Prime-RL avoids this split entirely by sending metadata over the
+        #   same NCCL stream before concatenated tensor payloads:
+        #   /tmp/prime-rl/src/prime_rl/trainer/rl/broadcast/nccl.py:46
+        #   and /tmp/prime-rl/src/prime_rl/inference/vllm/worker/nccl.py:43
+        # If the persistent path survives, prefer an explicit
+        # WeightUpdatePayload/sequence-hash contract over this compatibility
+        # wrapper.
         payload = WeightUpdatePayload(
             tensors=tuple(
                 WeightWireTensor(

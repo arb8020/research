@@ -1025,6 +1025,26 @@ def create_app(engine: InferenceEngineV2) -> Any:
         names = request.get("names", [])
         shapes = request.get("shapes", [])
         dtypes = request.get("dtypes", [])
+        # TODO(weight-sync-contract): We currently trust the HTTP request's
+        # names/shapes/dtypes and then independently assume the NCCL sender will
+        # broadcast the same tensor sequence. That is the dishonest boundary in
+        # the persistent path.
+        #
+        # Upstream references:
+        # - Slime's current protocol is the same split, but trainer metadata and
+        #   NCCL payload both come from one converted_named_tensors list:
+        #   /tmp/slime/slime/backends/megatron_utils/update_weight/update_weight_from_distributed.py:320
+        # - QED-Nano normalizes publication dtype to bfloat16 before broadcast,
+        #   so metadata and payload dtype agree by construction:
+        #   /tmp/QED-Nano/training/pipelinerl/finetune_loop.py:239
+        #   and /tmp/QED-Nano/training/pipelinerl/finetune_loop.py:247
+        # - Prime-RL sends metadata on the NCCL stream itself and reconstructs
+        #   tensors from that exact payload:
+        #   /tmp/prime-rl/src/prime_rl/trainer/rl/broadcast/nccl.py:52
+        #   and /tmp/prime-rl/src/prime_rl/inference/vllm/worker/nccl.py:43
+        # The honest follow-up is to reject updates unless the sender/receiver
+        # agree on a sequence hash, or to collapse metadata+payload into one
+        # transport instead of trusting this side channel.
 
         dtype_map = {
             "float16": torch.float16,

@@ -1626,18 +1626,17 @@ async def _grpo_train_async(
         ):
             init_fn = getattr(backend, "init_nccl_weight_sync", None)
             witness_fn = getattr(backend, "sync_weights_nccl_witness", None)
-            if init_fn is None:
+            megatron_uses_isolated_runtime_sync = config.trainer.backend == "megatron"
+            if init_fn is None and not megatron_uses_isolated_runtime_sync:
                 raise ValueError(
                     "weight_sync_mode='nccl' requires the selected trainer backend to implement "
                     "init_nccl_weight_sync()."
                 )
-            runtime_init_after_witness = bool(
-                config.trainer.backend == "megatron" and callable(witness_fn)
-            )
-            if runtime_init_after_witness:
+            runtime_init_after_witness = False
+            if megatron_uses_isolated_runtime_sync:
                 logger.info(
-                    "Deferring persistent NCCL weight sync init until after witness "
-                    f"for {num_engines} engine(s)..."
+                    "Skipping direct Megatron NCCL runtime init; live sync uses the "
+                    f"isolated sender helper for {num_engines} engine(s)."
                 )
             else:
                 logger.info(f"Initializing NCCL weight sync with {num_engines} engine(s)...")
@@ -1651,6 +1650,17 @@ async def _grpo_train_async(
                     master_port=config.checkpoint.nccl_master_port + 50,
                 )
                 logger.info("NCCL weight sync initialized")
+            if megatron_uses_isolated_runtime_sync and callable(witness_fn):
+                logger.info(
+                    "training_preflight_weight_sync_runtime_init_skipped",
+                    extra={
+                        "event": "training_preflight_weight_sync_runtime_init_skipped",
+                        **run_context,
+                        "node_id": run_context.get("node_id"),
+                        "backend": config.trainer.backend,
+                        "reason": "megatron_isolated_runtime_sync",
+                    },
+                )
             if callable(witness_fn):
                 inference_log_paths = [
                     str(getattr(engine, "log_path", ""))
