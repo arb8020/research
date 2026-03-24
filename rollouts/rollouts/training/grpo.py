@@ -1624,23 +1624,33 @@ async def _grpo_train_async(
             config.checkpoint.weight_sync_mode == "nccl"
             and config.checkpoint.pipeline_mode != "true_pipeline"
         ):
-            logger.info(f"Initializing NCCL weight sync with {num_engines} engine(s)...")
             init_fn = getattr(backend, "init_nccl_weight_sync", None)
+            witness_fn = getattr(backend, "sync_weights_nccl_witness", None)
             if init_fn is None:
                 raise ValueError(
                     "weight_sync_mode='nccl' requires the selected trainer backend to implement "
                     "init_nccl_weight_sync()."
                 )
-            await init_fn(
-                inference_endpoints=[e.base_url for e in inference_engines],
-                # Weight sync uses its own rendezvous group. Reusing the Megatron
-                # training port is a real port collision, not a backend quirk.
-                # Start probing above the training port so the second distributed
-                # effect stays disjoint from the main process-group rendezvous.
-                master_port=config.checkpoint.nccl_master_port + 50,
+            runtime_init_after_witness = bool(
+                config.trainer.backend == "megatron" and callable(witness_fn)
             )
-            logger.info("NCCL weight sync initialized")
-            witness_fn = getattr(backend, "sync_weights_nccl_witness", None)
+            if runtime_init_after_witness:
+                logger.info(
+                    "Deferring persistent NCCL weight sync init until after witness "
+                    f"for {num_engines} engine(s)..."
+                )
+            else:
+                logger.info(f"Initializing NCCL weight sync with {num_engines} engine(s)...")
+                assert init_fn is not None
+                await init_fn(
+                    inference_endpoints=[e.base_url for e in inference_engines],
+                    # Weight sync uses its own rendezvous group. Reusing the Megatron
+                    # training port is a real port collision, not a backend quirk.
+                    # Start probing above the training port so the second distributed
+                    # effect stays disjoint from the main process-group rendezvous.
+                    master_port=config.checkpoint.nccl_master_port + 50,
+                )
+                logger.info("NCCL weight sync initialized")
             if callable(witness_fn):
                 inference_log_paths = [
                     str(getattr(engine, "log_path", ""))
@@ -1713,43 +1723,33 @@ async def _grpo_train_async(
                         "inference_log_paths": inference_log_paths,
                     },
                 )
-                # The Megatron runtime path keeps a long-lived NCCL sender/session
-                # for live publication. The witness runs through a second,
-                # isolated group on the same receiver process. Re-establish the
-                # runtime session after the witness so the first live sync does
-                # not inherit possibly clobbered receiver-side communicator
-                # state.
-                if config.trainer.backend == "megatron":
-                    cleanup_fn = getattr(backend, "cleanup_nccl_weight_sync", None)
-                    init_fn = getattr(backend, "init_nccl_weight_sync", None)
-                    if callable(cleanup_fn) and callable(init_fn):
-                        resource_watchdog.set_phase("weight_sync_reinit")
-                        logger.info(
-                            "training_preflight_weight_sync_reinit_start",
-                            extra={
-                                "event": "training_preflight_weight_sync_reinit_start",
-                                **run_context,
-                                "node_id": run_context.get("node_id"),
-                                "backend": config.trainer.backend,
-                                "inference_log_paths": inference_log_paths,
-                            },
-                        )
-                        await cleanup_fn()
-                        await init_fn(
-                            inference_endpoints=[e.base_url for e in inference_engines],
-                            master_port=config.checkpoint.nccl_master_port + 50,
-                        )
-                        logger.info(
-                            "training_preflight_weight_sync_reinit_ok",
-                            extra={
-                                "event": "training_preflight_weight_sync_reinit_ok",
-                                **run_context,
-                                "node_id": run_context.get("node_id"),
-                                "backend": config.trainer.backend,
-                                "inference_log_paths": inference_log_paths,
-                            },
-                        )
-
+                if runtime_init_after_witness:
+                    assert init_fn is not None
+                    resource_watchdog.set_phase("weight_sync_runtime_init")
+                    logger.info(
+                        "training_preflight_weight_sync_runtime_init_start",
+                        extra={
+                            "event": "training_preflight_weight_sync_runtime_init_start",
+                            **run_context,
+                            "node_id": run_context.get("node_id"),
+                            "backend": config.trainer.backend,
+                            "inference_log_paths": inference_log_paths,
+                        },
+                    )
+                    await init_fn(
+                        inference_endpoints=[e.base_url for e in inference_engines],
+                        master_port=config.checkpoint.nccl_master_port + 50,
+                    )
+                    logger.info(
+                        "training_preflight_weight_sync_runtime_init_ok",
+                        extra={
+                            "event": "training_preflight_weight_sync_runtime_init_ok",
+                            **run_context,
+                            "node_id": run_context.get("node_id"),
+                            "backend": config.trainer.backend,
+                            "inference_log_paths": inference_log_paths,
+                        },
+                    )
         # Setup data and rollout generation
         logger.info(f"Dataset: {len(prompts)} prompts")
         runtime_run_logger.event(
