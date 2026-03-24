@@ -2081,6 +2081,10 @@ def _do_sync_weights_nccl(
 ) -> None:
     """NCCL sync path for inference updates."""
 
+    import concurrent.futures
+    import os
+
+    import requests
     import torch
     import torch.distributed as dist
 
@@ -2113,6 +2117,15 @@ def _do_sync_weights_nccl(
     receive_request: ReceiveWeightUpdateRequest | None = None
     participant_tensor_count = 0
     current_weight_version = int(getattr(backend, "_nccl_weight_version", 0))
+    runtime_sync_mode = os.environ.get("ROLLOUTS_MEGATRON_RUNTIME_SYNC_MODE", "isolated").strip()
+    if not runtime_sync_mode:
+        runtime_sync_mode = "isolated"
+    runtime_sync_mode = runtime_sync_mode.lower()
+    if not witness and runtime_sync_mode not in {"isolated", "persistent"}:
+        raise ValueError(
+            "ROLLOUTS_MEGATRON_RUNTIME_SYNC_MODE must be 'isolated' or 'persistent', "
+            f"got {runtime_sync_mode!r}"
+        )
 
     # Use the explicit runtime-export payload for both witness and live sync.
     # The newer persistent `dict[str, Tensor]` publication path was narrower in
@@ -2182,6 +2195,7 @@ def _do_sync_weights_nccl(
     request_group_name = "weight_sync"
     assert payload is not None
     request_weight_version = payload.version
+    use_persistent_runtime_sync = not witness and runtime_sync_mode == "persistent"
 
     isolated_master_addr: str | None = None
     isolated_master_port: int | None = None
@@ -2269,7 +2283,20 @@ def _do_sync_weights_nccl(
             else:
                 total_buckets = len(bucketed_updates)
                 assert request_weight_version is not None
-                isolated_master_addr, _ = _resolve_local_host_ip()
+                sender = (
+                    getattr(backend, "_nccl_weight_sender", None)
+                    if use_persistent_runtime_sync
+                    else None
+                )
+                if use_persistent_runtime_sync:
+                    if sender is None:
+                        raise RuntimeError(
+                            "Persistent runtime sync requested without an initialized NCCL sender. "
+                            "Call init_nccl_weight_sync() after the witness path."
+                        )
+                    request_group_name = str(getattr(backend, "_nccl_group_name", "weight_sync"))
+                else:
+                    isolated_master_addr, _ = _resolve_local_host_ip()
                 for bucket_index, (bucket_payload, bucket_request) in enumerate(
                     bucketed_updates,
                     start=1,
@@ -2282,28 +2309,41 @@ def _do_sync_weights_nccl(
                         for item in payload.tensors
                         if item.wire_name in bucket_name_set
                     )
-                    isolated_master_port, isolated_master_port_source = _allocate_tcp_port(
-                        int(getattr(backend, "_nccl_master_port", 29550))
-                    )
-                    isolated_group_name = f"weight_sync_runtime_v{request_weight_version}_{bucket_index}_{isolated_master_port}"
+                    if use_persistent_runtime_sync:
+                        bucket_group_name = request_group_name
+                        transport_name = "persistent_session"
+                    else:
+                        isolated_master_port, isolated_master_port_source = _allocate_tcp_port(
+                            int(getattr(backend, "_nccl_master_port", 29550))
+                        )
+                        bucket_group_name = f"weight_sync_runtime_v{request_weight_version}_{bucket_index}_{isolated_master_port}"
+                        transport_name = "isolated_helper"
                     logger.info(
-                        "weight_sync_megatron_isolated_bucket_start master=%s:%s group=%s bucket_index=%s bucket_count=%s bucket_tensors=%s bucket_bytes=%s load_format=%s port_source=%s",
-                        isolated_master_addr,
-                        isolated_master_port,
-                        isolated_group_name,
+                        "weight_sync_megatron_runtime_bucket_start transport=%s master=%s:%s group=%s bucket_index=%s bucket_count=%s bucket_tensors=%s bucket_bytes=%s load_format=%s port_source=%s",
+                        transport_name,
+                        isolated_master_addr if not use_persistent_runtime_sync else None,
+                        isolated_master_port if not use_persistent_runtime_sync else None,
+                        bucket_group_name,
                         bucket_index,
                         total_buckets,
                         len(bucket_names),
                         bucket_bytes,
                         bucket_request.get("load_format"),
-                        isolated_master_port_source,
+                        isolated_master_port_source if not use_persistent_runtime_sync else None,
                     )
                     _emit_argus_diag(
-                        "weight_sync_megatron_isolated_bucket_start",
-                        master_addr=isolated_master_addr,
-                        master_port=isolated_master_port,
-                        master_port_source=isolated_master_port_source,
-                        group=isolated_group_name,
+                        "weight_sync_megatron_runtime_bucket_start",
+                        transport=transport_name,
+                        master_addr=isolated_master_addr
+                        if not use_persistent_runtime_sync
+                        else None,
+                        master_port=isolated_master_port
+                        if not use_persistent_runtime_sync
+                        else None,
+                        master_port_source=(
+                            isolated_master_port_source if not use_persistent_runtime_sync else None
+                        ),
+                        group=bucket_group_name,
                         bucket_index=bucket_index,
                         bucket_count=total_buckets,
                         bucket_tensors=len(bucket_names),
@@ -2342,7 +2382,7 @@ def _do_sync_weights_nccl(
                             bucket_dtype_total_bytes.get(dtype_name, 0) + nbytes
                         )
                     bucket_contract = {
-                        "group": isolated_group_name,
+                        "group": bucket_group_name,
                         "weight_version": request_weight_version,
                         "tensor_count": len(bucket_rows),
                         "total_bytes": bucket_bytes,
@@ -2352,11 +2392,13 @@ def _do_sync_weights_nccl(
                         "first_tensors": bucket_rows[:3],
                         "last_tensors": bucket_rows[-3:],
                         "load_format": bucket_request.get("load_format"),
+                        "transport": transport_name,
                     }
                     backend._last_weight_sync_sender_contract = bucket_contract
                     logger.info(
-                        "weight_sync_megatron_isolated_bucket_request_ready group=%s bucket_index=%s bucket_count=%s first_names=%s first_load_names=%s first_shapes=%s first_dtypes=%s",
-                        isolated_group_name,
+                        "weight_sync_megatron_runtime_bucket_request_ready transport=%s group=%s bucket_index=%s bucket_count=%s first_names=%s first_load_names=%s first_shapes=%s first_dtypes=%s",
+                        transport_name,
+                        bucket_group_name,
                         bucket_index,
                         total_buckets,
                         list(bucket_request.get("names", []))[:3],
@@ -2379,34 +2421,113 @@ def _do_sync_weights_nccl(
                         len(bucket_names),
                         bucket_bytes,
                         bucket_request.get("load_format"),
-                        "isolated_helper",
+                        transport_name,
                     )
-                    _run_isolated_weight_sync_sender(
-                        master_addr=isolated_master_addr,
-                        master_port=isolated_master_port,
-                        inference_endpoints=inference_endpoints,
-                        group_name=isolated_group_name,
-                        updates=[
-                            _serialize_weight_sync_update(
+                    if use_persistent_runtime_sync:
+                        executor = concurrent.futures.ThreadPoolExecutor(
+                            max_workers=max(1, len(inference_endpoints))
+                        )
+                        request_body = {
+                            **bucket_request,
+                            "group_name": bucket_group_name,
+                            "weight_version": str(request_weight_version),
+                        }
+
+                        def _update_remote_endpoint(endpoint: str) -> dict[str, object]:
+                            started_at = time.monotonic()
+                            response: requests.Response | None = None
+                            try:
+                                response = requests.post(
+                                    f"{endpoint}/update_weights_from_distributed",
+                                    json=request_body,
+                                    timeout=(5.0, 300.0),
+                                )
+                                response.raise_for_status()
+                                return {
+                                    "endpoint": endpoint,
+                                    "status_code": response.status_code,
+                                    "elapsed_sec": round(time.monotonic() - started_at, 3),
+                                }
+                            except Exception as exc:
+                                status_code = None
+                                response_text = None
+                                if response is not None:
+                                    status_code = response.status_code
+                                    try:
+                                        response_text = response.text[:400]
+                                    except Exception:
+                                        response_text = "<response text unavailable>"
+                                _emit_argus_diag(
+                                    "weight_sync_megatron_persistent_remote_update_failed",
+                                    endpoint=endpoint,
+                                    group=bucket_group_name,
+                                    version=request_weight_version,
+                                    bucket_index=bucket_index,
+                                    bucket_count=total_buckets,
+                                    tensor_count=len(bucket_names),
+                                    elapsed_sec=round(time.monotonic() - started_at, 3),
+                                    status_code=status_code,
+                                    response_text=response_text,
+                                    error_type=type(exc).__name__,
+                                    error=str(exc),
+                                )
+                                raise RuntimeError(
+                                    "Megatron persistent weight update request failed "
+                                    f"endpoint={endpoint} group={bucket_group_name} "
+                                    f"bucket_index={bucket_index}/{total_buckets} "
+                                    f"tensors={len(bucket_names)}"
+                                ) from exc
+
+                        futures = [
+                            (endpoint, executor.submit(_update_remote_endpoint, endpoint))
+                            for endpoint in inference_endpoints
+                        ]
+                        try:
+                            sender.broadcast_payload(
                                 bucket_payload,
-                                version=request_weight_version,
-                                request_payload=bucket_request,
+                                async_op=True,
+                                advance_version=False,
                             )
-                        ],
-                    )
+                        except Exception:
+                            for _endpoint, future in futures:
+                                future.cancel()
+                            raise
+                        try:
+                            for _endpoint, future in futures:
+                                future.result()
+                        finally:
+                            executor.shutdown(wait=False, cancel_futures=True)
+                    else:
+                        _run_isolated_weight_sync_sender(
+                            master_addr=isolated_master_addr,
+                            master_port=isolated_master_port,
+                            inference_endpoints=inference_endpoints,
+                            group_name=bucket_group_name,
+                            updates=[
+                                _serialize_weight_sync_update(
+                                    bucket_payload,
+                                    version=request_weight_version,
+                                    request_payload=bucket_request,
+                                )
+                            ],
+                        )
                     logger.info(
-                        "weight_sync_megatron_broadcast_wait_ok tensors=%s bucket_index=%s bucket_count=%s load_format=%s",
+                        "weight_sync_megatron_broadcast_wait_ok tensors=%s bucket_index=%s bucket_count=%s load_format=%s transport=%s",
                         len(bucket_names),
                         bucket_index,
                         total_buckets,
                         bucket_request.get("load_format"),
+                        transport_name,
                     )
                     logger.info(
-                        "weight_sync_megatron_metadata_responses_ok endpoints=%s bucket_index=%s bucket_count=%s",
+                        "weight_sync_megatron_metadata_responses_ok endpoints=%s bucket_index=%s bucket_count=%s transport=%s",
                         inference_endpoints,
                         bucket_index,
                         total_buckets,
+                        transport_name,
                     )
+                if use_persistent_runtime_sync and sender is not None:
+                    sender._weight_version = request_weight_version
                 backend._nccl_weight_version = request_weight_version
         except Exception as exc:
             sync_error = exc
