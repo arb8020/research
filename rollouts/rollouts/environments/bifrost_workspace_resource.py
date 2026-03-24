@@ -33,6 +33,276 @@ class BrokerBifrostWorkspaceResourceConfig:
 
 
 @dataclass(frozen=True)
+class SshBifrostWorkspaceResourceConfig:
+    """Config for a workspace backed by a static SSH target (no broker provisioning).
+
+    Use this when you already have a machine (e.g. a bare-metal B200) and want
+    to use it directly without going through RunPod or any other broker.
+
+    gpu_ids_to_check: GPU indices to verify are free before connecting.
+    Raises RuntimeError if any GPU has >1GB memory used or >5% utilization.
+    """
+
+    ssh: str
+    workspace_path: str = DEFAULT_BIFROST_WORKSPACE
+    bootstrap_cmds: tuple[str, ...] = ()
+    env: dict[str, str] = field(default_factory=dict)
+    ssh_key_path: str | None = None
+    connect_timeout_seconds: int = 30
+    gpu_ids_to_check: tuple[int, ...] = (0,)
+    memory_threshold_mb: int = 1000
+    util_threshold_pct: int = 5
+
+
+@dataclass
+class SshBifrostWorkspaceResource:
+    """Workspace resource backed by a static SSH target.
+
+    Connects directly to an existing machine via bifrost — no broker provisioning.
+    Runs a GPU preflight check (nvidia-smi) before connecting.
+
+    Interface is identical to BrokerBifrostWorkspaceResource so it is a
+    drop-in replacement in KernelBenchRolloutResources and the workspace pipeline.
+    """
+
+    config: SshBifrostWorkspaceResourceConfig
+    sample_data: dict[str, Any] = field(default_factory=dict)
+    _workspace_path: str | None = field(default=None, repr=False)
+    _runtime_description: dict[str, Any] | None = field(default=None, repr=False)
+    _last_error: str | None = field(default=None, repr=False)
+    _started: bool = field(default=False, repr=False)
+    _provision_duration_ms: float | None = field(default=None, repr=False)
+    _client: Any | None = field(default=None, repr=False)
+
+    @property
+    def working_dir(self) -> str:
+        return self._workspace_path or self.config.workspace_path
+
+    async def start(self) -> None:
+        await self.prepare(self.sample_data)
+
+    async def prepare(self, sample_data: dict[str, Any] | None = None) -> None:
+        if sample_data is not None:
+            self.sample_data = sample_data
+        await self._ensure_client()
+
+    async def close(self) -> None:
+        if self._client is not None:
+            try:
+                await self._client.close()
+            except Exception:
+                pass
+            finally:
+                self._client = None
+        self._started = False
+
+    async def describe_runtime(self) -> dict[str, Any]:
+        client = await self._ensure_client()
+        with trio.fail_after(60):
+            result = await client.exec(self._runtime_probe_script(), working_dir=self.working_dir)
+        if result.exit_code != 0:
+            self._runtime_description = {
+                "runtime_ok": False,
+                "error": result.stderr or result.stdout or "runtime probe failed",
+                "errors": [result.stderr or result.stdout or "runtime probe failed"],
+            }
+            return self._runtime_description
+        import json
+
+        try:
+            self._runtime_description = json.loads(result.stdout)
+        except json.JSONDecodeError:
+            self._runtime_description = {
+                "runtime_ok": False,
+                "error": f"invalid runtime probe output: {result.stdout}",
+                "errors": [result.stderr] if result.stderr else [],
+            }
+        return self._runtime_description
+
+    def stats(self) -> dict[str, Any]:
+        return {
+            "kind": "ssh_bifrost_workspace_resource",
+            "started": self._started,
+            "ssh": self.config.ssh,
+            "workspace_path": self.working_dir,
+            "last_error": self._last_error,
+            "provision_duration_ms": self._provision_duration_ms,
+            "runtime": self._runtime_description,
+        }
+
+    def resolve_path(self, current_working_dir: str, path: str) -> str:
+        if not path:
+            return current_working_dir
+        pure = PurePosixPath(path)
+        if pure.is_absolute():
+            return str(pure)
+        return str(PurePosixPath(current_working_dir) / pure)
+
+    async def read_file(self, path: str) -> bytes:
+        client = await self._ensure_client()
+        resolved = self.resolve_path(self.working_dir, path)
+        with tempfile.NamedTemporaryFile(delete=False) as tmp:
+            local_path = tmp.name
+        try:
+            with trio.fail_after(60):
+                result = await client.download_files(resolved, local_path, recursive=False)
+            if not result.success:
+                raise RuntimeError(result.error_message or f"Failed to read {resolved}")
+            return await trio.Path(local_path).read_bytes()
+        finally:
+            local_tmp = trio.Path(local_path)
+            if await local_tmp.exists():
+                await local_tmp.unlink()
+
+    async def write_file(self, path: str, content: bytes) -> None:
+        client = await self._ensure_client()
+        resolved = self.resolve_path(self.working_dir, path)
+        with tempfile.NamedTemporaryFile(delete=False) as tmp:
+            local_path = tmp.name
+        try:
+            await trio.Path(local_path).write_bytes(content)
+            with trio.fail_after(60):
+                result = await client.upload_files(local_path, resolved, recursive=False)
+            if not result.success:
+                raise RuntimeError(result.error_message or f"Failed to write {resolved}")
+        finally:
+            local_tmp = trio.Path(local_path)
+            if await local_tmp.exists():
+                await local_tmp.unlink()
+
+    async def exec(self, spec: SessionExecSpec) -> CommandExecutionResult:
+        return await self.run(
+            spec.command,
+            cwd=spec.cwd,
+            timeout=spec.timeout,
+            session_id=spec.session_id,
+            cancel_scope=spec.cancel_scope,
+        )
+
+    async def upload_bytes(self, remote_path: str, content: bytes) -> None:
+        await self.write_file(remote_path, content)
+
+    async def download_bytes(self, remote_path: str) -> bytes:
+        return await self.read_file(remote_path)
+
+    async def run(
+        self,
+        command: str,
+        *,
+        cwd: str,
+        timeout: float,
+        session_id: str | None = None,
+        cancel_scope: Any | None = None,
+    ) -> CommandExecutionResult:
+        del session_id, cancel_scope
+        client = await self._ensure_client()
+        try:
+            with trio.fail_after(timeout):
+                result = await client.exec(
+                    command,
+                    env=self.config.env,
+                    working_dir=cwd,
+                )
+        except trio.TooSlowError as exc:
+            raise WorkspaceInfraError(
+                f"workspace command timed out after {timeout}s",
+                kind="workspace_timeout",
+            ) from exc
+        return CommandExecutionResult(
+            returncode=result.exit_code,
+            stdout=result.stdout,
+            stderr=result.stderr,
+            cwd=cwd,
+        )
+
+    async def _ensure_client(self) -> Any:
+        if self._client is not None:
+            return self._client
+
+        started_at = time.perf_counter()
+        self._preflight_gpu_check()
+
+        from bifrost.async_client import AsyncBifrostClient
+
+        client = AsyncBifrostClient(
+            ssh_connection=self.config.ssh,
+            ssh_key_path=self.config.ssh_key_path,
+            timeout=self.config.connect_timeout_seconds,
+        )
+        bootstrap_cmd = list(self.config.bootstrap_cmds) if self.config.bootstrap_cmds else None
+        self._workspace_path = await client.push(
+            workspace_path=self.config.workspace_path,
+            bootstrap_cmd=bootstrap_cmd,
+        )
+        self._client = client
+        self._started = True
+        self._last_error = None
+        self._provision_duration_ms = (time.perf_counter() - started_at) * 1000.0
+        return client
+
+    def _preflight_gpu_check(self) -> None:
+        """Check GPUs are free on the remote machine via nvidia-smi over SSH.
+
+        Uses a synchronous bifrost client since this is called before the async
+        client is initialized. Raises RuntimeError if any GPU appears busy.
+        """
+        if not self.config.gpu_ids_to_check:
+            return
+
+        from bifrost.client import BifrostClient
+
+        client = BifrostClient(self.config.ssh, self.config.ssh_key_path)
+        try:
+            result = client.exec(
+                "nvidia-smi --query-gpu=index,memory.used,utilization.gpu "
+                "--format=csv,noheader,nounits"
+            )
+        except Exception as exc:
+            raise RuntimeError(
+                f"GPU preflight check failed: could not run nvidia-smi on {self.config.ssh}: {exc}"
+            ) from exc
+
+        if result.exit_code != 0:
+            raise RuntimeError(f"nvidia-smi failed on {self.config.ssh}: {result.stderr}")
+
+        gpu_stats: dict[int, dict[str, int]] = {}
+        for line in result.stdout.strip().splitlines():
+            parts = [p.strip() for p in line.split(",")]
+            if len(parts) != 3:
+                continue
+            try:
+                gpu_stats[int(parts[0])] = {
+                    "memory_mb": int(parts[1]),
+                    "util_pct": int(parts[2]),
+                }
+            except ValueError:
+                continue
+
+        for gpu_id in self.config.gpu_ids_to_check:
+            if gpu_id not in gpu_stats:
+                raise RuntimeError(
+                    f"GPU {gpu_id} not found on {self.config.ssh} "
+                    f"(available: {list(gpu_stats.keys())})"
+                )
+            stats = gpu_stats[gpu_id]
+            mem_mb = stats["memory_mb"]
+            util = stats["util_pct"]
+            if mem_mb > self.config.memory_threshold_mb or util > self.config.util_threshold_pct:
+                raise RuntimeError(
+                    f"GPU {gpu_id} on {self.config.ssh} appears busy "
+                    f"({mem_mb}MB used, {util}% util). "
+                    "Check with nvidia-smi before running."
+                )
+
+    def _runtime_probe_script(self) -> str:
+        return f"""
+python3 <<'PY'
+{build_gpu_runtime_probe_script()}
+PY
+"""
+
+
+@dataclass(frozen=True)
 class BrokerBifrostWorkspaceLease:
     gpu_id: int
     acquired_at: float
