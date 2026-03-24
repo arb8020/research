@@ -1,5 +1,6 @@
 """Argus: run supervision primitives for detached experiment execution."""
 
+from .active_run import ActiveRun
 from .commands import Command, CommandKind
 from .journal import InMemoryEventJournal
 from .model import (
@@ -18,6 +19,7 @@ from .model import (
 from .projection import materialize_snapshot
 
 __all__ = [
+    "ActiveRun",
     "AllocationRef",
     "ArtifactRef",
     "AttemptRecord",

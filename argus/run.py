@@ -69,6 +69,9 @@ from typing import TYPE_CHECKING, Any
 
 import tomllib
 
+from argus.active_run import ActiveRun
+from argus.model import RunKind, RunStatus
+
 
 @contextmanager
 def _quiet_spinner(msg: str) -> Generator[None, None, None]:
@@ -187,6 +190,14 @@ REMOTE_SYSTEM_TOOLS_FEATURE = "remote-system-tools-v1"
 REMOTE_UV_FEATURE = "uv"
 SSH_MANAGED_VENV_DIR = "/root/.bifrost/venvs/rollouts-rl"
 
+
+@dataclass(frozen=True)
+class _SshBootstrapPlan:
+    steps: tuple[tuple[str, str], ...]
+    manifest_features: tuple[str, ...]
+    manifest_groups: tuple[str, ...]
+
+
 # sys.path hack: make sibling packages (miniray, bifrost, broker, etc.) importable.
 #
 # WHY THIS EXISTS
@@ -235,6 +246,7 @@ from rollouts.image_spec import (
     USER_IMAGE_MANIFEST_PATH,
     ImageManifest,
     ImageSpec,
+    RuntimeOverlay,
     image_manifest_for_spec,
     infer_cuda_version,
     manifest_write_command,
@@ -334,6 +346,212 @@ def _ssh_runtime_feature_scope(custom_image: ImageSpec | None) -> str:
         return "image-owned"
     python_version = custom_image.python_version if custom_image is not None else "3.12"
     return f"managed-venv-python-{python_version}"
+
+
+def _build_ssh_bootstrap_plan(
+    *,
+    remote_manifest: ImageManifest | None,
+    custom_image: ImageSpec | None,
+    custom_overlay: RuntimeOverlay | None,
+    runtime_feature_scope: str,
+    image_owned_runtime: bool,
+    runtime_python: str,
+    managed_venv_ready: bool,
+    needs_cuda_upgrade: bool,
+    cuda_req: tuple[int, int, int, str] | None,
+    extra_python_project_roots: tuple[str, ...],
+) -> _SshBootstrapPlan:
+    steps: list[tuple[str, str]] = []
+    manifest_features: list[str] = []
+    manifest_groups: list[str] = []
+
+    if remote_manifest is None or not remote_manifest.has_feature(REMOTE_SYSTEM_TOOLS_FEATURE):
+        steps.append((
+            "Installing system deps",
+            "apt-get update && apt-get install -y tmux libnuma1 wget",
+        ))
+        manifest_features.append(REMOTE_SYSTEM_TOOLS_FEATURE)
+
+    if remote_manifest is None or not remote_manifest.has_feature(REMOTE_UV_FEATURE):
+        steps.append((
+            "Installing uv",
+            "curl -LsSf https://astral.sh/uv/install.sh | sh && source ~/.local/bin/env",
+        ))
+        manifest_features.append(REMOTE_UV_FEATURE)
+
+    if not image_owned_runtime and not managed_venv_ready:
+        managed_venv_feature = f"ssh-managed-venv-python-{custom_image.python_version if custom_image is not None else '3.12'}"
+        if remote_manifest is None or not remote_manifest.has_feature(managed_venv_feature):
+            python_version = custom_image.python_version if custom_image is not None else "3.12"
+            steps.append((
+                "Creating managed Python runtime",
+                (
+                    f"~/.local/bin/uv python install {shlex.quote(python_version)} && "
+                    f"~/.local/bin/uv venv {shlex.quote(SSH_MANAGED_VENV_DIR)} "
+                    f"--python {shlex.quote(python_version)}"
+                ),
+            ))
+            manifest_features.append(managed_venv_feature)
+
+    if needs_cuda_upgrade:
+        assert cuda_req is not None, "cuda_req required when needs_cuda_upgrade is true"
+        _, req_major, req_minor, _ = cuda_req
+        cuda_installers = {
+            (
+                12,
+                8,
+            ): "https://developer.download.nvidia.com/compute/cuda/12.8.0/local_installers/cuda_12.8.0_570.86.10_linux.run",
+            (
+                12,
+                9,
+            ): "https://developer.download.nvidia.com/compute/cuda/12.9.0/local_installers/cuda_12.9.0_575.51.03_linux.run",
+        }
+        installer_url = cuda_installers.get((req_major, req_minor))
+        if installer_url is None:
+            raise RuntimeError(
+                f"No CUDA installer URL configured for required toolkit {req_major}.{req_minor}"
+            )
+        steps.append((
+            f"Upgrading CUDA toolkit to {req_major}.{req_minor}",
+            f"wget -q {installer_url} -O /tmp/cuda_installer.run && "
+            f"sh /tmp/cuda_installer.run --silent --toolkit && "
+            f"rm /tmp/cuda_installer.run && "
+            f"echo 'export PATH=/usr/local/cuda-{req_major}.{req_minor}/bin:$PATH' >> ~/.bashrc && "
+            f"export PATH=/usr/local/cuda-{req_major}.{req_minor}/bin:$PATH",
+        ))
+
+    if custom_image is not None and custom_image.system_packages:
+        image_apt_feature = stable_feature_name(
+            "image-system-packages", custom_image.system_packages
+        )
+        if remote_manifest is None or not remote_manifest.has_feature(image_apt_feature):
+            steps.append((
+                "Installing image system packages",
+                (
+                    f"{_apt_install_command(custom_image.system_packages)} && "
+                    f"{apt_install_probe_command('image-system-packages', packages=custom_image.system_packages)}"
+                ),
+            ))
+            manifest_features.append(image_apt_feature)
+
+    if custom_image is not None and custom_image.pip_packages:
+        image_pip_feature = stable_feature_name(
+            f"image-pip-packages-{runtime_feature_scope}",
+            custom_image.pip_packages,
+        )
+        if remote_manifest is None or not remote_manifest.has_feature(image_pip_feature):
+            steps.append((
+                "Installing image Python packages",
+                (
+                    f"{
+                        _uv_pip_install_command(
+                            custom_image.pip_packages,
+                            python_bin=None if image_owned_runtime else runtime_python,
+                            system=image_owned_runtime,
+                            index_url=custom_image.pip_index_url,
+                            extra_index_url=custom_image.pip_extra_index_url,
+                            pre=custom_image.pip_prerelease,
+                        )
+                    } && "
+                    f"{python_install_probe_command('image-pip-packages', python_bin=runtime_python)} && "
+                    f"{python_runtime_contract_snapshot_command('image-pip-packages', python_bin=runtime_python)}"
+                ),
+            ))
+            manifest_features.append(image_pip_feature)
+
+    if custom_image is not None and custom_image.build_commands:
+        image_build_feature = stable_feature_name(
+            f"image-build-commands-{runtime_feature_scope}",
+            custom_image.build_commands,
+        )
+        if remote_manifest is None or not remote_manifest.has_feature(image_build_feature):
+            for idx, command in enumerate(custom_image.build_commands, start=1):
+                if command_looks_like_install(command):
+                    command = (
+                        f"{command} && "
+                        f"{python_install_probe_command(f'image-build-command-{idx}', python_bin=runtime_python)} && "
+                        f"{python_runtime_contract_verify_command(f'image-build-command-{idx}', python_bin=runtime_python)}"
+                    )
+                steps.append((f"Running image build command {idx}", command))
+            manifest_features.append(image_build_feature)
+
+    if custom_overlay is not None and custom_overlay.system_packages:
+        overlay_apt_feature = stable_feature_name(
+            "overlay-system-packages", custom_overlay.system_packages
+        )
+        if remote_manifest is None or not remote_manifest.has_feature(overlay_apt_feature):
+            steps.append((
+                "Installing runtime system packages",
+                (
+                    f"{_apt_install_command(custom_overlay.system_packages)} && "
+                    f"{apt_install_probe_command('overlay-system-packages', packages=custom_overlay.system_packages)}"
+                ),
+            ))
+            manifest_features.append(overlay_apt_feature)
+
+    if custom_overlay is not None and custom_overlay.pip_packages:
+        overlay_pip_feature = stable_feature_name(
+            f"overlay-pip-packages-{runtime_feature_scope}",
+            custom_overlay.pip_packages,
+        )
+        if remote_manifest is None or not remote_manifest.has_feature(overlay_pip_feature):
+            steps.append((
+                "Installing runtime Python packages",
+                (
+                    f"{
+                        _uv_pip_install_command(
+                            custom_overlay.pip_packages,
+                            python_bin=None if image_owned_runtime else runtime_python,
+                            system=image_owned_runtime,
+                            index_url=custom_overlay.pip_index_url
+                            or (custom_image.pip_index_url if custom_image else None),
+                            extra_index_url=custom_overlay.pip_extra_index_url
+                            or (custom_image.pip_extra_index_url if custom_image else None),
+                            pre=custom_overlay.pip_prerelease
+                            or (custom_image.pip_prerelease if custom_image else False),
+                        )
+                    } && "
+                    f"{python_install_probe_command('overlay-pip-packages', python_bin=runtime_python)} && "
+                    f"{python_runtime_contract_snapshot_command('overlay-pip-packages', python_bin=runtime_python)}"
+                ),
+            ))
+            manifest_features.append(overlay_pip_feature)
+
+    if custom_overlay is not None and custom_overlay.commands:
+        overlay_cmd_feature = stable_feature_name(
+            f"overlay-commands-{runtime_feature_scope}",
+            custom_overlay.commands,
+        )
+        if remote_manifest is None or not remote_manifest.has_feature(overlay_cmd_feature):
+            for idx, command in enumerate(custom_overlay.commands, start=1):
+                if command_looks_like_install(command):
+                    command = (
+                        f"{command} && "
+                        f"{python_install_probe_command(f'overlay-command-{idx}', python_bin=runtime_python)} && "
+                        f"{python_runtime_contract_verify_command(f'overlay-command-{idx}', python_bin=runtime_python)}"
+                    )
+                steps.append((f"Running runtime overlay command {idx}", command))
+            manifest_features.append(overlay_cmd_feature)
+
+    if custom_overlay is not None:
+        manifest_features.extend(custom_overlay.features)
+        manifest_groups.extend(custom_overlay.installed_groups)
+
+    if extra_python_project_roots:
+        steps.append((
+            "Installing extra project Python packages",
+            (
+                f"{_uv_pip_install_editable_command(extra_python_project_roots, python_bin=None if image_owned_runtime else runtime_python, system=image_owned_runtime, no_deps=True)} && "
+                f"{python_install_probe_command('extra-python-projects', python_bin=runtime_python)} && "
+                f"{python_runtime_contract_snapshot_command('extra-python-projects', python_bin=runtime_python)}"
+            ),
+        ))
+
+    return _SshBootstrapPlan(
+        steps=tuple(steps),
+        manifest_features=tuple(manifest_features),
+        manifest_groups=tuple(manifest_groups),
+    )
 
 
 def _find_config_project_root(config_path: Path) -> Path:
@@ -662,8 +880,62 @@ def _setup_run_logging(
 
     # Provider-owned projections sometimes need to append directly to the
     # canonical parent journal without re-entering this callback path.
-    _emit_event.log_file = log_file  # type: ignore[attr-defined]
+    _emit_event.log_file = log_file
     return RunLogger(emit_event=_emit_event)
+
+
+def _job_status_from_run_status(status: RunStatus) -> str:
+    if status == RunStatus.PENDING:
+        return "starting"
+    if status == RunStatus.RUNNING:
+        return "running"
+    if status == RunStatus.SUCCEEDED:
+        return "completed"
+    if status in {RunStatus.FAILED, RunStatus.CANCELLED}:
+        return "failed"
+    raise AssertionError(status)
+
+
+def _active_run_log_fields(active_run: ActiveRun) -> dict[str, str | None]:
+    return {
+        "argus_run_id": active_run.run_id,
+        "argus_status": active_run.status.value,
+        "argus_stage": active_run.stage,
+        "argus_attempt_id": active_run.attempt_id,
+    }
+
+
+def _sync_registered_run(active_run: ActiveRun) -> None:
+    from rollouts.jobs import update_job_node, update_job_status
+
+    allocation = active_run.snapshot.allocation
+    if allocation is not None:
+        update_job_node(active_run.run_id, allocation.provider, allocation.node_id)
+    update_job_status(active_run.run_id, _job_status_from_run_status(active_run.status))
+
+
+def _apply_modal_run_event(active_run: ActiveRun, event: str, data: dict[str, Any]) -> None:
+    """Project provider-owned Modal events into Argus' logical run state."""
+    if event == "modal_sandbox_created":
+        sandbox_id = data.get("sandbox_id")
+        if sandbox_id:
+            active_run.bind_allocation(provider="modal", node_id=str(sandbox_id))
+        return
+    if event == "modal_repo_sync_start":
+        active_run.update_stage("modal_repo_sync")
+        return
+    if event == "modal_repo_synced":
+        active_run.update_stage("modal_repo_synced")
+        return
+    if event == "modal_training_start":
+        active_run.mark_running(stage="modal_training")
+        return
+    if event == "workload_entrypoint_started":
+        active_run.update_stage("workload_entrypoint_started")
+        return
+    if event == "remote_artifact_projection_started":
+        active_run.update_stage("artifact_projection")
+        return
 
 
 def _spawn_eval_subprocess(
@@ -760,7 +1032,7 @@ async def _deploy_and_submit(
     from broker import AccountError, ProvisionError
     from broker.types import ProvisionImage
     from pytui import Console
-    from rollouts.jobs import register_job, update_job_node
+    from rollouts.jobs import register_job
 
     # Check HF_TOKEN before provisioning (downloads will be slow/rate-limited without it)
     if not skip_hf_token_check and not os.getenv("HF_TOKEN"):
@@ -784,8 +1056,22 @@ async def _deploy_and_submit(
 
     # Create local run directory immediately for logging
     local_run_dir = REPO_ROOT / "results" / "rl" / run_name
+    active_run = ActiveRun.create(
+        run_id=run_name,
+        kind=RunKind.TRAINING,
+        entrypoint=script_path,
+        run_dir=local_run_dir,
+        name=run_name,
+    )
     log = _setup_run_logging(local_run_dir)
-    log("run_start", config=script_path, gpu_count=gpu_count, gpu_type=gpu_type, node_id=node_id)
+    log(
+        "run_start",
+        config=script_path,
+        gpu_count=gpu_count,
+        gpu_type=gpu_type,
+        node_id=node_id,
+        **_active_run_log_fields(active_run),
+    )
 
     # Register job in local registry BEFORE provisioning
     # Use placeholder node_id if reusing, will be updated after provision
@@ -805,6 +1091,7 @@ async def _deploy_and_submit(
         config_path=script_path,
         log_path=f"results/rl/{run_name}",
     )
+    _sync_registered_run(active_run)
 
     logs_port = 9100
     provision_image = "runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04"
@@ -874,567 +1161,484 @@ async def _deploy_and_submit(
     )
     enforce_source_sync_policy(source_sync_policy, repo_root=REPO_ROOT, stream=sys.stderr)
 
-    # Acquire node - show which credentials profile is being used
-    from broker.credentials import get_active_profile
-
-    profile_name, _ = get_active_profile()
-    profile_hint = f" [{profile_name}]" if profile_name else ""
-
-    if node_id:
-        provision_msg = "Connecting..."
-    elif provider:
-        provision_msg = f"Provisioning {gpu_count}x {gpu_type} on {provider}{profile_hint}..."
-    else:
-        provision_msg = f"Provisioning {gpu_count}x {gpu_type}{profile_hint}..."
-    log("provision_start", msg=provision_msg)
     try:
-        with spinner(provision_msg) as spin:
-            if node_id:
-                bifrost, instance = await acquire_node(node_id=node_id)
-                if spin:
-                    spin.update(f"Connected to {node_id}")
-                log("provision_done", node_id=node_id, reused=True)
-                # Update job registry with actual node info
-                if instance:
-                    update_job_node(run_name, instance.provider, instance.id)
-            else:
-                bifrost, instance = await acquire_node(
-                    provision=GPUQuery(
-                        type=gpu_type,
-                        count=gpu_count,
-                        min_cuda="12.8",
-                        exposed_ports=(logs_port,),
-                        container_disk_gb=container_disk_gb,
-                        image=provision_image,
-                        boot_image=provision_boot_image,
-                        template_id=provision_template_id,
-                        docker_args=provision_docker_args,
-                        persistent_volume_id=persistent_volume_id,
-                        persistent_volume_mount_path=persistent_volume_mount_path,
-                        persistent_volume_location=persistent_volume_location,
-                        name=f"rollouts/{run_name}",
-                        provider=provider,
-                    )
-                )
-                node_str = f"{instance.provider}:{instance.id}" if instance else "?"
-                if spin:
-                    spin.update(f"Provisioned {node_str}")
-                log(
-                    "provision_done",
-                    node_id=node_str,
-                    provider=instance.provider if instance else None,
-                )
-                # Update job registry with actual node info
-                if instance:
-                    update_job_node(run_name, instance.provider, instance.id)
-    except AccountError as e:
-        logger.debug("AccountError details", exc_info=True)
-        print(f"\nError: {e.user_message()}", file=sys.stderr)
-        sys.exit(1)
-    except ProvisionError as e:
-        logger.debug("ProvisionError details", exc_info=True)
-        # Surface categorized one-liner based on result
-        result = e.result
-        if result.credential_error:
-            print("\nError: Invalid API credentials. Check your API keys.", file=sys.stderr)
-        elif result.no_offers_found:
-            print(
-                f"\nError: No {gpu_type} GPUs found. Update hardware.gpu_type in the config.",
-                file=sys.stderr,
-            )
-        elif result.all_unavailable:
-            print(
-                f"\nError: No {gpu_type} GPUs available right now. Try again later or update "
-                "hardware.gpu_type in the config.",
-                file=sys.stderr,
-            )
-        elif result.network_error:
-            print("\nError: Network error reaching GPU provider. Try again.", file=sys.stderr)
+        # Acquire node - show which credentials profile is being used
+        from broker.credentials import get_active_profile
+
+        profile_name, _ = get_active_profile()
+        profile_hint = f" [{profile_name}]" if profile_name else ""
+
+        active_run.update_stage("provisioning")
+        _sync_registered_run(active_run)
+        if node_id:
+            provision_msg = "Connecting..."
+        elif provider:
+            provision_msg = f"Provisioning {gpu_count}x {gpu_type} on {provider}{profile_hint}..."
         else:
-            print(f"\nError: Provisioning failed: {e}", file=sys.stderr)
-        sys.exit(1)
+            provision_msg = f"Provisioning {gpu_count}x {gpu_type}{profile_hint}..."
+        log("provision_start", msg=provision_msg, **_active_run_log_fields(active_run))
+        try:
+            with spinner(provision_msg) as spin:
+                if node_id:
+                    bifrost, instance = await acquire_node(node_id=node_id)
+                    if spin:
+                        spin.update(f"Connected to {node_id}")
+                    if instance:
+                        active_run.bind_allocation(
+                            provider=instance.provider,
+                            node_id=instance.id,
+                            image_ref=resolved_registry_image_ref,
+                        )
+                        _sync_registered_run(active_run)
+                    log(
+                        "provision_done",
+                        node_id=node_id,
+                        reused=True,
+                        **_active_run_log_fields(active_run),
+                    )
+                else:
+                    bifrost, instance = await acquire_node(
+                        provision=GPUQuery(
+                            type=gpu_type,
+                            count=gpu_count,
+                            min_cuda="12.8",
+                            exposed_ports=(logs_port,),
+                            container_disk_gb=container_disk_gb,
+                            image=provision_image,
+                            boot_image=provision_boot_image,
+                            template_id=provision_template_id,
+                            docker_args=provision_docker_args,
+                            persistent_volume_id=persistent_volume_id,
+                            persistent_volume_mount_path=persistent_volume_mount_path,
+                            persistent_volume_location=persistent_volume_location,
+                            name=f"rollouts/{run_name}",
+                            provider=provider,
+                        )
+                    )
+                    node_str = f"{instance.provider}:{instance.id}" if instance else "?"
+                    if spin:
+                        spin.update(f"Provisioned {node_str}")
+                    if instance:
+                        active_run.bind_allocation(
+                            provider=instance.provider,
+                            node_id=instance.id,
+                            image_ref=resolved_registry_image_ref,
+                        )
+                        _sync_registered_run(active_run)
+                    log(
+                        "provision_done",
+                        node_id=node_str,
+                        provider=instance.provider if instance else None,
+                        **_active_run_log_fields(active_run),
+                    )
+        except AccountError as e:
+            logger.debug("AccountError details", exc_info=True)
+            active_run.mark_failed(error=e.user_message())
+            _sync_registered_run(active_run)
+            log(
+                "run_failed",
+                error=e.user_message(),
+                **_active_run_log_fields(active_run),
+            )
+            print(f"\nError: {e.user_message()}", file=sys.stderr)
+            sys.exit(1)
+        except ProvisionError as e:
+            logger.debug("ProvisionError details", exc_info=True)
+            # Surface categorized one-liner based on result
+            result = e.result
+            if result.credential_error:
+                user_message = "Invalid API credentials. Check your API keys."
+                print("\nError: Invalid API credentials. Check your API keys.", file=sys.stderr)
+            elif result.no_offers_found:
+                user_message = f"No {gpu_type} GPUs found. Update hardware.gpu_type in the config."
+                print(
+                    f"\nError: No {gpu_type} GPUs found. Update hardware.gpu_type in the config.",
+                    file=sys.stderr,
+                )
+            elif result.all_unavailable:
+                user_message = (
+                    f"No {gpu_type} GPUs available right now. Try again later or update "
+                    "hardware.gpu_type in the config."
+                )
+                print(
+                    f"\nError: No {gpu_type} GPUs available right now. Try again later or update "
+                    "hardware.gpu_type in the config.",
+                    file=sys.stderr,
+                )
+            elif result.network_error:
+                user_message = "Network error reaching GPU provider. Try again."
+                print("\nError: Network error reaching GPU provider. Try again.", file=sys.stderr)
+            else:
+                user_message = f"Provisioning failed: {e}"
+                print(f"\nError: Provisioning failed: {e}", file=sys.stderr)
+            active_run.mark_failed(error=user_message)
+            _sync_registered_run(active_run)
+            log(
+                "run_failed",
+                error=user_message,
+                **_active_run_log_fields(active_run),
+            )
+            sys.exit(1)
 
-    custom_image = deps.resolved_image(gpu_type) if deps is not None else None
+        custom_image = deps.resolved_image(gpu_type) if deps is not None else None
 
-    # Check CUDA toolkit version compatibility and auto-upgrade if needed
-    # The driver version (nvidia-smi) may be newer than the toolkit (nvcc)
-    # FlashInfer/Triton JIT-compile kernels and need nvcc to support the GPU arch
-    from rollouts.training.preflight import get_gpu_cuda_requirement
+        # Check CUDA toolkit version compatibility and auto-upgrade if needed
+        # The driver version (nvidia-smi) may be newer than the toolkit (nvcc)
+        # FlashInfer/Triton JIT-compile kernels and need nvcc to support the GPU arch
+        from rollouts.training.preflight import get_gpu_cuda_requirement
 
-    cuda_req = get_gpu_cuda_requirement(gpu_type)
-    needs_cuda_upgrade = False
-    should_reconcile_cuda = _should_reconcile_ssh_cuda_toolkit(custom_image)
-    if cuda_req is not None and should_reconcile_cuda:
-        sm_version, min_major, min_minor, arch_name = cuda_req
-        log(
-            "cuda_check_start",
-            gpu_type=gpu_type,
-            arch=arch_name,
-            min_cuda=f"{min_major}.{min_minor}",
-        )
-        with spinner(f"Checking CUDA toolkit for {gpu_type} ({arch_name})..."):
-            # Get nvcc version from remote
-            try:
-                result = bifrost.exec("nvcc --version 2>/dev/null || echo 'nvcc not found'")
-                nvcc_output = result.stdout if hasattr(result, "stdout") else str(result)
+        cuda_req = get_gpu_cuda_requirement(gpu_type)
+        needs_cuda_upgrade = False
+        should_reconcile_cuda = _should_reconcile_ssh_cuda_toolkit(custom_image)
+        if cuda_req is not None and should_reconcile_cuda:
+            sm_version, min_major, min_minor, arch_name = cuda_req
+            log(
+                "cuda_check_start",
+                gpu_type=gpu_type,
+                arch=arch_name,
+                min_cuda=f"{min_major}.{min_minor}",
+                **_active_run_log_fields(active_run),
+            )
+            with spinner(f"Checking CUDA toolkit for {gpu_type} ({arch_name})..."):
+                # Get nvcc version from remote
+                try:
+                    result = bifrost.exec("nvcc --version 2>/dev/null || echo 'nvcc not found'")
+                    nvcc_output = result.stdout if hasattr(result, "stdout") else str(result)
 
-                # Parse "release X.Y" from nvcc output
-                import re
+                    # Parse "release X.Y" from nvcc output
+                    import re
 
-                match = re.search(r"release (\d+)\.(\d+)", nvcc_output)
-                if match:
-                    nvcc_major, nvcc_minor = int(match.group(1)), int(match.group(2))
-                    if nvcc_major < min_major or (
-                        nvcc_major == min_major and nvcc_minor < min_minor
-                    ):
+                    match = re.search(r"release (\d+)\.(\d+)", nvcc_output)
+                    if match:
+                        nvcc_major, nvcc_minor = int(match.group(1)), int(match.group(2))
+                        if nvcc_major < min_major or (
+                            nvcc_major == min_major and nvcc_minor < min_minor
+                        ):
+                            logger.warning(
+                                f"CUDA toolkit {nvcc_major}.{nvcc_minor} is too old for {gpu_type} "
+                                f"(needs {min_major}.{min_minor}+). Will upgrade during bootstrap."
+                            )
+                            needs_cuda_upgrade = True
+                            log(
+                                "cuda_check_done",
+                                nvcc_version=f"{nvcc_major}.{nvcc_minor}",
+                                compatible=False,
+                                will_upgrade=True,
+                                **_active_run_log_fields(active_run),
+                            )
+                        else:
+                            log(
+                                "cuda_check_done",
+                                nvcc_version=f"{nvcc_major}.{nvcc_minor}",
+                                compatible=True,
+                                **_active_run_log_fields(active_run),
+                            )
+                    else:
+                        # nvcc not found - will need to install
                         logger.warning(
-                            f"CUDA toolkit {nvcc_major}.{nvcc_minor} is too old for {gpu_type} "
-                            f"(needs {min_major}.{min_minor}+). Will upgrade during bootstrap."
+                            "nvcc not found on remote. Will install CUDA toolkit during bootstrap."
                         )
                         needs_cuda_upgrade = True
                         log(
                             "cuda_check_done",
-                            nvcc_version=f"{nvcc_major}.{nvcc_minor}",
-                            compatible=False,
+                            nvcc_version="not_found",
                             will_upgrade=True,
+                            **_active_run_log_fields(active_run),
                         )
-                    else:
-                        log(
-                            "cuda_check_done",
-                            nvcc_version=f"{nvcc_major}.{nvcc_minor}",
-                            compatible=True,
-                        )
-                else:
-                    # nvcc not found - will need to install
+                except Exception as e:
+                    log(
+                        "cuda_check_done",
+                        error=str(e),
+                        **_active_run_log_fields(active_run),
+                    )
                     logger.warning(
-                        "nvcc not found on remote. Will install CUDA toolkit during bootstrap."
+                        f"CUDA check failed: {e}. Will attempt toolkit install during bootstrap."
                     )
                     needs_cuda_upgrade = True
-                    log("cuda_check_done", nvcc_version="not_found", will_upgrade=True)
-            except Exception as e:
-                log("cuda_check_done", error=str(e))
-                logger.warning(
-                    f"CUDA check failed: {e}. Will attempt toolkit install during bootstrap."
+        elif cuda_req is not None:
+            _, min_major, min_minor, arch_name = cuda_req
+            log(
+                "cuda_check_skipped",
+                gpu_type=gpu_type,
+                arch=arch_name,
+                min_cuda=f"{min_major}.{min_minor}",
+                reason="image_owned_runtime",
+                **_active_run_log_fields(active_run),
+            )
+
+        # Deploy code (git sync only, no bootstrap)
+        local_script_path = Path(script_path).resolve()
+
+        active_run.update_stage("deploying")
+        _sync_registered_run(active_run)
+        log("deploy_start", **_active_run_log_fields(active_run))
+        with spinner("Deploying code..."):
+            from bifrost import WorkspaceMaterializationSpec
+
+            workspace_handle = bifrost.materialize(
+                WorkspaceMaterializationSpec(
+                    requested_root="~/.bifrost/workspaces/rollouts-rl",
+                    allow_dirty=allow_dirty,
+                    extra_python_projects=extra_python_projects,
                 )
-                needs_cuda_upgrade = True
-    elif cuda_req is not None:
-        _, min_major, min_minor, arch_name = cuda_req
-        log(
-            "cuda_check_skipped",
-            gpu_type=gpu_type,
-            arch=arch_name,
-            min_cuda=f"{min_major}.{min_minor}",
-            reason="image_owned_runtime",
-        )
-
-    # Deploy code (git sync only, no bootstrap)
-    local_script_path = Path(script_path).resolve()
-
-    log("deploy_start")
-    with spinner("Deploying code..."):
-        from bifrost import WorkspaceMaterializationSpec
-
-        workspace_handle = bifrost.materialize(
-            WorkspaceMaterializationSpec(
-                requested_root="~/.bifrost/workspaces/rollouts-rl",
-                allow_dirty=allow_dirty,
-                extra_python_projects=extra_python_projects,
             )
-        )
-        workspace = _normalize_remote_workspace_root(bifrost, workspace_handle.root)
-    log("deploy_done", workspace=workspace)
-    remote_script_path = _remote_materialized_path(
-        local_path=local_script_path,
-        workspace_root=workspace,
-        extra_python_projects=extra_python_projects,
-    )
-
-    remote_manifest = _read_remote_manifest(bifrost)
-    if remote_manifest is not None:
-        log(
-            "image_manifest_loaded",
-            features=list(remote_manifest.features),
-            installed_groups=list(remote_manifest.installed_groups),
-        )
-
-    custom_overlay = deps.resolved_runtime_overlay() if deps is not None else None
-    image_owned_runtime = custom_image is not None and custom_image.python_runtime == "image_owned"
-    runtime_python = _ssh_runtime_python(custom_image)
-    runtime_feature_scope = _ssh_runtime_feature_scope(custom_image)
-    managed_venv_ready = True
-    if not image_owned_runtime:
-        managed_venv_ready = bifrost.exec(f"test -x {shlex.quote(runtime_python)}").success
-
-    if deps is not None and deps.image is not None:
-        logger.info(
-            "Custom image spec provided for SSH runner. Registry-backed images are now passed through to provisioning; non-registry image sources still require a build/push step first."
+            workspace = _normalize_remote_workspace_root(bifrost, workspace_handle.root)
+        if active_run.snapshot.allocation is not None:
+            allocation = active_run.snapshot.allocation
+            active_run.bind_allocation(
+                provider=allocation.provider,
+                node_id=allocation.node_id,
+                image_ref=allocation.image_ref,
+                workspace=workspace,
+            )
+            _sync_registered_run(active_run)
+        log("deploy_done", workspace=workspace, **_active_run_log_fields(active_run))
+        remote_script_path = _remote_materialized_path(
+            local_path=local_script_path,
+            workspace_root=workspace,
+            extra_python_projects=extra_python_projects,
         )
 
-    # Bootstrap steps — each gets its own spinner with ✓ on completion
-    bootstrap_steps: list[tuple[str, str]] = []
-    manifest_features_applied: list[str] = []
-    manifest_groups_applied: list[str] = []
-
-    if remote_manifest is None or not remote_manifest.has_feature(REMOTE_SYSTEM_TOOLS_FEATURE):
-        bootstrap_steps.append((
-            "Installing system deps",
-            "apt-get update && apt-get install -y tmux libnuma1 wget",
-        ))
-        manifest_features_applied.append(REMOTE_SYSTEM_TOOLS_FEATURE)
-
-    if remote_manifest is None or not remote_manifest.has_feature(REMOTE_UV_FEATURE):
-        bootstrap_steps.append((
-            "Installing uv",
-            "curl -LsSf https://astral.sh/uv/install.sh | sh && source ~/.local/bin/env",
-        ))
-        manifest_features_applied.append(REMOTE_UV_FEATURE)
-
-    if not image_owned_runtime and not managed_venv_ready:
-        managed_venv_feature = f"ssh-managed-venv-python-{custom_image.python_version if custom_image is not None else '3.12'}"
-        if remote_manifest is None or not remote_manifest.has_feature(managed_venv_feature):
-            python_version = custom_image.python_version if custom_image is not None else "3.12"
-            bootstrap_steps.append((
-                "Creating managed Python runtime",
-                (
-                    f"~/.local/bin/uv python install {shlex.quote(python_version)} && "
-                    f"~/.local/bin/uv venv {shlex.quote(SSH_MANAGED_VENV_DIR)} "
-                    f"--python {shlex.quote(python_version)}"
-                ),
-            ))
-            manifest_features_applied.append(managed_venv_feature)
-
-    # Add CUDA toolkit upgrade if needed (must happen before Python packages that compile CUDA code)
-    if needs_cuda_upgrade and cuda_req is not None:
-        _, req_major, req_minor, _ = cuda_req
-        # Use runfile installer with --toolkit to upgrade nvcc without touching driver
-        # This installs to /usr/local/cuda-X.Y and we update PATH to use it
-        # Download URLs from: https://developer.nvidia.com/cuda-12-8-0-download-archive
-        cuda_installers = {
-            (
-                12,
-                8,
-            ): "https://developer.download.nvidia.com/compute/cuda/12.8.0/local_installers/cuda_12.8.0_570.86.10_linux.run",
-            (
-                12,
-                9,
-            ): "https://developer.download.nvidia.com/compute/cuda/12.9.0/local_installers/cuda_12.9.0_575.51.03_linux.run",
-        }
-        installer_url = cuda_installers.get((req_major, req_minor))
-        if installer_url:
-            bootstrap_steps.append((
-                f"Upgrading CUDA toolkit to {req_major}.{req_minor}",
-                f"wget -q {installer_url} -O /tmp/cuda_installer.run && "
-                f"sh /tmp/cuda_installer.run --silent --toolkit && "
-                f"rm /tmp/cuda_installer.run && "
-                f"echo 'export PATH=/usr/local/cuda-{req_major}.{req_minor}/bin:$PATH' >> ~/.bashrc && "
-                f"export PATH=/usr/local/cuda-{req_major}.{req_minor}/bin:$PATH",
-            ))
-        else:
-            raise RuntimeError(
-                f"No CUDA installer URL configured for required toolkit {req_major}.{req_minor}"
+        remote_manifest = _read_remote_manifest(bifrost)
+        if remote_manifest is not None:
+            log(
+                "image_manifest_loaded",
+                features=list(remote_manifest.features),
+                installed_groups=list(remote_manifest.installed_groups),
+                **_active_run_log_fields(active_run),
             )
 
-    if custom_image is not None and custom_image.system_packages:
-        image_apt_feature = stable_feature_name(
-            "image-system-packages", custom_image.system_packages
+        custom_overlay = deps.resolved_runtime_overlay() if deps is not None else None
+        image_owned_runtime = (
+            custom_image is not None and custom_image.python_runtime == "image_owned"
         )
-        if remote_manifest is None or not remote_manifest.has_feature(image_apt_feature):
-            bootstrap_steps.append((
-                "Installing image system packages",
-                (
-                    f"{_apt_install_command(custom_image.system_packages)} && "
-                    f"{apt_install_probe_command('image-system-packages', packages=custom_image.system_packages)}"
-                ),
-            ))
-            manifest_features_applied.append(image_apt_feature)
+        runtime_python = _ssh_runtime_python(custom_image)
+        runtime_feature_scope = _ssh_runtime_feature_scope(custom_image)
+        managed_venv_ready = True
+        if not image_owned_runtime:
+            managed_venv_ready = bifrost.exec(f"test -x {shlex.quote(runtime_python)}").success
 
-    if custom_image is not None and custom_image.pip_packages:
-        # TODO: Mirror the Modal path here by creating an image-owned uv venv / runtime
-        # contract and keeping heavy Python deps out of per-run reconciliation entirely.
-        # This SSH/bootstrap path should eventually verify that runtime, not redefine it.
-        image_pip_feature = stable_feature_name(
-            f"image-pip-packages-{runtime_feature_scope}",
-            custom_image.pip_packages,
-        )
-        if remote_manifest is None or not remote_manifest.has_feature(image_pip_feature):
-            bootstrap_steps.append((
-                "Installing image Python packages",
-                (
-                    f"{
-                        _uv_pip_install_command(
-                            custom_image.pip_packages,
-                            python_bin=None if image_owned_runtime else runtime_python,
-                            system=image_owned_runtime,
-                            index_url=custom_image.pip_index_url,
-                            extra_index_url=custom_image.pip_extra_index_url,
-                            pre=custom_image.pip_prerelease,
-                        )
-                    } && "
-                    f"{python_install_probe_command('image-pip-packages', python_bin=runtime_python)} && "
-                    f"{python_runtime_contract_snapshot_command('image-pip-packages', python_bin=runtime_python)}"
-                ),
-            ))
-            manifest_features_applied.append(image_pip_feature)
+        if deps is not None and deps.image is not None:
+            logger.info(
+                "Custom image spec provided for SSH runner. Registry-backed images are now passed through to provisioning; non-registry image sources still require a build/push step first."
+            )
 
-    if custom_image is not None and custom_image.build_commands:
-        image_build_feature = stable_feature_name(
-            f"image-build-commands-{runtime_feature_scope}",
-            custom_image.build_commands,
-        )
-        if remote_manifest is None or not remote_manifest.has_feature(image_build_feature):
-            for idx, command in enumerate(custom_image.build_commands, start=1):
-                if command_looks_like_install(command):
-                    command = (
-                        f"{command} && "
-                        f"{python_install_probe_command(f'image-build-command-{idx}', python_bin=runtime_python)} && "
-                        f"{python_runtime_contract_verify_command(f'image-build-command-{idx}', python_bin=runtime_python)}"
-                    )
-                bootstrap_steps.append((f"Running image build command {idx}", command))
-            manifest_features_applied.append(image_build_feature)
-
-    if custom_overlay is not None and custom_overlay.system_packages:
-        overlay_apt_feature = stable_feature_name(
-            "overlay-system-packages", custom_overlay.system_packages
-        )
-        if remote_manifest is None or not remote_manifest.has_feature(overlay_apt_feature):
-            bootstrap_steps.append((
-                "Installing runtime system packages",
-                (
-                    f"{_apt_install_command(custom_overlay.system_packages)} && "
-                    f"{apt_install_probe_command('overlay-system-packages', packages=custom_overlay.system_packages)}"
-                ),
-            ))
-            manifest_features_applied.append(overlay_apt_feature)
-
-    if custom_overlay is not None and custom_overlay.pip_packages:
-        overlay_pip_feature = stable_feature_name(
-            f"overlay-pip-packages-{runtime_feature_scope}",
-            custom_overlay.pip_packages,
-        )
-        if remote_manifest is None or not remote_manifest.has_feature(overlay_pip_feature):
-            bootstrap_steps.append((
-                "Installing runtime Python packages",
-                (
-                    f"{
-                        _uv_pip_install_command(
-                            custom_overlay.pip_packages,
-                            python_bin=None if image_owned_runtime else runtime_python,
-                            system=image_owned_runtime,
-                            index_url=custom_overlay.pip_index_url
-                            or (custom_image.pip_index_url if custom_image else None),
-                            extra_index_url=custom_overlay.pip_extra_index_url
-                            or (custom_image.pip_extra_index_url if custom_image else None),
-                            pre=custom_overlay.pip_prerelease
-                            or (custom_image.pip_prerelease if custom_image else False),
-                        )
-                    } && "
-                    f"{python_install_probe_command('overlay-pip-packages', python_bin=runtime_python)} && "
-                    f"{python_runtime_contract_snapshot_command('overlay-pip-packages', python_bin=runtime_python)}"
-                ),
-            ))
-            manifest_features_applied.append(overlay_pip_feature)
-
-    if custom_overlay is not None and custom_overlay.commands:
-        overlay_cmd_feature = stable_feature_name(
-            f"overlay-commands-{runtime_feature_scope}",
-            custom_overlay.commands,
-        )
-        if remote_manifest is None or not remote_manifest.has_feature(overlay_cmd_feature):
-            for idx, command in enumerate(custom_overlay.commands, start=1):
-                if command_looks_like_install(command):
-                    command = (
-                        f"{command} && "
-                        f"{python_install_probe_command(f'overlay-command-{idx}', python_bin=runtime_python)} && "
-                        f"{python_runtime_contract_verify_command(f'overlay-command-{idx}', python_bin=runtime_python)}"
-                    )
-                bootstrap_steps.append((f"Running runtime overlay command {idx}", command))
-            manifest_features_applied.append(overlay_cmd_feature)
-
-    if custom_overlay is not None:
-        manifest_features_applied.extend(custom_overlay.features)
-        manifest_groups_applied.extend(custom_overlay.installed_groups)
-
-    if extra_python_projects:
-        extra_project_roots = tuple(
-            project.remote_source_root(workspace) for project in extra_python_projects
-        )
-        bootstrap_steps.append((
-            "Installing extra project Python packages",
-            (
-                f"{_uv_pip_install_editable_command(extra_project_roots, python_bin=None if image_owned_runtime else runtime_python, system=image_owned_runtime, no_deps=True)} && "
-                f"{python_install_probe_command('extra-python-projects', python_bin=runtime_python)} && "
-                f"{python_runtime_contract_snapshot_command('extra-python-projects', python_bin=runtime_python)}"
+        bootstrap_plan = _build_ssh_bootstrap_plan(
+            remote_manifest=remote_manifest,
+            custom_image=custom_image,
+            custom_overlay=custom_overlay,
+            runtime_feature_scope=runtime_feature_scope,
+            image_owned_runtime=image_owned_runtime,
+            runtime_python=runtime_python,
+            managed_venv_ready=managed_venv_ready,
+            needs_cuda_upgrade=needs_cuda_upgrade,
+            cuda_req=cuda_req,
+            extra_python_project_roots=tuple(
+                project.remote_source_root(workspace) for project in extra_python_projects
             ),
-        ))
+        )
 
-    for label, cmd in bootstrap_steps:
-        log("bootstrap_step_start", label=label)
-        with spinner(f"{label}..."):
-            bifrost.exec(cmd, working_dir=workspace)
-        log("bootstrap_step_done", label=label)
+        active_run.update_stage("bootstrapping")
+        _sync_registered_run(active_run)
+        for label, cmd in bootstrap_plan.steps:
+            log("bootstrap_step_start", label=label, **_active_run_log_fields(active_run))
+            with spinner(f"{label}..."):
+                bifrost.exec(cmd, working_dir=workspace)
+            log("bootstrap_step_done", label=label, **_active_run_log_fields(active_run))
 
-    # HuggingFace login for faster authenticated downloads
-    # Token is written to ~/.cache/huggingface/token (standard HF location)
-    # Using printf to avoid token appearing in shell history or ps output
-    if hf_token := os.getenv("HF_TOKEN"):
-        log("bootstrap_step_start", label="HuggingFace login")
-        with spinner("Logging into HuggingFace..."):
-            # Use env var in subshell - token only visible to this process
-            bifrost.exec(
-                f"mkdir -p {hf_cache_dir} && printf '%s' \"$HF_TOKEN\" > {hf_cache_dir}/token",
-                env={"HF_TOKEN": hf_token},
-                working_dir=workspace,
+        # HuggingFace login for faster authenticated downloads
+        # Token is written to ~/.cache/huggingface/token (standard HF location)
+        # Using printf to avoid token appearing in shell history or ps output
+        if hf_token := os.getenv("HF_TOKEN"):
+            log(
+                "bootstrap_step_start",
+                label="HuggingFace login",
+                **_active_run_log_fields(active_run),
             )
-        log("bootstrap_step_done", label="HuggingFace login")
-
-    manifest_base = remote_manifest
-    if manifest_base is None:
-        if custom_image is not None:
-            manifest_base = image_manifest_for_spec(
-                custom_image,
-                image_name=f"ssh-{gpu_type.lower()}",
-                cuda_version=infer_cuda_version(gpu_type, custom_image.pip_index_url),
-                resolved_image_ref=resolved_registry_image_ref,
-                env={
-                    "HF_HOME": hf_cache_dir,
-                    "HF_HUB_ENABLE_HF_TRANSFER": "1",
-                    **custom_image.env,
-                },
-                paths={"megatron_root": "/root/Megatron-LM"},
-            )
-        else:
-            manifest_base = ImageManifest(
-                image_name=f"ssh-{gpu_type.lower()}",
-                python_version="3.12",
-                env={
-                    "HF_HOME": hf_cache_dir,
-                    "HF_HUB_ENABLE_HF_TRANSFER": "1",
-                },
-                paths={"megatron_root": "/root/Megatron-LM"},
+            with spinner("Logging into HuggingFace..."):
+                # Use env var in subshell - token only visible to this process
+                bifrost.exec(
+                    f"mkdir -p {hf_cache_dir} && printf '%s' \"$HF_TOKEN\" > {hf_cache_dir}/token",
+                    env={"HF_TOKEN": hf_token},
+                    working_dir=workspace,
+                )
+            log(
+                "bootstrap_step_done",
+                label="HuggingFace login",
+                **_active_run_log_fields(active_run),
             )
 
-    manifest_to_write = manifest_base.extended(
-        features=tuple(manifest_features_applied),
-        installed_groups=tuple(manifest_groups_applied),
-        resolved_image_ref=resolved_registry_image_ref,
-        env={
+        manifest_base = remote_manifest
+        if manifest_base is None:
+            if custom_image is not None:
+                manifest_base = image_manifest_for_spec(
+                    custom_image,
+                    image_name=f"ssh-{gpu_type.lower()}",
+                    cuda_version=infer_cuda_version(gpu_type, custom_image.pip_index_url),
+                    resolved_image_ref=resolved_registry_image_ref,
+                    env={
+                        "HF_HOME": hf_cache_dir,
+                        "HF_HUB_ENABLE_HF_TRANSFER": "1",
+                        **custom_image.env,
+                    },
+                    paths={"megatron_root": "/root/Megatron-LM"},
+                )
+            else:
+                manifest_base = ImageManifest(
+                    image_name=f"ssh-{gpu_type.lower()}",
+                    python_version="3.12",
+                    env={
+                        "HF_HOME": hf_cache_dir,
+                        "HF_HUB_ENABLE_HF_TRANSFER": "1",
+                    },
+                    paths={"megatron_root": "/root/Megatron-LM"},
+                )
+
+        requested_cuda_version = (
+            f"{cuda_req[1]}.{cuda_req[2]}" if needs_cuda_upgrade and cuda_req is not None else None
+        )
+        manifest_to_write = manifest_base.extended(
+            features=bootstrap_plan.manifest_features,
+            installed_groups=bootstrap_plan.manifest_groups,
+            resolved_image_ref=resolved_registry_image_ref,
+            env={
+                "HF_HOME": hf_cache_dir,
+                "HF_HUB_ENABLE_HF_TRANSFER": "1",
+                **(custom_image.env if custom_image is not None else {}),
+                **(custom_overlay.env if custom_overlay is not None else {}),
+            },
+            paths={"megatron_root": "/root/Megatron-LM"},
+            python_version=manifest_base.python_version or "3.12",
+            cuda_version=manifest_base.cuda_version or requested_cuda_version,
+        )
+        log(
+            "image_manifest_write",
+            features=list(manifest_to_write.features),
+            installed_groups=list(manifest_to_write.installed_groups),
+            **_active_run_log_fields(active_run),
+        )
+        bifrost.exec(manifest_write_command(manifest_to_write, USER_IMAGE_MANIFEST_PATH))
+
+        # Create run output directory
+        remote_output_dir = f"{workspace}/rollouts/results/rl/{run_name}"
+        bifrost.exec(f"mkdir -p {remote_output_dir}")
+        training_log = f"{remote_output_dir}/training.log"
+        active_run.record_artifact(name="remote_training_log", path=training_log, kind="log")
+
+        # Start LogsServer as a detached service BEFORE the training job. This
+        # decouples LogsServer lifetime from the training job — if training
+        # crashes, LogsServer keeps running and can serve the final logs
+        # (including tracebacks).
+        logs_port = 9100
+        logs_dir = f"{workspace}/rollouts/results/rl/{run_name}"
+        logs_service_name = f"logs-{run_name}"
+        logs_log_file = f"{logs_dir}/logs_server.log"
+
+        # Kill any stale LogsServer processes from previous runs
+        bifrost.exec(f"fuser -k {logs_port}/tcp 2>/dev/null || true")
+        bifrost.exec("pkill -f 'miniray.logs_server' 2>/dev/null || true")
+
+        logs_service = bifrost.serve_service(
+            ServiceSpec(
+                process=ProcessSpec(
+                    command="python3",
+                    args=("-m", "miniray.logs_server", "--port", str(logs_port), "--dir", logs_dir),
+                    cwd=workspace,
+                ),
+                port=logs_port,
+                readiness_probe=ReadinessProbe(kind="process_alive"),
+            ),
+            name=logs_service_name,
+            log_file=logs_log_file,
+            workspace=workspace,
+        )
+        log(
+            "logs_server_started",
+            port=logs_port,
+            session=logs_service.handle_id,
+            log_file=logs_service.log_file,
+            **_active_run_log_fields(active_run),
+        )
+        active_run.record_artifact(name="logs_server_log", path=logs_log_file, kind="log")
+        _sync_registered_run(active_run)
+
+        remote_workspace_member_entries = _remote_workspace_pythonpath_entries(
+            local_workspace_root=_workspace_root,
+            remote_workspace_root=workspace,
+            extra_entries=("/root/Megatron-LM",),
+        )
+        remote_extra_project_entries = [
+            project.remote_source_root(workspace) for project in extra_python_projects
+        ]
+        pythonpath_entries = list(
+            dict.fromkeys([*remote_extra_project_entries, *remote_workspace_member_entries])
+        )
+
+        env_vars = {
+            "PYTHONUNBUFFERED": "1",
+            "ROLLOUTS_RUN_NAME": run_name,
+            "ROLLOUTS_OUTPUT_DIR": f"results/rl/{run_name}",
+            "ROLLOUTS_JSON_LOGS": "true",
             "HF_HOME": hf_cache_dir,
-            "HF_HUB_ENABLE_HF_TRANSFER": "1",
+            # PYTHONPATH includes:
+            # - staged extra project roots for external configs like charisma
+            # - each workspace member root for sibling package imports
+            # - /root/Megatron-LM for megatron.core imports
+            "PYTHONPATH": ":".join(pythonpath_entries),
+            # NCCL settings for multi-GPU training
+            "CUDA_DEVICE_MAX_CONNECTIONS": "1",
             **(custom_image.env if custom_image is not None else {}),
             **(custom_overlay.env if custom_overlay is not None else {}),
-        },
-        paths={"megatron_root": "/root/Megatron-LM"},
-        python_version=manifest_base.python_version or "3.12",
-        cuda_version=manifest_base.cuda_version
-        or (f"{req_major}.{req_minor}" if needs_cuda_upgrade and cuda_req is not None else None),
-    )
-    log(
-        "image_manifest_write",
-        features=list(manifest_to_write.features),
-        installed_groups=list(manifest_to_write.installed_groups),
-    )
-    bifrost.exec(manifest_write_command(manifest_to_write, USER_IMAGE_MANIFEST_PATH))
+            **_remote_broker_credentials_env(),
+        }
 
-    # Create run output directory
-    remote_output_dir = f"{workspace}/rollouts/results/rl/{run_name}"
-    bifrost.exec(f"mkdir -p {remote_output_dir}")
-    training_log = f"{remote_output_dir}/training.log"
+        # Submit training job
+        process_command = runtime_python
+        if raw_script:
+            run_args = (remote_script_path,)
+        else:
+            run_args = (
+                "-m",
+                "argus.run",
+                "--config",
+                remote_script_path,
+                "--local",
+            )
 
-    # Start LogsServer as a detached service BEFORE the training job. This
-    # decouples LogsServer lifetime from the training job — if training
-    # crashes, LogsServer keeps running and can serve the final logs
-    # (including tracebacks).
-    logs_port = 9100
-    logs_dir = f"{workspace}/rollouts/results/rl/{run_name}"
-    logs_service_name = f"logs-{run_name}"
-    logs_log_file = f"{logs_dir}/logs_server.log"
+        log("submit_start", **_active_run_log_fields(active_run))
+        with spinner(f"Starting {run_name}...") as spin:
+            job = bifrost.submit(
+                ProcessSpec(
+                    command=process_command,
+                    args=run_args,
+                    cwd=f"{workspace}/rollouts",
+                    env=env_vars,
+                ),
+                name=run_name,  # Unique per run for tmux session isolation
+                log_file=training_log,
+                workspace=f"{workspace}/rollouts",
+            )
+            if spin:
+                spin.update(f"Training started ({job.tmux_session})")
+        active_run.mark_running(stage="remote_submitted")
+        _sync_registered_run(active_run)
+        log("submit_done", tmux_session=job.tmux_session, **_active_run_log_fields(active_run))
 
-    # Kill any stale LogsServer processes from previous runs
-    bifrost.exec(f"fuser -k {logs_port}/tcp 2>/dev/null || true")
-    bifrost.exec("pkill -f 'miniray.logs_server' 2>/dev/null || true")
-
-    logs_service = bifrost.serve_service(
-        ServiceSpec(
-            process=ProcessSpec(
-                command="python3",
-                args=("-m", "miniray.logs_server", "--port", str(logs_port), "--dir", logs_dir),
-                cwd=workspace,
-            ),
-            port=logs_port,
-            readiness_probe=ReadinessProbe(kind="process_alive"),
-        ),
-        name=logs_service_name,
-        log_file=logs_log_file,
-        workspace=workspace,
-    )
-    log(
-        "logs_server_started",
-        port=logs_port,
-        session=logs_service.handle_id,
-        log_file=logs_service.log_file,
-    )
-
-    remote_workspace_member_entries = _remote_workspace_pythonpath_entries(
-        local_workspace_root=_workspace_root,
-        remote_workspace_root=workspace,
-        extra_entries=("/root/Megatron-LM",),
-    )
-    remote_extra_project_entries = [
-        project.remote_source_root(workspace) for project in extra_python_projects
-    ]
-    pythonpath_entries = list(
-        dict.fromkeys([*remote_extra_project_entries, *remote_workspace_member_entries])
-    )
-
-    env_vars = {
-        "PYTHONUNBUFFERED": "1",
-        "ROLLOUTS_RUN_NAME": run_name,
-        "ROLLOUTS_OUTPUT_DIR": f"results/rl/{run_name}",
-        "ROLLOUTS_JSON_LOGS": "true",
-        "HF_HOME": hf_cache_dir,
-        # PYTHONPATH includes:
-        # - staged extra project roots for external configs like charisma
-        # - each workspace member root for sibling package imports
-        # - /root/Megatron-LM for megatron.core imports
-        "PYTHONPATH": ":".join(pythonpath_entries),
-        # NCCL settings for multi-GPU training
-        "CUDA_DEVICE_MAX_CONNECTIONS": "1",
-        **(custom_image.env if custom_image is not None else {}),
-        **(custom_overlay.env if custom_overlay is not None else {}),
-        **_remote_broker_credentials_env(),
-    }
-
-    # Submit training job
-    process_command = runtime_python
-    if raw_script:
-        run_args = (remote_script_path,)
-    else:
-        run_args = (
-            "-m",
-            "argus.run",
-            "--config",
-            remote_script_path,
-            "--local",
+        return (
+            bifrost,
+            instance,
+            job,
+            run_name,
+            remote_output_dir,
+            workspace,
+            console,
+            local_run_dir,
         )
-
-    log("submit_start")
-    with spinner(f"Starting {run_name}...") as spin:
-        job = bifrost.submit(
-            ProcessSpec(
-                command=process_command,
-                args=run_args,
-                cwd=f"{workspace}/rollouts",
-                env=env_vars,
-            ),
-            name=run_name,  # Unique per run for tmux session isolation
-            log_file=training_log,
-            workspace=f"{workspace}/rollouts",
-        )
-        if spin:
-            spin.update(f"Training started ({job.tmux_session})")
-    log("submit_done", tmux_session=job.tmux_session)
-
-    return bifrost, instance, job, run_name, remote_output_dir, workspace, console, local_run_dir
+    except Exception as exc:
+        active_run.mark_failed(error=str(exc))
+        _sync_registered_run(active_run)
+        log("run_failed", error=str(exc), **_active_run_log_fields(active_run))
+        raise
 
 
 async def _sync_and_cleanup(
@@ -1872,7 +2076,7 @@ Examples:
 
             # Check if this is a benchmark config
             from rollouts.inference.benchmark.config import BenchmarkConfig
-            from rollouts.jobs import register_job, update_job_status
+            from rollouts.jobs import register_job
 
             if isinstance(config_module.config, BenchmarkConfig):
                 # Benchmark run
@@ -1902,15 +2106,17 @@ Examples:
                     config_path=str(config_path),
                     log_path=f"results/rl/{run_name}",
                 )
-                from rollouts.jobs import update_job_node
+                active_run = ActiveRun.create(
+                    run_id=run_name,
+                    kind=RunKind.TRAINING,
+                    entrypoint=str(config_path),
+                    run_dir=local_run_dir,
+                    name=run_name,
+                )
 
                 def _project_modal_event(event: str, data: dict[str, Any]) -> None:
-                    if event == "modal_sandbox_created":
-                        sandbox_id = data.get("sandbox_id")
-                        if sandbox_id:
-                            update_job_node(run_name, "modal", str(sandbox_id))
-                    elif event == "modal_training_start":
-                        update_job_status(run_name, "running")
+                    _apply_modal_run_event(active_run, event, data)
+                    _sync_registered_run(active_run)
 
                 log = _setup_run_logging(local_run_dir, on_event=_project_modal_event)
                 log(
@@ -1920,6 +2126,9 @@ Examples:
                     config=str(config_path),
                     gpu_count=runtime.gpu_count,
                     gpu_type=runtime.gpu_type,
+                    argus_run_id=active_run.run_id,
+                    argus_status=active_run.status.value,
+                    argus_attempt_id=active_run.attempt_id,
                 )
 
                 modal_tags = _argus_modal_tags(
@@ -1958,15 +2167,31 @@ Examples:
                 log("modal_submit_dispatch")
                 results = trio.run(run_modal_request, modal_request)
                 if not results.get("success"):
-                    update_job_status(run_name, "failed")
+                    active_run.mark_failed(
+                        exit_code=results.get("exit_code"),
+                        error=str(results.get("stderr") or ""),
+                    )
+                    _sync_registered_run(active_run)
                     log(
                         "run_failed",
                         exit_code=results.get("exit_code"),
                         stderr=results.get("stderr"),
+                        argus_run_id=active_run.run_id,
+                        argus_status=active_run.status.value,
+                        argus_stage=active_run.stage,
+                        argus_attempt_id=active_run.attempt_id,
                     )
                     return 1
-                update_job_status(run_name, "completed")
-                log("run_completed", exit_code=results.get("exit_code"))
+                active_run.mark_succeeded(exit_code=results.get("exit_code"))
+                _sync_registered_run(active_run)
+                log(
+                    "run_completed",
+                    exit_code=results.get("exit_code"),
+                    argus_run_id=active_run.run_id,
+                    argus_status=active_run.status.value,
+                    argus_stage=active_run.stage,
+                    argus_attempt_id=active_run.attempt_id,
+                )
 
         elif runtime.provider in ("runpod", "lambdalabs", "vast") or args.node_id:
             # Remote execution via SSH
