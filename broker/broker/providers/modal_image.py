@@ -286,13 +286,14 @@ async def _emit_private_modal_image_logs(
 
             return lines_emitted, truncated, progress_updates, terminal_status
 
-        with trio.move_on_after(MODAL_IMAGE_BUILD_LOG_FETCH_TIMEOUT_S) as scope:
-            (
-                lines_emitted,
-                truncated,
-                progress_updates,
-                terminal_status,
-            ) = await trio_asyncio.aio_as_trio(_consume_stream())
+        async with trio_asyncio.open_loop():
+            with trio.move_on_after(MODAL_IMAGE_BUILD_LOG_FETCH_TIMEOUT_S) as scope:
+                (
+                    lines_emitted,
+                    truncated,
+                    progress_updates,
+                    terminal_status,
+                ) = await trio_asyncio.aio_as_trio(_consume_stream())
         if scope.cancelled_caught:
             emit(
                 "modal_image_build_logs_fetch_timeout",
