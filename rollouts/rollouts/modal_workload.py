@@ -223,23 +223,41 @@ def emit(event: str, **data: object) -> None:
 
 def _project_training_event(data: dict[str, object]) -> None:
     event_name = data.get("event")
-    if event_name != "step_complete":
+    if event_name == "step_complete":
+        emit(
+            "step_complete",
+            projected_from_artifact=True,
+            projection_source="training.jsonl",
+            step=data.get("step"),
+            mean_reward=data.get("mean_reward"),
+            pg_loss=data.get("pg_loss"),
+            entropy=data.get("entropy"),
+            num_samples=data.get("num_samples"),
+            num_groups=data.get("num_groups"),
+            step_total_ms=data.get("step_total_ms"),
+            rollout_step_count=data.get("rollout_step_count"),
+            gpu_allocated_gb=data.get("gpu_allocated_gb"),
+            gpu_reserved_gb=data.get("gpu_reserved_gb"),
+            ram_gb=data.get("ram_gb"),
+        )
+        return
+    if event_name != "train_step_complete":
         return
     emit(
-        "step_complete",
+        "train_step_complete",
         projected_from_artifact=True,
         projection_source="training.jsonl",
         step=data.get("step"),
         mean_reward=data.get("mean_reward"),
         pg_loss=data.get("pg_loss"),
         entropy=data.get("entropy"),
-        num_samples=data.get("num_samples"),
-        num_groups=data.get("num_groups"),
+        loss=data.get("loss"),
+        grad_norm=data.get("grad_norm"),
+        process_batch_ms=data.get("process_batch_ms"),
+        checkpoint_ms=data.get("checkpoint_ms"),
+        weight_sync_ms=data.get("weight_sync_ms"),
         step_total_ms=data.get("step_total_ms"),
         rollout_step_count=data.get("rollout_step_count"),
-        gpu_allocated_gb=data.get("gpu_allocated_gb"),
-        gpu_reserved_gb=data.get("gpu_reserved_gb"),
-        ram_gb=data.get("ram_gb"),
     )
 
 
@@ -428,23 +446,42 @@ def terminate_process(proc: subprocess.Popen[bytes] | None) -> None:
 
 
 def _project_training_event(data: dict[str, object]) -> None:
-    if data.get("event") != "step_complete":
+    event_name = data.get("event")
+    if event_name == "step_complete":
+        emit(
+            "step_complete",
+            projected_from_artifact=True,
+            projection_source="training.jsonl",
+            step=data.get("step"),
+            mean_reward=data.get("mean_reward"),
+            pg_loss=data.get("pg_loss"),
+            entropy=data.get("entropy"),
+            num_samples=data.get("num_samples"),
+            num_groups=data.get("num_groups"),
+            step_total_ms=data.get("step_total_ms"),
+            rollout_step_count=data.get("rollout_step_count"),
+            gpu_allocated_gb=data.get("gpu_allocated_gb"),
+            gpu_reserved_gb=data.get("gpu_reserved_gb"),
+            ram_gb=data.get("ram_gb"),
+        )
+        return
+    if event_name != "train_step_complete":
         return
     emit(
-        "step_complete",
+        "train_step_complete",
         projected_from_artifact=True,
         projection_source="training.jsonl",
         step=data.get("step"),
         mean_reward=data.get("mean_reward"),
         pg_loss=data.get("pg_loss"),
         entropy=data.get("entropy"),
-        num_samples=data.get("num_samples"),
-        num_groups=data.get("num_groups"),
+        loss=data.get("loss"),
+        grad_norm=data.get("grad_norm"),
+        process_batch_ms=data.get("process_batch_ms"),
+        checkpoint_ms=data.get("checkpoint_ms"),
+        weight_sync_ms=data.get("weight_sync_ms"),
         step_total_ms=data.get("step_total_ms"),
         rollout_step_count=data.get("rollout_step_count"),
-        gpu_allocated_gb=data.get("gpu_allocated_gb"),
-        gpu_reserved_gb=data.get("gpu_reserved_gb"),
-        ram_gb=data.get("ram_gb"),
     )
 
 

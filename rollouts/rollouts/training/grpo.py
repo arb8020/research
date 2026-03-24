@@ -2093,6 +2093,19 @@ async def _grpo_train_async(
                 },
             )
 
+        def _log_post_weight_sync_state() -> None:
+            if step_weight_syncer is None:
+                return
+            state = getattr(step_weight_syncer, "state", None)
+            if state is None:
+                return
+            event = (
+                "weight_update_channel_after_sync"
+                if not state.update_in_progress and state.serving_resumed
+                else "weight_update_channel_after_sync_failed"
+            )
+            _log_update_channel_state(event)
+
         if step_weight_syncer is not None:
             _log_update_channel_state("weight_update_channel_created")
 
@@ -2415,7 +2428,7 @@ async def _grpo_train_async(
                 current_version = getattr(
                     backend, "weight_version", pipeline_state.current_train_version
                 )
-                _log_update_channel_state("weight_update_channel_after_sync")
+                _log_post_weight_sync_state()
                 _update_pipeline_state(
                     train_version=current_version,
                     serving_version=current_version,
@@ -2492,7 +2505,7 @@ async def _grpo_train_async(
                 current_version = getattr(
                     backend, "weight_version", pipeline_state.current_train_version
                 )
-                _log_update_channel_state("weight_update_channel_after_sync")
+                _log_post_weight_sync_state()
                 _update_pipeline_state(
                     train_version=current_version,
                     serving_version=current_version,

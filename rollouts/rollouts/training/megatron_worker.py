@@ -36,7 +36,7 @@ _ISOLATED_REMOTE_INIT_CONNECT_TIMEOUT_SEC = 5.0
 # needed a larger coordinator-side timeout; keep the runtime init read timeout
 # above the old 10s assumption so bucket init does not fail spuriously before
 # the helper itself has a chance to report a real transport error.
-_ISOLATED_REMOTE_INIT_READ_TIMEOUT_SEC = 30.0
+_ISOLATED_REMOTE_INIT_READ_TIMEOUT_SEC = 90.0
 # This helper wraps the whole isolated runtime publication lifecycle: start the
 # subprocess, stand up rank 0's NCCL group, let the receiver join, ship the
 # bucket, tear the group down, then unwind. The receiver-side init request
