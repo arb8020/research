@@ -18,6 +18,15 @@ Current trusted configs:
   - trainer: Megatron
   - inference: Slime-SGLang
   - provider: Modal
+  - trusted runtime sync: isolated Megatron runtime NCCL sync
+
+Current conclusion for Megatron + Slime-SGLang:
+
+- the trusted path is the restored isolated runtime sync contract
+- the newer persistent runtime sync contract is not part of the trusted surface
+  right now
+- treat persistent runtime sync as deferred until its session lifecycle and
+  payload contract are redesigned and revalidated
 
 Each trusted config now also exports a `worker_topology` sketch so eval and RL
 can converge on the same "allocation -> named workers -> semantic roles"

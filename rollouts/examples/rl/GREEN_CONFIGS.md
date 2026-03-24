@@ -25,10 +25,19 @@ If a config is not listed here, treat it as exploratory until it is revalidated.
   - trainer: `megatron`
   - inference: `slime-sglang`
   - provider: `modal`
+- Revalidated:
+  - commit: `8c8dcde5`
+  - run: [`run_20260324-002030`](/Users/chiraagbalu/research/rollouts/results/rl/run_20260324-002030/training.jsonl)
 - What this proves:
   - reverse-text RL loop completes
   - isolated runtime NCCL weight sync works
   - the dense Megatron/SGLang path is alive again
+
+Important note:
+- the trusted Megatron/SGLang path currently uses the restored isolated runtime
+  sync contract
+- the newer persistent runtime sync path is deferred until its sender/receiver
+  lifecycle is redesigned and revalidated
 
 ## Not Green Yet
 
