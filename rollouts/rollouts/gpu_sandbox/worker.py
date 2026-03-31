@@ -652,7 +652,7 @@ try:
     print(f"CORRECTNESS_RESULT:{{passed}}/{{len(_CORRECTNESS_SEEDS)}}")
 
     # ── Stage 4: Determinism ──────────────────────────────────────────────────
-    _check_determinism = {str(check_determinism).lower() == "true"}
+    _check_determinism = {check_determinism}
     if _check_determinism:
         torch.manual_seed(2026)
         if torch.cuda.is_available():
@@ -675,7 +675,7 @@ try:
     bench_inputs = [x.to(device) if isinstance(x, torch.Tensor) else x for x in get_inputs()]
 
     baseline_type = "pytorch_eager"
-    _adaptive = {str(adaptive_baseline).lower() == "true"}
+    _adaptive = {adaptive_baseline}
     if _adaptive:
         try:
             _compiled = torch.compile(model_ref, mode="reduce-overhead")
