@@ -591,7 +591,7 @@ try:
     model_ref = Model(*get_init_inputs()).to(device).eval()
     model_new = ModelNew(*get_init_inputs()).to(device).eval()
 
-    _CORRECTNESS_SEEDS = list(range({num_correct_seeds}))
+    assert {num_correct_seeds} <= 5, "num_correct_seeds must be <= 5 (hardcoded seed list has 5 entries)"
     _CORRECTNESS_SEEDS = [42, 123, 456, 789, 1337][:{num_correct_seeds}]
     passed = 0
     precision = "fp32"
