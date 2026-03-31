@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import tempfile
 import time
 from dataclasses import asdict, dataclass, field
@@ -11,6 +12,8 @@ import trio
 from ..infra_errors import WorkspaceInfraError
 from .resources import CommandExecutionResult, SessionExecSpec
 from .runtime_probe import build_gpu_runtime_probe_script
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_BIFROST_WORKSPACE = "~/.bifrost/workspaces/rollouts"
 
@@ -90,8 +93,8 @@ class SshBifrostWorkspaceResource:
         if self._client is not None:
             try:
                 await self._client.close()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("Error closing SSH bifrost client for %s: %s", self.config.ssh, exc)
             finally:
                 self._client = None
         self._started = False
