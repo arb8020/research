@@ -5,8 +5,10 @@ repos:
       # Run the linter
       - id: ruff
         args: [--fix]
+        exclude: ^dev/tinygrad-eval/
       # Run the formatter
       - id: ruff-format
+        exclude: ^dev/tinygrad-eval/
 
   # ty type checker (using system hook until official hook available)
   - repo: local
