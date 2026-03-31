@@ -220,7 +220,7 @@ class SshBifrostWorkspaceResource:
             return self._client
 
         started_at = time.perf_counter()
-        self._preflight_gpu_check()
+        await trio.to_thread.run_sync(self._preflight_gpu_check)
 
         from bifrost.async_client import AsyncBifrostClient
 
