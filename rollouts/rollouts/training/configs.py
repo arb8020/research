@@ -243,6 +243,24 @@ class HardwareConfig:
     persistent_volume_mount_path: str = "/workspace"
     persistent_volume_location: str | None = None
 
+    # Modal-specific: named volumes to mount inside the sandbox.
+    # Each entry is a (volume_name, mount_path) tuple.
+    # Use for mutable data that changes across runs: checkpoints, logs.
+    # Ignored by non-Modal providers.
+    # TODO(broker): fold into persistent_volume once PersistentVolumeAttachment
+    # is generalized to support Modal's name-based volume semantics.
+    modal_volume_mounts: tuple[tuple[str, str], ...] = ()
+
+    # Modal-specific: filesystem snapshot registry for static assets (model weights).
+    # Tuple of (registry_name, registry_key) pointing to a modal.Dict that maps
+    # the key to a snapshot image ID. On first run (no snapshot yet), falls back
+    # to building from deps. After a manual snapshot step, all subsequent runs
+    # restore from the snapshot automatically.
+    # Ignored by non-Modal providers.
+    # TODO(broker): generalize as BootImageSnapshot across providers
+    # (RunPod pod templates, AWS AMIs, etc.).
+    modal_snapshot_registry: tuple[str, str] | None = None
+
     # Auto-derived from gpu_type if None (for known GPUs)
     gpu_memory_gb: int | None = None
     compute_capability: str | None = None
@@ -505,25 +523,24 @@ class TrainerConfig:
 
 @dataclass(frozen=True)
 class InferenceConfig:
-    """Inference server settings (SGLang/vLLM).
+    """Inference server settings.
+
+    `spec` names an InferenceEngineSpec from inference_realizations.py —
+    the complete identity of the engine: what code runs, what sync protocols
+    it supports, what capabilities it exposes.
+
+    To use a different engine or a fork, define a new InferenceEngineSpec
+    and reference it here by name.
 
     Supports multiple inference engines for higher throughput (PipelineRL-style).
     Each GPU in cuda_device_ids gets its own inference server on a separate port.
 
-    Architectural note:
-    Inference backends now go through `inference_runtime_factory`, so engine
-    construction and first-cut pipeline validation have one home. That runtime
-    boundary is still narrower than the training-side one: launch sequencing,
-    lifecycle ownership, and async publication lowering still leak into GRPO.
-    Keep this config honest about concrete engine settings; do not treat it as
-    a complete cross-runtime capability contract yet.
-
     Example:
-        # Single inference engine on GPU 0
+        # Single inference engine on GPU 0 (default: slime-sglang)
         InferenceConfig(cuda_device_ids=(0,), port=30000)
 
-        # Two inference engines on GPUs 0 and 1 (ports 30000, 30001)
-        InferenceConfig(cuda_device_ids=(0, 1), port=30000)
+        # QED-patched vLLM with NCCL weight sync
+        InferenceConfig(spec="qed-vllm", cuda_device_ids=(0,))
 
         # TP=2: one engine using 2 GPUs
         InferenceConfig(cuda_device_ids=(0, 1), port=30000, tensor_parallel_size=2)
@@ -532,14 +549,9 @@ class InferenceConfig:
     When DistributedConfig is provided, it takes precedence.
     """
 
-    backend: str = "sglang"  # Compatibility input; factory lowers this to a realization.
-    # Preferred explicit runtime selection. Examples:
-    # - "slime-sglang"
-    # - "qed-vllm"
-    # Keep patch/local-server choices here instead of deriving them from sync flags.
-    realization: str | None = None
+    spec: str = "slime-sglang"  # Name of an InferenceEngineSpec
     # Service-scoped runtime deps for the inference process.
-    # Current launchers do not realize per-service environments yet.
+    # Overrides or supplements the deps declared on the engine spec.
     deps: DepsConfig | None = None
     port: int = 30000  # Base port (engines use port, port+1, ...)
     cuda_device_ids: tuple[int, ...] = (0,)
@@ -573,12 +585,9 @@ class InferenceConfig:
         return [tuple(gpus[i * tp : (i + 1) * tp]) for i in range(self.num_engines)]
 
     def __post_init__(self) -> None:
-        """Validate configuration."""
-        if self.backend not in ("sglang", "vllm", "engine_v2"):
-            raise ValueError(
-                f"Unknown inference backend: {self.backend!r}. "
-                "Use 'sglang', 'vllm', or 'engine_v2'."
-            )
+        from .inference_realizations import get_inference_engine_spec
+
+        get_inference_engine_spec(self.spec)  # fail loudly if unknown
         if len(self.cuda_device_ids) % self.tensor_parallel_size != 0:
             raise ValueError(
                 f"tensor_parallel_size={self.tensor_parallel_size} must divide "
@@ -618,12 +627,9 @@ class InferenceWorkerConfig:
     def resolved_provider(self) -> str:
         if self.provider is not None:
             return self.provider
-        if self.inference.backend in {"sglang", "vllm"}:
-            return self.inference.backend
-        raise ValueError(
-            f"InferenceWorkerConfig {self.worker_id!r} needs an explicit provider "
-            f"for backend {self.inference.backend!r}."
-        )
+        from .inference_realizations import get_inference_engine_spec
+
+        return get_inference_engine_spec(self.inference.spec).api_format
 
 
 @dataclass(frozen=True)

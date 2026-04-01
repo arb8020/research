@@ -57,7 +57,6 @@ config = GRPOConfig(
         max_grad_norm=1.0,
     ),
     inference=InferenceConfig(
-        backend="sglang",
         cuda_device_ids=(0,),
         port=30000,
         mem_fraction=0.65,

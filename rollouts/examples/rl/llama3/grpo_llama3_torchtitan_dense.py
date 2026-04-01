@@ -42,7 +42,6 @@ config = GRPOConfig(
         cuda_device_ids=(1,),
     ),
     inference=InferenceConfig(
-        backend="sglang",
         cuda_device_ids=(0,),
         mem_fraction=0.85,
         startup_timeout=600.0,

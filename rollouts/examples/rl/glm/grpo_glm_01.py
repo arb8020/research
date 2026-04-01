@@ -68,7 +68,6 @@ config = GRPOConfig(
         cuda_device_ids=(1,),
     ),
     inference=InferenceConfig(
-        backend="sglang",
         cuda_device_ids=(0,),
         mem_fraction=0.9,  # GLM MoE needs more VRAM
         startup_timeout=600.0,  # 10 min - GLM-4.7 has 48 shards (~60GB) to download

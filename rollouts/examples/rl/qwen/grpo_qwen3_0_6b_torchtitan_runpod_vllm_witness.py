@@ -89,8 +89,7 @@ config = GRPOConfig(
         cuda_device_ids=(1,),
     ),
     inference=InferenceConfig(
-        backend="vllm",
-        realization="qed-vllm",
+        spec="qed-vllm",
         deps=QWEN_TORCHTITAN_VLLM_INFERENCE_DEPS,
         cuda_device_ids=(0,),
         mem_fraction=0.45,

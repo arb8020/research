@@ -483,8 +483,7 @@ def _build_grpo_run_context(
         "output_dir": str(output_dir),
         "model_name": config.model.name,
         "trainer_backend": config.trainer.backend,
-        "inference_backend": config.inference.backend,
-        "inference_realization": config.inference.realization or config.inference.backend,
+        "inference_spec": config.inference.spec,
         "trainer_cuda_device_ids": tuple(config.trainer.cuda_device_ids),
         "inference_cuda_device_ids": tuple(config.inference.cuda_device_ids),
         "rollout_batch_size": config.rollout.batch_size,
@@ -1194,7 +1193,7 @@ async def _grpo_train_async(
     logger.info(f"GRPO Training: {run_name}")
     logger.info("=" * 60)
     logger.info(f"Model: {config.model.name}")
-    logger.info(f"Inference: {config.inference.realization or config.inference.backend}")
+    logger.info(f"Inference: {config.inference.spec}")
     logger.info(f"Steps: {config.checkpoint.num_steps}")
     logger.info(
         f"Batch: {config.rollout.batch_size} prompts x {config.rollout.n_samples_per_prompt} samples"
@@ -1273,8 +1272,7 @@ async def _grpo_train_async(
         "output_dir": str(output_dir),
         "model_name": config.model.name,
         "trainer_backend": config.trainer.backend,
-        "inference_backend": config.inference.backend,
-        "inference_realization": config.inference.realization or config.inference.backend,
+        "inference_spec": config.inference.spec,
         "node_id": os.environ.get("ROLLOUTS_NODE_ID"),
         "hostname": socket.gethostname(),
     }
@@ -1394,8 +1392,7 @@ async def _grpo_train_async(
             "num_engines": num_engines,
             "ports": list(config.inference.ports),
             "gpu_assignments": [list(gpus) for gpus in config.inference.gpu_assignments],
-            "inference_backend": config.inference.backend,
-            "inference_realization": inference_runtime.realization.name,
+            "inference_spec": inference_runtime.spec.name,
             "inference_sync_realization": (
                 inference_runtime.sync_realization.name
                 if inference_runtime.sync_realization is not None

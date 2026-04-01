@@ -465,7 +465,6 @@ class DiskWeightSync:
 
     config: DiskWeightSyncConfig
     endpoints: list[str] = field(default_factory=list)
-    backend: str = "sglang"  # "sglang" or "vllm"
 
 
 @dataclass
@@ -474,7 +473,6 @@ class ModalVolumeWeightSync:
 
     config: ModalVolumeWeightSyncConfig
     endpoints: list[str] = field(default_factory=list)
-    backend: str = "sglang"
     _volume: Any = field(default=None, repr=False)  # modal.Volume
 
 
@@ -484,7 +482,6 @@ class R2WeightSync:
 
     config: R2WeightSyncConfig
     endpoints: list[str] = field(default_factory=list)
-    backend: str = "sglang"
     _s3_client: Any = field(default=None, repr=False)  # boto3 client configured for R2
 
 
@@ -494,7 +491,6 @@ class NCCLWeightSync:
 
     config: NCCLWeightSyncConfig
     endpoints: list[str] = field(default_factory=list)
-    backend: str = "sglang"
     # NCCL process group created during connect
     _process_group: Any = field(default=None, repr=False)
     _world_size: int = 0
@@ -505,16 +501,14 @@ class NCCLWeightSync:
 # ============================================================================
 
 
-def connect_disk(sync: DiskWeightSync, endpoints: list[str], backend: str = "sglang") -> None:
+def connect_disk(sync: DiskWeightSync, endpoints: list[str]) -> None:
     """Connect to inference endpoints for disk-based sync.
 
     Creates sync directory if needed. No network setup required.
     """
     assert endpoints, "Must provide at least one endpoint"
-    assert backend in ("sglang", "vllm"), f"Unknown backend: {backend}"
 
     sync.endpoints = list(endpoints)
-    sync.backend = backend
     sync.config.sync_dir.mkdir(parents=True, exist_ok=True)
 
     logger.info(
@@ -543,14 +537,9 @@ async def sync_weights_disk(
     results = []
 
     async def sync_one(endpoint: str) -> dict[str, Any]:
-        if sync.backend == "sglang":
-            return await _update_sglang_weights_from_disk(
-                endpoint, checkpoint_path, sync.config.timeout_seconds
-            )
-        else:
-            return await _update_vllm_weights_from_disk(
-                endpoint, checkpoint_path, sync.config.timeout_seconds
-            )
+        return await _update_sglang_weights_from_disk(
+            endpoint, checkpoint_path, sync.config.timeout_seconds
+        )
 
     # Sync to all endpoints in parallel
     async with trio.open_nursery() as nursery:
@@ -577,16 +566,13 @@ def disconnect_disk(sync: DiskWeightSync) -> None:
 # ============================================================================
 
 
-def connect_modal_volume(
-    sync: ModalVolumeWeightSync, endpoints: list[str], backend: str = "sglang"
-) -> None:
+def connect_modal_volume(sync: ModalVolumeWeightSync, endpoints: list[str]) -> None:
     """Connect to inference endpoints for Modal Volume-based sync.
 
     Creates or gets the Modal volume. Inference sandboxes must mount this
     volume at config.mount_path.
     """
     assert endpoints, "Must provide at least one endpoint"
-    assert backend in ("sglang", "vllm"), f"Unknown backend: {backend}"
 
     try:
         import modal
@@ -594,7 +580,6 @@ def connect_modal_volume(
         raise ImportError("Modal SDK required. Install with: pip install modal") from e
 
     sync.endpoints = list(endpoints)
-    sync.backend = backend
     sync._volume = modal.Volume.from_name(sync.config.volume_name, create_if_missing=True)
 
     logger.info(
@@ -654,14 +639,9 @@ async def sync_weights_modal_volume(
     results = []
 
     async def sync_one(endpoint: str) -> dict[str, Any]:
-        if sync.backend == "sglang":
-            return await _update_sglang_weights_from_disk(
-                endpoint, inference_path, sync.config.timeout_seconds
-            )
-        else:
-            return await _update_vllm_weights_from_disk(
-                endpoint, inference_path, sync.config.timeout_seconds
-            )
+        return await _update_sglang_weights_from_disk(
+            endpoint, inference_path, sync.config.timeout_seconds
+        )
 
     async with trio.open_nursery() as nursery:
 
@@ -688,7 +668,7 @@ def disconnect_modal_volume(sync: ModalVolumeWeightSync) -> None:
 # ============================================================================
 
 
-def connect_r2(sync: R2WeightSync, endpoints: list[str], backend: str = "sglang") -> None:
+def connect_r2(sync: R2WeightSync, endpoints: list[str]) -> None:
     """Connect to inference endpoints for R2-based sync.
 
     Initializes boto3 S3 client configured for Cloudflare R2.
@@ -698,7 +678,6 @@ def connect_r2(sync: R2WeightSync, endpoints: list[str], backend: str = "sglang"
     assert sync.config.bucket, "R2 bucket must be configured"
     assert sync.config.access_key_id, "R2 access_key_id must be configured"
     assert sync.config.secret_access_key, "R2 secret_access_key must be configured"
-    assert backend in ("sglang", "vllm"), f"Unknown backend: {backend}"
 
     try:
         import boto3
@@ -706,7 +685,6 @@ def connect_r2(sync: R2WeightSync, endpoints: list[str], backend: str = "sglang"
         raise ImportError("boto3 required for R2. Install with: pip install boto3") from e
 
     sync.endpoints = list(endpoints)
-    sync.backend = backend
 
     # R2 endpoint URL
     endpoint_url = f"https://{sync.config.account_id}.r2.cloudflarestorage.com"
@@ -768,14 +746,9 @@ async def sync_weights_r2(
     results = []
 
     async def sync_one(endpoint: str) -> dict[str, Any]:
-        if sync.backend == "sglang":
-            return await _update_sglang_weights_from_disk(
-                endpoint, s3_path, sync.config.timeout_seconds
-            )
-        else:
-            return await _update_vllm_weights_from_disk(
-                endpoint, s3_path, sync.config.timeout_seconds
-            )
+        return await _update_sglang_weights_from_disk(
+            endpoint, s3_path, sync.config.timeout_seconds
+        )
 
     async with trio.open_nursery() as nursery:
 
@@ -802,7 +775,7 @@ def disconnect_r2(sync: R2WeightSync) -> None:
 # ============================================================================
 
 
-def connect_nccl(sync: NCCLWeightSync, endpoints: list[str], backend: str = "sglang") -> None:
+def connect_nccl(sync: NCCLWeightSync, endpoints: list[str]) -> None:
     """Connect to inference endpoints for NCCL-based sync.
 
     TODO:
@@ -816,7 +789,6 @@ def connect_nccl(sync: NCCLWeightSync, endpoints: list[str], backend: str = "sgl
     assert sync.config.master_addr, "NCCL master_addr must be configured"
 
     sync.endpoints = list(endpoints)
-    sync.backend = backend
 
     # TODO: Initialize NCCL process group
     # world_size = len(endpoints) * gpus_per_endpoint + 1  # +1 for trainer

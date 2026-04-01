@@ -245,7 +245,6 @@ config = GRPOConfig(
         recompute_num_layers=1,
     ),
     inference=InferenceConfig(
-        backend="sglang",
         # Colocated: same GPUs as trainer
         cuda_device_ids=tuple(range(8)),
         port=30000,

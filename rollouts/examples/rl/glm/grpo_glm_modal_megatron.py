@@ -76,8 +76,6 @@ config = GRPOConfig(
         validate_inference_export_in_preflight=False,
     ),
     inference=InferenceConfig(
-        backend="sglang",
-        realization="slime-sglang",
         # 4 GPUs for inference with TP=4 (or DP=4)
         cuda_device_ids=(0, 1, 2, 3),
         mem_fraction=0.9,

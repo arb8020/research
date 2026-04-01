@@ -47,8 +47,7 @@ async def run_torchtitan_vllm_real_tensor_smoke(
         "output_dir": str(output_dir),
         "model_name": config.model.name,
         "trainer_backend": config.trainer.backend,
-        "inference_backend": config.inference.backend,
-        "inference_realization": config.inference.realization or config.inference.backend,
+        "inference_spec": config.inference.spec,
         "hostname": socket.gethostname(),
     }
 

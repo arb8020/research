@@ -12,16 +12,11 @@ from pathlib import Path
 
 from .configs import CheckpointConfig, InferenceConfig, ModelConfig, RolloutConfig
 from .inference_realizations import (
-    ENGINE_V2,
-    QED_VLLM,
-    SLIME_SGLANG,
-    VLLM,
-    InferenceRealization,
-    get_inference_realization,
+    InferenceEngineSpec,
+    get_inference_engine_spec,
 )
 from .weight_sync import EngineV2Engine, InferenceBackend, SGLangEngine, VLLMEngine
 from .weight_sync_protocol import (
-    VLLM_CUSTOM_NCCL_BROADCAST,
     InferenceSyncRealization,
     get_inference_sync_realization,
     resolve_inference_sync_realization,
@@ -33,59 +28,30 @@ class InferenceRuntimePlan:
     """Concrete inference runtime plus validated sync semantics."""
 
     engines: tuple[InferenceBackend, ...]
-    realization: InferenceRealization
+    spec: InferenceEngineSpec
     sync_realization: InferenceSyncRealization | None = None
 
 
-def _resolve_realization(
+def _validate_sync_contract(
     *,
-    inference: InferenceConfig,
-    checkpoint: CheckpointConfig,
-) -> InferenceRealization:
-    if inference.realization is not None:
-        realization = get_inference_realization(inference.realization)
-        if realization.backend != inference.backend:
-            raise ValueError(
-                f"Inference realization {realization.name!r} requires backend "
-                f"{realization.backend!r}, got {inference.backend!r}."
-            )
-        return realization
-
-    if inference.backend == "sglang":
-        return SLIME_SGLANG
-    if inference.backend == "engine_v2":
-        return ENGINE_V2
-    if inference.backend == "vllm":
-        requested_sync_realization = checkpoint.inference_sync_realization
-        if requested_sync_realization == VLLM_CUSTOM_NCCL_BROADCAST.name:
-            return QED_VLLM
-        return VLLM
-    raise ValueError(f"Unknown inference backend: {inference.backend}")
-
-
-def _validate_realization_sync_contract(
-    *,
-    realization: InferenceRealization,
+    spec: InferenceEngineSpec,
     checkpoint: CheckpointConfig,
 ) -> None:
     requested = checkpoint.inference_sync_realization
     if requested is None:
         return
     sync_realization = get_inference_sync_realization(requested)
-    if (
-        sync_realization.requires_custom_server_patch
-        and not realization.supported_sync_realizations
-    ):
+    if sync_realization.requires_custom_server_patch and not spec.supported_sync_realizations:
         raise ValueError(
             f"Inference sync realization {requested!r} requires a patched inference "
-            f"server, but inference realization {realization.name!r} does not advertise "
+            f"server, but engine spec {spec.name!r} does not advertise "
             "a patched sync surface."
         )
 
 
 def _create_engine(
     *,
-    realization: InferenceRealization,
+    spec: InferenceEngineSpec,
     model: ModelConfig,
     inference: InferenceConfig,
     rollout: RolloutConfig,
@@ -94,7 +60,9 @@ def _create_engine(
     gpus: tuple[int, ...],
     port: int,
 ) -> InferenceBackend:
-    if realization.backend == "sglang":
+    # Dispatch on spec.name so each named spec maps to exactly one engine class.
+    # New forks: add a new InferenceEngineSpec and a branch here.
+    if spec.name in ("slime-sglang",):
         return SGLangEngine(
             model_name=model.name,
             port=port,
@@ -107,13 +75,13 @@ def _create_engine(
             max_prefill_tokens=inference.max_prefill_tokens,
             max_running_requests=inference.max_running_requests,
             chunked_prefill_size=inference.chunked_prefill_size,
-            realization_name=realization.name,
-            launch_module=realization.launch_module,
-            capability_notes=realization.capability_notes,
-            available_sync_realizations=realization.supported_sync_realizations,
-            default_sync_realization=realization.default_sync_realization,
+            realization_name=spec.name,
+            launch_module=spec.launch_module,
+            capability_notes=spec.capability_notes,
+            available_sync_realizations=spec.supported_sync_realizations,
+            default_sync_realization=spec.default_sync_realization,
         )
-    if realization.backend == "vllm":
+    if spec.name in ("vllm", "qed-vllm"):
         return VLLMEngine(
             model_name=model.name,
             port=port,
@@ -121,13 +89,13 @@ def _create_engine(
             output_dir=output_dir,
             dtype=model.dtype,
             gpu_memory_utilization=inference.mem_fraction,
-            realization_name=realization.name,
-            launch_module=realization.launch_module,
-            capability_notes=realization.capability_notes,
-            available_sync_realizations=realization.supported_sync_realizations,
-            default_sync_realization=realization.default_sync_realization,
+            realization_name=spec.name,
+            launch_module=spec.launch_module,
+            capability_notes=spec.capability_notes,
+            available_sync_realizations=spec.supported_sync_realizations,
+            default_sync_realization=spec.default_sync_realization,
         )
-    if realization.backend == "engine_v2":
+    if spec.name == "engine_v2":
         max_batch = rollout.batch_size * rollout.n_samples_per_prompt * 2
         return EngineV2Engine(
             model_name=model.name,
@@ -139,7 +107,7 @@ def _create_engine(
             max_batch_size=max_batch,
             max_seq_len=rollout.max_seq_len,
         )
-    raise ValueError(f"Unknown inference backend: {realization.backend}")
+    raise ValueError(f"Cannot construct engine for spec {spec.name!r}")
 
 
 def _resolve_sync_realization(
@@ -179,7 +147,7 @@ def _validate_pipeline_mode(
     raise ValueError(
         "checkpoint.pipeline_mode='true_pipeline' requires an inference runtime "
         "with truthful inflight weight-update semantics. "
-        f"Inference backend {capabilities.backend_name!r} currently advertises only "
+        f"Engine spec {capabilities.backend_name!r} currently advertises only "
         f"blocking updates.{detail_suffix}"
     )
 
@@ -194,17 +162,11 @@ def create_inference_backend_runtime(
 ) -> InferenceRuntimePlan:
     """Construct inference engines plus the validated sync realization."""
 
-    realization = _resolve_realization(
-        inference=inference,
-        checkpoint=checkpoint,
-    )
-    _validate_realization_sync_contract(
-        realization=realization,
-        checkpoint=checkpoint,
-    )
+    spec = get_inference_engine_spec(inference.spec)
+    _validate_sync_contract(spec=spec, checkpoint=checkpoint)
     engines = tuple(
         _create_engine(
-            realization=realization,
+            spec=spec,
             model=model,
             inference=inference,
             rollout=rollout,
@@ -225,6 +187,6 @@ def create_inference_backend_runtime(
     )
     return InferenceRuntimePlan(
         engines=engines,
-        realization=realization,
+        spec=spec,
         sync_realization=sync_realization,
     )

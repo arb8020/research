@@ -66,7 +66,7 @@ config = GRPOConfig(
         loss_type="masked",
     ),
     inference=InferenceConfig(
-        backend="engine_v2",  # Use rollouts native inference
+        spec="engine_v2",
         cuda_device_ids=(0,),  # GPU 0 for inference
         port=30000,
         mem_fraction=0.8,

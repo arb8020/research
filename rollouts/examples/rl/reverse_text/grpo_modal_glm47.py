@@ -86,7 +86,6 @@ config = GRPOConfig(
         recompute_num_layers=1,
     ),
     inference=InferenceConfig(
-        backend="sglang",
         cuda_device_ids=tuple(range(8)),
         port=30000,
         mem_fraction=0.7,

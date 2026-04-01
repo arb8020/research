@@ -38,7 +38,7 @@ hardware = HardwareConfig(
 
 config = BenchmarkConfig(
     model="Qwen/Qwen3-0.6B",
-    backend="engine_v2",
+    spec="engine_v2",
     workload=WorkloadConfig(
         type="random",
         num_prompts=100,  # Start small for testing

@@ -63,8 +63,6 @@ config = GRPOConfig(
         validate_inference_export_in_preflight=False,
     ),
     inference=InferenceConfig(
-        backend="sglang",
-        realization="slime-sglang",
         cuda_device_ids=(0,),
         mem_fraction=0.55,
         startup_timeout=600.0,

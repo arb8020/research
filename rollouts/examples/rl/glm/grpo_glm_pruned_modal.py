@@ -75,7 +75,6 @@ config = GRPOConfig(
         cuda_device_ids=(4, 5, 6, 7),
     ),
     inference=InferenceConfig(
-        backend="sglang",
         # Inference on GPUs 0-3 with EP=4
         cuda_device_ids=(0, 1, 2, 3),
         expert_parallel_size=4,
