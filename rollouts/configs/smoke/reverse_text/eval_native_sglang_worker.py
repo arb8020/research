@@ -22,6 +22,7 @@ from rollouts.eval import (
     endpoint_and_server_for_role,
 )
 from rollouts.training.configs import (
+    DepsConfig,
     HardwareConfig,
     InferenceConfig,
     InferenceRoleBinding,
@@ -69,9 +70,17 @@ config_status = draft(
 
 worker_topology = WorkerTopologyConfig(
     hardware=HardwareConfig(
-        provider="local",
+        provider="modal",
         gpu_type="A100",
         gpu_count=1,
+        deps=DepsConfig(
+            pip_packages=(
+                "torch>=2.4",
+                "sglang[all]",
+                "vllm==0.10.2",
+            ),
+            pip_index_url="https://download.pytorch.org/whl/cu124",
+        ),
     ),
     inference_workers=(
         InferenceWorkerConfig(
