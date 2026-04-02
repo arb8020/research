@@ -33,6 +33,7 @@ from typing import Any
 
 # Module-level log file path, set when attaching to a run
 _MONITOR_LOG: Path | None = None
+_MODAL_ATTACH_FILES = ("training.jsonl", "metrics.jsonl")
 
 
 def _log(event: str, **data: Any) -> None:
@@ -191,7 +192,8 @@ def _resolve_job_connection(job_id: str | None) -> dict:
     Reads job→node mapping from ~/.rollouts/jobs.json,
     then queries broker for live port data.
 
-    Returns dict with: run_id, node_id, logs_host, logs_port.
+    Returns dict with:
+      run_id, provider, node_id, log_path, logs_host, logs_port.
     """
     from dotenv import load_dotenv
 
@@ -205,15 +207,27 @@ def _resolve_job_connection(job_id: str | None) -> dict:
     # Multi-node: would pick the rank-0 / training node.
     assert job.nodes, f"Job {job.job_id} has no nodes"
     node = job.nodes[0]
+    node_id_str = f"{node.provider}:{node.node_id}"
+
+    if node.provider == "modal":
+        return {
+            "run_id": job.job_id,
+            "provider": node.provider,
+            "node_id": node_id_str,
+            "log_path": job.log_path,
+            "logs_host": None,
+            "logs_port": None,
+        }
 
     # Query broker for live instance data (ports, IPs)
     instance = _get_instance(node.provider, node.node_id)
-    node_id_str = f"{node.provider}:{node.node_id}"
 
     if instance is None:
         return {
             "run_id": job.job_id,
+            "provider": node.provider,
             "node_id": node_id_str,
+            "log_path": job.log_path,
             "logs_host": None,
             "logs_port": None,
         }
@@ -221,10 +235,91 @@ def _resolve_job_connection(job_id: str | None) -> dict:
     logs_host, logs_port = _resolve_logs_endpoint(instance)
     return {
         "run_id": job.job_id,
+        "provider": node.provider,
         "node_id": node_id_str,
+        "log_path": job.log_path,
         "logs_host": logs_host,
         "logs_port": logs_port,
     }
+
+
+def _get_modal_sandbox(sandbox_id: str) -> Any:
+    import modal
+
+    return modal.Sandbox.from_id(sandbox_id)
+
+
+def _modal_output_dir_candidates(run_id: str, log_path: str | None) -> tuple[str, ...]:
+    suffixes = [f"results/rl/{run_id}"]
+    if log_path:
+        suffixes.insert(0, log_path.strip("/"))
+
+    candidates: list[str] = []
+    prefixes = (
+        "/workspace/research/rollouts",
+        "/workspace/research",
+        "/root/.bifrost/workspaces/rollouts-rl/rollouts",
+        "/root/.bifrost/workspaces/rollouts-rl",
+    )
+    for suffix in suffixes:
+        for prefix in prefixes:
+            candidates.append(f"{prefix}/{suffix}".replace("//", "/"))
+    return tuple(dict.fromkeys(candidates))
+
+
+def _resolve_modal_output_dir(sandbox: Any, run_id: str, log_path: str | None) -> str:
+    for candidate in _modal_output_dir_candidates(run_id, log_path):
+        try:
+            sandbox.ls(candidate)
+            return candidate
+        except Exception:
+            continue
+    raise FileNotFoundError(f"Could not find remote output dir for run {run_id!r} in Modal sandbox")
+
+
+def _read_modal_text_file(sandbox: Any, path: str) -> str | None:
+    try:
+        handle = sandbox.open(path, "r")
+    except Exception:
+        return None
+    try:
+        return handle.read()
+    finally:
+        handle.close()
+
+
+def _sync_modal_files_once(
+    *,
+    sandbox: Any,
+    remote_output_dir: str,
+    local_sync_dir: Path,
+    line_offsets: dict[str, int],
+) -> tuple[tuple[str, ...], int]:
+    files: list[str] = []
+    total_new_lines = 0
+
+    for filename in _MODAL_ATTACH_FILES:
+        text = _read_modal_text_file(sandbox, f"{remote_output_dir}/{filename}")
+        if text is None:
+            continue
+        files.append(filename)
+        lines = text.splitlines()
+        previous = line_offsets.get(filename, 0)
+        if previous > len(lines):
+            previous = 0
+            local_path = local_sync_dir / filename
+            if local_path.exists():
+                local_path.unlink()
+        new_lines = lines[previous:]
+        if new_lines:
+            local_path = local_sync_dir / filename
+            with open(local_path, "a", encoding="utf-8") as f:
+                for line in new_lines:
+                    f.write(line + "\n")
+            total_new_lines += len(new_lines)
+        line_offsets[filename] = len(lines)
+
+    return tuple(files), total_new_lines
 
 
 def _open_ssh_tunnel(
@@ -481,13 +576,35 @@ def _run_attached(
 
     run = _resolve_job_connection(run_id)
     resolved_run_id = run["run_id"]
+    provider = run.get("provider")
     logs_host = run.get("logs_host")
     logs_port = run.get("logs_port")
     node_id = run.get("node_id")
+    log_path = run.get("log_path")
 
     tunnel_cleanup: Callable[[], None] | None = None
+    modal_sandbox = None
+    modal_output_dir = None
+    modal_files: tuple[str, ...] = ()
 
-    if logs_host and logs_port:
+    if provider == "modal" and node_id:
+        print(f"Attaching to run: {resolved_run_id}")
+        print(f"Opening Modal sandbox {node_id}...")
+        _, sandbox_id = node_id.split(":", 1)
+        try:
+            modal_sandbox = _get_modal_sandbox(sandbox_id)
+            modal_output_dir = _resolve_modal_output_dir(modal_sandbox, resolved_run_id, log_path)
+        except FileNotFoundError as exc:
+            print(
+                f"Run {resolved_run_id} is not attachable via Modal sandbox: {exc}", file=sys.stderr
+            )
+            print(
+                "The Modal sandbox may have already finished or been terminated.",
+                file=sys.stderr,
+            )
+            return 1
+        print(f"Modal output dir: {modal_output_dir}")
+    elif logs_host and logs_port:
         # Direct TCP — instance was provisioned with exposed_ports
         print(f"Attaching to run: {resolved_run_id}")
         print(f"LogsServer: {logs_host}:{logs_port} (direct TCP)")
@@ -503,47 +620,31 @@ def _run_attached(
         print(f"Run {resolved_run_id} has no live instance — cannot attach")
         return 1
 
-    worker = RemoteWorker(logs_host, logs_port)
+    worker = None
+    available = {"files": []}
+    if modal_sandbox is None:
+        worker = RemoteWorker(logs_host, logs_port)
 
-    # Retry connection - LogsServer may still be starting
-    max_retries = 10
-    retry_delay = 1.0
-    for attempt in range(max_retries):
-        try:
-            worker.connect()
-            break
-        except ConnectionRefusedError:
-            if attempt == max_retries - 1:
-                # Try to fetch logs_server.log to see what went wrong
-                _fetch_and_print_logs_server_log(node_id, resolved_run_id)
-                raise
-            print(
-                f"LogsServer not ready, retrying in {retry_delay}s... ({attempt + 1}/{max_retries})"
-            )
-            time.sleep(retry_delay)
-            retry_delay = min(retry_delay * 1.5, 5.0)
+        # Retry connection - LogsServer may still be starting
+        max_retries = 10
+        retry_delay = 1.0
+        for attempt in range(max_retries):
+            try:
+                worker.connect()
+                break
+            except ConnectionRefusedError:
+                if attempt == max_retries - 1:
+                    # Try to fetch logs_server.log to see what went wrong
+                    _fetch_and_print_logs_server_log(node_id, resolved_run_id)
+                    raise
+                print(
+                    f"LogsServer not ready, retrying in {retry_delay}s... ({attempt + 1}/{max_retries})"
+                )
+                time.sleep(retry_delay)
+                retry_delay = min(retry_delay * 1.5, 5.0)
 
-    # Discover available files
-    worker.send({"cmd": "list"})
-    available = worker.recv()
-    print(f"Files: {', '.join(available['files'])}", file=sys.stderr)
-
-    # One-shot mode: fetch last N lines per file and exit
-    if tail_lines is not None:
-        for filename in available.get("files", []):
-            worker.send({"cmd": "tail", "file": filename, "offset": 0})
-            result = worker.recv()
-            lines = result.get("lines", [])
-            if not lines:
-                continue
-            print(f"\n=== {filename} (last {tail_lines} lines) ===")
-            for line in lines[-tail_lines:]:
-                print(line)
-        worker.close()
-        if tunnel_cleanup:
-            tunnel_cleanup()
-        return 0
-
+        worker.send({"cmd": "list"})
+        available = worker.recv()
     local_sync_dir = Path("results/rl") / resolved_run_id
     local_sync_dir.mkdir(parents=True, exist_ok=True)
 
@@ -562,6 +663,44 @@ def _run_attached(
             _log("offsets_loaded", files=offsets)
         except (json.JSONDecodeError, OSError):
             pass
+    if modal_sandbox is not None:
+        modal_files, _ = _sync_modal_files_once(
+            sandbox=modal_sandbox,
+            remote_output_dir=modal_output_dir,
+            local_sync_dir=local_sync_dir,
+            line_offsets=offsets,
+        )
+        available = {"files": list(modal_files)}
+    print(f"Files: {', '.join(available['files'])}", file=sys.stderr)
+
+    # One-shot mode: fetch last N lines per file and exit
+    if tail_lines is not None:
+        if modal_sandbox is not None:
+            for filename in available.get("files", []):
+                text = _read_modal_text_file(modal_sandbox, f"{modal_output_dir}/{filename}")
+                if not text:
+                    continue
+                lines = text.splitlines()
+                if not lines:
+                    continue
+                print(f"\n=== {filename} (last {tail_lines} lines) ===")
+                for line in lines[-tail_lines:]:
+                    print(line)
+        else:
+            assert worker is not None
+            for filename in available.get("files", []):
+                worker.send({"cmd": "tail", "file": filename, "offset": 0})
+                result = worker.recv()
+                lines = result.get("lines", [])
+                if not lines:
+                    continue
+                print(f"\n=== {filename} (last {tail_lines} lines) ===")
+                for line in lines[-tail_lines:]:
+                    print(line)
+            worker.close()
+        if tunnel_cleanup:
+            tunnel_cleanup()
+        return 0
 
     sync_count = 0
 
@@ -572,31 +711,40 @@ def _run_attached(
         nonlocal sync_count
         while not stop_sync.is_set():
             try:
-                worker.send({"cmd": "list"})
-                resp = worker.recv()
-                files = resp.get("files", [])
+                if modal_sandbox is not None:
+                    files, total_new_lines = _sync_modal_files_once(
+                        sandbox=modal_sandbox,
+                        remote_output_dir=modal_output_dir,
+                        local_sync_dir=local_sync_dir,
+                        line_offsets=offsets,
+                    )
+                else:
+                    assert worker is not None
+                    worker.send({"cmd": "list"})
+                    resp = worker.recv()
+                    files = tuple(resp.get("files", []))
 
-                total_new_lines = 0
-                for filename in files:
-                    offset = offsets.get(filename, 0)
-                    worker.send({"cmd": "tail", "file": filename, "offset": offset})
-                    result = worker.recv()
+                    total_new_lines = 0
+                    for filename in files:
+                        offset = offsets.get(filename, 0)
+                        worker.send({"cmd": "tail", "file": filename, "offset": offset})
+                        result = worker.recv()
 
-                    if result.get("error"):
-                        _log("sync_error", file=filename, error=result.get("error"))
-                        continue
+                        if result.get("error"):
+                            _log("sync_error", file=filename, error=result.get("error"))
+                            continue
 
-                    new_lines = result.get("lines", [])
-                    new_offset = result.get("offset", offset)
+                        new_lines = result.get("lines", [])
+                        new_offset = result.get("offset", offset)
 
-                    if new_lines:
-                        local_path = local_sync_dir / filename
-                        with open(local_path, "a") as f:
-                            for line in new_lines:
-                                f.write(line + "\n")
-                        total_new_lines += len(new_lines)
+                        if new_lines:
+                            local_path = local_sync_dir / filename
+                            with open(local_path, "a", encoding="utf-8") as f:
+                                for line in new_lines:
+                                    f.write(line + "\n")
+                            total_new_lines += len(new_lines)
 
-                    offsets[filename] = new_offset
+                        offsets[filename] = new_offset
 
                 sync_count += 1
                 if sync_count <= 3 or total_new_lines > 0 or sync_count % 30 == 0:
@@ -608,7 +756,7 @@ def _run_attached(
                 except OSError:
                     pass
 
-            except (EOFError, BrokenPipeError, ConnectionResetError) as e:
+            except (EOFError, BrokenPipeError, ConnectionResetError, FileNotFoundError) as e:
                 _log("sync_connection_lost", error=str(e))
                 connection_lost.set()
                 # Don't print while the TUI is running (it corrupts the screen).
@@ -680,30 +828,42 @@ def _run_attached(
 
     print("\nFinal sync...")
     try:
-        worker.send({"cmd": "list"})
-        resp = worker.recv()
-        for filename in resp.get("files", []):
-            offset = offsets.get(filename, 0)
-            worker.send({"cmd": "tail", "file": filename, "offset": offset})
-            result = worker.recv()
-            new_lines = result.get("lines", [])
-            new_offset = result.get("offset", offset)
-            if new_lines:
-                local_path = local_sync_dir / filename
-                with open(local_path, "a") as f:
-                    for line in new_lines:
-                        f.write(line + "\n")
-                print(f"  Synced: {resolved_run_id}/{filename} (+{len(new_lines)} lines)")
-            offsets[filename] = new_offset
+        if modal_sandbox is not None:
+            files, _ = _sync_modal_files_once(
+                sandbox=modal_sandbox,
+                remote_output_dir=modal_output_dir,
+                local_sync_dir=local_sync_dir,
+                line_offsets=offsets,
+            )
+            for filename in files:
+                print(f"  Synced: {resolved_run_id}/{filename}")
+        else:
+            assert worker is not None
+            worker.send({"cmd": "list"})
+            resp = worker.recv()
+            for filename in resp.get("files", []):
+                offset = offsets.get(filename, 0)
+                worker.send({"cmd": "tail", "file": filename, "offset": offset})
+                result = worker.recv()
+                new_lines = result.get("lines", [])
+                new_offset = result.get("offset", offset)
+                if new_lines:
+                    local_path = local_sync_dir / filename
+                    with open(local_path, "a", encoding="utf-8") as f:
+                        for line in new_lines:
+                            f.write(line + "\n")
+                    print(f"  Synced: {resolved_run_id}/{filename} (+{len(new_lines)} lines)")
+                offsets[filename] = new_offset
         # Persist final offsets
         try:
             offsets_file.write_text(json.dumps(offsets))
         except OSError:
             pass
-    except (EOFError, BrokenPipeError, ConnectionResetError):
+    except (EOFError, BrokenPipeError, ConnectionResetError, FileNotFoundError):
         print("  LogsServer disconnected, skipping final sync")
 
-    worker.close()
+    if worker is not None:
+        worker.close()
 
     if tunnel_cleanup is not None:
         tunnel_cleanup()
@@ -728,21 +888,24 @@ def _run_attached(
                 print(f"Reattach: python -m argus monitor --attach {resolved_run_id}")
 
         if should_terminate:
-            import trio
-
-            from broker.client import GPUClient
-
-            credentials = _broker_credentials()
             provider, instance_id = node_id.split(":", 1)
-
-            async def _do_terminate() -> None:
-                client = GPUClient(credentials=credentials)
-                inst = await client.get_instance(instance_id, provider)
-                assert inst is not None, f"Instance not found: {node_id}"
-                await inst.terminate()
-
             print(f"Terminating {node_id}...")
-            trio.run(_do_terminate)
+            if provider == "modal":
+                _get_modal_sandbox(instance_id).terminate()
+            else:
+                import trio
+
+                from broker.client import GPUClient
+
+                credentials = _broker_credentials()
+
+                async def _do_terminate() -> None:
+                    client = GPUClient(credentials=credentials)
+                    inst = await client.get_instance(instance_id, provider)
+                    assert inst is not None, f"Instance not found: {node_id}"
+                    await inst.terminate()
+
+                trio.run(_do_terminate)
             print("Terminated.")
 
     return 0
