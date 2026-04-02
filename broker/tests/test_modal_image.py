@@ -24,8 +24,13 @@ def test_eager_build_modal_image_includes_logs_in_failure(
         build=_FakeBuild(),
     )
 
-    async def fake_emit_private_modal_image_logs(image_obj: object, emit: object) -> list[str]:
-        del image_obj, emit
+    async def fake_emit_private_modal_image_logs(
+        image_obj: object,
+        emit: object,
+        *,
+        image_id_override: str | None = None,
+    ) -> list[str]:
+        del image_obj, emit, image_id_override
         return [
             "Collecting sglang[all]",
             "Building wheel for flashinfer-python",
@@ -62,3 +67,9 @@ def test_raise_modal_image_build_failure_preserves_original_when_logs_absent() -
 
     with pytest.raises(RuntimeError, match="boom"):
         modal_image._raise_modal_image_build_failure(exc, image, [])
+
+
+def test_extract_modal_image_id_from_remote_error() -> None:
+    exc = RuntimeError("Image build for im-cAVetPJulvu9ek7UOebROV failed. See build logs.")
+
+    assert modal_image._extract_modal_image_id(exc) == "im-cAVetPJulvu9ek7UOebROV"

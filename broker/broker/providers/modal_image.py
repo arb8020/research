@@ -12,6 +12,7 @@ ownership move is that provider-specific lowering no longer lives in
 from __future__ import annotations
 
 import logging
+import re
 import shlex
 from pathlib import Path
 from typing import Any
@@ -51,6 +52,7 @@ MODAL_IMAGE_BUILD_LOG_LINE_LIMIT = 200
 MODAL_IMAGE_BUILD_LOG_CHAR_LIMIT = 1000
 MODAL_IMAGE_BUILD_LOG_FETCH_TIMEOUT_S = 30.0
 MODAL_IMAGE_BUILD_FAILURE_TAIL_LINES = 40
+MODAL_IMAGE_ID_PATTERN = re.compile(r"\bim-[A-Za-z0-9]+\b")
 
 
 def build_modal_image(modal: Any, deps: Any, gpu_type: str) -> Any:
@@ -283,10 +285,12 @@ def _trim_modal_build_log_line(line: str) -> str:
 async def _emit_private_modal_image_logs(
     image: Any,
     emit: Any,
+    *,
+    image_id_override: str | None = None,
 ) -> list[str]:
     """Best-effort image build event capture via Modal ImageJoinStreaming."""
 
-    image_id = getattr(image, "object_id", None)
+    image_id = image_id_override or getattr(image, "object_id", None)
     if not image_id:
         emit("modal_image_build_logs_unavailable", reason="missing_image_id")
         return []
@@ -408,6 +412,13 @@ def _raise_modal_image_build_failure(exc: Exception, image: Any, log_lines: list
     raise RuntimeError(message) from exc
 
 
+def _extract_modal_image_id(exc: Exception) -> str | None:
+    match = MODAL_IMAGE_ID_PATTERN.search(str(exc))
+    if match is None:
+        return None
+    return match.group(0)
+
+
 async def eager_build_modal_image(
     image: Any,
     app: Any,
@@ -443,13 +454,18 @@ async def eager_build_modal_image(
     if "error" in result:
         exc = result["error"]
         elapsed = trio.current_time() - start
+        failed_image_id = getattr(image, "object_id", None) or _extract_modal_image_id(exc)
         emit(
             "modal_image_build_failed",
-            image_id=getattr(image, "object_id", None),
+            image_id=failed_image_id,
             elapsed_sec=round(elapsed, 3),
             error=f"{type(exc).__name__}: {exc}",
         )
-        log_lines = await _emit_private_modal_image_logs(image, emit)
+        log_lines = await _emit_private_modal_image_logs(
+            image,
+            emit,
+            image_id_override=failed_image_id,
+        )
         _raise_modal_image_build_failure(exc, image, log_lines)
 
     built_image = result["image"]
