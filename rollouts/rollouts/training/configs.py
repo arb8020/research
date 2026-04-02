@@ -181,6 +181,17 @@ def deps_config_from_data(data: DepsConfig | dict[str, Any] | None) -> DepsConfi
     return DepsConfig(**payload)
 
 
+def hardware_config_from_data(
+    data: HardwareConfig | dict[str, Any] | None,
+) -> HardwareConfig | None:
+    if data is None or isinstance(data, HardwareConfig):
+        return data
+    assert isinstance(data, dict), f"hardware must be HardwareConfig|dict|None, got {type(data)}"
+    payload = dict(data)
+    payload["deps"] = deps_config_from_data(payload.get("deps"))
+    return HardwareConfig(**payload)
+
+
 # Known GPU specs: (memory_gb, compute_capability)
 # Used for validation and auto-derivation
 GPU_SPECS: dict[str, tuple[int, str]] = {
@@ -595,6 +606,17 @@ class InferenceConfig:
             )
 
 
+def inference_config_from_data(
+    data: InferenceConfig | dict[str, Any] | None,
+) -> InferenceConfig | None:
+    if data is None or isinstance(data, InferenceConfig):
+        return data
+    assert isinstance(data, dict), f"inference must be InferenceConfig|dict|None, got {type(data)}"
+    payload = dict(data)
+    payload["deps"] = deps_config_from_data(payload.get("deps"))
+    return InferenceConfig(**payload)
+
+
 InferenceRole = Literal["actor", "judge", "teacher", "reference"]
 
 
@@ -643,12 +665,59 @@ class TrainingWorkerConfig:
         assert self.worker_id, "worker_id cannot be empty"
 
 
+def trainer_config_from_data(data: TrainerConfig | dict[str, Any] | None) -> TrainerConfig | None:
+    if data is None or isinstance(data, TrainerConfig):
+        return data
+    assert isinstance(data, dict), f"trainer must be TrainerConfig|dict|None, got {type(data)}"
+    payload = dict(data)
+    payload["deps"] = deps_config_from_data(payload.get("deps"))
+    payload["megatron_overrides"] = megatron_overrides_from_data(payload.get("megatron_overrides"))
+    return TrainerConfig(**payload)
+
+
 @dataclass(frozen=True)
 class InferenceRoleBinding:
     """Bind a semantic workload role to a named inference worker."""
 
     role: InferenceRole
     worker_id: str
+
+
+def inference_worker_config_from_data(
+    data: InferenceWorkerConfig | dict[str, Any],
+) -> InferenceWorkerConfig:
+    if isinstance(data, InferenceWorkerConfig):
+        return data
+    assert isinstance(data, dict), (
+        f"inference worker must be InferenceWorkerConfig|dict, got {type(data)}"
+    )
+    payload = dict(data)
+    payload["inference"] = inference_config_from_data(payload.get("inference")) or InferenceConfig()
+    return InferenceWorkerConfig(**payload)
+
+
+def training_worker_config_from_data(
+    data: TrainingWorkerConfig | dict[str, Any],
+) -> TrainingWorkerConfig:
+    if isinstance(data, TrainingWorkerConfig):
+        return data
+    assert isinstance(data, dict), (
+        f"training worker must be TrainingWorkerConfig|dict, got {type(data)}"
+    )
+    payload = dict(data)
+    payload["trainer"] = trainer_config_from_data(payload.get("trainer")) or TrainerConfig()
+    return TrainingWorkerConfig(**payload)
+
+
+def inference_role_binding_from_data(
+    data: InferenceRoleBinding | dict[str, Any],
+) -> InferenceRoleBinding:
+    if isinstance(data, InferenceRoleBinding):
+        return data
+    assert isinstance(data, dict), (
+        f"role binding must be InferenceRoleBinding|dict, got {type(data)}"
+    )
+    return InferenceRoleBinding(**data)
 
 
 @dataclass(frozen=True)
@@ -667,11 +736,17 @@ class WorkerTopologyConfig:
     """
 
     hardware: HardwareConfig
+    service_runtime_layout: str = "shared_env"
     inference_workers: tuple[InferenceWorkerConfig, ...] = ()
     training_workers: tuple[TrainingWorkerConfig, ...] = ()
     role_bindings: tuple[InferenceRoleBinding, ...] = ()
 
     def __post_init__(self) -> None:
+        if self.service_runtime_layout not in {"shared_env", "split_env"}:
+            raise ValueError(
+                f"Unknown service_runtime_layout={self.service_runtime_layout!r}. "
+                "Use 'shared_env' or 'split_env'."
+            )
         worker_ids = [w.worker_id for w in self.inference_workers] + [
             w.worker_id for w in self.training_workers
         ]
@@ -713,6 +788,30 @@ class WorkerTopologyConfig:
             if binding.role == role:
                 return self.get_inference_worker(binding.worker_id)
         raise KeyError(f"Unknown inference role: {role!r}")
+
+
+def worker_topology_config_from_data(
+    data: WorkerTopologyConfig | dict[str, Any] | None,
+) -> WorkerTopologyConfig | None:
+    if data is None or isinstance(data, WorkerTopologyConfig):
+        return data
+    assert isinstance(data, dict), (
+        f"topology must be WorkerTopologyConfig|dict|None, got {type(data)}"
+    )
+    payload = dict(data)
+    hardware = hardware_config_from_data(payload.get("hardware"))
+    assert hardware is not None, "WorkerTopologyConfig requires hardware"
+    payload["hardware"] = hardware
+    payload["inference_workers"] = tuple(
+        inference_worker_config_from_data(worker) for worker in payload.get("inference_workers", ())
+    )
+    payload["training_workers"] = tuple(
+        training_worker_config_from_data(worker) for worker in payload.get("training_workers", ())
+    )
+    payload["role_bindings"] = tuple(
+        inference_role_binding_from_data(binding) for binding in payload.get("role_bindings", ())
+    )
+    return WorkerTopologyConfig(**payload)
 
 
 @dataclass(frozen=True)

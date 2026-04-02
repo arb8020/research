@@ -45,12 +45,16 @@ from ..training.configs import (  # noqa: E402
     CheckpointConfig,
     DepsConfig,
     InferenceConfig,
+    InferenceWorkerConfig,
     ModelConfig,
     OutputConfig,
     RolloutConfig,
     TrainerConfig,
-    deps_config_from_data,
-    megatron_overrides_from_data,
+    TrainingWorkerConfig,
+    WorkerTopologyConfig,
+    inference_config_from_data,
+    trainer_config_from_data,
+    worker_topology_config_from_data,
 )
 from ..training.inference_runtime_factory import create_inference_backend_runtime
 from ..training.runtime_factory import (
@@ -99,23 +103,97 @@ class GRPOConfig:
     """
 
     model: ModelConfig = field(default_factory=ModelConfig)
-    inference: InferenceConfig = field(default_factory=InferenceConfig)
-    trainer: TrainerConfig = field(default_factory=TrainerConfig)
+    topology: WorkerTopologyConfig | None = None
+    # TODO(worker-topology): Remove this compatibility mirror after all GRPO
+    # call sites consume config.topology directly.
+    inference: InferenceConfig | None = None
+    # TODO(worker-topology): Remove this compatibility mirror after all GRPO
+    # call sites consume config.topology directly.
+    trainer: TrainerConfig | None = None
     rollout: RolloutConfig = field(default_factory=RolloutConfig)
     checkpoint: CheckpointConfig = field(default_factory=CheckpointConfig)
     runtime_watchdog: ResourceWatchdogConfig = field(default_factory=ResourceWatchdogConfig)
     output: OutputConfig = field(
         default_factory=lambda: OutputConfig(output_dir="results/rl", experiment_name="grpo")
     )
-    service_runtime_layout: str = "shared_env"
+    # TODO(worker-topology): Remove this compatibility mirror after all GRPO
+    # call sites consume config.topology directly.
+    service_runtime_layout: str | None = None
 
     def __post_init__(self) -> None:
+        if self.topology is not None:
+            trainer_worker = self._resolve_training_worker(self.topology)
+            inference_worker = self._resolve_actor_worker(self.topology)
+
+            if inference_worker.model != self.model.name:
+                raise ValueError(
+                    "GRPOConfig.model.name must match the actor worker model in topology. "
+                    f"Got model.name={self.model.name!r}, actor model={inference_worker.model!r}."
+                )
+
+            if self.inference is not None and self.inference != inference_worker.inference:
+                raise ValueError(
+                    "GRPOConfig.inference conflicts with topology actor worker inference config"
+                )
+            if self.trainer is not None and self.trainer != trainer_worker.trainer:
+                raise ValueError(
+                    "GRPOConfig.trainer conflicts with topology training worker trainer config"
+                )
+            if (
+                self.service_runtime_layout is not None
+                and self.service_runtime_layout != self.topology.service_runtime_layout
+            ):
+                raise ValueError(
+                    "GRPOConfig.service_runtime_layout conflicts with topology.service_runtime_layout"
+                )
+
+            # TODO(worker-topology): Delete these compatibility mirrors once
+            # GRPO internals stop reading config.trainer/config.inference directly.
+            object.__setattr__(self, "trainer", trainer_worker.trainer)
+            object.__setattr__(self, "inference", inference_worker.inference)
+            object.__setattr__(self, "service_runtime_layout", self.topology.service_runtime_layout)
+        else:
+            # TODO(worker-topology): Delete this legacy path after config authors
+            # migrate GRPO workloads to topology-backed configs.
+            inference = self.inference or InferenceConfig()
+            trainer = self.trainer or TrainerConfig()
+            service_runtime_layout = self.service_runtime_layout or "shared_env"
+            if service_runtime_layout not in {"shared_env", "split_env"}:
+                raise ValueError(
+                    f"Unknown service_runtime_layout={service_runtime_layout!r}. "
+                    "Use 'shared_env' or 'split_env'."
+                )
+            object.__setattr__(self, "inference", inference)
+            object.__setattr__(self, "trainer", trainer)
+            object.__setattr__(self, "service_runtime_layout", service_runtime_layout)
+
         if self.trainer.backend == "megatron" and self.checkpoint.weight_sync_mode != "nccl":
             raise ValueError(
                 "Megatron training currently supports only checkpoint.weight_sync_mode='nccl'. "
                 "The Megatron backend performs direct weight sync to inference and does not "
                 "implement disk checkpoint sync semantics for per-step sampler updates yet."
             )
+
+    @staticmethod
+    def _resolve_training_worker(topology: WorkerTopologyConfig) -> TrainingWorkerConfig:
+        if len(topology.training_workers) != 1:
+            raise ValueError(
+                "Current GRPO topology path requires exactly one training worker. "
+                f"Got {len(topology.training_workers)}."
+            )
+        return topology.training_workers[0]
+
+    @staticmethod
+    def _resolve_actor_worker(topology: WorkerTopologyConfig) -> InferenceWorkerConfig:
+        try:
+            return topology.get_worker_for_role("actor")
+        except KeyError:
+            if len(topology.inference_workers) == 1:
+                return topology.inference_workers[0]
+            raise ValueError(
+                "Current GRPO topology path requires an actor role binding or exactly one "
+                f"inference worker. Got {len(topology.inference_workers)} inference workers."
+            ) from None
 
     def save(self, path: Path | str) -> None:
         """Save config to JSON."""
@@ -124,11 +202,24 @@ class GRPOConfig:
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
         with open(path, "w") as f:
-            json.dump(asdict(self), f, indent=2)
+            json.dump(self.to_dict(), f, indent=2)
 
     def to_dict(self) -> dict[str, Any]:
         """Convert config to a JSON-serializable dict."""
-        return asdict(self)
+        payload: dict[str, Any] = {
+            "model": asdict(self.model),
+            "rollout": asdict(self.rollout),
+            "checkpoint": asdict(self.checkpoint),
+            "runtime_watchdog": asdict(self.runtime_watchdog),
+            "output": asdict(self.output),
+        }
+        if self.topology is not None:
+            payload["topology"] = asdict(self.topology)
+        else:
+            payload["inference"] = asdict(self.inference)
+            payload["trainer"] = asdict(self.trainer)
+            payload["service_runtime_layout"] = self.service_runtime_layout
+        return payload
 
     def to_json(self) -> str:
         """Convert config to JSON string (for remote runners)."""
@@ -142,15 +233,9 @@ class GRPOConfig:
         assert isinstance(data, dict), f"data must be dict, got {type(data)}"
 
         model = ModelConfig(**data.get("model", {}))
-        inference_data = dict(data.get("inference", {}))
-        trainer_data = dict(data.get("trainer", {}))
-        inference_data["deps"] = deps_config_from_data(inference_data.get("deps"))
-        trainer_data["deps"] = deps_config_from_data(trainer_data.get("deps"))
-        trainer_data["megatron_overrides"] = megatron_overrides_from_data(
-            trainer_data.get("megatron_overrides")
-        )
-        inference = InferenceConfig(**inference_data)
-        trainer = TrainerConfig(**trainer_data)
+        topology = worker_topology_config_from_data(data.get("topology"))
+        inference = inference_config_from_data(data.get("inference"))
+        trainer = trainer_config_from_data(data.get("trainer"))
         rollout = RolloutConfig(**data.get("rollout", {}))
         checkpoint = CheckpointConfig(**data.get("checkpoint", {}))
         runtime_watchdog = ResourceWatchdogConfig(**data.get("runtime_watchdog", {}))
@@ -158,13 +243,14 @@ class GRPOConfig:
 
         return GRPOConfig(
             model=model,
+            topology=topology,
             inference=inference,
             trainer=trainer,
             rollout=rollout,
             checkpoint=checkpoint,
             runtime_watchdog=runtime_watchdog,
             output=output,
-            service_runtime_layout=data.get("service_runtime_layout", "shared_env"),
+            service_runtime_layout=data.get("service_runtime_layout"),
         )
 
     def trainer_deps(self) -> DepsConfig | None:

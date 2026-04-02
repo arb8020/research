@@ -265,7 +265,7 @@ from rollouts.remote_runtime import (
     materialization_plan_from_runtime,
     runtime_contract_from_hardware,
 )
-from rollouts.training.configs import HardwareConfig
+from rollouts.training.configs import HardwareConfig, WorkerTopologyConfig
 
 # TODO(chiraag): This import cluster is the current control-plane leak. Argus
 # should choose an execution substrate and own run/attempt lifecycle, but the
@@ -847,6 +847,26 @@ def _modal_workload_request_fields(config: Any) -> tuple[str | None, str | None]
     return model_name, pruning_recipe
 
 
+def _normalize_worker_topology(config_module: Any) -> WorkerTopologyConfig | None:
+    topology = getattr(config_module, "worker_topology", None)
+    if topology is not None:
+        if not isinstance(topology, WorkerTopologyConfig):
+            raise ValueError("config_module.worker_topology must be a WorkerTopologyConfig")
+        return topology
+
+    workload_config = getattr(config_module, "config", None)
+    if workload_config is None:
+        return None
+
+    topology = getattr(workload_config, "topology", None)
+    if topology is not None:
+        if not isinstance(topology, WorkerTopologyConfig):
+            raise ValueError("config.topology must be a WorkerTopologyConfig")
+        return topology
+
+    return None
+
+
 def _argus_modal_tags(*, launcher_id: str, run_name: str, config_path: Path) -> dict[str, str]:
     """Control-plane identity tags for Modal sandboxes."""
     return {
@@ -1023,6 +1043,7 @@ async def _deploy_and_submit(
     deps: DepsConfig | None = None,
     raw_script: bool = False,
     extra_python_projects: tuple[PythonProjectMaterialization, ...] = (),
+    provider_overrides: dict | None = None,
 ) -> tuple:
     """Provision node, deploy code, submit training job.
 
@@ -1213,6 +1234,7 @@ async def _deploy_and_submit(
                             persistent_volume_location=persistent_volume_location,
                             name=f"rollouts/{run_name}",
                             provider=provider,
+                            provider_overrides=provider_overrides or {},
                         )
                     )
                     node_str = f"{instance.provider}:{instance.id}" if instance else "?"
@@ -1693,6 +1715,47 @@ async def _sync_and_cleanup(
             logger.info("Reuse with: --node-id %s:%s", instance.provider, instance.id)
 
 
+def _modal_provider_overrides(runtime: Any) -> dict:
+    """Build provider_overrides dict for Modal from a RuntimeContract.
+
+    Translates modal_volume_mounts and modal_snapshot_registry from the runtime
+    contract into ModalVolumeMount / ModalFilesystemSnapshot objects that
+    ProvisionRequest understands, quarantined in provider_overrides so GPUQuery
+    stays provider-agnostic.
+
+    Returns empty dict for non-Modal providers or when no Modal-specific config
+    is set.
+
+    TODO(broker): when other providers get first-class overrides (RunPod
+    template_id, Vast.ai bid_price), add similar helpers here and consolidate
+    into a single _provider_overrides(runtime) dispatch.
+    """
+    if runtime.provider != "modal":
+        return {}
+
+    overrides: dict = {}
+
+    try:
+        from broker.broker.types import ModalFilesystemSnapshot, ModalVolumeMount
+    except ImportError:
+        return {}
+
+    if runtime.modal_volume_mounts:
+        overrides["modal_volumes"] = [
+            ModalVolumeMount(volume_name=name, mount_path=path)
+            for name, path in runtime.modal_volume_mounts
+        ]
+
+    if runtime.modal_snapshot_registry is not None:
+        registry_name, registry_key = runtime.modal_snapshot_registry
+        overrides["modal_snapshot"] = ModalFilesystemSnapshot(
+            snapshot_registry_name=registry_name,
+            snapshot_registry_key=registry_key,
+        )
+
+    return overrides
+
+
 async def run_remote(
     script_path: str,
     keep_alive: bool = False,
@@ -1714,6 +1777,7 @@ async def run_remote(
     raw_script: bool = False,
     block: bool = False,
     extra_python_projects: tuple[PythonProjectMaterialization, ...] = (),
+    provider_overrides: dict | None = None,
 ) -> None:
     """Run training script on remote GPU via bifrost."""
     # TODO(argus-run): Move the SSH/bifrost remote training launcher into its
@@ -1745,6 +1809,7 @@ async def run_remote(
         deps=deps,
         raw_script=raw_script,
         extra_python_projects=extra_python_projects,
+        provider_overrides=provider_overrides or {},
     )
 
     assert instance is not None, "run_remote requires a provisioned instance"
@@ -1899,7 +1964,12 @@ Examples:
         return 1
 
     # Get hardware config (default to local if not specified)
-    hardware: HardwareConfig = getattr(config_module, "hardware", HardwareConfig(provider="local"))
+    worker_topology = _normalize_worker_topology(config_module)
+    hardware: HardwareConfig = (
+        worker_topology.hardware
+        if worker_topology is not None
+        else getattr(config_module, "hardware", HardwareConfig(provider="local"))
+    )
     workload_config = getattr(config_module, "config", None)
     # TODO(boundary): this loader/merge path is reconstructing a launchable
     # execution spec from module exports, CLI overrides, and service-scoped deps.
@@ -1907,8 +1977,17 @@ Examples:
 
     trainer_service_deps = None
     inference_service_deps = None
-    service_runtime_layout = "shared_env"
-    if workload_config is not None:
+    service_runtime_layout = (
+        worker_topology.service_runtime_layout if worker_topology is not None else "shared_env"
+    )
+    if worker_topology is not None and workload_config is not None:
+        trainer = getattr(workload_config, "trainer", None)
+        inference = getattr(workload_config, "inference", None)
+        if trainer is not None:
+            trainer_service_deps = getattr(trainer, "deps", None)
+        if inference is not None:
+            inference_service_deps = getattr(inference, "deps", None)
+    elif workload_config is not None:
         trainer = getattr(workload_config, "trainer", None)
         inference = getattr(workload_config, "inference", None)
         trainer_service_deps = getattr(trainer, "deps", None)
@@ -1922,14 +2001,19 @@ Examples:
             "Use 'shared_env' or 'split_env'."
         )
 
-    if service_runtime_layout != "shared_env":
-        raise ValueError(
-            "The current Argus launcher only realizes service_runtime_layout='shared_env'. "
-            "Split service runtimes need a launcher that provisions separate trainer "
-            "and inference environments."
-        )
-
-    if trainer_service_deps is not None or inference_service_deps is not None:
+    if service_runtime_layout == "split_env":
+        # Trainer and inference server run in separate venvs on the same machine.
+        # For same base image: one Modal image with two venvs layered on top.
+        # For different base image: two separate sandboxes (only Modal for now).
+        # The trainer_service_deps drive the image; inference_service_deps are
+        # passed through to bifrost which layers INFERENCE_VENV_DIR on top and
+        # sets ROLLOUTS_INFERENCE_PYTHON in the trainer subprocess environment.
+        # For RunPod: not yet implemented (falls through to the SSH launcher which
+        # will raise if it encounters inference_service_deps without shared_env).
+        if trainer_service_deps is not None:
+            hardware = replace(hardware, deps=trainer_service_deps)
+        # inference_service_deps passed separately to ModalExecutionRequest below.
+    elif trainer_service_deps is not None or inference_service_deps is not None:
         if trainer_service_deps is None:
             shared_deps = inference_service_deps
         elif inference_service_deps is None:
@@ -2157,6 +2241,9 @@ Examples:
                         dirty_action="warn" if args.force_deploy_committed else "fail"
                     ),
                     tags={**modal_tags, **workload_tags},
+                    inference_deps=inference_service_deps
+                    if service_runtime_layout == "split_env"
+                    else None,
                 )
                 for extra_root in extra_source_roots:
                     enforce_source_sync_policy(
@@ -2223,6 +2310,7 @@ Examples:
                 False,  # raw_script
                 False,  # block
                 extra_python_projects,
+                _modal_provider_overrides(runtime),
             )
 
         else:

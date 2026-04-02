@@ -27,23 +27,31 @@ config_status = known_good(
 )
 
 hardware = _hardware
-config = _config
 worker_topology = WorkerTopologyConfig(
     hardware=hardware,
+    service_runtime_layout=_config.service_runtime_layout,
     inference_workers=(
         InferenceWorkerConfig(
             worker_id="actor",
-            model=config.model.name,
-            inference=config.inference,
+            model=_config.model.name,
+            inference=_config.inference,
         ),
     ),
     training_workers=(
         TrainingWorkerConfig(
             worker_id="trainer",
-            trainer=config.trainer,
+            trainer=_config.trainer,
         ),
     ),
     role_bindings=(InferenceRoleBinding(role="actor", worker_id="actor"),),
+)
+config = GRPOConfig(
+    model=_config.model,
+    topology=worker_topology,
+    rollout=_config.rollout,
+    checkpoint=_config.checkpoint,
+    runtime_watchdog=_config.runtime_watchdog,
+    output=_config.output,
 )
 
 
