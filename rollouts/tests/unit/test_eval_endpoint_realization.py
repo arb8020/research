@@ -1,0 +1,146 @@
+from __future__ import annotations
+
+from contextlib import asynccontextmanager
+from pathlib import Path
+
+import pytest
+
+from rollouts.eval.configs import EndpointConfig, InferenceServerConfig
+from rollouts.eval.endpoint_realization import (
+    _legacy_worker_from_eval_surface,
+    realize_worker_backed_endpoint,
+)
+from rollouts.eval.run import run_with_sglang_provision
+from rollouts.training.configs import (
+    HardwareConfig,
+    InferenceConfig,
+    InferenceRoleBinding,
+    InferenceWorkerConfig,
+    WorkerTopologyConfig,
+)
+
+
+class _FakeEngine:
+    def __init__(self) -> None:
+        self.api_base = "http://localhost:30000/v1"
+        self.launch_called = False
+        self.tailer_called = False
+        self.ready_waits: list[float] = []
+        self.shutdown_called = False
+
+    def launch(self) -> str:
+        self.launch_called = True
+        return "fake-session"
+
+    def start_log_tailer(self) -> object:
+        self.tailer_called = True
+        return object()
+
+    async def wait_until_ready(self, max_wait: float = 120.0) -> None:
+        self.ready_waits.append(max_wait)
+
+    def shutdown(self) -> None:
+        self.shutdown_called = True
+
+
+def test_legacy_worker_from_eval_surface_uses_endpoint_and_server_settings() -> None:
+    worker = _legacy_worker_from_eval_surface(
+        endpoint_config=EndpointConfig(provider="sglang", model="Qwen/Qwen2.5-0.5B-Instruct"),
+        server_config=InferenceServerConfig(
+            port=31000,
+            mem_fraction=0.55,
+            tensor_parallel_size=1,
+            startup_timeout=123,
+        ),
+    )
+
+    assert worker.worker_id == "eval-endpoint"
+    assert worker.model == "Qwen/Qwen2.5-0.5B-Instruct"
+    assert worker.inference.spec == "slime-sglang"
+    assert worker.inference.port == 31000
+    assert worker.inference.mem_fraction == 0.55
+    assert worker.inference.startup_timeout == 123
+
+
+@pytest.mark.trio
+async def test_realize_worker_backed_endpoint_launches_and_shuts_down(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    fake_engine = _FakeEngine()
+    monkeypatch.setattr(
+        "rollouts.eval.endpoint_realization._build_engine",
+        lambda **_: fake_engine,
+    )
+
+    async with realize_worker_backed_endpoint(
+        endpoint_config=EndpointConfig(provider="sglang", model="Qwen/Qwen2.5-0.5B-Instruct"),
+        output_dir=tmp_path,
+        hardware_config=HardwareConfig(provider="local", gpu_count=1),
+        server_config=InferenceServerConfig(startup_timeout=45),
+    ) as realized:
+        assert realized.endpoint_config.base_url == "http://localhost:30000/v1"
+        assert fake_engine.launch_called is True
+        assert fake_engine.tailer_called is True
+        assert fake_engine.ready_waits == [45]
+
+    assert fake_engine.shutdown_called is True
+
+
+@pytest.mark.trio
+async def test_run_with_sglang_provision_prefers_topology_actor_worker(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    topology = WorkerTopologyConfig(
+        hardware=HardwareConfig(provider="local", gpu_count=1),
+        inference_workers=(
+            InferenceWorkerConfig(
+                worker_id="actor",
+                model="Qwen/Qwen2.5-0.5B-Instruct",
+                inference=InferenceConfig(port=32000, startup_timeout=33.0),
+            ),
+        ),
+        role_bindings=(InferenceRoleBinding(role="actor", worker_id="actor"),),
+    )
+    config_module = type("ConfigModule", (), {"worker_topology": topology})
+    output_config = type("OutputConfig", (), {"output_dir": tmp_path})
+    captured: dict[str, object] = {}
+
+    @asynccontextmanager
+    async def fake_realize(**kwargs: object):
+        captured.update(kwargs)
+        yield type(
+            "Realized",
+            (),
+            {
+                "endpoint_config": EndpointConfig(
+                    provider="sglang",
+                    model="Qwen/Qwen2.5-0.5B-Instruct",
+                    base_url="http://localhost:32000/v1",
+                )
+            },
+        )()
+
+    async def fake_run_with_api(
+        config_module: object,
+        endpoint_config: EndpointConfig,
+        run_config: object,
+        output_config: object,
+        cancel_scope: object | None = None,
+    ) -> dict[str, object]:
+        del config_module, run_config, output_config, cancel_scope
+        return {"base_url": endpoint_config.base_url}
+
+    monkeypatch.setattr("rollouts.eval.run.realize_worker_backed_endpoint", fake_realize)
+    monkeypatch.setattr("rollouts.eval.run.run_with_api", fake_run_with_api)
+
+    result = await run_with_sglang_provision(
+        config_module=config_module,
+        endpoint_config=EndpointConfig(provider="sglang", model="Qwen/Qwen2.5-0.5B-Instruct"),
+        run_config=object(),
+        output_config=output_config,
+        hardware_config=topology.hardware,
+        server_config=InferenceServerConfig(),
+    )
+
+    assert result == {"base_url": "http://localhost:32000/v1"}
+    assert captured["worker"] == topology.get_worker_for_role("actor")

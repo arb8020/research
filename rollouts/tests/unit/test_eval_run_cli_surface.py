@@ -19,7 +19,6 @@ from rollouts.eval import run as eval_run
         ["rollouts.eval.run", "--config", "dummy.py", "--provision"],
         ["rollouts.eval.run", "--config", "dummy.py", "--gpu-type", "H100"],
         ["rollouts.eval.run", "--config", "dummy.py", "--hardware-provider", "runpod"],
-        ["rollouts.eval.run", "--config", "dummy.py", "--output-dir", "/tmp/results"],
         [
             "rollouts.eval.run",
             "launch",
@@ -44,3 +43,13 @@ def test_eval_run_main_rejects_removed_config_owned_flags(
         eval_run.main()
 
     assert excinfo.value.code == 2
+
+
+def test_eval_run_main_accepts_output_dir_flag(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["rollouts.eval.run", "--config", "dummy.py", "--output-dir", "/tmp/results"],
+    )
+
+    assert eval_run.main() == 1

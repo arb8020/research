@@ -35,6 +35,7 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import logging
+import os
 import signal
 import sys
 from dataclasses import replace
@@ -49,6 +50,7 @@ if TYPE_CHECKING:
     from rollouts.core import Environment
 
 from ..config_contracts import validate_eval_config_module
+from .endpoint_realization import realize_worker_backed_endpoint
 
 logger = logging.getLogger(__name__)
 
@@ -67,8 +69,18 @@ def _resolve_output_dir(
     *,
     config_path: Path,
     output_config: Any,
+    cli_output_dir: Path | None = None,
 ) -> Path:
     project_root = _find_config_project_root(config_path)
+    explicit_output_dir = os.environ.get("ROLLOUTS_OUTPUT_DIR")
+    if explicit_output_dir:
+        return Path(explicit_output_dir)
+
+    if cli_output_dir is not None:
+        if cli_output_dir.is_absolute():
+            return cli_output_dir
+        return (project_root / cli_output_dir).resolve()
+
     configured_output_dir = output_config.output_dir
     if configured_output_dir is not None:
         if configured_output_dir.is_absolute():
@@ -252,13 +264,25 @@ async def run_with_sglang_provision(
     hardware_config: Any,
     server_config: Any,
 ) -> dict[str, Any]:
-    """Provision GPU, launch SGLang server, run eval, cleanup."""
-    # This would use bifrost to provision, similar to rollouts/run.py
-    # For now, raise NotImplementedError
-    raise NotImplementedError(
-        "SGLang provisioning not yet implemented. "
-        "Start SGLang server manually and set base_url in endpoint config."
-    )
+    """Realize a worker-backed endpoint locally, run eval, then tear it down."""
+    worker = None
+    worker_topology = getattr(config_module, "worker_topology", None)
+    if worker_topology is not None:
+        worker = worker_topology.get_worker_for_role("actor")
+
+    async with realize_worker_backed_endpoint(
+        endpoint_config=endpoint_config,
+        output_dir=output_config.output_dir,
+        hardware_config=hardware_config,
+        server_config=server_config,
+        worker=worker,
+    ) as realized:
+        return await run_with_api(
+            config_module,
+            realized.endpoint_config,
+            run_config,
+            output_config,
+        )
 
 
 def main() -> int:
@@ -301,6 +325,11 @@ Examples:
 
     # Batch run flags
     run_parser.add_argument("--quiet", action="store_true")
+    run_parser.add_argument(
+        "--output-dir",
+        type=Path,
+        help="Explicit output directory. ROLLOUTS_OUTPUT_DIR takes precedence when set.",
+    )
 
     # Launch flags
     launch_parser.add_argument(
@@ -359,6 +388,7 @@ Examples:
     resolved_output_dir = _resolve_output_dir(
         config_path=config_path,
         output_config=output_config,
+        cli_output_dir=getattr(args, "output_dir", None),
     )
     output_config = replace(output_config, output_dir=resolved_output_dir)
 

@@ -980,14 +980,14 @@ def _spawn_eval_subprocess(
         "rollouts.eval.run",
         "--config",
         str(config_path),
-        "--output-dir",
-        str(output_dir),
     ]
     if max_samples is not None:
         command.extend(["--limit", str(max_samples)])
 
     stdout_handle = stdout_log.open("a")
     stderr_handle = stderr_log.open("a")
+    env = os.environ.copy()
+    env["ROLLOUTS_OUTPUT_DIR"] = str(output_dir)
     try:
         proc = subprocess.Popen(
             command,
@@ -995,7 +995,7 @@ def _spawn_eval_subprocess(
             stdout=stdout_handle,
             stderr=stderr_handle,
             start_new_session=True,
-            env=os.environ.copy(),
+            env=env,
         )
     finally:
         stdout_handle.close()

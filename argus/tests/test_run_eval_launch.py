@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -91,3 +92,38 @@ def test_run_main_eval_tui_hands_off_to_monitor(monkeypatch: object, tmp_path: P
     assert result == 17
     assert captured["monitor_run_dir"] == captured["output_dir"]
     assert captured["monitor_tail"] is False
+
+
+def test_spawn_eval_subprocess_sets_rollouts_output_dir(
+    monkeypatch: object, tmp_path: Path
+) -> None:
+    config_path = tmp_path / "eval_config.py"
+    config_path.write_text("# test config")
+    output_dir = tmp_path / "results" / "eval" / "run_123"
+
+    captured: dict[str, object] = {}
+
+    class _FakeProc:
+        pid = 4242
+
+    def fake_popen(*args: object, **kwargs: object) -> _FakeProc:
+        captured["command"] = kwargs.get("args", args[0] if args else None)
+        captured["env"] = kwargs["env"]
+        return _FakeProc()
+
+    monkeypatch.setattr("subprocess.Popen", fake_popen)
+
+    def log(event: str, **data: object) -> None:
+        captured["event"] = event
+        captured["log"] = data
+
+    pid = argus_run._spawn_eval_subprocess(
+        config_path=config_path,
+        output_dir=output_dir,
+        max_samples=None,
+        log=log,
+    )
+
+    assert pid == 4242
+    assert "--output-dir" not in captured["command"]
+    assert captured["env"]["ROLLOUTS_OUTPUT_DIR"] == os.fspath(output_dir)

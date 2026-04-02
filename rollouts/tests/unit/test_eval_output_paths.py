@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
+
+import pytest
 
 from rollouts.eval.configs import EvalOutputConfig
 from rollouts.eval.run import _find_config_project_root, _resolve_output_dir
@@ -50,3 +53,28 @@ def test_resolve_output_dir_uses_project_root_for_relative_config_override(tmp_p
     )
 
     assert output_dir == repo_root / "custom-results" / "smoke"
+
+
+def test_resolve_output_dir_prefers_env_over_cli_and_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo_root = tmp_path / "charisma"
+    config_path = repo_root / "charisma" / "configs" / "kernelbench_v3" / "eval.py"
+    repo_root.mkdir()
+    (repo_root / "pyproject.toml").write_text("[project]\nname='charisma'\n")
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text("# test config")
+
+    env_output_dir = tmp_path / "env-results" / "run_123"
+    monkeypatch.setenv("ROLLOUTS_OUTPUT_DIR", os.fspath(env_output_dir))
+
+    output_dir = _resolve_output_dir(
+        config_path=config_path,
+        output_config=EvalOutputConfig(
+            experiment_name="kernelbench_v3_smoke_cuda",
+            output_dir=Path("config-results"),
+        ),
+        cli_output_dir=Path("cli-results"),
+    )
+
+    assert output_dir == env_output_dir
