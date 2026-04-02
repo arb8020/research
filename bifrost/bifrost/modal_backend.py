@@ -45,6 +45,10 @@ from .types import (
 
 logger = logging.getLogger(__name__)
 
+MODAL_PARENT_LEASE_PATH = "/tmp/bifrost/modal_parent_lease"
+MODAL_PARENT_LEASE_TTL_S = 90.0
+MODAL_PARENT_LEASE_REFRESH_INTERVAL_S = 15.0
+
 
 def _json_decode_maybe_incomplete(payload: str, exc: json.JSONDecodeError) -> bool:
     """Return true when a JSON decode failure likely reflects a split chunk.
@@ -192,6 +196,89 @@ def _read_modal_supervisor_status_sync(sandbox: Any, status_file: str) -> dict[s
     if isinstance(payload, dict):
         return payload
     return None
+
+
+def _modal_primary_command(keep_alive: bool) -> tuple[str, ...]:
+    if keep_alive:
+        return (
+            "python3",
+            "-c",
+            "import signal,time; signal.signal(signal.SIGTERM, lambda *_: exit(0)); "
+            "signal.signal(signal.SIGINT, lambda *_: exit(0)); time.sleep(315360000)",
+        )
+
+    watchdog_script = (
+        "import pathlib\n"
+        "import signal\n"
+        "import sys\n"
+        "import time\n"
+        "\n"
+        "lease_path = pathlib.Path(sys.argv[1])\n"
+        "ttl_s = float(sys.argv[2])\n"
+        "signal.signal(signal.SIGTERM, lambda *_: exit(0))\n"
+        "signal.signal(signal.SIGINT, lambda *_: exit(0))\n"
+        "startup_deadline = time.time() + ttl_s\n"
+        "sleep_s = max(1.0, min(ttl_s / 6.0, 5.0))\n"
+        "while True:\n"
+        "    now = time.time()\n"
+        "    if lease_path.exists():\n"
+        "        if now - lease_path.stat().st_mtime > ttl_s:\n"
+        "            break\n"
+        "    elif now >= startup_deadline:\n"
+        "        break\n"
+        "    time.sleep(sleep_s)\n"
+    )
+    return (
+        "python3",
+        "-c",
+        watchdog_script,
+        MODAL_PARENT_LEASE_PATH,
+        str(MODAL_PARENT_LEASE_TTL_S),
+    )
+
+
+def _refresh_modal_parent_lease_sync(sandbox: Any) -> None:
+    lease_dir = shlex.quote(str(Path(MODAL_PARENT_LEASE_PATH).parent))
+    lease_path = shlex.quote(MODAL_PARENT_LEASE_PATH)
+    proc = sandbox.exec(
+        "bash",
+        "-lc",
+        f"mkdir -p {lease_dir} && touch {lease_path}",
+        timeout=30,
+    )
+    _ = "".join(proc.stdout)
+    stderr = "".join(proc.stderr)
+    exit_code = proc.wait()
+    if exit_code != 0:
+        raise RuntimeError(
+            f"Failed to refresh Modal parent lease at {MODAL_PARENT_LEASE_PATH}: "
+            f"exit_code={exit_code} stderr={stderr.strip()}"
+        )
+
+
+async def _refresh_modal_parent_lease(sandbox: Any) -> None:
+    await trio.to_thread.run_sync(_refresh_modal_parent_lease_sync, sandbox)
+
+
+async def _maintain_modal_parent_lease(
+    sandbox: Any,
+    emit: Callable[[str], None] | None = None,
+    refresh_interval_s: float = MODAL_PARENT_LEASE_REFRESH_INTERVAL_S,
+) -> None:
+    def _emit(event: str, **data: Any) -> None:
+        if emit is not None:
+            emit(event, **data)
+
+    _emit(
+        "modal_parent_lease_heartbeat_started",
+        lease_path=MODAL_PARENT_LEASE_PATH,
+        ttl_s=MODAL_PARENT_LEASE_TTL_S,
+        refresh_interval_s=refresh_interval_s,
+    )
+    while True:
+        await _refresh_modal_parent_lease(sandbox)
+        _emit("modal_parent_lease_refreshed", lease_path=MODAL_PARENT_LEASE_PATH)
+        await trio.sleep(refresh_interval_s)
 
 
 def _read_modal_text_artifact_sync(sandbox: Any, remote_path: str) -> str | None:
@@ -1220,12 +1307,7 @@ async def create_modal_sandbox(request: ModalExecutionRequest) -> ModalSandboxHa
     ts = int(datetime.now(timezone.utc).timestamp())
     sandbox_name = f"rollouts-{request.runtime.gpu_type.lower()}-{ts}"
     timeout_seconds = request.timeout_hours * 3600
-    keepalive_cmd = (
-        "python3",
-        "-c",
-        "import signal,time; signal.signal(signal.SIGTERM, lambda *_: exit(0)); "
-        "signal.signal(signal.SIGINT, lambda *_: exit(0)); time.sleep(315360000)",
-    )
+    primary_cmd = _modal_primary_command(request.keep_alive)
     create_timeout_s = 300
     create_heartbeat_s = 15
     create_attempts = 2
@@ -1277,7 +1359,7 @@ async def create_modal_sandbox(request: ModalExecutionRequest) -> ModalSandboxHa
         async def _create_task() -> None:
             result["sandbox"] = await trio_asyncio.aio_as_trio(
                 modal.Sandbox.create.aio(
-                    *keepalive_cmd,
+                    *primary_cmd,
                     app=app,
                     image=image,
                     gpu=gpu_spec,
@@ -1405,7 +1487,15 @@ async def create_modal_sandbox(request: ModalExecutionRequest) -> ModalSandboxHa
         elapsed_sec=round(trio.current_time() - stabilize_start, 3),
         probe_count=stabilize_attempt,
     )
-    emit("modal_sandbox_keepalive_configured", command=list(keepalive_cmd))
+    if request.keep_alive:
+        emit("modal_sandbox_keepalive_configured", command=list(primary_cmd))
+    else:
+        emit(
+            "modal_sandbox_parent_lease_watchdog_configured",
+            command=list(primary_cmd),
+            lease_path=MODAL_PARENT_LEASE_PATH,
+            ttl_s=MODAL_PARENT_LEASE_TTL_S,
+        )
 
     if request.tags:
         try:
@@ -1854,7 +1944,7 @@ async def _wait_for_modal_exec_ready(
 ) -> None:
     """Wait until the Modal sandbox can reliably spawn exec commands.
 
-    `sandbox.poll() is None` only proves the keepalive primary is still alive.
+    `sandbox.poll() is None` only proves the sandbox primary is still alive.
     The actual exec boundary is closer to "Modal has assigned a sandbox task ID
     and a cheap exec can start promptly".
     """
@@ -2183,6 +2273,14 @@ async def run_modal_request(request: ModalExecutionRequest) -> dict[str, Any]:
 
             try:
                 await _wait_for_modal_exec_ready(sandbox_handle, sandbox_id=sandbox_id, emit=emit)
+                if not request.keep_alive:
+                    await _refresh_modal_parent_lease(sandbox_handle.sandbox)
+                    emit(
+                        "modal_parent_lease_initialized",
+                        sandbox_id=sandbox_id,
+                        lease_path=MODAL_PARENT_LEASE_PATH,
+                        ttl_s=MODAL_PARENT_LEASE_TTL_S,
+                    )
                 await _verify_modal_gpu(sandbox_handle, sandbox_id=sandbox_id, emit=emit)
 
                 if request.model_name:
@@ -2252,6 +2350,12 @@ async def run_modal_request(request: ModalExecutionRequest) -> dict[str, Any]:
                 )
                 try:
                     async with trio.open_nursery() as nursery:
+                        if not request.keep_alive:
+                            nursery.start_soon(
+                                _maintain_modal_parent_lease,
+                                sandbox_handle.sandbox,
+                                emit,
+                            )
                         nursery.start_soon(
                             _project_modal_run_artifacts,
                             sandbox_handle.sandbox,
