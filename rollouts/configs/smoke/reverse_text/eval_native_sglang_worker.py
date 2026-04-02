@@ -77,7 +77,6 @@ worker_topology = WorkerTopologyConfig(
             pip_packages=(
                 "torch>=2.4",
                 "sglang[all]",
-                "vllm==0.10.2",
             ),
             pip_index_url="https://download.pytorch.org/whl/cu124",
         ),
