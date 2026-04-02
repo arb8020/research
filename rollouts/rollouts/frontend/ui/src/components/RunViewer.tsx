@@ -47,6 +47,118 @@ interface RunViewerProps {
 
 type TabId = 'conversation' | 'summary' | 'json'
 
+function hasEnvironmentState(sample: TraceSample): boolean {
+  return sample.environment_state != null
+}
+
+type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue }
+
+function getVerifierTurnHistory(sample: TraceSample): Record<string, JsonValue>[] {
+  const environmentState = sample.environment_state as Record<string, unknown> | null | undefined
+  const verifierState = environmentState?.['verifier_state']
+  if (!verifierState || typeof verifierState !== 'object') return []
+  const turnHistory = (verifierState as Record<string, unknown>).turn_history
+  return Array.isArray(turnHistory)
+    ? turnHistory.filter((entry): entry is Record<string, JsonValue> => entry != null && typeof entry === 'object')
+    : []
+}
+
+function getTurnEntry(turnHistory: Record<string, JsonValue>[], uiTurn: number): Record<string, JsonValue> | null {
+  const targetTurn = uiTurn + 1
+  return turnHistory.find(entry => entry.turn === targetTurn) ?? null
+}
+
+function JsonSection({ label, value }: { label: string; value: unknown }) {
+  return (
+    <div>
+      <div
+        className="text-[10px] uppercase tracking-wide mb-2 font-medium"
+        style={{ color: 'var(--color-dark-text-muted)' }}
+      >
+        {label}
+      </div>
+      <div
+        className="overflow-auto font-mono text-xs rounded"
+        style={{
+          padding: '0.75rem',
+          background: '#0a0a0a',
+          border: '1px solid var(--color-dark-border)',
+          maxHeight: '32vh',
+        }}
+      >
+        <pre>{JSON.stringify(value, null, 2)}</pre>
+      </div>
+    </div>
+  )
+}
+
+function EnvironmentStatePanel({
+  sample,
+  selectedTurn,
+  checkedTurns,
+}: {
+  sample: TraceSample
+  selectedTurn: number
+  checkedTurns: number[]
+}) {
+  const turnHistory = getVerifierTurnHistory(sample)
+  const fullState = sample.environment_state
+
+  const content = (() => {
+    if (turnHistory.length === 0) {
+      return <JsonSection label="Raw environment state" value={fullState} />
+    }
+
+    if (checkedTurns.length >= 2) {
+      const startTurn = checkedTurns[0]
+      const endTurn = checkedTurns[checkedTurns.length - 1]
+      const startEntry = getTurnEntry(turnHistory, startTurn)
+      const endEntry = getTurnEntry(turnHistory, endTurn)
+      return (
+        <>
+          <JsonSection label={`Turn ${startTurn + 1} state`} value={startEntry ?? { turn: startTurn + 1, missing: true }} />
+          <JsonSection label={`Turn ${endTurn + 1} state`} value={endEntry ?? { turn: endTurn + 1, missing: true }} />
+        </>
+      )
+    }
+
+    const focusTurn = checkedTurns.length === 1 ? checkedTurns[0] : selectedTurn
+    const focusEntry = getTurnEntry(turnHistory, focusTurn)
+    return <JsonSection label={`Turn ${focusTurn + 1} state`} value={focusEntry ?? { turn: focusTurn + 1, missing: true }} />
+  })()
+
+  return (
+    <div className="flex flex-col h-full overflow-hidden">
+      <div
+        className="flex-shrink-0 px-3 py-2 text-xs font-medium uppercase tracking-wide"
+        style={{
+          color: 'var(--color-dark-text-muted)',
+          borderBottom: '1px solid var(--color-dark-border)',
+          background: 'var(--color-dark-card)',
+        }}
+      >
+        Environment State
+      </div>
+      <div className="flex-1 overflow-auto" style={{ minHeight: 0, padding: '0.75rem' }}>
+        <div className="space-y-3">
+          {content}
+          <details>
+            <summary
+              className="text-[10px] uppercase tracking-wide font-medium cursor-pointer select-none"
+              style={{ color: 'var(--color-dark-text-muted)' }}
+            >
+              Raw environment state
+            </summary>
+            <div style={{ marginTop: '0.5rem' }}>
+              <JsonSection label="Full state" value={fullState} />
+            </div>
+          </details>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function getRewardColor(value: number): string {
   if (value >= 0.8) return '#22c55e'
   if (value >= 0.4) return '#3b82f6'
@@ -72,6 +184,7 @@ function RunViewerContent({
   checkedTurns,
   onToggleTurn,
   onMessageVisible,
+  selectedTurn,
 }: {
   activeTab: TabId
   sample: TraceSample
@@ -79,6 +192,7 @@ function RunViewerContent({
   checkedTurns: Set<number>
   onToggleTurn: (turn: number) => void
   onMessageVisible?: (messageIndex: number) => void
+  selectedTurn: number
 }) {
   const scoreMetrics = getScoreMetrics(sample)
 
@@ -87,6 +201,7 @@ function RunViewerContent({
       <ErrorBoundary label="ConversationView">
         <ConversationView
           sample={sample}
+          selectedTurn={showWorkspaceSelection ? selectedTurn : undefined}
           onMessageVisible={onMessageVisible}
           checkedTurns={showWorkspaceSelection ? checkedTurns : undefined}
           onToggleTurn={showWorkspaceSelection ? onToggleTurn : undefined}
@@ -245,10 +360,12 @@ export function RunViewer({ runId, sampleId, evalName, liveStatus = null, onBack
   const workspaceData = sampleState.kind === 'loaded' ? sampleState.workspaceData : null
   const checkedTurnsSorted = useMemo(() => [...checkedTurns].sort((a, b) => a - b), [checkedTurns])
   const hasWorkspace = workspaceData !== null && workspaceData.snapshots.some(s => Object.keys(s.files).length > 0)
+  const hasEnvironmentPanel = sample !== null && hasEnvironmentState(sample)
+  const hasTurnScopedSidePanel = hasWorkspace || hasEnvironmentPanel
   const plugin = sampleState.kind === 'loaded' && sampleState.source === 'artifact'
     ? resolvePlugin(evalName, sample)
     : null
-  const hasRightPanel = hasWorkspace || plugin !== null
+  const hasRightPanel = hasWorkspace || plugin !== null || hasEnvironmentPanel
 
   // Header + tabs shared by both layouts
   const header = (
@@ -318,7 +435,7 @@ export function RunViewer({ runId, sampleId, evalName, liveStatus = null, onBack
   // Non-workspace layout (simple, scrollable)
   if (!hasRightPanel) {
     return (
-      <div className="p-4 sm:p-6 max-w-5xl mx-auto">
+      <div className="p-4 sm:p-6 max-w-5xl mx-auto" style={{ height: '100%', overflowY: 'auto', minHeight: 0 }}>
         {header}
         <div className="rounded p-4" style={{ background: 'var(--color-dark-card)', border: '1px solid var(--color-dark-border)' }}>
           {sampleState.kind === 'loading' ? (
@@ -334,6 +451,7 @@ export function RunViewer({ runId, sampleId, evalName, liveStatus = null, onBack
               showWorkspaceSelection={false}
               checkedTurns={checkedTurns}
               onToggleTurn={handleToggleTurn}
+              selectedTurn={selectedTurn}
             />
           ) : null}
         </div>
@@ -379,10 +497,11 @@ export function RunViewer({ runId, sampleId, evalName, liveStatus = null, onBack
             <RunViewerContent
               activeTab={activeTab}
               sample={sample}
-              showWorkspaceSelection={hasWorkspace}
+              showWorkspaceSelection={hasTurnScopedSidePanel}
               checkedTurns={checkedTurns}
               onToggleTurn={handleToggleTurn}
-              onMessageVisible={hasWorkspace ? (idx) => setSelectedTurn(messageToTurn(idx)) : undefined}
+              onMessageVisible={hasTurnScopedSidePanel ? (idx) => setSelectedTurn(messageToTurn(idx)) : undefined}
+              selectedTurn={selectedTurn}
             />
           </div>
 
@@ -412,6 +531,14 @@ export function RunViewer({ runId, sampleId, evalName, liveStatus = null, onBack
                     selectedTurn={selectedTurn}
                     checkedTurns={checkedTurnsSorted}
                     onFitWidth={handleFitWidth}
+                  />
+                </ErrorBoundary>
+              ) : sample && hasEnvironmentPanel ? (
+                <ErrorBoundary label="EnvironmentStatePanel">
+                  <EnvironmentStatePanel
+                    sample={sample}
+                    selectedTurn={selectedTurn}
+                    checkedTurns={checkedTurnsSorted}
                   />
                 </ErrorBoundary>
               ) : plugin && sample ? (

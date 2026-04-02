@@ -1,4 +1,5 @@
 import { useState, useMemo } from 'react'
+import { Eye } from 'lucide-react'
 import type { TraceSample } from '../types'
 
 // ─── Styles (ported from rollout-viewer.html) ─────────────────────────────────
@@ -21,16 +22,43 @@ const css = `
   min-width: 0;
 }
 .rv-msg-header:hover { background: #1c1c1c; }
-.rv-msg-pin-col {
+.rv-msg-controls {
   display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 28px;
+  align-items: stretch;
   flex-shrink: 0;
   border-left: 1px solid transparent;
 }
-.rv-msg-pin-col:hover { background: #1c1c1c; }
-.rv-msg-pinned .rv-msg-pin-col { border-left-color: #3b82f6; }
+.rv-msg-pinned .rv-msg-controls { border-left-color: #3b82f6; }
+.rv-msg-control {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  flex-shrink: 0;
+}
+.rv-msg-control:hover { background: #1c1c1c; }
+.rv-msg-control-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 2px;
+  border: 1px solid #444;
+  background: transparent;
+  cursor: pointer;
+  color: #737373;
+  transition: border-color 100ms, color 100ms, background 100ms;
+}
+.rv-msg-control-button:hover {
+  border-color: #666;
+  color: #fafafa;
+}
+.rv-msg-control-button.rv-active {
+  border-color: #3b82f6;
+  background: rgba(59,130,246,0.18);
+  color: #93c5fd;
+}
 
 .rv-role-tag {
   font-family: "IBM Plex Mono", monospace;
@@ -406,7 +434,7 @@ function toggleSetEntry(current: Set<number>, index: number, isOpen: boolean): S
 
 // ─── Message component ────────────────────────────────────────────────────────
 
-function Message({ msg, isPinned, onTogglePin }: { msg: ParsedMessage; isPinned?: boolean; onTogglePin?: () => void }) {
+function Message({ msg, isPinned, isSelectedTurn, onTogglePin, onSelectTurn }: { msg: ParsedMessage; isPinned?: boolean; isSelectedTurn?: boolean; onTogglePin?: () => void; onSelectTurn?: () => void }) {
   const [open, setOpen] = useState(false)
   const [openText, setOpenText] = useState<Set<number>>(new Set())
   const [openThinking, setOpenThinking] = useState<Set<number>>(new Set())
@@ -423,26 +451,40 @@ function Message({ msg, isPinned, onTogglePin }: { msg: ParsedMessage; isPinned?
           {preview && <span className="rv-msg-subtitle">{preview}</span>}
           {msg.timestamp && <span className="rv-msg-ts">{fmtTs(msg.timestamp)}</span>}
         </div>
-        {onTogglePin && (
-          <div className="rv-msg-pin-col" onClick={e => { e.stopPropagation(); onTogglePin() }}>
-            <div style={{
-              width: 12,
-              height: 12,
-              borderRadius: 2,
-              border: `1.5px solid ${isPinned ? '#3b82f6' : '#444'}`,
-              background: isPinned ? '#3b82f6' : 'transparent',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              cursor: 'pointer',
-              flexShrink: 0,
-            }}>
-              {isPinned && (
-                <svg width="7" height="7" viewBox="0 0 7 7" fill="none">
-                  <path d="M1 3.5l1.8 1.8 3.2-3.2" stroke="white" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-                </svg>
-              )}
-            </div>
+        {(onSelectTurn || onTogglePin) && (
+          <div className="rv-msg-controls">
+            {onSelectTurn && (
+              <div className="rv-msg-control">
+                <button
+                  type="button"
+                  className={`rv-msg-control-button${isSelectedTurn ? ' rv-active' : ''}`}
+                  title="View this turn in the right panel"
+                  aria-label="View this turn in the right panel"
+                  onClick={e => { e.stopPropagation(); onSelectTurn() }}
+                >
+                  <Eye size={11} />
+                </button>
+              </div>
+            )}
+            {onTogglePin && (
+              <div className="rv-msg-control">
+                <button
+                  type="button"
+                  className={`rv-msg-control-button${isPinned ? ' rv-active' : ''}`}
+                  title="Add or remove this turn from the comparison interval"
+                  aria-label="Add or remove this turn from the comparison interval"
+                  onClick={e => { e.stopPropagation(); onTogglePin() }}
+                >
+                  {isPinned ? (
+                    <svg width="7" height="7" viewBox="0 0 7 7" fill="none">
+                      <path d="M1 3.5l1.8 1.8 3.2-3.2" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                    </svg>
+                  ) : (
+                    <span style={{ fontSize: 10, lineHeight: 1 }}>+</span>
+                  )}
+                </button>
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -574,11 +616,13 @@ function ensureStyles() {
 
 export function ConversationView({
   sample,
+  selectedTurn,
   onMessageVisible,
   checkedTurns,
   onToggleTurn,
 }: {
   sample: TraceSample
+  selectedTurn?: number
   onMessageVisible?: (messageIndex: number) => void
   // TODO: Future improvement — group all messages per turn into collapsible rows
   // and put the checkbox on the turn row rather than individual assistant messages.
@@ -609,10 +653,12 @@ export function ConversationView({
         const isChecked = isAssistant && checkedTurns?.has(turn)
 
         return (
-          <div key={i} onClick={onMessageVisible ? () => onMessageVisible(i) : undefined}>
+          <div key={i}>
             <Message
               msg={msg}
               isPinned={isChecked}
+              isSelectedTurn={isAssistant && turn === selectedTurn}
+              onSelectTurn={isAssistant && onMessageVisible ? () => onMessageVisible(i) : undefined}
               onTogglePin={isAssistant && onToggleTurn ? () => onToggleTurn(turn) : undefined}
             />
           </div>
