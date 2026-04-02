@@ -38,10 +38,19 @@ HF_CACHE_DIR = "/root/.cache/huggingface"
 UV_BIN = "/root/.local/bin/uv"
 IMAGE_VENV_DIR = "/opt/venvs/rollouts"
 IMAGE_VENV_PYTHON = f"{IMAGE_VENV_DIR}/bin/python"
+# Inference venv for split_env: trainer and inference server use separate venvs.
+# When split_env is implemented in argus/run.py, the launcher must:
+#   1. Build a second venv at this path from InferenceConfig.deps
+#   2. Set ROLLOUTS_INFERENCE_PYTHON=INFERENCE_VENV_PYTHON in the trainer process env
+# weight_sync._python_module_launch reads ROLLOUTS_INFERENCE_PYTHON to find the
+# inference interpreter. See the TODO there for the proper long-term fix.
+INFERENCE_VENV_DIR = "/opt/venvs/inference"
+INFERENCE_VENV_PYTHON = f"{INFERENCE_VENV_DIR}/bin/python"
 MODAL_IMAGE_BUILD_HEARTBEAT_S = 15.0
 MODAL_IMAGE_BUILD_LOG_LINE_LIMIT = 200
 MODAL_IMAGE_BUILD_LOG_CHAR_LIMIT = 1000
 MODAL_IMAGE_BUILD_LOG_FETCH_TIMEOUT_S = 30.0
+MODAL_IMAGE_BUILD_FAILURE_TAIL_LINES = 40
 
 
 def build_modal_image(modal: Any, deps: Any, gpu_type: str) -> Any:
@@ -203,6 +212,67 @@ def build_modal_image(modal: Any, deps: Any, gpu_type: str) -> Any:
     return image
 
 
+def add_inference_venv_to_image(modal: Any, image: Any, inference_deps: Any, gpu_type: str) -> Any:
+    """Layer an inference venv onto an existing trainer image (split_env, same base image).
+
+    Installs inference_deps into INFERENCE_VENV_DIR on top of the trainer image.
+    The trainer image is unchanged; inference processes use INFERENCE_VENV_PYTHON.
+
+    Precondition: inference_deps.base_image == trainer_deps.base_image.
+    For different base images (e.g. TRT-LLM), use two separate sandboxes instead.
+    """
+    spec = inference_deps.resolved_image(gpu_type)
+    assert spec.source_type not in ("registry", "dockerfile_path") or spec.source_ref == getattr(
+        image, "_spec_base_image", None
+    ), (
+        "add_inference_venv_to_image requires the same base image as the trainer. "
+        "For a different base image use two separate sandboxes."
+    )
+
+    def _uv_install_command(packages: tuple[str, ...], *, index_url: str | None, extra_index_url: str | None, pre: bool) -> str:
+        parts = [UV_BIN, "pip", "install", "--compile-bytecode", "--python", INFERENCE_VENV_PYTHON]
+        if index_url:
+            parts.extend(["--index-url", index_url])
+        if extra_index_url:
+            parts.extend(["--extra-index-url", extra_index_url])
+        if pre:
+            parts.extend(["--prerelease", "allow"])
+        parts.extend(packages)
+        return shlex.join(parts)
+
+    image = image.run_commands(
+        f"{UV_BIN} venv {INFERENCE_VENV_DIR} --python {spec.python_version or '3.11'}",
+    )
+
+    if spec.pip_packages:
+        image = image.run_commands(
+            _uv_install_command(
+                spec.pip_packages,
+                index_url=spec.pip_index_url,
+                extra_index_url=spec.pip_extra_index_url,
+                pre=spec.pip_prerelease,
+            ),
+        )
+
+    for cmd in spec.build_commands:
+        image = image.run_commands(cmd)
+
+    overlay = inference_deps.resolved_runtime_overlay()
+    if overlay.pip_packages:
+        image = image.run_commands(
+            _uv_install_command(
+                overlay.pip_packages,
+                index_url=overlay.pip_index_url or spec.pip_index_url,
+                extra_index_url=overlay.pip_extra_index_url or spec.pip_extra_index_url,
+                pre=overlay.pip_prerelease or spec.pip_prerelease,
+            ),
+        )
+    for cmd in overlay.commands:
+        image = image.run_commands(cmd)
+
+    return image
+
+
 def _trim_modal_build_log_line(line: str) -> str:
     trimmed = line.rstrip()
     if len(trimmed) <= MODAL_IMAGE_BUILD_LOG_CHAR_LIMIT:
@@ -213,13 +283,13 @@ def _trim_modal_build_log_line(line: str) -> str:
 async def _emit_private_modal_image_logs(
     image: Any,
     emit: Any,
-) -> None:
+) -> list[str]:
     """Best-effort image build event capture via Modal ImageJoinStreaming."""
 
     image_id = getattr(image, "object_id", None)
     if not image_id:
         emit("modal_image_build_logs_unavailable", reason="missing_image_id")
-        return
+        return []
 
     client = getattr(image, "client", None)
     stub = getattr(client, "stub", None)
@@ -230,22 +300,23 @@ async def _emit_private_modal_image_logs(
             image_id=image_id,
             reason="missing_image_join_stream",
         )
-        return
+        return []
 
     emit("modal_image_build_logs_fetch_start", image_id=image_id)
     lines_emitted = 0
     truncated = False
     progress_updates = 0
     last_entry_id = ""
+    emitted_lines: list[str] = []
 
     try:
         import trio_asyncio
         from modal_proto import api_pb2
 
-        async def _consume_stream() -> tuple[int, bool, int, str | None]:
-            nonlocal lines_emitted, truncated, progress_updates, last_entry_id
+        terminal_status: str | None = None
 
-            terminal_status: str | None = None
+        async def _consume_stream() -> list[str]:
+            nonlocal lines_emitted, truncated, progress_updates, last_entry_id, terminal_status
             request = api_pb2.ImageJoinStreamingRequest(
                 image_id=image_id,
                 timeout=55,
@@ -280,20 +351,16 @@ async def _emit_private_modal_image_logs(
                             continue
                         logger.info("[modal image] %s", line)
                         emit("modal_image_build_log", image_id=image_id, line=line)
+                        emitted_lines.append(line)
                         lines_emitted += 1
                 if terminal_status is not None:
-                    return lines_emitted, truncated, progress_updates, terminal_status
+                    return emitted_lines
 
-            return lines_emitted, truncated, progress_updates, terminal_status
+            return emitted_lines
 
         async with trio_asyncio.open_loop():
             with trio.move_on_after(MODAL_IMAGE_BUILD_LOG_FETCH_TIMEOUT_S) as scope:
-                (
-                    lines_emitted,
-                    truncated,
-                    progress_updates,
-                    terminal_status,
-                ) = await trio_asyncio.aio_as_trio(_consume_stream())
+                emitted_lines = await trio_asyncio.aio_as_trio(_consume_stream())
         if scope.cancelled_caught:
             emit(
                 "modal_image_build_logs_fetch_timeout",
@@ -303,7 +370,7 @@ async def _emit_private_modal_image_logs(
                 progress_updates=progress_updates,
                 truncated=truncated,
             )
-            return
+            return emitted_lines
     except Exception as exc:
         emit(
             "modal_image_build_logs_fetch_failed",
@@ -314,7 +381,7 @@ async def _emit_private_modal_image_logs(
             truncated=truncated,
         )
         logger.warning("Failed to fetch Modal image build logs for %s: %s", image_id, exc)
-        return
+        return emitted_lines
 
     emit(
         "modal_image_build_logs_fetch_finished",
@@ -324,6 +391,21 @@ async def _emit_private_modal_image_logs(
         truncated=truncated,
         terminal_status=terminal_status,
     )
+    return emitted_lines
+
+
+def _raise_modal_image_build_failure(exc: Exception, image: Any, log_lines: list[str]) -> None:
+    image_id = getattr(image, "object_id", None)
+    if not log_lines:
+        raise exc
+
+    tail = "\n".join(log_lines[-MODAL_IMAGE_BUILD_FAILURE_TAIL_LINES:])
+    message = (
+        f"Modal image build failed for {image_id or '<unknown-image>'}: {exc}\n\n"
+        "Recent Modal image build logs:\n"
+        f"{tail}"
+    )
+    raise RuntimeError(message) from exc
 
 
 async def eager_build_modal_image(
@@ -367,7 +449,8 @@ async def eager_build_modal_image(
             elapsed_sec=round(elapsed, 3),
             error=f"{type(exc).__name__}: {exc}",
         )
-        raise exc
+        log_lines = await _emit_private_modal_image_logs(image, emit)
+        _raise_modal_image_build_failure(exc, image, log_lines)
 
     built_image = result["image"]
     elapsed = trio.current_time() - start
