@@ -144,6 +144,7 @@ async def _realize_modal_endpoint(
         terminate_modal_sandbox,
     )
     from bifrost.types import ProcessSpec, ReadinessProbe, ServiceSpec, WorkspaceMaterializationSpec
+    import modal
     import trio_asyncio
 
     runtime = runtime_contract_from_hardware(hardware_config)
@@ -167,70 +168,71 @@ async def _realize_modal_endpoint(
             "provider": "modal",
         },
     )
-    async with trio_asyncio.open_loop():
-        sandbox_handle = await create_modal_sandbox(request)
-        session = ModalExecutionSession(sandbox_handle=sandbox_handle, local_root=REPO_ROOT)
-        try:
-            workspace = await session.materialize(
-                WorkspaceMaterializationSpec(
-                    requested_root=getattr(request.materialization, "workspace_root", None)
+    with modal.enable_output():
+        async with trio_asyncio.open_loop():
+            sandbox_handle = await create_modal_sandbox(request)
+            session = ModalExecutionSession(sandbox_handle=sandbox_handle, local_root=REPO_ROOT)
+            try:
+                workspace = await session.materialize(
+                    WorkspaceMaterializationSpec(
+                        requested_root=getattr(request.materialization, "workspace_root", None)
+                    )
                 )
-            )
-            remote_output_dir = Path(workspace.root) / "results" / "eval" / run_name
-            launch_cmd, readiness_target = _remote_service_spec(
-                worker=worker,
-                output_dir=remote_output_dir,
-            )
-            service = await session.serve_service(
-                ServiceSpec(
-                    process=ProcessSpec(
-                        command="bash",
-                        args=("-lc", launch_cmd),
+                remote_output_dir = Path(workspace.root) / "results" / "eval" / run_name
+                launch_cmd, readiness_target = _remote_service_spec(
+                    worker=worker,
+                    output_dir=remote_output_dir,
+                )
+                service = await session.serve_service(
+                    ServiceSpec(
+                        process=ProcessSpec(
+                            command="bash",
+                            args=("-lc", launch_cmd),
+                            cwd=workspace.root,
+                        ),
+                        port=worker.inference.port,
+                        readiness_probe=ReadinessProbe(kind="http", target=readiness_target),
+                    ),
+                    name=f"eval-endpoint-{run_name}",
+                    workspace=workspace,
+                    log_file=f"{remote_output_dir}/endpoint_service",
+                )
+                healthy = await service.wait_until_healthy(timeout=worker.inference.startup_timeout)
+                if not healthy:
+                    logs = await service.logs(tail=80)
+                    raise RuntimeError(
+                        "Modal eval endpoint failed to become healthy.\n"
+                        f"Recent service logs:\n{logs}"
+                    )
+                await session.start_process(
+                    ProcessSpec(
+                        command="python",
+                        args=(
+                            "-m",
+                            "rollouts.eval.modal_forwarder",
+                            "--port",
+                            str(worker.inference.port),
+                        ),
                         cwd=workspace.root,
                     ),
-                    port=worker.inference.port,
-                    readiness_probe=ReadinessProbe(kind="http", target=readiness_target),
-                ),
-                name=f"eval-endpoint-{run_name}",
-                workspace=workspace,
-                log_file=f"{remote_output_dir}/endpoint_service",
-            )
-            healthy = await service.wait_until_healthy(timeout=worker.inference.startup_timeout)
-            if not healthy:
-                logs = await service.logs(tail=80)
-                raise RuntimeError(
-                    "Modal eval endpoint failed to become healthy.\n"
-                    f"Recent service logs:\n{logs}"
+                    name=f"eval-forwarder-{run_name}",
+                    timeout=86400,
+                    start_timeout_s=30.0,
                 )
-            await session.start_process(
-                ProcessSpec(
-                    command="python",
-                    args=(
-                        "-m",
-                        "rollouts.eval.modal_forwarder",
-                        "--port",
-                        str(worker.inference.port),
-                    ),
-                    cwd=workspace.root,
-                ),
-                name=f"eval-forwarder-{run_name}",
-                timeout=86400,
-                start_timeout_s=30.0,
-            )
-            tunnel = await _wait_for_modal_tunnel(
-                sandbox=sandbox_handle.sandbox,
-                port=worker.inference.port,
-                timeout_s=60.0,
-            )
-            yield RealizedEvalEndpoint(
-                endpoint_config=replace(endpoint_config, base_url=f"{tunnel.url.rstrip('/')}/v1"),
-                metadata={
-                    "provider": "modal",
-                    "sandbox_id": sandbox_handle.sandbox_id,
-                },
-            )
-        finally:
-            await terminate_modal_sandbox(sandbox_handle)
+                tunnel = await _wait_for_modal_tunnel(
+                    sandbox=sandbox_handle.sandbox,
+                    port=worker.inference.port,
+                    timeout_s=60.0,
+                )
+                yield RealizedEvalEndpoint(
+                    endpoint_config=replace(endpoint_config, base_url=f"{tunnel.url.rstrip('/')}/v1"),
+                    metadata={
+                        "provider": "modal",
+                        "sandbox_id": sandbox_handle.sandbox_id,
+                    },
+                )
+            finally:
+                await terminate_modal_sandbox(sandbox_handle)
 
 
 @asynccontextmanager
