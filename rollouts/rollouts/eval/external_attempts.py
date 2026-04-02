@@ -17,12 +17,18 @@ from typing import Any, Literal
 import trio
 
 from ..core import Message, Trajectory
-from ..drivers import ClaudeDriver, CodexDriver, run_driver_to_trajectory
+from ..drivers import (
+    ClaudeACPDriver,
+    ClaudeDriver,
+    CodexACPDriver,
+    CodexDriver,
+    run_driver_to_trajectory,
+)
 from ..drivers.claude import _ClaudeEventParser
 from ..drivers.codex import _CodexEventParser
 from ..drivers.runner import _EventAccumulator, _FlushAssistantMessage
 from ..dtypes import StreamChunk
-from ..environments.resources import SandboxWorkspaceResource
+from ..environments.resources import SandboxWorkspaceResource, SessionExecSpec
 from ..training.types import AttemptResult, ProblemRow, Status
 
 _event_logger = logging.getLogger("rollouts.eval.events")
@@ -34,8 +40,31 @@ PromptBuilder = Callable[[dict[str, Any]], str]
 # rather than via another benchmark-local wrapper. If more runtimes arrive,
 # consider replacing this Literal with an explicit sum type plus runtime
 # capability metadata instead of growing ad hoc string branching.
-ExternalRuntime = Literal["claude_code", "codex", "openhands", "mini_swe_agent"]
+ExternalRuntime = Literal[
+    "claude_code",
+    "claude_acp",
+    "codex",
+    "codex_acp",
+    "openhands",
+    "mini_swe_agent",
+]
 REMOTE_AGENT_USER = "rollouts-agent"
+
+
+async def _workspace_exec(
+    workspace: SandboxWorkspaceResource,
+    command: str,
+    *,
+    cwd: str,
+    timeout: float,
+) -> Any:
+    return await workspace.exec(
+        SessionExecSpec(
+            command=command,
+            cwd=cwd,
+            timeout=timeout,
+        )
+    )
 
 
 def _make_eval_on_event(
@@ -93,6 +122,21 @@ RemoteTrajectoryAdapter = Callable[
     [str, str, dict[str, Any], SandboxWorkspaceResource, str, Any],
     Awaitable[ExternalAttemptArtifact],
 ]
+
+
+@dataclass(frozen=True)
+class RemoteRuntimePreparation:
+    mode: Literal["preinstalled", "uv"] = "uv"
+    uv_config_toml: str | None = None
+    npmrc: str | None = "min-release-age=8\nignore-scripts=true\n"
+
+
+# TODO(remote-runtime-preparation): Modal currently uses per-attempt uv-based
+# preparation for remote ACP runs (node/npm + ACP Python deps + npx package
+# fetch). That is semantically acceptable for disposable sandboxes but too
+# expensive and too mutation-heavy to be the long-term default. Move Modal
+# toward a preinstalled runtime/image path, then give SSH/bare-metal a separate
+# user-space or preinstalled preparation story instead of inheriting this path.
 
 
 def _trajectory_adapter_accepts_run_config(trajectory_adapter: TrajectoryAdapter) -> bool:
@@ -221,8 +265,12 @@ async def execute_external_attempt(
 def _trajectory_adapter_for_runtime(runtime: ExternalRuntime) -> TrajectoryAdapter:
     if runtime == "claude_code":
         return trajectory_from_claude_code
+    if runtime == "claude_acp":
+        return trajectory_from_claude_acp
     if runtime == "codex":
         return trajectory_from_codex
+    if runtime == "codex_acp":
+        return trajectory_from_codex_acp
     if runtime == "openhands":
         return trajectory_from_openhands
     if runtime == "mini_swe_agent":
@@ -306,7 +354,8 @@ def make_remote_external_trajectory_adapter(
     with a session-file polling approach: launch the CLI in the background inside
     the sandbox, then poll the native session file it writes
     (~/.claude/projects/.../session.jsonl or ~/.codex/sessions/.../rollout-*.jsonl)
-    via repeated workspace.run("tail -c +{offset} {path}") calls, feeding each new
+    via repeated workspace.exec(SessionExecSpec(command="tail -c +{offset} {path}", ...))
+    calls, feeding each new
     line through the canonical _ClaudeEventParser / _CodexEventParser from
     drivers/claude.py and drivers/codex.py. This gives live progress and uses the
     authoritative session file (which has complete tool arguments) rather than the
@@ -315,8 +364,12 @@ def make_remote_external_trajectory_adapter(
 
     if runtime == "claude_code":
         return partial(trajectory_from_remote_claude_code, **trajectory_kwargs)
+    if runtime == "claude_acp":
+        return partial(trajectory_from_remote_claude_acp, **trajectory_kwargs)
     if runtime == "codex":
         return partial(trajectory_from_remote_codex, **trajectory_kwargs)
+    if runtime == "codex_acp":
+        return partial(trajectory_from_remote_codex_acp, **trajectory_kwargs)
     raise ValueError(f"Unsupported remote external runtime: {runtime}")
 
 
@@ -331,8 +384,12 @@ def _remote_runtime_state_dir(runtime: str, sample_id: str) -> str:
 def _remote_runtime_cli(runtime: str) -> tuple[str, str]:
     if runtime == "claude_code":
         return "claude", "@anthropic-ai/claude-code"
+    if runtime == "claude_acp":
+        return "claude-agent-acp", "@agentclientprotocol/claude-agent-acp"
     if runtime == "codex":
         return "codex", "@openai/codex"
+    if runtime == "codex_acp":
+        return "codex-acp", "@zed-industries/codex-acp"
     raise ValueError(f"Unsupported remote runtime: {runtime}")
 
 
@@ -345,6 +402,13 @@ def _remote_runtime_env(runtime: str) -> dict[str, str]:
             "ANTHROPIC_API_KEY": key,
             "CLAUDE_CODE_ENTRYPOINT": "rollouts-remote-eval",
         }
+    if runtime == "claude_acp":
+        key = os.environ.get("ANTHROPIC_API_KEY")
+        if not key:
+            raise RuntimeError("ANTHROPIC_API_KEY is required for remote Claude ACP runs")
+        return {
+            "ANTHROPIC_API_KEY": key,
+        }
     if runtime == "codex":
         key = os.environ.get("OPENAI_API_KEY")
         if not key:
@@ -354,7 +418,571 @@ def _remote_runtime_env(runtime: str) -> dict[str, str]:
             "OPENAI_API_KEY": key,
             "CODEX_ENTRYPOINT": "rollouts-remote-eval",
         }
+    if runtime == "codex_acp":
+        key = os.environ.get("OPENAI_API_KEY")
+        if not key:
+            raise RuntimeError("OPENAI_API_KEY is required for remote Codex ACP runs")
+        return {
+            "CODEX_API_KEY": key,
+            "OPENAI_API_KEY": key,
+        }
     raise ValueError(f"Unsupported remote runtime: {runtime}")
+
+
+def _remote_acp_python(runtime: str) -> str:
+    del runtime
+    return "/opt/venvs/rollouts/bin/python"
+
+
+def _remote_codex_acp_auth_payload(api_key: str) -> dict[str, Any]:
+    return {
+        "auth_mode": "apikey",
+        "OPENAI_API_KEY": api_key,
+        "tokens": None,
+        "last_refresh": None,
+    }
+
+
+def _remote_acp_validate_command(runtime: str) -> str:
+    cli_name, _npm_package = _remote_runtime_cli(runtime)
+    python_bin = _remote_acp_python(runtime)
+    return (
+        "set -euo pipefail\n"
+        'NODE_MAJOR="$(node -p \'process.versions.node.split(".")[0]\' 2>/dev/null || echo 0)"\n'
+        'if ! command -v node >/dev/null 2>&1 || ! command -v npm >/dev/null 2>&1 || [ "${NODE_MAJOR}" -lt 18 ]; then\n'
+        '  echo "missing required Node/npm runtime (need node>=18 and npm)" >&2\n'
+        "  exit 1\n"
+        "fi\n"
+        f"if ! command -v {cli_name} >/dev/null 2>&1; then\n"
+        f'  echo "missing preinstalled ACP CLI: {cli_name}" >&2\n'
+        "  exit 1\n"
+        "fi\n"
+        f'{python_bin} -c "import acp, trio_asyncio" >/dev/null 2>&1\n'
+    )
+
+
+def _emit_remote_runtime_stage(
+    *,
+    runtime: str,
+    sample_id: str | None,
+    stage: str,
+    status: str,
+) -> None:
+    _event_logger.info(
+        "remote_runtime_stage",
+        extra={
+            "runtime": runtime,
+            "sample_id": sample_id,
+            "stage": stage,
+            "status": status,
+        },
+    )
+
+
+def _remote_acp_ensure_node_command() -> str:
+    return (
+        "set -euo pipefail\n"
+        'NODE_MAJOR="$(node -p \'process.versions.node.split(".")[0]\' 2>/dev/null || echo 0)"\n'
+        'if ! command -v node >/dev/null 2>&1 || ! command -v npm >/dev/null 2>&1 || [ "${NODE_MAJOR}" -lt 18 ]; then\n'
+        "  apt-get update\n"
+        "  DEBIAN_FRONTEND=noninteractive apt-get install -y curl ca-certificates\n"
+        "  curl -fsSL https://deb.nodesource.com/setup_20.x | bash -\n"
+        "  DEBIAN_FRONTEND=noninteractive apt-get install -y nodejs\n"
+        "fi\n"
+    )
+
+
+def _remote_acp_ensure_uv_command() -> str:
+    return (
+        "set -euo pipefail\n"
+        "if ! command -v uv >/dev/null 2>&1; then\n"
+        '  if [ -x "$HOME/.local/bin/uv" ]; then\n'
+        '    export PATH="$HOME/.local/bin:$PATH"\n'
+        "  else\n"
+        "    if ! command -v curl >/dev/null 2>&1; then\n"
+        "      apt-get update\n"
+        "      DEBIAN_FRONTEND=noninteractive apt-get install -y curl ca-certificates\n"
+        "    fi\n"
+        "    curl -LsSf https://astral.sh/uv/install.sh | sh\n"
+        '    export PATH="$HOME/.local/bin:$PATH"\n'
+        "  fi\n"
+        "fi\n"
+        "command -v uv >/dev/null 2>&1\n"
+    )
+
+
+def _remote_acp_uv_prepare_command(
+    runtime: str,
+    *,
+    uv_config_path: str | None = None,
+    npmrc_path: str | None = None,
+) -> str:
+    python_bin = _remote_acp_python(runtime)
+    uv_args = f"--config-file {shlex.quote(uv_config_path)} " if uv_config_path else ""
+    npm_env = f"export NPM_CONFIG_USERCONFIG={shlex.quote(npmrc_path)}\n" if npmrc_path else ""
+    return (
+        "set -euo pipefail\n"
+        f"{npm_env}"
+        'if ! command -v uv >/dev/null 2>&1 && [ -x "$HOME/.local/bin/uv" ]; then\n'
+        '  export PATH="$HOME/.local/bin:$PATH"\n'
+        "fi\n"
+        f'{python_bin} -c "import acp, trio_asyncio" >/dev/null 2>&1 || '
+        f"uv pip install {uv_args}--python {shlex.quote(python_bin)} "
+        "'agent-client-protocol>=0.8.1' 'trio-asyncio>=0.15.0'\n"
+    )
+
+
+def _remote_npm_registry_probe_command(
+    npm_package: str,
+    *,
+    npmrc_path: str | None = None,
+) -> str:
+    npm_env = f"export NPM_CONFIG_USERCONFIG={shlex.quote(npmrc_path)}\n" if npmrc_path else ""
+    return f"set -euo pipefail\n{npm_env}npm view {shlex.quote(npm_package)} version >/dev/null\n"
+
+
+def _remote_acp_run_env_exports(*, npmrc_path: str | None = None) -> str:
+    exports: list[str] = []
+    if npmrc_path is not None:
+        exports.append(f"export NPM_CONFIG_USERCONFIG={shlex.quote(npmrc_path)}")
+    # TODO(remote-pnpm-preparation): if the ACP adapter path ever switches from
+    # npm/npx to pnpm dlx, materialize a remote pnpm rc file here and export the
+    # corresponding config env so remote release-age policy stays explicit.
+    # TODO(remote-bun-preparation): if the ACP adapter path ever switches from
+    # npm/npx to bunx, materialize a remote bunfig.toml here and export BUN_CONFIG
+    # (or pass --config) explicitly rather than relying on ambient host config.
+    if not exports:
+        return ""
+    return "".join(f"{line}\n" for line in exports)
+
+
+def _remote_acp_command(
+    runtime: Literal["claude_acp", "codex_acp"],
+    *,
+    preparation: RemoteRuntimePreparation,
+    extra_args: list[str] | None = None,
+) -> list[str]:
+    cli_name, npm_package = _remote_runtime_cli(runtime)
+    base = [cli_name] if preparation.mode == "preinstalled" else ["npx", "-y", npm_package]
+    return [*base, *(extra_args or [])]
+
+
+async def _ensure_remote_acp_uv_preparation(
+    workspace: SandboxWorkspaceResource,
+    *,
+    runtime: Literal["claude_acp", "codex_acp"],
+    cwd: str,
+    preparation: RemoteRuntimePreparation,
+    sample_id: str | None = None,
+) -> None:
+    _cli_name, npm_package = _remote_runtime_cli(runtime)
+    marker_dir = f"/tmp/rollouts-external-runtime/{runtime}"
+    marker_path = f"{marker_dir}/bootstrap-ready"
+    await _workspace_exec(workspace, f"mkdir -p {marker_dir}", cwd=cwd, timeout=30.0)
+
+    marker_result = await _workspace_exec(
+        workspace,
+        f"test -f {marker_path}",
+        cwd=cwd,
+        timeout=10.0,
+    )
+    if marker_result.returncode == 0:
+        _emit_remote_runtime_stage(
+            runtime=runtime,
+            sample_id=sample_id,
+            stage="prepare_cached",
+            status="success",
+        )
+        return
+
+    uv_config_path: str | None = None
+    npmrc_path: str | None = None
+    if preparation.uv_config_toml is not None:
+        uv_config_path = f"{marker_dir}/uv.toml"
+        await workspace.write_file(uv_config_path, preparation.uv_config_toml.encode("utf-8"))
+    if preparation.npmrc is not None:
+        npmrc_path = f"{marker_dir}/.npmrc"
+        await workspace.write_file(npmrc_path, preparation.npmrc.encode("utf-8"))
+
+    stages = (
+        ("node_runtime", _remote_acp_ensure_node_command(), 5 * 60),
+        ("uv_runtime", _remote_acp_ensure_uv_command(), 5 * 60),
+        (
+            "python_deps",
+            _remote_acp_uv_prepare_command(
+                runtime,
+                uv_config_path=uv_config_path,
+                npmrc_path=npmrc_path,
+            ),
+            10 * 60,
+        ),
+        (
+            "npm_registry",
+            _remote_npm_registry_probe_command(npm_package, npmrc_path=npmrc_path),
+            60.0,
+        ),
+        ("mark_ready", f"touch {marker_path}", 10.0),
+    )
+
+    for stage_name, command, timeout in stages:
+        _emit_remote_runtime_stage(
+            runtime=runtime,
+            sample_id=sample_id,
+            stage=stage_name,
+            status="start",
+        )
+        result = await _workspace_exec(
+            workspace,
+            command,
+            cwd=cwd,
+            timeout=timeout,
+        )
+        if result.returncode != 0:
+            _emit_remote_runtime_stage(
+                runtime=runtime,
+                sample_id=sample_id,
+                stage=stage_name,
+                status="error",
+            )
+            raise RuntimeError(
+                f"Failed to prepare remote {runtime} during {stage_name}: "
+                f"{result.stderr or result.stdout}"
+            )
+        _emit_remote_runtime_stage(
+            runtime=runtime,
+            sample_id=sample_id,
+            stage=stage_name,
+            status="success",
+        )
+
+
+async def _ensure_remote_acp_preinstalled(
+    workspace: SandboxWorkspaceResource,
+    *,
+    runtime: Literal["claude_acp", "codex_acp"],
+    cwd: str,
+) -> None:
+    result = await _workspace_exec(
+        workspace,
+        _remote_acp_validate_command(runtime),
+        cwd=cwd,
+        timeout=60.0,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"Remote {runtime} preinstalled runtime is incomplete: {result.stderr or result.stdout}"
+        )
+
+
+async def _prepare_remote_acp_runtime(
+    workspace: SandboxWorkspaceResource,
+    *,
+    runtime: Literal["claude_acp", "codex_acp"],
+    cwd: str,
+    preparation: RemoteRuntimePreparation,
+    sample_id: str | None = None,
+) -> None:
+    if preparation.mode == "preinstalled":
+        await _ensure_remote_acp_preinstalled(workspace, runtime=runtime, cwd=cwd)
+        return
+    if preparation.mode == "uv":
+        await _ensure_remote_acp_uv_preparation(
+            workspace,
+            runtime=runtime,
+            cwd=cwd,
+            preparation=preparation,
+            sample_id=sample_id,
+        )
+        return
+    raise AssertionError(f"Unhandled remote ACP preparation mode: {preparation.mode!r}")
+
+
+def _assistant_block_from_text(idx: int, text: str) -> tuple[int, dict[str, Any]]:
+    return idx, {"type": "text", "text": text}
+
+
+def _assistant_block_from_thinking(idx: int, text: str) -> tuple[int, dict[str, Any]]:
+    return idx, {"type": "thinking", "thinking": text}
+
+
+def _assistant_block_from_tool_call(
+    idx: int,
+    *,
+    tool_call_id: str,
+    name: str,
+    args: dict[str, Any],
+) -> tuple[int, dict[str, Any]]:
+    return idx, {"type": "toolCall", "id": tool_call_id, "name": name, "arguments": args}
+
+
+def _trajectory_from_remote_acp_payload(payload: dict[str, Any]) -> Trajectory:
+    messages: list[Message] = []
+    completed_blocks: list[tuple[int, dict[str, Any]]] = []
+
+    def flush_assistant() -> None:
+        nonlocal completed_blocks
+        if not completed_blocks:
+            return
+        completed_blocks.sort(key=lambda item: item[0])
+        messages.append(Message(role="assistant", content=[block for _, block in completed_blocks]))
+        completed_blocks = []
+
+    for entry in payload.get("events", []):
+        event_type = entry.get("event")
+        if event_type == "text":
+            completed_blocks.append(
+                _assistant_block_from_text(int(entry["content_index"]), str(entry["content"]))
+            )
+            continue
+        if event_type == "thinking":
+            completed_blocks.append(
+                _assistant_block_from_thinking(int(entry["content_index"]), str(entry["content"]))
+            )
+            continue
+        if event_type == "tool_call":
+            completed_blocks.append(
+                _assistant_block_from_tool_call(
+                    int(entry["content_index"]),
+                    tool_call_id=str(entry["tool_call_id"]),
+                    name=str(entry["tool_name"]),
+                    args=dict(entry.get("args", {})),
+                )
+            )
+            continue
+        if event_type == "tool_result":
+            flush_assistant()
+            messages.append(
+                Message(
+                    role="tool",
+                    content=str(entry.get("content", "")),
+                    tool_call_id=str(entry["tool_call_id"]),
+                )
+            )
+            continue
+
+    flush_assistant()
+    return Trajectory(messages=messages)
+
+
+async def _run_remote_acp_runtime(
+    *,
+    runtime: Literal["claude_acp", "codex_acp"],
+    prompt: str,
+    sample_id: str,
+    workspace: SandboxWorkspaceResource,
+    cwd: str,
+    run_config: Any | None,
+    command: list[str],
+    timeout_seconds: float,
+    preparation: RemoteRuntimePreparation,
+) -> ExternalAttemptArtifact:
+    del run_config
+    await _prepare_remote_acp_runtime(
+        workspace,
+        runtime=runtime,
+        cwd=cwd,
+        preparation=preparation,
+        sample_id=sample_id,
+    )
+
+    state_dir = _remote_runtime_state_dir(runtime, sample_id)
+    prompt_path = f"{state_dir}/prompt.txt"
+    env_path = f"{state_dir}/env.json"
+    output_path = f"{state_dir}/result.json"
+    python_bin = _remote_acp_python(runtime)
+    npmrc_path = f"/tmp/rollouts-external-runtime/{runtime}/.npmrc"
+    codex_home_path: str | None = None
+    await _workspace_exec(workspace, f"mkdir -p {state_dir}", cwd=cwd, timeout=30.0)
+    await workspace.write_file(prompt_path, prompt.encode("utf-8"))
+    env_payload = _remote_runtime_env(runtime)
+    if runtime == "codex_acp":
+        codex_home_path = f"{state_dir}/codex-home"
+        auth_path = f"{codex_home_path}/auth.json"
+        await _workspace_exec(workspace, f"mkdir -p {codex_home_path}", cwd=cwd, timeout=30.0)
+        await workspace.write_file(
+            auth_path,
+            json.dumps(_remote_codex_acp_auth_payload(str(env_payload["OPENAI_API_KEY"]))).encode(
+                "utf-8"
+            ),
+        )
+        env_payload["CODEX_HOME"] = codex_home_path
+    await workspace.write_file(
+        env_path,
+        json.dumps(env_payload).encode("utf-8"),
+    )
+
+    runner = (
+        "cat <<'PY' > "
+        f"{state_dir}/run_remote_acp.py\n"
+        "from __future__ import annotations\n"
+        "import json\n"
+        "import os\n"
+        "from pathlib import Path\n"
+        "import trio\n"
+        "import trio_asyncio\n"
+        "from acp import InitializeResponse, PromptResponse, spawn_agent_process\n"
+        "from acp.schema import ClientCapabilities, Implementation, TextContentBlock\n"
+        "class Bridge:\n"
+        "    def __init__(self):\n"
+        "        self.events = []\n"
+        "        self._content_index = 0\n"
+        "        self._pending = {}\n"
+        "    def _next_idx(self):\n"
+        "        idx = self._content_index\n"
+        "        self._content_index += 1\n"
+        "        return idx\n"
+        "    def on_connect(self, conn):\n"
+        "        return None\n"
+        "    async def request_permission(self, options, session_id, tool_call, **kwargs):\n"
+        "        del session_id, tool_call, kwargs\n"
+        "        from acp import RequestPermissionResponse\n"
+        "        from acp.schema import AllowedOutcome, DeniedOutcome\n"
+        "        allowed = next((opt for opt in options if getattr(opt, 'kind', None) in {'allow_once', 'allow_always'}), None)\n"
+        "        if allowed is None:\n"
+        "            return RequestPermissionResponse(outcome=DeniedOutcome(outcome='cancelled'))\n"
+        "        return RequestPermissionResponse(outcome=AllowedOutcome(optionId=allowed.optionId, outcome='selected'))\n"
+        "    async def session_update(self, session_id, update, **kwargs):\n"
+        "        del session_id, kwargs\n"
+        "        update_type = getattr(update, 'sessionUpdate', None)\n"
+        "        if update_type == 'agent_message_chunk':\n"
+        "            text = self._content_to_text(getattr(update, 'content', None))\n"
+        "            if text:\n"
+        "                self.events.append({'event': 'text', 'content_index': self._next_idx(), 'content': text})\n"
+        "            return\n"
+        "        if update_type == 'agent_thought_chunk':\n"
+        "            text = self._content_to_text(getattr(update, 'content', None))\n"
+        "            if text:\n"
+        "                self.events.append({'event': 'thinking', 'content_index': self._next_idx(), 'content': text})\n"
+        "            return\n"
+        "        if update_type not in {'tool_call', 'tool_call_update'}:\n"
+        "            return\n"
+        "        tool_call_id = getattr(update, 'toolCallId', None)\n"
+        "        if not tool_call_id:\n"
+        "            return\n"
+        "        pending = self._pending.get(tool_call_id)\n"
+        "        name = self._tool_name(update)\n"
+        "        args = self._json_safe(getattr(update, 'rawInput', None))\n"
+        "        if not isinstance(args, dict):\n"
+        "            args = {'raw_input': args}\n"
+        "        if pending is None:\n"
+        "            pending = {'content_index': self._next_idx(), 'tool_name': name, 'args': args}\n"
+        "            self._pending[tool_call_id] = pending\n"
+        "        else:\n"
+        "            pending['tool_name'] = name or pending['tool_name']\n"
+        "            pending['args'] = args or pending['args']\n"
+        "        status = getattr(update, 'status', None)\n"
+        "        if status not in {'completed', 'failed'}:\n"
+        "            return\n"
+        "        self.events.append({'event': 'tool_call', 'content_index': pending['content_index'], 'tool_call_id': tool_call_id, 'tool_name': pending['tool_name'], 'args': pending['args']})\n"
+        "        raw_output = self._json_safe(getattr(update, 'rawOutput', None))\n"
+        "        content = self._json_safe(getattr(update, 'content', None))\n"
+        "        result = self._stringify(raw_output) if raw_output is not None else self._stringify(content)\n"
+        "        self.events.append({'event': 'tool_result', 'tool_call_id': tool_call_id, 'content': result, 'is_error': status == 'failed'})\n"
+        "        self._pending.pop(tool_call_id, None)\n"
+        "    def _tool_name(self, update):\n"
+        "        title = getattr(update, 'title', None)\n"
+        "        if title:\n"
+        "            return str(title)\n"
+        "        kind = getattr(update, 'kind', None)\n"
+        "        if kind:\n"
+        "            return str(kind)\n"
+        "        return 'tool'\n"
+        "    def _json_safe(self, value):\n"
+        "        if isinstance(value, list):\n"
+        "            return [self._json_safe(item) for item in value]\n"
+        "        if isinstance(value, tuple):\n"
+        "            return [self._json_safe(item) for item in value]\n"
+        "        if isinstance(value, dict):\n"
+        "            return {str(k): self._json_safe(v) for k, v in value.items() if not (k == 'field_meta' and v is None)}\n"
+        "        if hasattr(value, 'model_dump'):\n"
+        "            return self._json_safe(value.model_dump())\n"
+        "        if hasattr(value, '__dict__') and not isinstance(value, (str, bytes, bytearray)):\n"
+        "            try:\n"
+        "                return self._json_safe(vars(value))\n"
+        "            except TypeError:\n"
+        "                pass\n"
+        "        try:\n"
+        "            json.dumps(value)\n"
+        "            return value\n"
+        "        except TypeError:\n"
+        "            return repr(value)\n"
+        "    def _content_to_text(self, content):\n"
+        "        if content is None:\n"
+        "            return ''\n"
+        "        if isinstance(content, list):\n"
+        "            return '\\n'.join(filter(None, (self._content_to_text(item) for item in content)))\n"
+        "        block_type = getattr(content, 'type', None)\n"
+        "        if block_type == 'text':\n"
+        "            return str(getattr(content, 'text', ''))\n"
+        "        return json.dumps(self._json_safe(content), indent=2)\n"
+        "    def _stringify(self, value):\n"
+        "        if isinstance(value, str):\n"
+        "            return value\n"
+        "        try:\n"
+        "            return json.dumps(value, indent=2)\n"
+        "        except TypeError:\n"
+        "            return repr(value)\n"
+        "async def main():\n"
+        f"    prompt = Path({prompt_path!r}).read_text()\n"
+        f"    env = dict(os.environ)\n"
+        f"    env.update(json.loads(Path({env_path!r}).read_text()))\n"
+        f"    if Path({npmrc_path!r}).exists():\n"
+        f"        env['NPM_CONFIG_USERCONFIG'] = {npmrc_path!r}\n"
+        f"    command = {command!r}\n"
+        "    async def run_once_asyncio():\n"
+        "        bridge = Bridge()\n"
+        "        async with spawn_agent_process(bridge, command[0], *command[1:], env=env, cwd=os.getcwd()) as (conn, process):\n"
+        "            init = await conn.initialize(protocol_version=1, client_capabilities=ClientCapabilities(terminal=False), client_info=Implementation(name='rollouts-remote', version='0.1.0'))\n"
+        "            if not isinstance(init, InitializeResponse):\n"
+        "                raise RuntimeError(f'unexpected initialize response: {init!r}')\n"
+        "            session = await conn.new_session(cwd=os.getcwd(), mcp_servers=[])\n"
+        "            response = await conn.prompt([TextContentBlock(type='text', text=prompt)], session_id=session.sessionId)\n"
+        "            if not isinstance(response, PromptResponse):\n"
+        "                raise RuntimeError(f'unexpected prompt response: {response!r}')\n"
+        "            if process.returncode is None:\n"
+        "                process.terminate()\n"
+        "                await process.wait()\n"
+        "            return bridge, response, process.returncode\n"
+        "    async with trio_asyncio.open_loop():\n"
+        "        bridge, response, returncode = await trio_asyncio.aio_as_trio(run_once_asyncio)()\n"
+        "    payload = {'events': bridge.events, 'stop_reason': response.stopReason, 'returncode': returncode}\n"
+        f"    Path({output_path!r}).write_text(json.dumps(payload), encoding='utf-8')\n"
+        "trio.run(main)\n"
+        "PY\n"
+        f"{_remote_acp_run_env_exports(npmrc_path=npmrc_path)}"
+        f"{python_bin} {state_dir}/run_remote_acp.py\n"
+    )
+    result = await _workspace_exec(
+        workspace,
+        runner,
+        cwd=cwd,
+        timeout=timeout_seconds,
+    )
+    output_result = await _workspace_exec(
+        workspace,
+        f"cat {output_path}",
+        cwd=cwd,
+        timeout=30.0,
+    )
+    await _workspace_exec(workspace, f"rm -rf {state_dir}", cwd=cwd, timeout=30.0)
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"Remote {runtime} failed before producing trajectory output: "
+            f"{result.stderr or result.stdout}"
+        )
+    payload = json.loads(output_result.stdout)
+    trajectory = _trajectory_from_remote_acp_payload(payload)
+    metadata: dict[str, Any] = {
+        "runtime": runtime,
+        "driver": runtime,
+        "cwd": cwd,
+        "remote_execution": True,
+        "source": "remote_acp_buffered",
+        "stop_reason": payload.get("stop_reason"),
+    }
+    if payload.get("returncode") not in (None, 0):
+        metadata["remote_returncode"] = payload["returncode"]
+    return ExternalAttemptArtifact(trajectory=trajectory, metadata=metadata)
 
 
 def _remote_runtime_bootstrap_command(runtime: str) -> str:
@@ -385,7 +1013,8 @@ async def _ensure_remote_runtime_bootstrap(
 ) -> None:
     marker_dir = f"/tmp/rollouts-external-runtime/{runtime}"
     marker_path = f"{marker_dir}/bootstrap-ready"
-    result = await workspace.run(
+    result = await _workspace_exec(
+        workspace,
         (
             "set -euo pipefail\n"
             f"mkdir -p {marker_dir}\n"
@@ -504,20 +1133,22 @@ async def _run_remote_external_runtime_session_file(
     stdout_path = f"{state_dir}/agent.stdout"
     stderr_path = f"{state_dir}/agent.stderr"
 
-    await workspace.run(f"mkdir -p {state_dir}", cwd=cwd, timeout=30.0)
+    await _workspace_exec(workspace, f"mkdir -p {state_dir}", cwd=cwd, timeout=30.0)
     await workspace.write_file(prompt_path, prompt.encode("utf-8"))
     await workspace.write_file(
         env_path,
         json.dumps(_remote_runtime_env(runtime)).encode("utf-8"),
     )
-    await workspace.run(
+    await _workspace_exec(
+        workspace,
         f"chown -R {REMOTE_AGENT_USER}:{REMOTE_AGENT_USER} {cwd} {state_dir}",
         cwd=cwd,
         timeout=30.0,
     )
 
     # Get the agent user's home directory
-    home_result = await workspace.run(
+    home_result = await _workspace_exec(
+        workspace,
         f"getent passwd {REMOTE_AGENT_USER} | cut -d: -f6",
         cwd=cwd,
         timeout=10.0,
@@ -536,7 +1167,7 @@ async def _run_remote_external_runtime_session_file(
         + f" >{stdout_path} 2>{stderr_path} & echo $!"
     )
     launch_script = f"su -s /bin/bash {REMOTE_AGENT_USER} -c {shlex.quote(inner_cmd)} >{pid_path}"
-    launch_result = await workspace.run(launch_script, cwd=cwd, timeout=30.0)
+    launch_result = await _workspace_exec(workspace, launch_script, cwd=cwd, timeout=30.0)
     if launch_result.returncode != 0:
         raise RuntimeError(
             f"Failed to launch remote {runtime}: {launch_result.stderr or launch_result.stdout}"
@@ -559,7 +1190,7 @@ async def _run_remote_external_runtime_session_file(
 
         # Discover session file on first appearance
         if session_file is None:
-            disc = await workspace.run(discovery_script, cwd=cwd, timeout=10.0)
+            disc = await _workspace_exec(workspace, discovery_script, cwd=cwd, timeout=10.0)
             path = disc.stdout.strip()
             if path:
                 session_file = path
@@ -570,7 +1201,8 @@ async def _run_remote_external_runtime_session_file(
 
         # Read new bytes from session file
         if session_file is not None:
-            read_result = await workspace.run(
+            read_result = await _workspace_exec(
+                workspace,
                 f"tail -c +{file_offset + 1} {session_file}",
                 cwd=cwd,
                 timeout=10.0,
@@ -631,7 +1263,8 @@ async def _run_remote_external_runtime_session_file(
                                 assistant_turn += 1
 
         # Check if background process has exited
-        alive_result = await workspace.run(
+        alive_result = await _workspace_exec(
+            workspace,
             f"kill -0 $(cat {pid_path} 2>/dev/null) 2>/dev/null && echo alive || echo dead",
             cwd=cwd,
             timeout=10.0,
@@ -639,7 +1272,8 @@ async def _run_remote_external_runtime_session_file(
         if alive_result.stdout.strip() == "dead":
             # One final read to catch any trailing lines written before exit
             if session_file is not None:
-                final_result = await workspace.run(
+                final_result = await _workspace_exec(
+                    workspace,
                     f"tail -c +{file_offset + 1} {session_file}",
                     cwd=cwd,
                     timeout=10.0,
@@ -673,13 +1307,13 @@ async def _run_remote_external_runtime_session_file(
             f"(session_file={session_file!r})"
         )
 
-    stdout_result = await workspace.run(
-        f"cat {stdout_path} 2>/dev/null || true", cwd=cwd, timeout=10.0
+    stdout_result = await _workspace_exec(
+        workspace, f"cat {stdout_path} 2>/dev/null || true", cwd=cwd, timeout=10.0
     )
-    stderr_result = await workspace.run(
-        f"cat {stderr_path} 2>/dev/null || true", cwd=cwd, timeout=10.0
+    stderr_result = await _workspace_exec(
+        workspace, f"cat {stderr_path} 2>/dev/null || true", cwd=cwd, timeout=10.0
     )
-    await workspace.run(f"rm -rf {state_dir}", cwd=cwd, timeout=30.0)
+    await _workspace_exec(workspace, f"rm -rf {state_dir}", cwd=cwd, timeout=30.0)
 
     has_agent_output = any(
         isinstance(msg, Message) and msg.role in {"assistant", "tool"} for msg in messages
@@ -741,7 +1375,8 @@ async def _run_remote_external_runtime(
     state_dir = _remote_runtime_state_dir(runtime, sample_id)
     prompt_path = f"{state_dir}/prompt.txt"
     env_path = f"{state_dir}/env.json"
-    await workspace.run(
+    await _workspace_exec(
+        workspace,
         f"mkdir -p {state_dir}",
         cwd=cwd,
         timeout=30.0,
@@ -751,7 +1386,8 @@ async def _run_remote_external_runtime(
         env_path,
         json.dumps(_remote_runtime_env(runtime)).encode("utf-8"),
     )
-    await workspace.run(
+    await _workspace_exec(
+        workspace,
         f"chown -R {REMOTE_AGENT_USER}:{REMOTE_AGENT_USER} {cwd} {state_dir}",
         cwd=cwd,
         timeout=30.0,
@@ -785,12 +1421,14 @@ async def _run_remote_external_runtime(
         "raise SystemExit(proc.returncode)\n"
         "PY"
     )
-    result = await workspace.run(
+    result = await _workspace_exec(
+        workspace,
         runner,
         cwd=cwd,
         timeout=timeout_seconds,
     )
-    await workspace.run(
+    await _workspace_exec(
+        workspace,
         f"rm -rf {state_dir}",
         cwd=cwd,
         timeout=30.0,
@@ -939,6 +1577,75 @@ async def trajectory_from_remote_codex(
     return artifact
 
 
+async def trajectory_from_remote_claude_acp(
+    prompt: str,
+    sample_id: str,
+    sample_data: dict[str, Any],
+    workspace: SandboxWorkspaceResource,
+    cwd: str,
+    run_config: Any | None = None,
+    *,
+    model: str = "claude-agent-acp",
+    timeout_seconds: float = 600.0,
+    preparation: RemoteRuntimePreparation = RemoteRuntimePreparation(mode="uv"),
+) -> ExternalAttemptArtifact:
+    del sample_data
+    artifact = await _run_remote_acp_runtime(
+        runtime="claude_acp",
+        prompt=prompt,
+        sample_id=sample_id,
+        workspace=workspace,
+        cwd=cwd,
+        run_config=run_config,
+        command=_remote_acp_command("claude_acp", preparation=preparation),
+        timeout_seconds=timeout_seconds,
+        preparation=preparation,
+    )
+    artifact.metadata["model"] = model
+    return artifact
+
+
+async def trajectory_from_remote_codex_acp(
+    prompt: str,
+    sample_id: str,
+    sample_data: dict[str, Any],
+    workspace: SandboxWorkspaceResource,
+    cwd: str,
+    run_config: Any | None = None,
+    *,
+    model: str = "codex-acp",
+    timeout_seconds: float = 600.0,
+    preparation: RemoteRuntimePreparation = RemoteRuntimePreparation(mode="uv"),
+) -> ExternalAttemptArtifact:
+    del sample_data
+    artifact = await _run_remote_acp_runtime(
+        runtime="codex_acp",
+        prompt=prompt,
+        sample_id=sample_id,
+        workspace=workspace,
+        cwd=cwd,
+        run_config=run_config,
+        command=_remote_acp_command(
+            "codex_acp",
+            preparation=preparation,
+            extra_args=[
+                "-c",
+                'forced_login_method="api"',
+                "-c",
+                'preferred_auth_method="apikey"',
+                "-c",
+                'approval_policy="never"',
+                "-c",
+                'sandbox_mode="workspace-write"',
+            ],
+        ),
+        timeout_seconds=timeout_seconds,
+        preparation=preparation,
+    )
+    artifact.metadata["model"] = model
+    return artifact
+
+
 async def trajectory_from_claude_code(
     prompt: str,
     sample_id: str,
@@ -1016,6 +1723,64 @@ async def trajectory_from_codex(
             "cwd": str(cwd),
             "sandbox": sandbox,
             "session_id": driver.session_id,
+        },
+    )
+
+
+async def trajectory_from_claude_acp(
+    prompt: str,
+    sample_id: str,
+    sample_data: dict[str, Any],
+    *,
+    cwd: Path,
+    run_config: Any | None = None,
+    model: str = "claude-agent-acp",
+) -> ExternalAttemptArtifact:
+    del sample_data
+    driver = ClaudeACPDriver(cwd=cwd, model=model)
+    on_event = _make_eval_on_event(sample_id, getattr(run_config, "on_chunk", None))
+    trajectory = await run_driver_to_trajectory(
+        driver,
+        prompt,
+        sample_id=sample_id,
+        on_event=on_event,
+    )
+    return ExternalAttemptArtifact(
+        trajectory=trajectory,
+        metadata={
+            "runtime": "claude_acp",
+            "driver": "claude_acp",
+            "model": model,
+            "cwd": str(cwd),
+        },
+    )
+
+
+async def trajectory_from_codex_acp(
+    prompt: str,
+    sample_id: str,
+    sample_data: dict[str, Any],
+    *,
+    cwd: Path,
+    run_config: Any | None = None,
+    model: str = "codex-acp",
+) -> ExternalAttemptArtifact:
+    del sample_data
+    driver = CodexACPDriver(cwd=cwd, model=model)
+    on_event = _make_eval_on_event(sample_id, getattr(run_config, "on_chunk", None))
+    trajectory = await run_driver_to_trajectory(
+        driver,
+        prompt,
+        sample_id=sample_id,
+        on_event=on_event,
+    )
+    return ExternalAttemptArtifact(
+        trajectory=trajectory,
+        metadata={
+            "runtime": "codex_acp",
+            "driver": "codex_acp",
+            "model": model,
+            "cwd": str(cwd),
         },
     )
 

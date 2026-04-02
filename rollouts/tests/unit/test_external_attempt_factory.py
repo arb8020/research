@@ -9,6 +9,8 @@ from rollouts.core import Message, Trajectory
 from rollouts.eval import external_attempts
 from rollouts.eval.external_attempts import (
     ExternalAttemptArtifact,
+    RemoteRuntimePreparation,
+    _remote_acp_uv_prepare_command,
     make_external_attempt_executor,
     make_external_trajectory_adapter,
 )
@@ -126,3 +128,131 @@ async def test_make_external_trajectory_adapter_passes_projected_cwd_and_run_con
         "run_config": run_config,
         "model": "sonnet",
     }
+
+
+@pytest.mark.trio
+async def test_make_external_trajectory_adapter_supports_claude_acp(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed: dict[str, object] = {}
+
+    async def _fake_claude_acp_adapter(
+        prompt: str,
+        sample_id: str,
+        sample_data: dict[str, str],
+        *,
+        cwd: object,
+        run_config: object,
+        model: str,
+    ) -> ExternalAttemptArtifact:
+        observed["prompt"] = prompt
+        observed["sample_id"] = sample_id
+        observed["sample_data"] = sample_data
+        observed["cwd"] = cwd
+        observed["run_config"] = run_config
+        observed["model"] = model
+        return ExternalAttemptArtifact(
+            trajectory=Trajectory(messages=[Message(role="assistant", content="ok")]),
+            metadata={"runtime": "claude_acp"},
+            status=Status.COMPLETED,
+        )
+
+    monkeypatch.setattr(external_attempts, "trajectory_from_claude_acp", _fake_claude_acp_adapter)
+
+    adapter = make_external_trajectory_adapter(
+        "claude_acp",
+        model="claude-agent-acp",
+    )
+
+    run_config = object()
+    artifact = await adapter(
+        "prompt:hello",
+        "sample-1",
+        {"text": "hello"},
+        Path("/tmp/workdir"),
+        run_config,
+    )
+
+    assert artifact.metadata["runtime"] == "claude_acp"
+    assert observed == {
+        "prompt": "prompt:hello",
+        "sample_id": "sample-1",
+        "sample_data": {"text": "hello"},
+        "cwd": Path("/tmp/workdir"),
+        "run_config": run_config,
+        "model": "claude-agent-acp",
+    }
+
+
+@pytest.mark.trio
+async def test_make_external_trajectory_adapter_supports_codex_acp(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed: dict[str, object] = {}
+
+    async def _fake_codex_acp_adapter(
+        prompt: str,
+        sample_id: str,
+        sample_data: dict[str, str],
+        *,
+        cwd: object,
+        run_config: object,
+        model: str,
+    ) -> ExternalAttemptArtifact:
+        observed["prompt"] = prompt
+        observed["sample_id"] = sample_id
+        observed["sample_data"] = sample_data
+        observed["cwd"] = cwd
+        observed["run_config"] = run_config
+        observed["model"] = model
+        return ExternalAttemptArtifact(
+            trajectory=Trajectory(messages=[Message(role="assistant", content="ok")]),
+            metadata={"runtime": "codex_acp"},
+            status=Status.COMPLETED,
+        )
+
+    monkeypatch.setattr(external_attempts, "trajectory_from_codex_acp", _fake_codex_acp_adapter)
+
+    adapter = make_external_trajectory_adapter(
+        "codex_acp",
+        model="codex-acp",
+    )
+
+    run_config = object()
+    artifact = await adapter(
+        "prompt:hello",
+        "sample-1",
+        {"text": "hello"},
+        Path("/tmp/workdir"),
+        run_config,
+    )
+
+    assert artifact.metadata["runtime"] == "codex_acp"
+    assert observed == {
+        "prompt": "prompt:hello",
+        "sample_id": "sample-1",
+        "sample_data": {"text": "hello"},
+        "cwd": Path("/tmp/workdir"),
+        "run_config": run_config,
+        "model": "codex-acp",
+    }
+
+
+def test_remote_runtime_preparation_keeps_uv_config_explicit() -> None:
+    preparation = RemoteRuntimePreparation(
+        mode="uv",
+        uv_config_toml='exclude-newer = "7 days"\n',
+        npmrc="min-release-age=8\nignore-scripts=true\n",
+    )
+
+    command = _remote_acp_uv_prepare_command(
+        "claude_acp",
+        uv_config_path="/tmp/rollouts-external-runtime/claude_acp/uv.toml",
+        npmrc_path="/tmp/rollouts-external-runtime/claude_acp/.npmrc",
+    )
+
+    assert preparation.uv_config_toml == 'exclude-newer = "7 days"\n'
+    assert preparation.npmrc == "min-release-age=8\nignore-scripts=true\n"
+    assert "--config-file /tmp/rollouts-external-runtime/claude_acp/uv.toml" in command
+    assert "NPM_CONFIG_USERCONFIG=/tmp/rollouts-external-runtime/claude_acp/.npmrc" in command
+    assert "npx -y @agentclientprotocol/claude-agent-acp --help" not in command

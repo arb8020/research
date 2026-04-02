@@ -33,8 +33,10 @@ from .external_attempts import (
     execute_external_attempt,
     make_external_attempt_executor,
     make_external_trajectory_adapter,
+    trajectory_from_claude_acp,
     trajectory_from_claude_code,
     trajectory_from_codex,
+    trajectory_from_codex_acp,
     trajectory_from_openhands,
 )
 from .lm_eval import run_lm_eval
@@ -78,7 +80,9 @@ __all__ = [
     "run_lm_eval",
     "simple_evaluate",
     "summarize",
+    "trajectory_from_claude_acp",
     "trajectory_from_claude_code",
+    "trajectory_from_codex_acp",
     "trajectory_from_codex",
     "trajectory_from_openhands",
     "resolve_eval_task_spec",
