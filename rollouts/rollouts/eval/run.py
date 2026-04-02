@@ -91,6 +91,16 @@ def _resolve_output_dir(
     return project_root / "results" / f"{output_config.experiment_name}_{timestamp}"
 
 
+def _apply_endpoint_env_overrides(endpoint_config: Any) -> Any:
+    if endpoint_config is None:
+        return None
+
+    base_url_override = os.environ.get("ROLLOUTS_ENDPOINT_BASE_URL")
+    if not base_url_override:
+        return endpoint_config
+    return replace(endpoint_config, base_url=base_url_override)
+
+
 def _lower_eval_stop_handler(stop_handler: Any) -> Any:
     from rollouts.agents import (
         handle_stop_cost_budget,
@@ -380,6 +390,7 @@ Examples:
     endpoint_config = eval_task.run_spec.endpoint
     if endpoint_config is None and eval_task.run_spec.attempt_executor is None:
         endpoint_config = EndpointConfig()
+    endpoint_config = _apply_endpoint_env_overrides(endpoint_config)
     run_config = eval_task.run
     output_config = eval_task.output
     hardware_config = eval_task.hardware

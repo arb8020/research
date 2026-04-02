@@ -964,8 +964,9 @@ def _spawn_eval_subprocess(
     output_dir: Path,
     max_samples: int | None,
     log: _RunLogger,
+    force_deploy_committed: bool = False,
 ) -> int:
-    """Launch rollouts.eval.run as a detached local subprocess."""
+    """Launch the local Argus eval supervisor as a detached subprocess."""
     # TODO(argus-run): Extract local launch paths (eval + local training) into
     # a separate launcher module. This is a distinct state machine from remote
     # provisioning/bootstrap and should not stay interleaved in `run.py`.
@@ -977,12 +978,16 @@ def _spawn_eval_subprocess(
     command = [
         sys.executable,
         "-m",
-        "rollouts.eval.run",
+        "argus.eval_supervisor",
         "--config",
         str(config_path),
+        "--output-dir",
+        str(output_dir),
     ]
     if max_samples is not None:
-        command.extend(["--limit", str(max_samples)])
+        command.extend(["--max-samples", str(max_samples)])
+    if force_deploy_committed:
+        command.append("--force-deploy-committed")
 
     stdout_handle = stdout_log.open("a")
     stderr_handle = stderr_log.open("a")
@@ -2083,11 +2088,10 @@ Examples:
         from rollouts.inference.benchmark.config import BenchmarkConfig
 
         if workload_kind == "evaluation":
-            if runtime.provider != "local" or args.node_id or multi_node is not None:
+            if args.node_id or multi_node is not None:
                 raise ValueError(
-                    "Argus evaluation launch currently supports only local orchestration. "
-                    "Provider-specific remote lifecycle belongs in the eval workload itself "
-                    "(for example via Modal/RunPod resources), not in the training SSH launcher."
+                    "Argus evaluation launch does not yet support explicit node reuse or "
+                    "multi-node execution."
                 )
 
             timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
@@ -2107,6 +2111,7 @@ Examples:
                 output_dir=local_run_dir,
                 max_samples=args.max_samples,
                 log=log,
+                force_deploy_committed=args.force_deploy_committed,
             )
             print(f"Evaluation submitted: {run_name}")
             print(f"  PID:    {pid}")

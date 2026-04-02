@@ -5,8 +5,12 @@ from pathlib import Path
 
 import pytest
 
-from rollouts.eval.configs import EvalOutputConfig
-from rollouts.eval.run import _find_config_project_root, _resolve_output_dir
+from rollouts.eval.configs import EndpointConfig, EvalOutputConfig
+from rollouts.eval.run import (
+    _apply_endpoint_env_overrides,
+    _find_config_project_root,
+    _resolve_output_dir,
+)
 
 
 def test_find_config_project_root_prefers_owning_repo(tmp_path: Path) -> None:
@@ -78,3 +82,15 @@ def test_resolve_output_dir_prefers_env_over_cli_and_config(
     )
 
     assert output_dir == env_output_dir
+
+
+def test_apply_endpoint_env_overrides_prefers_realized_base_url(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ROLLOUTS_ENDPOINT_BASE_URL", "https://example.test/v1")
+
+    resolved = _apply_endpoint_env_overrides(
+        EndpointConfig(provider="sglang", model="Qwen/Qwen2.5-7B-Instruct")
+    )
+
+    assert resolved.base_url == "https://example.test/v1"

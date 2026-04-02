@@ -35,11 +35,17 @@ def test_run_main_launches_eval_via_detached_subprocess(
     captured: dict[str, object] = {}
 
     def fake_spawn_eval_subprocess(
-        *, config_path: Path, output_dir: Path, max_samples: int | None, log: object
+        *,
+        config_path: Path,
+        output_dir: Path,
+        max_samples: int | None,
+        log: object,
+        force_deploy_committed: bool = False,
     ) -> int:
         captured["config_path"] = config_path
         captured["output_dir"] = output_dir
         captured["max_samples"] = max_samples
+        captured["force_deploy_committed"] = force_deploy_committed
         return 4242
 
     monkeypatch.setattr(argus_run, "_spawn_eval_subprocess", fake_spawn_eval_subprocess)
@@ -55,6 +61,7 @@ def test_run_main_launches_eval_via_detached_subprocess(
     assert isinstance(captured["output_dir"], Path)
     assert str(captured["output_dir"]).endswith("/results/eval/" + captured["output_dir"].name)
     assert captured["max_samples"] is None
+    assert captured["force_deploy_committed"] is False
 
 
 def test_run_main_eval_tui_hands_off_to_monitor(monkeypatch: object, tmp_path: Path) -> None:
@@ -71,7 +78,12 @@ def test_run_main_eval_tui_hands_off_to_monitor(monkeypatch: object, tmp_path: P
     captured: dict[str, object] = {}
 
     def fake_spawn_eval_subprocess(
-        *, config_path: Path, output_dir: Path, max_samples: int | None, log: object
+        *,
+        config_path: Path,
+        output_dir: Path,
+        max_samples: int | None,
+        log: object,
+        force_deploy_committed: bool = False,
     ) -> int:
         captured["output_dir"] = output_dir
         return 4242
@@ -125,5 +137,6 @@ def test_spawn_eval_subprocess_sets_rollouts_output_dir(
     )
 
     assert pid == 4242
-    assert "--output-dir" not in captured["command"]
+    assert captured["command"][:3] == [os.fspath(argus_run.sys.executable), "-m", "argus.eval_supervisor"]
+    assert "--output-dir" in captured["command"]
     assert captured["env"]["ROLLOUTS_OUTPUT_DIR"] == os.fspath(output_dir)
