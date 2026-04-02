@@ -136,6 +136,7 @@ async def _realize_modal_endpoint(
     worker: InferenceWorkerConfig,
     run_name: str,
     force_deploy_committed: bool,
+    run_logger: Any | None,
 ) -> Any:
     from bifrost.modal_backend import (
         ModalExecutionRequest,
@@ -167,6 +168,7 @@ async def _realize_modal_endpoint(
             "config_basename": run_name,
             "provider": "modal",
         },
+        run_logger=run_logger,
     )
     with modal.enable_output():
         async with trio_asyncio.open_loop():
@@ -245,6 +247,7 @@ async def realize_worker_backed_endpoint(
     worker: InferenceWorkerConfig | None = None,
     run_name: str = "eval-endpoint",
     force_deploy_committed: bool = False,
+    run_logger: Any | None = None,
 ) -> Any:
     if endpoint_config.base_url is not None or not endpoint_config.requires_server:
         yield RealizedEvalEndpoint(endpoint_config=endpoint_config)
@@ -275,6 +278,7 @@ async def realize_worker_backed_endpoint(
             worker=realized_worker,
             run_name=run_name,
             force_deploy_committed=force_deploy_committed,
+            run_logger=run_logger,
         ) as realized:
             yield realized
         return

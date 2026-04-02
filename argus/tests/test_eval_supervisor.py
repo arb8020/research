@@ -20,7 +20,8 @@ def test_eval_supervisor_passes_realized_base_url_to_eval_runner(
     captured: dict[str, object] = {}
 
     @asynccontextmanager
-    async def fake_realize_worker_backed_endpoint(**_: object):
+    async def fake_realize_worker_backed_endpoint(**kwargs: object):
+        captured["realize_kwargs"] = kwargs
         yield SimpleNamespace(
             endpoint_config=EndpointConfig(
                 provider="sglang",
@@ -83,3 +84,4 @@ def test_eval_supervisor_passes_realized_base_url_to_eval_runner(
     assert captured["command"][:3] == [os.fspath(eval_supervisor.sys.executable), "-m", "rollouts.eval.run"]
     assert captured["env"]["ROLLOUTS_OUTPUT_DIR"] == os.fspath(output_dir.resolve())
     assert captured["env"]["ROLLOUTS_ENDPOINT_BASE_URL"] == "https://example.test/v1"
+    assert captured["realize_kwargs"]["run_logger"] is not None

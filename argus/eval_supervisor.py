@@ -13,6 +13,7 @@ import trio
 from rollouts.eval.configs import EndpointConfig, resolve_eval_task_spec
 from rollouts.eval.endpoint_realization import realize_worker_backed_endpoint
 from rollouts.eval.run import REPO_ROOT, load_config_module
+from rollouts.run_logger import JsonlEventSink, RunLogger
 
 
 def _resolve_eval_worker(config_module: Any) -> Any | None:
@@ -32,6 +33,17 @@ def _child_command(*, config_path: Path) -> list[str]:
     ]
 
 
+def _setup_run_logging(output_dir: Path) -> RunLogger:
+    run_log = output_dir / "run.jsonl"
+    sink = JsonlEventSink(run_log)
+
+    def _emit_event(event: str, **data: Any) -> None:
+        sink(event, **data)
+
+    _emit_event.log_file = run_log
+    return RunLogger(emit_event=_emit_event)
+
+
 async def _wait_for_process(proc: subprocess.Popen[bytes]) -> int:
     return await trio.to_thread.run_sync(proc.wait)
 
@@ -43,6 +55,7 @@ async def _run_eval(
     max_samples: int | None,
     force_deploy_committed: bool,
 ) -> int:
+    run_logger = _setup_run_logging(output_dir)
     config_module = load_config_module(config_path)
     eval_task = resolve_eval_task_spec(config_module)
     endpoint_config = eval_task.run_spec.endpoint
@@ -67,6 +80,7 @@ async def _run_eval(
             worker=worker,
             run_name=output_dir.name,
             force_deploy_committed=force_deploy_committed,
+            run_logger=run_logger,
         ) as realized:
             child_env["ROLLOUTS_ENDPOINT_BASE_URL"] = realized.endpoint_config.base_url or ""
             proc = subprocess.Popen(command, cwd=str(REPO_ROOT.parent), env=child_env)
