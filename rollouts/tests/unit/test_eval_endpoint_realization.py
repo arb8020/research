@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -8,10 +9,13 @@ import pytest
 from rollouts.eval.configs import EndpointConfig, InferenceServerConfig
 from rollouts.eval.endpoint_realization import (
     _legacy_worker_from_eval_surface,
+    _remote_inference_python,
     realize_worker_backed_endpoint,
 )
 from rollouts.eval.run import run_with_sglang_provision
+from rollouts.image_spec import ImageSpec
 from rollouts.training.configs import (
+    DepsConfig,
     HardwareConfig,
     InferenceConfig,
     InferenceRoleBinding,
@@ -62,6 +66,36 @@ def test_legacy_worker_from_eval_surface_uses_endpoint_and_server_settings() -> 
     assert worker.inference.startup_timeout == 123
 
 
+def test_remote_inference_python_uses_remote_runtime_contract() -> None:
+    default_managed = HardwareConfig(provider="modal", gpu_count=1, deps=DepsConfig())
+    assert _remote_inference_python(default_managed) == "/opt/venvs/rollouts/bin/python"
+
+    managed = HardwareConfig(
+        provider="modal",
+        gpu_count=1,
+        deps=DepsConfig(
+            image=ImageSpec.from_registry(
+                "nvidia/cuda:12.4.0-devel-ubuntu22.04",
+                python_runtime="managed_venv",
+            )
+        ),
+    )
+    assert _remote_inference_python(managed) == "/opt/venvs/rollouts/bin/python"
+
+    image_owned = HardwareConfig(
+        provider="modal",
+        gpu_count=1,
+        deps=DepsConfig(
+            image=ImageSpec.from_registry(
+                "slimerl/slime:v0.2.3",
+                python_runtime="image_owned",
+                python_executable="python3",
+            )
+        ),
+    )
+    assert _remote_inference_python(image_owned) == "python3"
+
+
 @pytest.mark.trio
 async def test_realize_worker_backed_endpoint_launches_and_shuts_down(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -106,7 +140,7 @@ async def test_run_with_sglang_provision_prefers_topology_actor_worker(
     captured: dict[str, object] = {}
 
     @asynccontextmanager
-    async def fake_realize(**kwargs: object):
+    async def fake_realize(**kwargs: object) -> AsyncIterator[object]:
         captured.update(kwargs)
         yield type(
             "Realized",

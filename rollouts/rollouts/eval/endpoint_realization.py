@@ -16,6 +16,7 @@ from rollouts.training.inference_realizations import get_inference_engine_spec
 from rollouts.training.weight_sync import InferenceBackend, SGLangEngine, VLLMEngine
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
+REMOTE_VENV_PYTHON = "/opt/venvs/rollouts/bin/python"
 
 
 @dataclass(frozen=True)
@@ -110,6 +111,16 @@ def _remote_service_spec(
     return engine.build_launch_cmd(), engine.health_url.removeprefix("http://localhost")
 
 
+def _remote_inference_python(hardware_config: HardwareConfig) -> str:
+    deps = hardware_config.deps
+    if deps is None:
+        return REMOTE_VENV_PYTHON
+    image = deps.resolved_image(hardware_config.gpu_type)
+    if image.python_runtime == "image_owned":
+        return image.python_executable
+    return REMOTE_VENV_PYTHON
+
+
 async def _wait_for_modal_tunnel(
     *,
     sandbox: Any,
@@ -138,6 +149,9 @@ async def _realize_modal_endpoint(
     force_deploy_committed: bool,
     run_logger: Any | None,
 ) -> Any:
+    import modal
+    import trio_asyncio
+
     from bifrost.modal_backend import (
         ModalExecutionRequest,
         ModalExecutionSession,
@@ -145,8 +159,6 @@ async def _realize_modal_endpoint(
         terminate_modal_sandbox,
     )
     from bifrost.types import ProcessSpec, ReadinessProbe, ServiceSpec, WorkspaceMaterializationSpec
-    import modal
-    import trio_asyncio
 
     runtime = runtime_contract_from_hardware(hardware_config)
     request = ModalExecutionRequest(
@@ -191,6 +203,11 @@ async def _realize_modal_endpoint(
                             command="bash",
                             args=("-lc", launch_cmd),
                             cwd=workspace.root,
+                            env={
+                                "ROLLOUTS_INFERENCE_PYTHON": _remote_inference_python(
+                                    hardware_config
+                                )
+                            },
                         ),
                         port=worker.inference.port,
                         readiness_probe=ReadinessProbe(kind="http", target=readiness_target),
@@ -227,7 +244,9 @@ async def _realize_modal_endpoint(
                     timeout_s=60.0,
                 )
                 yield RealizedEvalEndpoint(
-                    endpoint_config=replace(endpoint_config, base_url=f"{tunnel.url.rstrip('/')}/v1"),
+                    endpoint_config=replace(
+                        endpoint_config, base_url=f"{tunnel.url.rstrip('/')}/v1"
+                    ),
                     metadata={
                         "provider": "modal",
                         "sandbox_id": sandbox_handle.sandbox_id,
