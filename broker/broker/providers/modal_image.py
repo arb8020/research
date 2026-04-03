@@ -295,17 +295,6 @@ async def _emit_private_modal_image_logs(
         emit("modal_image_build_logs_unavailable", reason="missing_image_id")
         return []
 
-    client = getattr(image, "client", None)
-    stub = getattr(client, "stub", None)
-    join_stream = getattr(stub, "ImageJoinStreaming", None)
-    if client is None or join_stream is None:
-        emit(
-            "modal_image_build_logs_unavailable",
-            image_id=image_id,
-            reason="missing_image_join_stream",
-        )
-        return []
-
     emit("modal_image_build_logs_fetch_start", image_id=image_id)
     lines_emitted = 0
     truncated = False
@@ -315,12 +304,24 @@ async def _emit_private_modal_image_logs(
 
     try:
         import trio_asyncio
+        from modal.client import _Client
         from modal_proto import api_pb2
 
         terminal_status: str | None = None
 
         async def _consume_stream() -> list[str]:
             nonlocal lines_emitted, truncated, progress_updates, last_entry_id, terminal_status
+
+            client = getattr(image, "client", None)
+            stub = getattr(client, "stub", None)
+            join_stream = getattr(stub, "ImageJoinStreaming", None)
+            if join_stream is None:
+                client = await _Client.from_env()
+                stub = client.stub
+                join_stream = getattr(stub, "ImageJoinStreaming", None)
+            if join_stream is None:
+                raise RuntimeError("Modal client stub does not expose ImageJoinStreaming")
+
             request = api_pb2.ImageJoinStreamingRequest(
                 image_id=image_id,
                 timeout=55,
