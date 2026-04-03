@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import os
+import time
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
+
+import trio
 
 from rollouts.eval.configs import EndpointConfig, InferenceServerConfig
 from rollouts.remote_runtime import (
@@ -14,10 +17,16 @@ from rollouts.remote_runtime import (
 )
 from rollouts.training.configs import HardwareConfig, InferenceConfig, InferenceWorkerConfig
 from rollouts.training.inference_realizations import get_inference_engine_spec
-from rollouts.training.weight_sync import InferenceBackend, SGLangEngine, VLLMEngine
+from rollouts.training.weight_sync import (
+    InferenceBackend,
+    SGLangEngine,
+    VLLMEngine,
+    _classify_sglang_startup_phase,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 REMOTE_VENV_PYTHON = "/opt/venvs/rollouts/bin/python"
+STARTUP_STALL_DIAGNOSTIC_INTERVAL = 15
 
 
 @dataclass(frozen=True)
@@ -131,6 +140,309 @@ def _remote_inference_python(hardware_config: HardwareConfig) -> str:
     return REMOTE_VENV_PYTHON
 
 
+def _startup_log_context(
+    *,
+    worker: InferenceWorkerConfig,
+    sandbox_id: str,
+    service_name: str,
+    remote_output_dir: Path,
+) -> dict[str, Any]:
+    return {
+        "provider": "modal",
+        "sandbox_id": sandbox_id,
+        "service_name": service_name,
+        "engine_name": worker.inference.spec,
+        "engine_port": worker.inference.port,
+        "engine_cuda_device_ids": list(worker.inference.cuda_device_ids),
+        "model_name": worker.model,
+        "engine_log_path": f"{remote_output_dir}/endpoint_service",
+        "engine_trace_path": str(remote_output_dir / f"sglang_{worker.inference.port}_trace.jsonl"),
+    }
+
+
+def _parse_service_logs(log_blob: str) -> dict[str, list[str]]:
+    streams: dict[str, list[str]] = {"stdout": [], "stderr": []}
+    current: str | None = None
+    for raw_line in log_blob.splitlines():
+        line = raw_line.rstrip()
+        if line == "== stdout ==":
+            current = "stdout"
+            continue
+        if line == "== stderr ==":
+            current = "stderr"
+            continue
+        if current is not None and line:
+            streams[current].append(line)
+    return streams
+
+
+def _tail_lines(path: Path, max_lines: int = 40) -> str:
+    try:
+        lines = path.read_text().splitlines()
+    except Exception:
+        return ""
+    return "\n".join(lines[-max_lines:])
+
+
+async def _tail_remote_trace(
+    *,
+    session: Any,
+    trace_path: Path,
+    max_lines: int = 40,
+) -> str:
+    result = await session.exec(
+        f"tail -n {max_lines} {trace_path} 2>/dev/null || true",
+    )
+    return result.stdout.strip()
+
+
+def _emit_log_lines(
+    *,
+    run_logger: Any | None,
+    log_blob: str,
+    seen_lines: dict[str, set[str]],
+    emitted_startup_phases: set[str],
+    startup_context: dict[str, Any],
+) -> None:
+    if run_logger is None:
+        return
+    parsed = _parse_service_logs(log_blob)
+    for stream_name, lines in parsed.items():
+        stream_seen = seen_lines.setdefault(stream_name, set())
+        for line in lines:
+            line_key = f"{stream_name}:{line}"
+            if line_key in stream_seen:
+                continue
+            stream_seen.add(line_key)
+            run_logger.event(
+                "eval_inference_service_log",
+                log_stream=stream_name,
+                line=line,
+                **startup_context,
+            )
+            phase = _classify_sglang_startup_phase(line)
+            if phase is None:
+                continue
+            phase_name, _phase_fields = phase
+            if phase_name in emitted_startup_phases:
+                continue
+            emitted_startup_phases.add(phase_name)
+            run_logger.event(
+                "inference_startup_phase",
+                phase=phase_name,
+                phase_source=f"service_{stream_name}",
+                phase_line=line,
+                **startup_context,
+            )
+
+
+async def _service_logs_best_effort(service: Any, *, tail: int = 120) -> str:
+    try:
+        return await service.logs(tail=tail)
+    except Exception as exc:
+        return f"== stdout ==\n== stderr ==\n<failed to read service logs: {type(exc).__name__}: {exc}>"
+
+
+async def _wait_for_modal_service_ready(
+    *,
+    service: Any,
+    session: Any,
+    sandbox: Any,
+    worker: InferenceWorkerConfig,
+    startup_timeout: float,
+    run_logger: Any | None,
+    startup_context: dict[str, Any],
+    remote_output_dir: Path,
+) -> bool:
+    started = time.monotonic()
+    last_health_state: str | None = None
+    last_health_detail: str | None = None
+    emitted_startup_phases: set[str] = set()
+    seen_lines: dict[str, set[str]] = {"stdout": set(), "stderr": set()}
+
+    if run_logger is not None:
+        run_logger.event(
+            "inference_healthcheck_start",
+            startup_timeout=startup_timeout,
+            **startup_context,
+        )
+
+    async def _emit_health_state(
+        state: str,
+        *,
+        attempt: int,
+        detail: str | None = None,
+        error: str | None = None,
+    ) -> None:
+        nonlocal last_health_state, last_health_detail
+        last_health_detail = detail
+        if last_health_state == state:
+            return
+        last_health_state = state
+        if run_logger is not None:
+            run_logger.event(
+                "inference_health_state",
+                health_state=state,
+                health_attempt=attempt,
+                health_error=error,
+                health_detail=detail,
+                **startup_context,
+            )
+
+    attempt = 0
+    while time.monotonic() - started < startup_timeout:
+        log_blob = await _service_logs_best_effort(service, tail=120)
+        _emit_log_lines(
+            run_logger=run_logger,
+            log_blob=log_blob,
+            seen_lines=seen_lines,
+            emitted_startup_phases=emitted_startup_phases,
+            startup_context=startup_context,
+        )
+
+        try:
+            healthy = await service.is_healthy()
+        except Exception as exc:
+            healthy = False
+            await _emit_health_state(
+                "healthcheck_exception",
+                attempt=attempt,
+                error=type(exc).__name__,
+                detail=str(exc),
+            )
+            try:
+                sandbox_state = await trio.to_thread.run_sync(lambda: sandbox.poll())
+            except Exception as sandbox_exc:
+                trace_tail = await _tail_remote_trace(
+                    session=session,
+                    trace_path=remote_output_dir / f"sglang_{worker.inference.port}_trace.jsonl",
+                )
+                if run_logger is not None:
+                    run_logger.event(
+                        "inference_startup_failed",
+                        failure_kind="sandbox_unavailable",
+                        health_attempt=attempt,
+                        last_health_state=last_health_state,
+                        last_health_detail=last_health_detail,
+                        log_tail=log_blob,
+                        trace_tail=trace_tail,
+                        sandbox_error=f"{type(sandbox_exc).__name__}: {sandbox_exc}",
+                        **startup_context,
+                    )
+                raise RuntimeError(
+                    "Modal eval endpoint sandbox disappeared during startup.\n"
+                    f"Recent service logs:\n{log_blob}\n"
+                    f"Sandbox error: {type(sandbox_exc).__name__}: {sandbox_exc}"
+                ) from exc
+            if sandbox_state is not None:
+                trace_tail = await _tail_remote_trace(
+                    session=session,
+                    trace_path=remote_output_dir / f"sglang_{worker.inference.port}_trace.jsonl",
+                )
+                if run_logger is not None:
+                    run_logger.event(
+                        "inference_startup_failed",
+                        failure_kind="sandbox_exited",
+                        health_attempt=attempt,
+                        last_health_state=last_health_state,
+                        last_health_detail=last_health_detail,
+                        log_tail=log_blob,
+                        trace_tail=trace_tail,
+                        sandbox_returncode=sandbox_state,
+                        **startup_context,
+                    )
+                raise RuntimeError(
+                    "Modal eval endpoint sandbox exited during startup.\n"
+                    f"Recent service logs:\n{log_blob}\n"
+                    f"Sandbox return code: {sandbox_state}"
+                ) from exc
+        else:
+            if healthy:
+                await _emit_health_state("healthy", attempt=attempt)
+                if run_logger is not None:
+                    run_logger.event("inference_ready", **startup_context)
+                return True
+
+            try:
+                running = await service.is_running()
+            except Exception as exc:
+                running = False
+                await _emit_health_state(
+                    "running_check_exception",
+                    attempt=attempt,
+                    error=type(exc).__name__,
+                    detail=str(exc),
+                )
+            else:
+                if not running:
+                    await _emit_health_state("service_exited_before_ready", attempt=attempt)
+                    trace_tail = await _tail_remote_trace(
+                        session=session,
+                        trace_path=remote_output_dir
+                        / f"sglang_{worker.inference.port}_trace.jsonl",
+                    )
+                    if run_logger is not None:
+                        run_logger.event(
+                            "inference_startup_failed",
+                            failure_kind="service_exited_before_ready",
+                            health_attempt=attempt,
+                            last_health_state=last_health_state,
+                            last_health_detail=last_health_detail,
+                            log_tail=log_blob,
+                            trace_tail=trace_tail,
+                            **startup_context,
+                        )
+                    raise RuntimeError(
+                        "Modal eval endpoint service exited before becoming healthy.\n"
+                        f"Recent service logs:\n{log_blob}"
+                    )
+                await _emit_health_state("transport_pending", attempt=attempt)
+
+        if (
+            run_logger is not None
+            and attempt > 0
+            and attempt % STARTUP_STALL_DIAGNOSTIC_INTERVAL == 0
+        ):
+            trace_tail = await _tail_remote_trace(
+                session=session,
+                trace_path=remote_output_dir / f"sglang_{worker.inference.port}_trace.jsonl",
+                max_lines=20,
+            )
+            run_logger.event(
+                "inference_health_stall",
+                health_attempt=attempt,
+                last_health_state=last_health_state,
+                last_health_detail=last_health_detail,
+                log_tail=log_blob,
+                trace_tail=trace_tail,
+                **startup_context,
+            )
+        attempt += 1
+        await trio.sleep(1.0)
+
+    log_blob = await _service_logs_best_effort(service, tail=120)
+    trace_tail = await _tail_remote_trace(
+        session=session,
+        trace_path=remote_output_dir / f"sglang_{worker.inference.port}_trace.jsonl",
+    )
+    if run_logger is not None:
+        run_logger.event(
+            "inference_startup_failed",
+            failure_kind="timeout",
+            health_attempt=attempt,
+            last_health_state=last_health_state,
+            last_health_detail=last_health_detail,
+            log_tail=log_blob,
+            trace_tail=trace_tail,
+            **startup_context,
+        )
+    raise RuntimeError(
+        f"Modal eval endpoint failed to become healthy within {startup_timeout}s.\n"
+        f"Recent service logs:\n{log_blob}\n"
+        f"Recent trace logs:\n{trace_tail}"
+    )
+
+
 async def _wait_for_modal_tunnel(
     *,
     sandbox: Any,
@@ -223,13 +535,29 @@ async def _realize_modal_endpoint(
                     workspace=workspace,
                     log_file=f"{remote_output_dir}/endpoint_service",
                 )
-                healthy = await service.wait_until_healthy(timeout=worker.inference.startup_timeout)
-                if not healthy:
-                    logs = await service.logs(tail=80)
-                    raise RuntimeError(
-                        "Modal eval endpoint failed to become healthy.\n"
-                        f"Recent service logs:\n{logs}"
+                startup_context = _startup_log_context(
+                    worker=worker,
+                    sandbox_id=sandbox_handle.sandbox_id,
+                    service_name=f"eval-endpoint-{run_name}",
+                    remote_output_dir=remote_output_dir,
+                )
+                if run_logger is not None:
+                    run_logger.event(
+                        "inference_engine_launch",
+                        engine_launch_cmd=launch_cmd,
+                        readiness_target=readiness_target,
+                        **startup_context,
                     )
+                await _wait_for_modal_service_ready(
+                    service=service,
+                    session=session,
+                    sandbox=sandbox_handle.sandbox,
+                    worker=worker,
+                    startup_timeout=worker.inference.startup_timeout,
+                    run_logger=run_logger,
+                    startup_context=startup_context,
+                    remote_output_dir=remote_output_dir,
+                )
                 await session.start_process(
                     ProcessSpec(
                         command="python",

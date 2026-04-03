@@ -9,6 +9,7 @@ import pytest
 
 from rollouts.eval.configs import EndpointConfig, InferenceServerConfig
 from rollouts.eval.endpoint_realization import (
+    _emit_log_lines,
     _legacy_worker_from_eval_surface,
     _remote_inference_python,
     _remote_service_spec,
@@ -16,6 +17,7 @@ from rollouts.eval.endpoint_realization import (
 )
 from rollouts.eval.run import run_with_sglang_provision
 from rollouts.image_spec import ImageSpec
+from rollouts.run_logger import RunLogger
 from rollouts.training.configs import (
     DepsConfig,
     HardwareConfig,
@@ -126,6 +128,32 @@ def test_remote_service_spec_builds_with_remote_python(monkeypatch: pytest.Monke
     assert launch_cmd == "/opt/venvs/rollouts/bin/python"
     assert readiness_target == ":30000/health"
     assert "ROLLOUTS_INFERENCE_PYTHON" not in os.environ
+
+
+def test_emit_log_lines_emits_startup_phase_once() -> None:
+    events: list[tuple[str, dict[str, object]]] = []
+    run_logger = RunLogger(emit_event=lambda event, **data: events.append((event, data)))
+
+    _emit_log_lines(
+        run_logger=run_logger,
+        log_blob=(
+            "== stdout ==\n"
+            "Started server process [123]\n"
+            "Started server process [123]\n"
+            "== stderr ==\n"
+            "Application startup complete.\n"
+        ),
+        seen_lines={"stdout": set(), "stderr": set()},
+        emitted_startup_phases=set(),
+        startup_context={"service_name": "eval-endpoint"},
+    )
+
+    phase_events = [event for event, _data in events if event == "inference_startup_phase"]
+    assert phase_events == ["inference_startup_phase", "inference_startup_phase"]
+    assert [event for event, _data in events if event == "eval_inference_service_log"] == [
+        "eval_inference_service_log",
+        "eval_inference_service_log",
+    ]
 
 
 @pytest.mark.trio
