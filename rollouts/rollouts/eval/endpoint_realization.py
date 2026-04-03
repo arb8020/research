@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -106,9 +107,18 @@ def _remote_service_spec(
     *,
     worker: InferenceWorkerConfig,
     output_dir: Path,
+    remote_python: str,
 ) -> tuple[str, str]:
-    engine = _build_engine(worker=worker, output_dir=output_dir)
-    return engine.build_launch_cmd(), engine.health_url.removeprefix("http://localhost")
+    original_python = os.environ.get("ROLLOUTS_INFERENCE_PYTHON")
+    os.environ["ROLLOUTS_INFERENCE_PYTHON"] = remote_python
+    try:
+        engine = _build_engine(worker=worker, output_dir=output_dir)
+        return engine.build_launch_cmd(), engine.health_url.removeprefix("http://localhost")
+    finally:
+        if original_python is None:
+            os.environ.pop("ROLLOUTS_INFERENCE_PYTHON", None)
+        else:
+            os.environ["ROLLOUTS_INFERENCE_PYTHON"] = original_python
 
 
 def _remote_inference_python(hardware_config: HardwareConfig) -> str:
@@ -193,9 +203,11 @@ async def _realize_modal_endpoint(
                     )
                 )
                 remote_output_dir = Path(workspace.root) / "results" / "eval" / run_name
+                remote_python = _remote_inference_python(hardware_config)
                 launch_cmd, readiness_target = _remote_service_spec(
                     worker=worker,
                     output_dir=remote_output_dir,
+                    remote_python=remote_python,
                 )
                 service = await session.serve_service(
                     ServiceSpec(
@@ -203,11 +215,6 @@ async def _realize_modal_endpoint(
                             command="bash",
                             args=("-lc", launch_cmd),
                             cwd=workspace.root,
-                            env={
-                                "ROLLOUTS_INFERENCE_PYTHON": _remote_inference_python(
-                                    hardware_config
-                                )
-                            },
                         ),
                         port=worker.inference.port,
                         readiness_probe=ReadinessProbe(kind="http", target=readiness_target),

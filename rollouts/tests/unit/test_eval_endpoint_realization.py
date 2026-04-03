@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -10,6 +11,7 @@ from rollouts.eval.configs import EndpointConfig, InferenceServerConfig
 from rollouts.eval.endpoint_realization import (
     _legacy_worker_from_eval_surface,
     _remote_inference_python,
+    _remote_service_spec,
     realize_worker_backed_endpoint,
 )
 from rollouts.eval.run import run_with_sglang_provision
@@ -94,6 +96,36 @@ def test_remote_inference_python_uses_remote_runtime_contract() -> None:
         ),
     )
     assert _remote_inference_python(image_owned) == "python3"
+
+
+def test_remote_service_spec_builds_with_remote_python(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _FakeRemoteEngine:
+        health_url = "http://localhost:30000/health"
+
+        def build_launch_cmd(self) -> str:
+            import os
+
+            return os.environ["ROLLOUTS_INFERENCE_PYTHON"]
+
+    monkeypatch.delenv("ROLLOUTS_INFERENCE_PYTHON", raising=False)
+    monkeypatch.setattr(
+        "rollouts.eval.endpoint_realization._build_engine",
+        lambda **_: _FakeRemoteEngine(),
+    )
+
+    launch_cmd, readiness_target = _remote_service_spec(
+        worker=InferenceWorkerConfig(
+            worker_id="actor",
+            model="Qwen/Qwen2.5-0.5B-Instruct",
+            inference=InferenceConfig(),
+        ),
+        output_dir=Path("/tmp/unused"),
+        remote_python="/opt/venvs/rollouts/bin/python",
+    )
+
+    assert launch_cmd == "/opt/venvs/rollouts/bin/python"
+    assert readiness_target == ":30000/health"
+    assert "ROLLOUTS_INFERENCE_PYTHON" not in os.environ
 
 
 @pytest.mark.trio
