@@ -110,10 +110,21 @@ def test_emit_private_modal_image_logs_uses_fresh_client_when_image_has_no_stub(
         ImageJoinStreaming = _FakeJoinStream()
 
     class _FakeClient:
-        stub = _FakeStub()
+        def __init__(self, server_url: str, client_type: int, credentials: object) -> None:
+            self.server_url = server_url
+            self.client_type = client_type
+            self.credentials = credentials
+            self.stub = _FakeStub()
+            self._closed = False
 
-    async def fake_from_env() -> object:
-        return _FakeClient()
+        async def _open(self) -> None:
+            return None
+
+        async def _close(self) -> None:
+            self._closed = True
+
+        def is_closed(self) -> bool:
+            return self._closed
 
     class _FakeLoop:
         async def __aenter__(self) -> None:
@@ -126,8 +137,10 @@ def test_emit_private_modal_image_logs_uses_fresh_client_when_image_has_no_stub(
     monkeypatch.setattr(trio_asyncio, "open_loop", lambda: _FakeLoop())
 
     import modal.client
+    import modal.config
 
-    monkeypatch.setattr(modal.client._Client, "from_env", fake_from_env)
+    monkeypatch.setattr(modal.client, "_Client", _FakeClient)
+    monkeypatch.setattr(modal.config, "_is_remote", lambda: False)
 
     def emit(event: str, **data: object) -> None:
         events.append((event, data))

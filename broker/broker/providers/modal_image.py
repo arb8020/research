@@ -305,63 +305,77 @@ async def _emit_private_modal_image_logs(
     try:
         import trio_asyncio
         from modal.client import _Client
+        from modal.config import _is_remote, config
         from modal_proto import api_pb2
 
         terminal_status: str | None = None
 
+        async def _open_fresh_modal_client() -> Any:
+            token_id = config["token_id"]
+            token_secret = config["token_secret"]
+            if _is_remote():
+                client_type = api_pb2.CLIENT_TYPE_CONTAINER
+                credentials = None
+            else:
+                if not token_id or not token_secret:
+                    raise RuntimeError("Modal token missing while fetching image build logs")
+                client_type = api_pb2.CLIENT_TYPE_CLIENT
+                credentials = (token_id, token_secret)
+            client = _Client(config["server_url"], client_type, credentials)
+            await client._open()
+            return client
+
         async def _consume_stream() -> list[str]:
             nonlocal lines_emitted, truncated, progress_updates, last_entry_id, terminal_status
+            client = await _open_fresh_modal_client()
+            try:
+                join_stream = getattr(client.stub, "ImageJoinStreaming", None)
+                if join_stream is None:
+                    raise RuntimeError("Modal client stub does not expose ImageJoinStreaming")
 
-            client = getattr(image, "client", None)
-            stub = getattr(client, "stub", None)
-            join_stream = getattr(stub, "ImageJoinStreaming", None)
-            if join_stream is None:
-                client = await _Client.from_env()
-                stub = client.stub
-                join_stream = getattr(stub, "ImageJoinStreaming", None)
-            if join_stream is None:
-                raise RuntimeError("Modal client stub does not expose ImageJoinStreaming")
+                request = api_pb2.ImageJoinStreamingRequest(
+                    image_id=image_id,
+                    timeout=55,
+                    last_entry_id=last_entry_id,
+                    include_logs_for_finished=True,
+                )
 
-            request = api_pb2.ImageJoinStreamingRequest(
-                image_id=image_id,
-                timeout=55,
-                last_entry_id=last_entry_id,
-                include_logs_for_finished=True,
-            )
-
-            async for response in join_stream.unary_stream(request):
-                if response.entry_id:
-                    last_entry_id = response.entry_id
-                if response.result.status:
-                    terminal_status = api_pb2.GenericResult.GenericStatus.Name(
-                        response.result.status
-                    )
-                for task_log in response.task_logs:
-                    progress = task_log.task_progress
-                    if progress.pos or progress.len:
-                        progress_updates += 1
-                        emit(
-                            "modal_image_build_progress",
-                            image_id=image_id,
-                            progress_type=api_pb2.ProgressType.Name(progress.progress_type),
-                            pos=int(progress.pos),
-                            total=int(progress.len),
+                async for response in join_stream.unary_stream(request):
+                    if response.entry_id:
+                        last_entry_id = response.entry_id
+                    if response.result.status:
+                        terminal_status = api_pb2.GenericResult.GenericStatus.Name(
+                            response.result.status
                         )
-                    elif task_log.data:
-                        if lines_emitted >= MODAL_IMAGE_BUILD_LOG_LINE_LIMIT:
-                            truncated = True
-                            continue
-                        line = _trim_modal_build_log_line(task_log.data)
-                        if not line:
-                            continue
-                        logger.info("[modal image] %s", line)
-                        emit("modal_image_build_log", image_id=image_id, line=line)
-                        emitted_lines.append(line)
-                        lines_emitted += 1
-                if terminal_status is not None:
-                    return emitted_lines
+                    for task_log in response.task_logs:
+                        progress = task_log.task_progress
+                        if progress.pos or progress.len:
+                            progress_updates += 1
+                            emit(
+                                "modal_image_build_progress",
+                                image_id=image_id,
+                                progress_type=api_pb2.ProgressType.Name(progress.progress_type),
+                                pos=int(progress.pos),
+                                total=int(progress.len),
+                            )
+                        elif task_log.data:
+                            if lines_emitted >= MODAL_IMAGE_BUILD_LOG_LINE_LIMIT:
+                                truncated = True
+                                continue
+                            line = _trim_modal_build_log_line(task_log.data)
+                            if not line:
+                                continue
+                            logger.info("[modal image] %s", line)
+                            emit("modal_image_build_log", image_id=image_id, line=line)
+                            emitted_lines.append(line)
+                            lines_emitted += 1
+                    if terminal_status is not None:
+                        return emitted_lines
 
-            return emitted_lines
+                return emitted_lines
+            finally:
+                if not client.is_closed():
+                    await client._close()
 
         async with trio_asyncio.open_loop():
             with trio.move_on_after(MODAL_IMAGE_BUILD_LOG_FETCH_TIMEOUT_S) as scope:
