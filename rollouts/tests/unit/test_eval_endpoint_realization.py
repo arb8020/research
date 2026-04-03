@@ -126,7 +126,7 @@ def test_remote_service_spec_builds_with_remote_python(monkeypatch: pytest.Monke
     )
 
     assert launch_cmd == "/opt/venvs/rollouts/bin/python"
-    assert readiness_target == ":30000/health"
+    assert readiness_target == "/health"
     assert "ROLLOUTS_INFERENCE_PYTHON" not in os.environ
 
 

@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 import trio
 
@@ -122,7 +123,13 @@ def _remote_service_spec(
     os.environ["ROLLOUTS_INFERENCE_PYTHON"] = remote_python
     try:
         engine = _build_engine(worker=worker, output_dir=output_dir)
-        return engine.build_launch_cmd(), engine.health_url.removeprefix("http://localhost")
+        parsed_health_url = urlsplit(engine.health_url)
+        readiness_target = parsed_health_url.path or "/"
+        if parsed_health_url.query:
+            readiness_target = f"{readiness_target}?{parsed_health_url.query}"
+        if parsed_health_url.fragment:
+            readiness_target = f"{readiness_target}#{parsed_health_url.fragment}"
+        return engine.build_launch_cmd(), readiness_target
     finally:
         if original_python is None:
             os.environ.pop("ROLLOUTS_INFERENCE_PYTHON", None)
