@@ -485,8 +485,12 @@ async def _realize_modal_endpoint(
     import trio_asyncio
 
     from bifrost.modal_backend import (
+        MODAL_PARENT_LEASE_PATH,
+        MODAL_PARENT_LEASE_TTL_S,
         ModalExecutionRequest,
         ModalExecutionSession,
+        _maintain_modal_parent_lease,
+        _refresh_modal_parent_lease,
         create_modal_sandbox,
         terminate_modal_sandbox,
     )
@@ -514,11 +518,28 @@ async def _realize_modal_endpoint(
         },
         run_logger=run_logger,
     )
+
+    def emit_modal_event(event: str, **data: Any) -> None:
+        if run_logger is not None:
+            run_logger.event(
+                event,
+                provider="modal",
+                run_name=run_name,
+                **data,
+            )
+
     with modal.enable_output():
         async with trio_asyncio.open_loop():
             sandbox_handle = await create_modal_sandbox(request)
             session = ModalExecutionSession(sandbox_handle=sandbox_handle, local_root=REPO_ROOT)
             try:
+                await _refresh_modal_parent_lease(sandbox_handle.sandbox)
+                emit_modal_event(
+                    "modal_parent_lease_initialized",
+                    sandbox_id=sandbox_handle.sandbox_id,
+                    lease_path=MODAL_PARENT_LEASE_PATH,
+                    ttl_s=MODAL_PARENT_LEASE_TTL_S,
+                )
                 workspace = await session.materialize(
                     WorkspaceMaterializationSpec(
                         requested_root=getattr(request.materialization, "workspace_root", None)
@@ -558,45 +579,54 @@ async def _realize_modal_endpoint(
                         readiness_target=readiness_target,
                         **startup_context,
                     )
-                await _wait_for_modal_service_ready(
-                    service=service,
-                    session=session,
-                    sandbox=sandbox_handle.sandbox,
-                    worker=worker,
-                    startup_timeout=worker.inference.startup_timeout,
-                    run_logger=run_logger,
-                    startup_context=startup_context,
-                    remote_output_dir=remote_output_dir,
-                )
-                await session.start_process(
-                    ProcessSpec(
-                        command="python",
-                        args=(
-                            "-m",
-                            "rollouts.eval.modal_forwarder",
-                            "--port",
-                            str(worker.inference.port),
+                async with trio.open_nursery() as nursery:
+                    nursery.start_soon(
+                        _maintain_modal_parent_lease,
+                        sandbox_handle.sandbox,
+                        emit_modal_event,
+                    )
+                    await _wait_for_modal_service_ready(
+                        service=service,
+                        session=session,
+                        sandbox=sandbox_handle.sandbox,
+                        worker=worker,
+                        startup_timeout=worker.inference.startup_timeout,
+                        run_logger=run_logger,
+                        startup_context=startup_context,
+                        remote_output_dir=remote_output_dir,
+                    )
+                    await session.start_process(
+                        ProcessSpec(
+                            command="python",
+                            args=(
+                                "-m",
+                                "rollouts.eval.modal_forwarder",
+                                "--port",
+                                str(worker.inference.port),
+                            ),
+                            cwd=workspace.root,
                         ),
-                        cwd=workspace.root,
-                    ),
-                    name=f"eval-forwarder-{run_name}",
-                    timeout=86400,
-                    start_timeout_s=30.0,
-                )
-                tunnel = await _wait_for_modal_tunnel(
-                    sandbox=sandbox_handle.sandbox,
-                    port=worker.inference.port,
-                    timeout_s=60.0,
-                )
-                yield RealizedEvalEndpoint(
-                    endpoint_config=replace(
-                        endpoint_config, base_url=f"{tunnel.url.rstrip('/')}/v1"
-                    ),
-                    metadata={
-                        "provider": "modal",
-                        "sandbox_id": sandbox_handle.sandbox_id,
-                    },
-                )
+                        name=f"eval-forwarder-{run_name}",
+                        timeout=86400,
+                        start_timeout_s=30.0,
+                    )
+                    tunnel = await _wait_for_modal_tunnel(
+                        sandbox=sandbox_handle.sandbox,
+                        port=worker.inference.port,
+                        timeout_s=60.0,
+                    )
+                    try:
+                        yield RealizedEvalEndpoint(
+                            endpoint_config=replace(
+                                endpoint_config, base_url=f"{tunnel.url.rstrip('/')}/v1"
+                            ),
+                            metadata={
+                                "provider": "modal",
+                                "sandbox_id": sandbox_handle.sandbox_id,
+                            },
+                        )
+                    finally:
+                        nursery.cancel_scope.cancel()
             finally:
                 await terminate_modal_sandbox(sandbox_handle)
 
