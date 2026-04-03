@@ -581,6 +581,16 @@ class ModalExecutionRequest:
     pruning_recipe: str | None = None
     run_logger: Any = None
     tags: dict[str, str] = field(default_factory=dict)
+    # split_env: inference venv installed separately from the trainer venv.
+    # When set, add_inference_venv_to_image layers INFERENCE_VENV_DIR onto the
+    # trainer image, and ROLLOUTS_INFERENCE_PYTHON is set in the trainer env so
+    # weight_sync._python_module_launch uses the right interpreter.
+    # Only valid when inference_deps.base_image == runtime.deps.base_image.
+    # For a different base image, use two separate sandboxes (not yet implemented).
+    inference_deps: Any = None
+    encrypted_ports: tuple[int, ...] = ()
+    unencrypted_ports: tuple[int, ...] = ()
+    h2_ports: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -1221,7 +1231,11 @@ async def create_modal_sandbox(request: ModalExecutionRequest) -> ModalSandboxHa
 
     import modal
     import trio_asyncio
-    from broker.providers.modal_image import build_modal_image, eager_build_modal_image
+    from broker.providers.modal_image import (
+        add_inference_venv_to_image,
+        build_modal_image,
+        eager_build_modal_image,
+    )
     from rollouts.modal_workload import MODAL_APP_NAME
 
     if request.sandbox_id:
@@ -1329,8 +1343,27 @@ async def create_modal_sandbox(request: ModalExecutionRequest) -> ModalSandboxHa
 
     logger.info("Constructing Modal image...")
     assert request.runtime.deps is not None, "Modal deps must be present before sandbox creation"
-    emit("modal_image_construct_start", app_id=app.app_id)
+    emit(
+        "modal_image_construct_start",
+        app_id=app.app_id,
+        split_env=request.inference_deps is not None,
+    )
     image = build_modal_image(modal, request.runtime.deps, request.runtime.gpu_type)
+    if request.inference_deps is not None:
+        trainer_base = request.runtime.deps.base_image
+        inference_base = request.inference_deps.base_image
+        assert trainer_base == inference_base, (
+            f"split_env with different base images is not supported on Modal. "
+            f"Modal sandboxes cannot share a GPU across separate containers, so "
+            f"two-sandbox split_env would require two separate GPU allocations which "
+            f"defeats the purpose. Install inference packages as a venv on top of "
+            f"the trainer image instead (same base_image, separate pip_packages). "
+            f"trainer={trainer_base!r} inference={inference_base!r}"
+        )
+        logger.info("Adding inference venv (split_env)...")
+        image = add_inference_venv_to_image(
+            modal, image, request.inference_deps, request.runtime.gpu_type
+        )
     emit(
         "modal_image_construct_finished",
         app_id=app.app_id,
@@ -1339,6 +1372,7 @@ async def create_modal_sandbox(request: ModalExecutionRequest) -> ModalSandboxHa
             "source_ref",
             None,
         ),
+        split_env=request.inference_deps is not None,
     )
     logger.info("Eagerly building Modal image...")
     image = await eager_build_modal_image(image, app, emit)
@@ -1365,6 +1399,9 @@ async def create_modal_sandbox(request: ModalExecutionRequest) -> ModalSandboxHa
                     gpu=gpu_spec,
                     timeout=timeout_seconds,
                     name=sandbox_name,
+                    encrypted_ports=request.encrypted_ports,
+                    unencrypted_ports=request.unencrypted_ports,
+                    h2_ports=request.h2_ports,
                     verbose=True,
                 )
             )
@@ -2106,6 +2143,7 @@ def _build_argus_local_process_spec(
     run_name: str,
     deps: Any,
     gpu_type: str,
+    inference_deps: Any = None,
 ) -> ProcessSpec:
     """Lower the Modal workload launch into one observed process spec."""
 
@@ -2182,6 +2220,10 @@ def _build_argus_local_process_spec(
         "ROLLOUTS_RUN_NAME": run_name,
         "ROLLOUTS_OUTPUT_DIR": f"results/rl/{run_name}",
     }
+    if inference_deps is not None:
+        from broker.providers.modal_image import INFERENCE_VENV_PYTHON
+
+        env["ROLLOUTS_INFERENCE_PYTHON"] = INFERENCE_VENV_PYTHON
 
     return ProcessSpec(
         command=image_python,
@@ -2339,6 +2381,7 @@ async def run_modal_request(request: ModalExecutionRequest) -> dict[str, Any]:
                         run_name=run_name,
                         deps=request.runtime.deps,
                         gpu_type=request.runtime.gpu_type,
+                        inference_deps=request.inference_deps,
                     ),
                     name=run_name,
                     timeout=14400,

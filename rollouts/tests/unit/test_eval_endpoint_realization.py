@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import os
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
+import trio
 
 from rollouts.eval.configs import EndpointConfig, InferenceServerConfig
 from rollouts.eval.endpoint_realization import (
@@ -253,3 +255,103 @@ async def test_run_with_sglang_provision_prefers_topology_actor_worker(
 
     assert result == {"base_url": "http://localhost:32000/v1"}
     assert captured["worker"] == topology.get_worker_for_role("actor")
+
+
+@pytest.mark.trio
+async def test_modal_endpoint_exposes_port_at_sandbox_creation(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    captured: dict[str, object] = {}
+
+    class _FakeTunnel:
+        url = "https://endpoint.modal.run"
+
+    class _FakeSandbox:
+        object_id = "sb-test"
+
+        def tunnels(self, timeout: int = 5) -> dict[int, _FakeTunnel]:
+            del timeout
+            return {30000: _FakeTunnel()}
+
+    class _FakeService:
+        async def logs(self, tail: int = 120) -> str:
+            del tail
+            return "== stdout ==\nApplication startup complete.\n== stderr ==\n"
+
+        async def is_healthy(self) -> bool:
+            return True
+
+        async def is_running(self) -> bool:
+            return True
+
+    class _FakeSession:
+        def __init__(self, *, sandbox_handle: object, local_root: Path) -> None:
+            captured["sandbox_handle"] = sandbox_handle
+            captured["local_root"] = local_root
+
+        async def materialize(self, _spec: object) -> object:
+            return SimpleNamespace(root="/workspace/research/rollouts")
+
+        async def serve_service(self, _service_spec: object, **_kwargs: object) -> _FakeService:
+            return _FakeService()
+
+        async def start_process(self, *_args: object, **_kwargs: object) -> object:
+            raise AssertionError("Modal eval endpoint should not start an in-sandbox forwarder")
+
+        async def exec(self, _command: str) -> object:
+            return SimpleNamespace(stdout="", stderr="", exit_code=0)
+
+    async def fake_create_modal_sandbox(request: object) -> object:
+        captured["request"] = request
+        return SimpleNamespace(sandbox=_FakeSandbox(), sandbox_id="sb-test")
+
+    async def fake_terminate_modal_sandbox(_handle: object) -> None:
+        captured["terminated"] = True
+
+    async def fake_refresh_modal_parent_lease(_sandbox: object) -> None:
+        captured["lease_initialized"] = True
+
+    async def fake_maintain_modal_parent_lease(_sandbox: object, _emit: object) -> None:
+        await trio.sleep_forever()
+
+    @asynccontextmanager
+    async def fake_open_loop() -> AsyncIterator[None]:
+        yield
+
+    @contextmanager
+    def fake_enable_output() -> AsyncIterator[None]:
+        yield
+
+    monkeypatch.setattr("bifrost.modal_backend.create_modal_sandbox", fake_create_modal_sandbox)
+    monkeypatch.setattr(
+        "bifrost.modal_backend.terminate_modal_sandbox", fake_terminate_modal_sandbox
+    )
+    monkeypatch.setattr("bifrost.modal_backend.ModalExecutionSession", _FakeSession)
+    monkeypatch.setattr(
+        "bifrost.modal_backend._refresh_modal_parent_lease", fake_refresh_modal_parent_lease
+    )
+    monkeypatch.setattr(
+        "bifrost.modal_backend._maintain_modal_parent_lease",
+        fake_maintain_modal_parent_lease,
+    )
+    monkeypatch.setattr("modal.enable_output", fake_enable_output)
+    monkeypatch.setattr("trio_asyncio.open_loop", fake_open_loop)
+
+    async with realize_worker_backed_endpoint(
+        endpoint_config=EndpointConfig(provider="sglang", model="Qwen/Qwen2.5-0.5B-Instruct"),
+        output_dir=tmp_path,
+        hardware_config=HardwareConfig(provider="modal", gpu_count=1, deps=DepsConfig()),
+        server_config=None,
+        worker=InferenceWorkerConfig(
+            worker_id="actor",
+            model="Qwen/Qwen2.5-0.5B-Instruct",
+            inference=InferenceConfig(port=30000, startup_timeout=5.0),
+        ),
+        run_name="eval-modal-test",
+    ) as realized:
+        assert realized.endpoint_config.base_url == "https://endpoint.modal.run/v1"
+
+    request = captured["request"]
+    assert request.encrypted_ports == (30000,)
+    assert captured["lease_initialized"] is True
+    assert captured["terminated"] is True

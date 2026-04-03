@@ -517,6 +517,7 @@ async def _realize_modal_endpoint(
             "provider": "modal",
         },
         run_logger=run_logger,
+        encrypted_ports=(worker.inference.port,),
     )
 
     def emit_modal_event(event: str, **data: Any) -> None:
@@ -594,20 +595,6 @@ async def _realize_modal_endpoint(
                         run_logger=run_logger,
                         startup_context=startup_context,
                         remote_output_dir=remote_output_dir,
-                    )
-                    await session.start_process(
-                        ProcessSpec(
-                            command=remote_python,
-                            args=(
-                                "rollouts/eval/modal_forwarder.py",
-                                "--port",
-                                str(worker.inference.port),
-                            ),
-                            cwd=workspace.root,
-                        ),
-                        name=f"eval-forwarder-{run_name}",
-                        timeout=86400,
-                        start_timeout_s=30.0,
                     )
                     tunnel = await _wait_for_modal_tunnel(
                         sandbox=sandbox_handle.sandbox,

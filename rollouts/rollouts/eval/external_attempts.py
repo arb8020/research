@@ -50,6 +50,12 @@ ExternalRuntime = Literal[
 ]
 REMOTE_AGENT_USER = "rollouts-agent"
 
+# TODO(runtime-hooks): make runtime capabilities explicit enough for topology-
+# aware environments to reject unsupported pairings honestly. Near-term target:
+# - LocalSync environments: runtime only needs local workspace execution
+# - RemoteResident environments: runtime must support launch in authoritative remote workspace
+# - defer local-loop + hijacked-remote-tools until runtimes expose real tool interception hooks
+
 
 async def _workspace_exec(
     workspace: SandboxWorkspaceResource,
@@ -159,6 +165,11 @@ def _make_raw_driver_line_handler(
     *,
     driver: str,
 ) -> Callable[[str], Awaitable[None]] | None:
+    # TODO(observability): `raw_driver_line` is a raw boundary observation, not
+    # a normalized domain event. Keep it available for parser/runtime debugging,
+    # but move the canonical info-level journal toward parsed StreamEvents with
+    # an explicit event envelope (`source` / `kind` / `payload`) instead of
+    # treating escaped vendor JSON as a primary analysis surface.
     on_chunk = getattr(run_config, "on_chunk", None)
     if on_chunk is None:
         return None
