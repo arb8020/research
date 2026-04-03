@@ -597,10 +597,9 @@ async def _realize_modal_endpoint(
                     )
                     await session.start_process(
                         ProcessSpec(
-                            command="python",
+                            command=remote_python,
                             args=(
-                                "-m",
-                                "rollouts.eval.modal_forwarder",
+                                "rollouts/eval/modal_forwarder.py",
                                 "--port",
                                 str(worker.inference.port),
                             ),
