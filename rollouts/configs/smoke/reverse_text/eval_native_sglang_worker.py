@@ -76,23 +76,7 @@ worker_topology = WorkerTopologyConfig(
         deps=DepsConfig(
             bootstrap_commands=(
                 "mkdir -p /tmp/rollouts-sglang-deps",
-                """cat > /tmp/rollouts-sglang-deps/pyproject.toml <<'EOF'
-[project]
-name = "rollouts-eval-sglang-worker"
-version = "0.0.1"
-requires-python = "==3.12.*"
-dependencies = [
-  "sglang[all] @ git+https://github.com/sgl-project/sglang.git@main#subdirectory=python",
-]
-
-[tool.uv.sources]
-torch = { index = "pytorch-cu124" }
-
-[[tool.uv.index]]
-name = "pytorch-cu124"
-url = "https://download.pytorch.org/whl/cu124"
-explicit = true
-EOF""",
+                """python3 -c "from pathlib import Path; Path('/tmp/rollouts-sglang-deps/pyproject.toml').write_text('''[project]\nname = \"rollouts-eval-sglang-worker\"\nversion = \"0.0.1\"\nrequires-python = \"==3.12.*\"\ndependencies = [\n  \"sglang[all] @ git+https://github.com/sgl-project/sglang.git@main#subdirectory=python\",\n]\n\n[tool.uv.sources]\ntorch = { index = \"pytorch-cu124\" }\n\n[[tool.uv.index]]\nname = \"pytorch-cu124\"\nurl = \"https://download.pytorch.org/whl/cu124\"\nexplicit = true\n''')" """,
                 "~/.local/bin/uv pip compile /tmp/rollouts-sglang-deps/pyproject.toml --output-file /tmp/rollouts-sglang-deps/requirements.txt",
                 "~/.local/bin/uv pip install --compile-bytecode --python /opt/venvs/rollouts/bin/python -r /tmp/rollouts-sglang-deps/requirements.txt",
             ),
