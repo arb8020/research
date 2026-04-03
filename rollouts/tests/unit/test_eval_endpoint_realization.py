@@ -13,10 +13,10 @@ from rollouts.eval.configs import EndpointConfig, InferenceServerConfig
 from rollouts.eval.endpoint_realization import (
     _emit_log_lines,
     _legacy_worker_from_eval_surface,
-    _wait_for_modal_sandbox_baseline,
     _remote_inference_python,
     _remote_service_spec,
     _tail_remote_trace,
+    _wait_for_modal_sandbox_baseline,
     realize_worker_backed_endpoint,
 )
 from rollouts.eval.run import run_with_sglang_provision
@@ -236,6 +236,57 @@ async def test_wait_for_modal_sandbox_baseline_emits_incomplete_cleanup(
 
     assert events[-1][0] == "modal_sandbox_cleanup_incomplete"
     assert events[-1][1]["residual_sandbox_ids"] == ["sb-stuck"]
+
+
+@pytest.mark.trio
+async def test_wait_for_modal_sandbox_baseline_force_terminates_residuals(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[tuple[str, dict[str, object]]] = []
+    run_logger = RunLogger(emit_event=lambda event, **data: events.append((event, data)))
+    sandbox_sets = iter(({"sb-old", "sb-stuck"}, {"sb-old"}))
+    terminated: list[str] = []
+
+    async def fake_list_modal_sandbox_ids() -> set[str]:
+        return next(sandbox_sets)
+
+    async def fake_terminate_modal_sandbox_ids(sandbox_ids: list[str]) -> list[str]:
+        terminated.extend(sandbox_ids)
+        return list(sandbox_ids)
+
+    async def fake_sleep(_seconds: float) -> None:
+        return None
+
+    clock = {"now": 0.0}
+
+    def fake_current_time() -> float:
+        value = clock["now"]
+        clock["now"] += 1.0
+        return value
+
+    monkeypatch.setattr(
+        "rollouts.eval.endpoint_realization._list_modal_sandbox_ids",
+        fake_list_modal_sandbox_ids,
+    )
+    monkeypatch.setattr(
+        "rollouts.eval.endpoint_realization._terminate_modal_sandbox_ids",
+        fake_terminate_modal_sandbox_ids,
+    )
+    monkeypatch.setattr("rollouts.eval.endpoint_realization.trio.sleep", fake_sleep)
+    monkeypatch.setattr("rollouts.eval.endpoint_realization.trio.current_time", fake_current_time)
+
+    await _wait_for_modal_sandbox_baseline(
+        baseline_ids={"sb-old"},
+        run_logger=run_logger,
+        run_name="run-test",
+        timeout_s=0.5,
+        force_terminate_timeout_s=0.5,
+    )
+
+    assert terminated == ["sb-stuck"]
+    assert events[-2][0] == "modal_sandbox_cleanup_force_terminate_finished"
+    assert events[-1][0] == "modal_sandbox_cleanup_converged"
+    assert events[-1][1]["cleanup_mode"] == "force_terminate"
 
 
 @pytest.mark.trio

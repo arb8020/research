@@ -28,8 +28,9 @@ from rollouts.training.weight_sync import (
 REPO_ROOT = Path(__file__).resolve().parents[3]
 REMOTE_VENV_PYTHON = "/opt/venvs/rollouts/bin/python"
 STARTUP_STALL_DIAGNOSTIC_INTERVAL = 15
-MODAL_SANDBOX_CLEANUP_TIMEOUT_S = 180.0
+MODAL_SANDBOX_CLEANUP_TIMEOUT_S = 15.0
 MODAL_SANDBOX_CLEANUP_POLL_INTERVAL_S = 5.0
+MODAL_SANDBOX_FORCE_TERMINATE_TIMEOUT_S = 15.0
 
 
 @dataclass(frozen=True)
@@ -263,12 +264,29 @@ async def _list_modal_sandbox_ids() -> set[str]:
     )
 
 
+async def _terminate_modal_sandbox_ids(sandbox_ids: list[str]) -> list[str]:
+    import modal
+
+    def _terminate_sync() -> list[str]:
+        terminated: list[str] = []
+        for sandbox_id in sandbox_ids:
+            try:
+                modal.Sandbox.from_id(sandbox_id).terminate()
+            except Exception:
+                continue
+            terminated.append(sandbox_id)
+        return terminated
+
+    return await trio.to_thread.run_sync(_terminate_sync)
+
+
 async def _wait_for_modal_sandbox_baseline(
     *,
     baseline_ids: set[str],
     run_logger: Any | None,
     run_name: str,
     timeout_s: float = MODAL_SANDBOX_CLEANUP_TIMEOUT_S,
+    force_terminate_timeout_s: float = MODAL_SANDBOX_FORCE_TERMINATE_TIMEOUT_S,
 ) -> None:
     deadline = trio.current_time() + timeout_s
     while True:
@@ -285,11 +303,42 @@ async def _wait_for_modal_sandbox_baseline(
         if trio.current_time() >= deadline:
             if run_logger is not None:
                 run_logger.event(
+                    "modal_sandbox_cleanup_force_terminate_start",
+                    provider="modal",
+                    run_name=run_name,
+                    residual_sandbox_ids=residual_ids,
+                )
+            terminated_ids = await _terminate_modal_sandbox_ids(residual_ids)
+            force_deadline = trio.current_time() + force_terminate_timeout_s
+            while True:
+                current_ids = await _list_modal_sandbox_ids()
+                residual_ids = sorted(current_ids - baseline_ids)
+                if not residual_ids:
+                    if run_logger is not None:
+                        run_logger.event(
+                            "modal_sandbox_cleanup_force_terminate_finished",
+                            provider="modal",
+                            run_name=run_name,
+                            terminated_sandbox_ids=terminated_ids,
+                        )
+                        run_logger.event(
+                            "modal_sandbox_cleanup_converged",
+                            provider="modal",
+                            run_name=run_name,
+                            cleanup_mode="force_terminate",
+                        )
+                    return
+                if trio.current_time() >= force_deadline:
+                    break
+                await trio.sleep(MODAL_SANDBOX_CLEANUP_POLL_INTERVAL_S)
+            if run_logger is not None:
+                run_logger.event(
                     "modal_sandbox_cleanup_incomplete",
                     provider="modal",
                     run_name=run_name,
                     residual_sandbox_ids=residual_ids,
                     timeout_s=timeout_s,
+                    terminated_sandbox_ids=terminated_ids,
                 )
             return
         await trio.sleep(MODAL_SANDBOX_CLEANUP_POLL_INTERVAL_S)
