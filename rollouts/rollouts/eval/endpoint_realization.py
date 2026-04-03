@@ -28,6 +28,8 @@ from rollouts.training.weight_sync import (
 REPO_ROOT = Path(__file__).resolve().parents[3]
 REMOTE_VENV_PYTHON = "/opt/venvs/rollouts/bin/python"
 STARTUP_STALL_DIAGNOSTIC_INTERVAL = 15
+MODAL_SANDBOX_CLEANUP_TIMEOUT_S = 180.0
+MODAL_SANDBOX_CLEANUP_POLL_INTERVAL_S = 5.0
 
 
 @dataclass(frozen=True)
@@ -251,6 +253,46 @@ async def _service_logs_best_effort(service: Any, *, tail: int = 120) -> str:
         return await service.logs(tail=tail)
     except Exception as exc:
         return f"== stdout ==\n== stderr ==\n<failed to read service logs: {type(exc).__name__}: {exc}>"
+
+
+async def _list_modal_sandbox_ids() -> set[str]:
+    import modal
+
+    return await trio.to_thread.run_sync(
+        lambda: {sandbox.object_id for sandbox in modal.Sandbox.list()},
+    )
+
+
+async def _wait_for_modal_sandbox_baseline(
+    *,
+    baseline_ids: set[str],
+    run_logger: Any | None,
+    run_name: str,
+    timeout_s: float = MODAL_SANDBOX_CLEANUP_TIMEOUT_S,
+) -> None:
+    deadline = trio.current_time() + timeout_s
+    while True:
+        current_ids = await _list_modal_sandbox_ids()
+        residual_ids = sorted(current_ids - baseline_ids)
+        if not residual_ids:
+            if run_logger is not None:
+                run_logger.event(
+                    "modal_sandbox_cleanup_converged",
+                    provider="modal",
+                    run_name=run_name,
+                )
+            return
+        if trio.current_time() >= deadline:
+            if run_logger is not None:
+                run_logger.event(
+                    "modal_sandbox_cleanup_incomplete",
+                    provider="modal",
+                    run_name=run_name,
+                    residual_sandbox_ids=residual_ids,
+                    timeout_s=timeout_s,
+                )
+            return
+        await trio.sleep(MODAL_SANDBOX_CLEANUP_POLL_INTERVAL_S)
 
 
 async def _wait_for_modal_service_ready(
@@ -531,6 +573,7 @@ async def _realize_modal_endpoint(
 
     with modal.enable_output():
         async with trio_asyncio.open_loop():
+            baseline_sandbox_ids = await _list_modal_sandbox_ids()
             sandbox_handle = await create_modal_sandbox(request)
             session = ModalExecutionSession(sandbox_handle=sandbox_handle, local_root=REPO_ROOT)
             try:
@@ -615,6 +658,11 @@ async def _realize_modal_endpoint(
                         nursery.cancel_scope.cancel()
             finally:
                 await terminate_modal_sandbox(sandbox_handle)
+                await _wait_for_modal_sandbox_baseline(
+                    baseline_ids=baseline_sandbox_ids,
+                    run_logger=run_logger,
+                    run_name=run_name,
+                )
 
 
 @asynccontextmanager
