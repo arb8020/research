@@ -74,11 +74,28 @@ worker_topology = WorkerTopologyConfig(
         gpu_type="A100",
         gpu_count=1,
         deps=DepsConfig(
-            pip_packages=(
-                "torch>=2.4",
-                "sglang[all]",
+            bootstrap_commands=(
+                "mkdir -p /tmp/rollouts-sglang-deps",
+                """cat > /tmp/rollouts-sglang-deps/pyproject.toml <<'EOF'
+[project]
+name = "rollouts-eval-sglang-worker"
+version = "0.0.1"
+requires-python = "==3.12.*"
+dependencies = [
+  "sglang[all] @ git+https://github.com/sgl-project/sglang.git@main#subdirectory=python",
+]
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu124" }
+
+[[tool.uv.index]]
+name = "pytorch-cu124"
+url = "https://download.pytorch.org/whl/cu124"
+explicit = true
+EOF""",
+                "~/.local/bin/uv pip compile /tmp/rollouts-sglang-deps/pyproject.toml --output-file /tmp/rollouts-sglang-deps/requirements.txt",
+                "~/.local/bin/uv pip install --compile-bytecode --python /opt/venvs/rollouts/bin/python -r /tmp/rollouts-sglang-deps/requirements.txt",
             ),
-            pip_index_url="https://download.pytorch.org/whl/cu124",
         ),
     ),
     inference_workers=(
