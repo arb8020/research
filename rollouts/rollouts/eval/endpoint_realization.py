@@ -197,9 +197,12 @@ async def _tail_remote_trace(
     trace_path: Path,
     max_lines: int = 40,
 ) -> str:
-    result = await session.exec(
-        f"tail -n {max_lines} {trace_path} 2>/dev/null || true",
-    )
+    try:
+        result = await session.exec(
+            f"tail -n {max_lines} {trace_path} 2>/dev/null || true",
+        )
+    except Exception as exc:
+        return f"<failed to read remote trace: {type(exc).__name__}: {exc}>"
     return result.stdout.strip()
 
 

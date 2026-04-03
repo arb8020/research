@@ -13,6 +13,7 @@ from rollouts.eval.endpoint_realization import (
     _legacy_worker_from_eval_surface,
     _remote_inference_python,
     _remote_service_spec,
+    _tail_remote_trace,
     realize_worker_backed_endpoint,
 )
 from rollouts.eval.run import run_with_sglang_provision
@@ -154,6 +155,20 @@ def test_emit_log_lines_emits_startup_phase_once() -> None:
         "eval_inference_service_log",
         "eval_inference_service_log",
     ]
+
+
+@pytest.mark.trio
+async def test_tail_remote_trace_is_best_effort() -> None:
+    class _FailingSession:
+        async def exec(self, _command: str) -> object:
+            raise RuntimeError("sandbox unavailable")
+
+    trace_tail = await _tail_remote_trace(
+        session=_FailingSession(),
+        trace_path=Path("/tmp/trace.jsonl"),
+    )
+
+    assert trace_tail == "<failed to read remote trace: RuntimeError: sandbox unavailable>"
 
 
 @pytest.mark.trio
