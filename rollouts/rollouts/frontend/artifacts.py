@@ -62,6 +62,10 @@ def _rehydrate_external_session_trajectory(
 ) -> None:
     runtime = metadata.get("runtime")
     if runtime == "claude_code" and sample.get("status") == "completed":
+        # Recommendation for viewer/modeling work:
+        # treat ACP trajectories as the cleaner canonical conversation reference
+        # for now. Raw Claude Code session replay is provider-faithful but still
+        # more fragmented (multiple assistant entries for one semantic phase).
         session_id = metadata.get("session_id")
         if isinstance(session_id, str) and session_id:
             try:

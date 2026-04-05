@@ -246,14 +246,69 @@ def write_claude_session(
 # -----------------------------------------------------------------------------
 
 
-def claude_message_to_rollouts(msg: dict[str, Any]) -> Message | None:
+def _claude_user_content_to_rollouts(content: Any, timestamp: str | None) -> list[Message]:
+    """Convert Claude user-entry content into rollouts Messages.
+
+    Claude Code writes tool results as top-level `type=="user"` entries whose
+    `message.content` is a list containing `tool_result` blocks. Those are not
+    semantic user turns and must be normalized into `role="tool"` messages.
+    """
+    if isinstance(content, str):
+        return [Message(role="user", content=content, timestamp=timestamp)]
+
+    if not isinstance(content, list):
+        return [Message(role="user", content=str(content), timestamp=timestamp)]
+
+    messages: list[Message] = []
+    text_parts: list[str] = []
+
+    for block in content:
+        if not isinstance(block, dict):
+            text_parts.append(str(block))
+            continue
+
+        block_type = block.get("type")
+        if block_type == "tool_result":
+            if text_parts:
+                messages.append(
+                    Message(role="user", content="\n".join(text_parts), timestamp=timestamp)
+                )
+                text_parts = []
+            tool_content = block.get("content", "")
+            if isinstance(tool_content, list):
+                tool_content = json.dumps(tool_content)
+            messages.append(
+                Message(
+                    role="tool",
+                    content=tool_content if isinstance(tool_content, str) else str(tool_content),
+                    tool_call_id=block.get("tool_use_id"),
+                    timestamp=timestamp,
+                )
+            )
+            continue
+
+        if block_type == "text":
+            text_parts.append(str(block.get("text", "")))
+            continue
+
+        text_parts.append(json.dumps(block))
+
+    if text_parts:
+        messages.append(Message(role="user", content="\n".join(text_parts), timestamp=timestamp))
+
+    return messages
+
+
+def claude_message_to_rollouts(msg: dict[str, Any]) -> list[Message]:
     """Convert a Claude Code message to rollouts Message.
 
     Args:
         msg: Claude Code message dict from JSONL
 
     Returns:
-        Message or None if not a content message (e.g., summary, system)
+        Zero or more Messages. Claude tool results are encoded as `user`
+        entries containing `tool_result` blocks, so one raw session line can
+        legitimately lower into multiple semantic messages.
     """
     msg_type = msg.get("type")
     timestamp = msg.get("timestamp")
@@ -261,11 +316,7 @@ def claude_message_to_rollouts(msg: dict[str, Any]) -> Message | None:
     if msg_type == "user":
         inner = msg.get("message", {})
         content = inner.get("content", "")
-        return Message(
-            role="user",
-            content=content,
-            timestamp=timestamp,
-        )
+        return _claude_user_content_to_rollouts(content, timestamp)
 
     elif msg_type == "assistant":
         inner = msg.get("message", {})
@@ -275,23 +326,27 @@ def claude_message_to_rollouts(msg: dict[str, Any]) -> Message | None:
         # Convert Claude blocks to rollouts ContentBlocks
         rollouts_blocks = _claude_blocks_to_content(content_blocks)
 
-        return Message(
-            role="assistant",
-            content=rollouts_blocks if rollouts_blocks else "",
-            model=model,
-            timestamp=timestamp,
-        )
+        return [
+            Message(
+                role="assistant",
+                content=rollouts_blocks if rollouts_blocks else "",
+                model=model,
+                timestamp=timestamp,
+            )
+        ]
 
     elif msg_type == "tool_result":
-        return Message(
-            role="tool",
-            content=msg.get("content", ""),
-            tool_call_id=msg.get("tool_use_id"),
-            timestamp=timestamp,
-        )
+        return [
+            Message(
+                role="tool",
+                content=msg.get("content", ""),
+                tool_call_id=msg.get("tool_use_id"),
+                timestamp=timestamp,
+            )
+        ]
 
     # Skip non-content messages (summary, system, file-history-snapshot, etc.)
-    return None
+    return []
 
 
 def _claude_blocks_to_content(blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -330,9 +385,7 @@ def claude_session_to_messages(session_path: Path) -> list[Message]:
                 continue
             try:
                 msg = json.loads(line)
-                rollouts_msg = claude_message_to_rollouts(msg)
-                if rollouts_msg is not None:
-                    messages.append(rollouts_msg)
+                messages.extend(claude_message_to_rollouts(msg))
             except json.JSONDecodeError:
                 continue
     return messages

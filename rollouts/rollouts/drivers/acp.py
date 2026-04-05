@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -28,6 +29,7 @@ from ..dtypes import (
 from .protocol import ExternalAgentDriver
 
 logger = logging.getLogger(__name__)
+_ACP_TEARDOWN_TIMEOUT_SECONDS = 5.0
 
 
 @dataclass
@@ -48,6 +50,8 @@ class _ACPEventBridge:
         self._auto_approve_permissions = auto_approve_permissions
         self._content_index = 0
         self._pending_tools: dict[str, _PendingToolCall] = {}
+        self._active_text: tuple[int, str] | None = None
+        self._active_thinking: tuple[int, str] | None = None
         self.events: list[Any] = []
 
     def on_connect(self, conn: Any) -> None:
@@ -96,24 +100,36 @@ class _ACPEventBridge:
         return idx
 
     async def _emit_text_chunk(self, update: Any) -> None:
+        self._flush_thinking()
         text = _content_block_to_text(getattr(update, "content", None))
         if text == "":
             return
-        idx = self._next_content_index()
-        self.events.append(TextStart(content_index=idx))
+        if self._active_text is None:
+            idx = self._next_content_index()
+            self._active_text = (idx, "")
+            self.events.append(TextStart(content_index=idx))
+        idx, accumulated = self._active_text
+        accumulated += text
+        self._active_text = (idx, accumulated)
         self.events.append(TextDelta(content_index=idx, delta=text))
-        self.events.append(TextEnd(content_index=idx, content=text))
 
     async def _emit_thought_chunk(self, update: Any) -> None:
+        self._flush_text()
         text = _content_block_to_text(getattr(update, "content", None))
         if text == "":
             return
-        idx = self._next_content_index()
-        self.events.append(ThinkingStart(content_index=idx))
+        if self._active_thinking is None:
+            idx = self._next_content_index()
+            self._active_thinking = (idx, "")
+            self.events.append(ThinkingStart(content_index=idx))
+        idx, accumulated = self._active_thinking
+        accumulated += text
+        self._active_thinking = (idx, accumulated)
         self.events.append(ThinkingDelta(content_index=idx, delta=text))
-        self.events.append(ThinkingEnd(content_index=idx, content=text))
 
     async def _emit_tool_update(self, update: Any) -> None:
+        self._flush_text()
+        self._flush_thinking()
         tool_call_id = getattr(update, "toolCallId", None)
         if not tool_call_id:
             return
@@ -171,6 +187,24 @@ class _ACPEventBridge:
                 details=pending.details,
             )
         )
+
+    def finalize(self) -> None:
+        self._flush_text()
+        self._flush_thinking()
+
+    def _flush_text(self) -> None:
+        if self._active_text is None:
+            return
+        idx, content = self._active_text
+        self.events.append(TextEnd(content_index=idx, content=content))
+        self._active_text = None
+
+    def _flush_thinking(self) -> None:
+        if self._active_thinking is None:
+            return
+        idx, content = self._active_thinking
+        self.events.append(ThinkingEnd(content_index=idx, content=content))
+        self._active_thinking = None
 
 
 def _json_safe(value: Any) -> Any:
@@ -324,11 +358,25 @@ class ACPDriver(ExternalAgentDriver):
             )
             if not isinstance(response, PromptResponse):
                 raise RuntimeError(f"Unexpected ACP prompt response: {response!r}")
-            terminated = False
+            bridge.finalize()
+            cleanup_terminated = False
             if process.returncode is None:
-                terminated = True
+                cleanup_terminated = True
                 process.terminate()
-                await process.wait()
-            if process.returncode not in (None, 0) and not terminated:
+                try:
+                    await asyncio.wait_for(process.wait(), timeout=_ACP_TEARDOWN_TIMEOUT_SECONDS)
+                except TimeoutError:
+                    logger.warning(
+                        "ACP agent did not exit %.1fs after prompt completion; killing lingering process",
+                        _ACP_TEARDOWN_TIMEOUT_SECONDS,
+                    )
+                    process.kill()
+                    try:
+                        await asyncio.wait_for(process.wait(), timeout=1.0)
+                    except TimeoutError:
+                        logger.warning(
+                            "ACP agent still did not exit after kill; continuing because prompt already completed"
+                        )
+            if process.returncode not in (None, 0, -15, -9) and not cleanup_terminated:
                 raise RuntimeError(f"ACP agent exited with status {process.returncode}")
             return bridge, response
