@@ -177,6 +177,17 @@ export type StreamEvent =
         [key: string]: unknown
       }>
     }
+  | {
+      type: 'sample_messages'
+      id: string
+      timestamp: string
+      messages: Array<{
+        role: string
+        content: string | unknown[]
+        tool_call_id?: string | null
+        [key: string]: unknown
+      }>
+    }
   | { type: 'turn'; id: string; turn: number; status: string; timestamp: string }
   | { type: 'assistant_message'; sample_id: string; turn: number; content: string; timestamp: string }
   | { type: 'sample_end'; id: string; score: number | null; timestamp: string }

@@ -59,6 +59,20 @@ def _message_text(content: Any) -> str:
     return str(content) if content is not None else ""
 
 
+def _message_to_payload(message: Any) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "role": getattr(message, "role", None),
+        "content": getattr(message, "content", ""),
+    }
+    tool_call_id = getattr(message, "tool_call_id", None)
+    if tool_call_id is not None:
+        payload["tool_call_id"] = tool_call_id
+    timestamp = getattr(message, "timestamp", None)
+    if timestamp is not None:
+        payload["timestamp"] = timestamp
+    return payload
+
+
 def _normalize_watch_event(raw: dict[str, Any]) -> dict[str, Any]:
     event_type = raw.get("message", "")
     out: dict[str, Any] = {"type": event_type, "timestamp": raw.get("timestamp", "")}
@@ -70,6 +84,9 @@ def _normalize_watch_event(raw: dict[str, Any]) -> dict[str, Any]:
         out["id"] = raw.get("sample_id", "")
         out["name"] = raw.get("sample_name", "")
         out["sample_data"] = raw.get("sample_data")
+        out["messages"] = raw.get("messages")
+    elif event_type == "sample_messages":
+        out["id"] = raw.get("sample_id", "")
         out["messages"] = raw.get("messages")
     elif event_type == "turn":
         out["id"] = raw.get("sample_id", "")
@@ -267,7 +284,7 @@ def _stream_external_session(handler: Any, runtime: str, session_id: str) -> Non
     poll_interval = 1.0
     max_idle = 300.0
     idle_since: float | None = None
-    last_assistant_count = 0
+    last_messages_signature: str | None = None
     sample_started = False
     run_name = f"{runtime} interactive"
 
@@ -304,44 +321,25 @@ def _stream_external_session(handler: Any, runtime: str, session_id: str) -> Non
                     "type": "sample_start",
                     "id": sample_id,
                     "name": f"{runtime}:{sample_id}",
+                    "messages": [_message_to_payload(message) for message in messages],
                     "timestamp": datetime.fromtimestamp(mtime).isoformat(),
                 },
             )
             sample_started = True
 
-        assistant_messages = [msg for msg in messages if getattr(msg, "role", None) == "assistant"]
-        if len(assistant_messages) > last_assistant_count:
-            for turn_index, msg in enumerate(
-                assistant_messages[last_assistant_count:],
-                start=last_assistant_count + 1,
-            ):
-                text = _message_text(getattr(msg, "content", None))
-                if not text.strip():
-                    continue
-                timestamp = (
-                    getattr(msg, "timestamp", None) or datetime.fromtimestamp(mtime).isoformat()
-                )
-                _write_sse(
-                    handler,
-                    {
-                        "type": "turn",
-                        "id": sample_id,
-                        "turn": turn_index,
-                        "status": "running",
-                        "timestamp": timestamp,
-                    },
-                )
-                _write_sse(
-                    handler,
-                    {
-                        "type": "assistant_message",
-                        "sample_id": sample_id,
-                        "turn": turn_index,
-                        "content": text,
-                        "timestamp": timestamp,
-                    },
-                )
-            last_assistant_count = len(assistant_messages)
+        message_payload = [_message_to_payload(message) for message in messages]
+        message_signature = json.dumps(message_payload, sort_keys=True, default=str)
+        if message_signature != last_messages_signature:
+            _write_sse(
+                handler,
+                {
+                    "type": "sample_messages",
+                    "id": sample_id,
+                    "messages": message_payload,
+                    "timestamp": datetime.fromtimestamp(mtime).isoformat(),
+                },
+            )
+            last_messages_signature = message_signature
             idle_since = None
         else:
             if idle_since is None:

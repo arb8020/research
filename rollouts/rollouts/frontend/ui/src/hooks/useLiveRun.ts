@@ -1,6 +1,8 @@
 import { useState, useEffect } from 'react'
 import { openRunEvents } from '../api'
-import type { LiveRunState, LiveSample, StreamEvent, TraceSample } from '../types'
+import type { LiveMessage, LiveRunState, LiveSample, StreamEvent, TraceSample } from '../types'
+
+type TraceMessage = NonNullable<TraceSample['trajectory']['messages']>[number]
 
 function makeInitialState(runId: string, initialStatus: string): LiveRunState {
   return {
@@ -35,6 +37,33 @@ function buildInitialTraceSample(
       turns_used: 0,
     },
   }
+}
+
+function normalizeTraceMessages(messages: TraceMessage[] | undefined): TraceMessage[] {
+  if (!messages) return []
+  return messages.map(message => ({
+    ...message,
+    content: message.content ?? '',
+  }))
+}
+
+function summarizeAssistantMessages(messages: TraceMessage[]): LiveMessage[] {
+  const summarized: LiveMessage[] = []
+  let turn = 0
+  for (const message of messages) {
+    if (message.role !== 'assistant') continue
+    turn += 1
+    const content =
+      typeof message.content === 'string'
+        ? message.content
+        : JSON.stringify(message.content)
+    summarized.push({
+      turn,
+      content,
+      timestamp: typeof message.timestamp === 'string' ? message.timestamp : '',
+    })
+  }
+  return summarized
 }
 
 export function useLiveRun(runId: string, initialStatus: string) {
@@ -85,20 +114,36 @@ function applyEvent(prev: LiveRunState, event: StreamEvent): LiveRunState {
     }
     case 'sample_start': {
       const samples = new Map(prev.samples)
-      const initialMessages = (event.messages ?? []).map(message => ({
-        ...message,
-        content: message.content ?? '',
-      }))
+      const initialMessages = normalizeTraceMessages(event.messages)
       const sample: LiveSample = {
         id: event.id,
         name: event.name,
         status: 'running',
         turn: 0,
         score: null,
-        messages: [],
+        messages: summarizeAssistantMessages(initialMessages),
         sample: buildInitialTraceSample(event.id, event.sample_data, initialMessages),
       }
       samples.set(event.id, sample)
+      return { ...prev, samples }
+    }
+    case 'sample_messages': {
+      const samples = new Map(prev.samples)
+      const existing = samples.get(event.id)
+      if (existing) {
+        const messages = normalizeTraceMessages(event.messages)
+        samples.set(event.id, {
+          ...existing,
+          messages: summarizeAssistantMessages(messages),
+          sample: {
+            ...existing.sample,
+            trajectory: {
+              ...existing.sample.trajectory,
+              messages,
+            },
+          },
+        })
+      }
       return { ...prev, samples }
     }
     case 'turn': {
