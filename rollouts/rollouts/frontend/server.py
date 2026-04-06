@@ -481,7 +481,8 @@ def main() -> None:
         if d not in seen:
             all_dirs.append(d)
             seen.add(d)
-    RolloutsViewerServer.results_dir = all_dirs[0] if all_dirs else primary
+    first_existing = next((d for d in all_dirs if d.exists()), None)
+    RolloutsViewerServer.results_dir = first_existing or (all_dirs[0] if all_dirs else primary)
     RolloutsViewerServer.known_results_dirs = all_dirs
 
     # Create server

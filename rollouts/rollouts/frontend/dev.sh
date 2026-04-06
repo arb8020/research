@@ -23,10 +23,18 @@ SESSION="rollouts-ui"
 UI_DIR="$ROOT_DIR/ui"
 
 # Extra results dirs to surface in the UI (space-separated, or set EXTRA_RESULTS_DIRS env var)
-# Defaults to charisma's results dir if it exists
-_default_extras=""
-[[ -d "$HOME/silares_stuff/charisma/results" ]] && _default_extras="$HOME/silares_stuff/charisma/results"
-EXTRA_RESULTS_DIRS="${EXTRA_RESULTS_DIRS:-$_default_extras}"
+# Defaults to all results/ dirs found by walking up from ROOT_DIR
+if [[ -z "${EXTRA_RESULTS_DIRS+x}" ]]; then
+  _default_extras=""
+  _walk="$ROOT_DIR"
+  while [[ "$_walk" != "/" ]]; do
+    _walk="$(dirname "$_walk")"
+    if [[ -d "$_walk/results" ]]; then
+      _default_extras="${_default_extras:+$_default_extras }$_walk/results"
+    fi
+  done
+  EXTRA_RESULTS_DIRS="$_default_extras"
+fi
 
 # ── Port finder ────────────────────────────────────────────────────────────────
 find_free_port() {
@@ -68,7 +76,7 @@ _extra_args=()
 
 if ! command -v tmux >/dev/null 2>&1; then
   echo "tmux not found - running foreground (no split view)" >&2
-  "$_PYTHON" "$ROOT_DIR/server.py" --project "$PROJECT_DIR" --port "$SERVER_PORT" "${_extra_args[@]}" 2>&1 | tee "$SERVER_LOG" &
+  "$_PYTHON" -m rollouts.frontend.server --project "$PROJECT_DIR" --port "$SERVER_PORT" "${_extra_args[@]}" 2>&1 | tee "$SERVER_LOG" &
   SERVER_PID=$!
   trap "kill $SERVER_PID 2>/dev/null; wait" INT TERM
   cd "$UI_DIR" && API_PORT=$SERVER_PORT bun run dev --port "$VITE_PORT"
@@ -85,11 +93,12 @@ fi
 # Resolve venv Python — prefer workspace venv, fall back to python3
 _VENV_PYTHON=""
 for _candidate in \
+    "$PROJECT_DIR/../../../.venv/bin/python3" \
     "$PROJECT_DIR/../../.venv/bin/python3" \
     "$PROJECT_DIR/../.venv/bin/python3" \
     "$PROJECT_DIR/.venv/bin/python3"; do
   if [[ -x "$_candidate" ]]; then
-    _VENV_PYTHON="$(realpath "$_candidate")"
+    _VENV_PYTHON="$_candidate"
     break
   fi
 done
@@ -97,7 +106,7 @@ _PYTHON="${_VENV_PYTHON:-python3}"
 
 # Server pane (left)
 tmux new-session -d -s "$SESSION" -n ui -c "$ROOT_DIR" \
-  "'$_PYTHON' '$ROOT_DIR/server.py' --project '$PROJECT_DIR' --port $SERVER_PORT ${_extra_args[*]:-} \
+  "'$_PYTHON' -m rollouts.frontend.server --project '$PROJECT_DIR' --port $SERVER_PORT ${_extra_args[*]:-} \
    2>&1 | tee '$SERVER_LOG'; echo '[server exited — press enter]'; read"
 
 # Vite pane (right) — pass API_PORT so vite.config.ts proxies to the right server

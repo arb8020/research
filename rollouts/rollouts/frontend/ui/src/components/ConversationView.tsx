@@ -1,6 +1,9 @@
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useRef, useCallback } from 'react'
 import { Eye } from 'lucide-react'
 import type { TraceSample } from '../types'
+import { CodeMirrorViewer } from './CodeMirrorViewer'
+import type { EditorView } from '@codemirror/view'
+import { foldAll, unfoldAll } from '@codemirror/language'
 
 // ─── Styles (ported from rollout-viewer.html) ─────────────────────────────────
 const css = `
@@ -268,6 +271,79 @@ pre.rv-pre {
 .rv-jp { color: #636363; }
 `
 
+// ─── YAML serializer ──────────────────────────────────────────────────────────
+
+// Render a value as YAML, all lines relative to indent=0.
+// Caller is responsible for prefixing the first line.
+function yamlValue(value: unknown): string {
+  if (value === null) return 'null'
+  if (typeof value === 'boolean') return value ? 'true' : 'false'
+  if (typeof value === 'number') return String(value)
+
+  if (typeof value === 'string') {
+    if (value === '') return "''"
+    if (value.includes('\n')) {
+      return '|\n' + value.split('\n').map(l => '  ' + l).join('\n')
+    }
+    if (/[:{}\[\],#&*?|<>=!%@`"']/.test(value) || /^\s|\s$/.test(value)) {
+      return JSON.stringify(value)
+    }
+    return value
+  }
+
+  if (Array.isArray(value)) {
+    if (value.length === 0) return '[]'
+    return value.map(item => {
+      const v = yamlValue(item)
+      const lines = v.split('\n')
+      // first line follows the dash, rest are indented
+      return '- ' + lines[0] + (lines.length > 1 ? '\n' + lines.slice(1).map(l => '  ' + l).join('\n') : '')
+    }).join('\n')
+  }
+
+  if (typeof value === 'object') {
+    const entries = Object.entries(value as Record<string, unknown>)
+    if (entries.length === 0) return '{}'
+    return entries.map(([k, v]) => {
+      const rendered = yamlValue(v)
+      const isBlock = typeof v === 'object' && v !== null
+      if (isBlock) {
+        return k + ':\n' + rendered.split('\n').map(l => '  ' + l).join('\n')
+      }
+      if (rendered.startsWith('|')) {
+        return k + ': ' + rendered.split('\n').map((l, i) => i === 0 ? l : '  ' + l).join('\n')
+      }
+      return k + ': ' + rendered
+    }).join('\n')
+  }
+
+  return String(value)
+}
+
+function trajectoryToYaml(messages: TraceSample['trajectory']['messages']): string {
+  if (!messages?.length) return '[]'
+  return messages.map((msg) => {
+    const { role, content, timestamp, tool_call_id } = msg as Record<string, unknown>
+    const lines: string[] = []
+    lines.push(`- role: ${role}`)
+
+    const contentRendered = yamlValue(content)
+    const isBlock = typeof content === 'object' && content !== null
+    if (isBlock) {
+      lines.push('  content:\n' + contentRendered.split('\n').map(l => '    ' + l).join('\n'))
+    } else if (contentRendered.startsWith('|')) {
+      lines.push('  content: ' + contentRendered.split('\n').map((l, i) => i === 0 ? l : '    ' + l).join('\n'))
+    } else {
+      lines.push(`  content: ${contentRendered}`)
+    }
+
+    if (tool_call_id != null) lines.push(`  tool_call_id: ${yamlValue(tool_call_id)}`)
+    if (timestamp != null) lines.push(`  timestamp: ${yamlValue(timestamp)}`)
+
+    return lines.join('\n')
+  }).join('\n')
+}
+
 // ─── Parse rollout messages (ported from rollout-viewer.html) ──────────────────
 
 interface ParsedBlock {
@@ -288,33 +364,6 @@ interface ParsedMessage {
   timestamp?: string
   subtitle?: string
   blocks: ParsedBlock[]
-}
-
-function splitAssistantBlocks(blocks: ParsedBlock[]): ParsedBlock[][] {
-  const segments: ParsedBlock[][] = []
-  let current: ParsedBlock[] = []
-
-  const flush = () => {
-    if (current.length > 0) {
-      segments.push(current)
-      current = []
-    }
-  }
-
-  for (const block of blocks) {
-    const resumesAssistantNarration =
-      (block.type === 'text' || block.type === 'thinking') &&
-      current.some(existing => existing.type === 'toolCall')
-
-    if (resumesAssistantNarration) {
-      flush()
-    }
-
-    current.push(block)
-  }
-
-  flush()
-  return segments
 }
 
 function parseMessages(messages: TraceSample['trajectory']['messages']): ParsedMessage[] {
@@ -367,9 +416,7 @@ function parseMessages(messages: TraceSample['trajectory']['messages']): ParsedM
         if (b.type === 'toolCall') return { type: 'toolCall' as const, id: b.id as string, name: b.name as string, arguments: b.arguments as Record<string, unknown> }
         return { type: 'text' as const, text: JSON.stringify(b) }
       })
-      for (const segment of splitAssistantBlocks(normalized)) {
-        parsed.push({ role: 'assistant', timestamp: msg.timestamp as string | undefined, blocks: segment })
-      }
+      parsed.push({ role: 'assistant', timestamp: msg.timestamp as string | undefined, blocks: normalized })
     }
   }
   return parsed
@@ -614,6 +661,8 @@ function ensureStyles() {
   document.head.appendChild(el)
 }
 
+type ViewMode = 'ui' | 'yaml' | 'raw'
+
 export function ConversationView({
   sample,
   selectedTurn,
@@ -624,28 +673,109 @@ export function ConversationView({
   sample: TraceSample
   selectedTurn?: number
   onMessageVisible?: (messageIndex: number) => void
-  // TODO: Future improvement — group all messages per turn into collapsible rows
-  // and put the checkbox on the turn row rather than individual assistant messages.
-  // Currently checkboxes appear only on assistant messages (natural turn boundaries).
   checkedTurns?: Set<number>
   onToggleTurn?: (turn: number) => void
 }) {
   ensureStyles()
+  const [viewMode, setViewMode] = useState<ViewMode>('ui')
   const messages = useMemo(() => parseMessages(sample.trajectory.messages), [sample])
+  const editorViewRef = useRef<EditorView | null>(null)
+  const handleViewReady = useCallback((view: EditorView) => { editorViewRef.current = view }, [])
 
-  // Track display turns: UI-only projection over canonical assistant messages.
-  let turnCounter = -1
+  const toggle = (
+    <div style={{ display: 'flex', gap: 2, marginBottom: 8 }}>
+      {(['ui', 'yaml', 'raw'] as ViewMode[]).map(mode => (
+        <button
+          key={mode}
+          onClick={() => setViewMode(mode)}
+          style={{
+            fontFamily: '"IBM Plex Mono", monospace',
+            fontSize: 10,
+            padding: '2px 8px',
+            borderRadius: 2,
+            border: '1px solid',
+            cursor: 'pointer',
+            borderColor: viewMode === mode ? '#3b82f6' : '#333',
+            background: viewMode === mode ? 'rgba(59,130,246,0.15)' : 'transparent',
+            color: viewMode === mode ? '#93c5fd' : '#636363',
+          }}
+        >
+          {mode}
+        </button>
+      ))}
+    </div>
+  )
 
-  if (!messages.length) {
+  const foldControls = (
+    <div style={{ display: 'flex', gap: 4, marginBottom: 6 }}>
+      {[
+        { label: 'fold all', fn: () => editorViewRef.current && foldAll(editorViewRef.current) },
+        { label: 'unfold all', fn: () => editorViewRef.current && unfoldAll(editorViewRef.current) },
+      ].map(({ label, fn }) => (
+        <button key={label} onClick={fn} style={{
+          fontFamily: '"IBM Plex Mono", monospace',
+          fontSize: 10,
+          padding: '2px 8px',
+          borderRadius: 2,
+          border: '1px solid #333',
+          background: 'transparent',
+          color: '#636363',
+          cursor: 'pointer',
+        }}>{label}</button>
+      ))}
+    </div>
+  )
+
+  if (viewMode === 'raw') {
     return (
-      <div style={{ color: '#636363', fontFamily: '"IBM Plex Mono", monospace', fontSize: 12, fontStyle: 'italic' }}>
-        No recorded agent turns for this sample
+      <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+        {toggle}
+        {foldControls}
+        <div style={{ flex: 1, minHeight: 0 }}>
+          <CodeMirrorViewer
+            value={JSON.stringify(sample.trajectory.messages, null, 2)}
+            lang="json"
+            onViewReady={handleViewReady}
+          />
+        </div>
       </div>
     )
   }
 
+  if (viewMode === 'yaml') {
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+        {toggle}
+        {foldControls}
+        <div style={{ flex: 1, minHeight: 0 }}>
+          <CodeMirrorViewer
+            value={trajectoryToYaml(sample.trajectory.messages)}
+            lang="yaml"
+            onViewReady={handleViewReady}
+          />
+        </div>
+      </div>
+    )
+  }
+
+  // ui mode
+  if (!messages.length) {
+    return (
+      <div>
+        {toggle}
+        <div style={{ color: '#636363', fontFamily: '"IBM Plex Mono", monospace', fontSize: 12, fontStyle: 'italic' }}>
+          No recorded agent turns for this sample
+        </div>
+      </div>
+    )
+  }
+
+  // Track display turns: one assistant message = one turn
+  let turnCounter = -1
+
   return (
     <div>
+      {toggle}
       {messages.map((msg, i) => {
         const isAssistant = msg.role === 'assistant'
         if (isAssistant) turnCounter++

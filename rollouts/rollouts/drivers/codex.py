@@ -602,17 +602,30 @@ class _CodexEventParser:
 # ── Output parsers ────────────────────────────────────────────────────────────
 
 
-def _parse_function_call_output(raw: str) -> tuple[str, int]:
+def _parse_function_call_output(raw: str | list) -> tuple[str, int]:
     """Extract stdout and exit code from function_call_output.output.
 
-    Format:
+    String format:
         Chunk ID: <hex>\n
         Wall time: <float> seconds\n
         Process exited with code <N>\n
         Original token count: <N>\n
         Output:\n
         <actual stdout>
+
+    List format (multimodal): list of content blocks with type "input_text"
+    or "input_image". Text blocks are joined; image blocks become "[image]".
     """
+    if isinstance(raw, list):
+        parts = []
+        for block in raw:
+            if isinstance(block, dict):
+                if block.get("type") == "input_text":
+                    parts.append(block.get("text", ""))
+                else:
+                    parts.append("[image]")
+        return "\n".join(parts), 0
+
     exit_code = 0
     for line in raw.splitlines():
         if line.startswith("Process exited with code "):
