@@ -50,6 +50,16 @@ MODAL_PARENT_LEASE_TTL_S = 90.0
 MODAL_PARENT_LEASE_REFRESH_INTERVAL_S = 15.0
 
 
+def _is_modal_not_found_error(exc: BaseException) -> bool:
+    """Return true when Modal reports a sandbox/object is already gone.
+
+    Teardown/artifact polling should treat this as a terminal condition, not a
+    new failure that masks the child process outcome.
+    """
+
+    return type(exc).__name__ == "NotFoundError"
+
+
 def _json_decode_maybe_incomplete(payload: str, exc: json.JSONDecodeError) -> bool:
     """Return true when a JSON decode failure likely reflects a split chunk.
 
@@ -151,7 +161,8 @@ def _exception_is_operator_interrupt(exc: BaseException) -> bool:
 
     if isinstance(exc, (KeyboardInterrupt, trio.Cancelled)):
         return True
-    if isinstance(exc, BaseExceptionGroup):
+    base_exception_group = globals().get("BaseExceptionGroup")
+    if base_exception_group is not None and isinstance(exc, base_exception_group):
         return any(_exception_is_operator_interrupt(child) for child in exc.exceptions)
     return False
 
@@ -178,12 +189,17 @@ def _modal_supervisor_exit_code(event_name: str, event_data: dict[str, Any]) -> 
 def _read_modal_supervisor_status_sync(sandbox: Any, status_file: str) -> dict[str, Any] | None:
     """Read the supervisor status file from the sandbox, if present."""
 
-    proc = sandbox.exec(
-        "bash",
-        "-lc",
-        f"if [ -f {shlex.quote(status_file)} ]; then cat {shlex.quote(status_file)}; fi",
-        timeout=30,
-    )
+    try:
+        proc = sandbox.exec(
+            "bash",
+            "-lc",
+            f"if [ -f {shlex.quote(status_file)} ]; then cat {shlex.quote(status_file)}; fi",
+            timeout=30,
+        )
+    except BaseException as exc:
+        if _is_modal_not_found_error(exc):
+            return None
+        raise
     stdout = "".join(proc.stdout)
     _ = "".join(proc.stderr)
     exit_code = proc.wait()
@@ -284,16 +300,21 @@ async def _maintain_modal_parent_lease(
 def _read_modal_text_artifact_sync(sandbox: Any, remote_path: str) -> str | None:
     """Read a text artifact from the sandbox, if present."""
 
-    proc = sandbox.exec(
-        "bash",
-        "-lc",
-        (
-            f"if [ -f {shlex.quote(remote_path)} ]; then "
-            f"cat {shlex.quote(remote_path)}; "
-            "else exit 2; fi"
-        ),
-        timeout=30,
-    )
+    try:
+        proc = sandbox.exec(
+            "bash",
+            "-lc",
+            (
+                f"if [ -f {shlex.quote(remote_path)} ]; then "
+                f"cat {shlex.quote(remote_path)}; "
+                "else exit 2; fi"
+            ),
+            timeout=30,
+        )
+    except BaseException as exc:
+        if _is_modal_not_found_error(exc):
+            return None
+        raise
     stdout = "".join(proc.stdout)
     _ = "".join(proc.stderr)
     exit_code = proc.wait()
@@ -1566,7 +1587,12 @@ async def terminate_modal_sandbox(sandbox: ModalSandboxHandle) -> None:
     """Terminate a live Modal sandbox."""
 
     def _terminate() -> None:
-        sandbox.sandbox.terminate()
+        try:
+            sandbox.sandbox.terminate()
+        except BaseException as exc:
+            if _is_modal_not_found_error(exc):
+                return
+            raise
 
     await trio.to_thread.run_sync(_terminate)
 

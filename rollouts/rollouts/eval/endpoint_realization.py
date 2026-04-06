@@ -10,7 +10,14 @@ from urllib.parse import urlsplit
 
 import trio
 
-from rollouts.eval.configs import EndpointConfig, InferenceServerConfig
+from rollouts.eval.configs import (
+    EndpointCapabilities,
+    EndpointConfig,
+    ExternalEndpoint,
+    InferenceEndpoint,
+    InferenceServerConfig,
+    OwnedEndpoint,
+)
 from rollouts.remote_runtime import (
     SourceSyncPolicy,
     materialization_plan_from_runtime,
@@ -18,12 +25,8 @@ from rollouts.remote_runtime import (
 )
 from rollouts.training.configs import HardwareConfig, InferenceConfig, InferenceWorkerConfig
 from rollouts.training.inference_realizations import get_inference_engine_spec
-from rollouts.training.weight_sync import (
-    InferenceBackend,
-    SGLangEngine,
-    VLLMEngine,
-    _classify_sglang_startup_phase,
-)
+from rollouts.training.inference_runtime_factory import build_owned_endpoint
+from rollouts.training.weight_sync import InferenceBackend, _classify_sglang_startup_phase
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 REMOTE_VENV_PYTHON = "/opt/venvs/rollouts/bin/python"
@@ -35,8 +38,8 @@ MODAL_SANDBOX_FORCE_TERMINATE_TIMEOUT_S = 15.0
 
 @dataclass(frozen=True)
 class RealizedEvalEndpoint:
-    endpoint_config: EndpointConfig
-    engine: InferenceBackend | None = None
+    endpoint_config: ExternalEndpoint | EndpointConfig
+    engine: InferenceBackend | OwnedEndpoint | None = None
     metadata: dict[str, Any] | None = None
 
 
@@ -74,45 +77,55 @@ def _build_engine(
     *,
     worker: InferenceWorkerConfig,
     output_dir: Path,
-) -> InferenceBackend:
+) -> OwnedEndpoint:
     spec = get_inference_engine_spec(worker.inference.spec)
     inference = worker.inference
-    if spec.api_format == "sglang":
-        return SGLangEngine(
-            model_name=worker.model,
-            port=inference.port,
-            cuda_device_ids=inference.cuda_device_ids,
-            output_dir=output_dir,
-            mem_fraction=inference.mem_fraction,
-            dtype="bfloat16",
-            disable_cuda_graph=inference.disable_cuda_graph,
-            max_total_tokens=inference.max_total_tokens,
-            max_prefill_tokens=inference.max_prefill_tokens,
-            max_running_requests=inference.max_running_requests,
-            chunked_prefill_size=inference.chunked_prefill_size,
-            realization_name=spec.name,
-            launch_module=spec.launch_module,
-            capability_notes=spec.capability_notes,
-            available_sync_realizations=spec.supported_sync_realizations,
-            default_sync_realization=spec.default_sync_realization,
+    if spec.api_format not in ("sglang", "vllm"):
+        raise ValueError(
+            f"Eval worker-backed endpoint does not support engine spec {spec.name!r} "
+            f"(api_format={spec.api_format!r})"
         )
-    if spec.api_format == "vllm":
-        return VLLMEngine(
-            model_name=worker.model,
-            port=inference.port,
-            cuda_device_ids=inference.cuda_device_ids,
-            output_dir=output_dir,
-            dtype="bfloat16",
-            gpu_memory_utilization=inference.mem_fraction,
-            realization_name=spec.name,
-            launch_module=spec.launch_module,
-            capability_notes=spec.capability_notes,
-            available_sync_realizations=spec.supported_sync_realizations,
-            default_sync_realization=spec.default_sync_realization,
-        )
-    raise ValueError(
-        f"Eval worker-backed endpoint does not support engine spec {spec.name!r} "
-        f"(api_format={spec.api_format!r})"
+    return build_owned_endpoint(
+        spec=spec,
+        model=worker.model,
+        cuda_device_ids=inference.cuda_device_ids,
+        port=inference.port,
+        output_dir=output_dir,
+        capabilities=EndpointCapabilities(weight_sync=None),
+        dtype="bfloat16",
+        mem_fraction=inference.mem_fraction,
+        disable_cuda_graph=inference.disable_cuda_graph,
+        max_total_tokens=inference.max_total_tokens,
+        max_prefill_tokens=inference.max_prefill_tokens,
+        max_running_requests=inference.max_running_requests,
+        chunked_prefill_size=inference.chunked_prefill_size,
+        startup_timeout=inference.startup_timeout,
+    )
+
+
+def _worker_from_owned_endpoint(endpoint_config: OwnedEndpoint) -> InferenceWorkerConfig:
+    return InferenceWorkerConfig(
+        worker_id="eval-endpoint",
+        model=endpoint_config.model,
+        inference=InferenceConfig(
+            spec=endpoint_config.spec,
+            port=endpoint_config.port,
+            cuda_device_ids=endpoint_config.cuda_device_ids,
+            mem_fraction=endpoint_config.mem_fraction,
+            tensor_parallel_size=len(endpoint_config.cuda_device_ids),
+            startup_timeout=endpoint_config.startup_timeout,
+        ),
+        provider=endpoint_config.provider,
+    )
+
+
+def _externalize_owned_endpoint(endpoint_config: OwnedEndpoint, url: str) -> ExternalEndpoint:
+    return ExternalEndpoint(
+        url=url,
+        model=endpoint_config.model,
+        provider=endpoint_config.provider,
+        temperature=endpoint_config.temperature,
+        max_tokens=endpoint_config.max_tokens,
     )
 
 
@@ -564,7 +577,7 @@ async def _wait_for_modal_tunnel(
 @asynccontextmanager
 async def _realize_modal_endpoint(
     *,
-    endpoint_config: EndpointConfig,
+    endpoint_config: EndpointConfig | OwnedEndpoint,
     output_dir: Path,
     hardware_config: HardwareConfig,
     worker: InferenceWorkerConfig,
@@ -695,8 +708,15 @@ async def _realize_modal_endpoint(
                     )
                     try:
                         yield RealizedEvalEndpoint(
-                            endpoint_config=replace(
-                                endpoint_config, base_url=f"{tunnel.url.rstrip('/')}/v1"
+                            endpoint_config=(
+                                _externalize_owned_endpoint(
+                                    endpoint_config,
+                                    f"{tunnel.url.rstrip('/')}/v1",
+                                )
+                                if isinstance(endpoint_config, OwnedEndpoint)
+                                else replace(
+                                    endpoint_config, base_url=f"{tunnel.url.rstrip('/')}/v1"
+                                )
                             ),
                             metadata={
                                 "provider": "modal",
@@ -717,7 +737,7 @@ async def _realize_modal_endpoint(
 @asynccontextmanager
 async def realize_worker_backed_endpoint(
     *,
-    endpoint_config: EndpointConfig,
+    endpoint_config: InferenceEndpoint | EndpointConfig,
     output_dir: Path,
     hardware_config: HardwareConfig | None,
     server_config: InferenceServerConfig | None,
@@ -726,26 +746,34 @@ async def realize_worker_backed_endpoint(
     force_deploy_committed: bool = False,
     run_logger: Any | None = None,
 ) -> Any:
-    if endpoint_config.base_url is not None or not endpoint_config.requires_server:
+    if isinstance(endpoint_config, ExternalEndpoint):
         yield RealizedEvalEndpoint(endpoint_config=endpoint_config)
         return
+    if isinstance(endpoint_config, EndpointConfig):
+        if endpoint_config.base_url is not None or not endpoint_config.requires_server:
+            yield RealizedEvalEndpoint(endpoint_config=endpoint_config)
+            return
 
     if hardware_config is None:
         raise ValueError(
-            "Auto-realized eval endpoint requires hardware config when base_url is omitted."
+            "Auto-realized eval endpoint requires hardware config for OwnedEndpoint or "
+            "when base_url is omitted."
         )
 
     realized_worker = worker
     if realized_worker is None:
-        if server_config is None:
-            raise ValueError(
-                "Auto-realized eval endpoint requires either a worker topology binding or "
-                "server config."
+        if isinstance(endpoint_config, OwnedEndpoint):
+            realized_worker = _worker_from_owned_endpoint(endpoint_config)
+        else:
+            if server_config is None:
+                raise ValueError(
+                    "Auto-realized eval endpoint requires either a worker topology binding or "
+                    "server config."
+                )
+            realized_worker = _legacy_worker_from_eval_surface(
+                endpoint_config=endpoint_config,
+                server_config=server_config,
             )
-        realized_worker = _legacy_worker_from_eval_surface(
-            endpoint_config=endpoint_config,
-            server_config=server_config,
-        )
 
     if hardware_config.provider == "modal":
         async with _realize_modal_endpoint(
@@ -771,7 +799,11 @@ async def realize_worker_backed_endpoint(
     try:
         await engine.wait_until_ready(realized_worker.inference.startup_timeout)
         yield RealizedEvalEndpoint(
-            endpoint_config=replace(endpoint_config, base_url=engine.api_base),
+            endpoint_config=(
+                _externalize_owned_endpoint(endpoint_config, engine.base_url)
+                if isinstance(endpoint_config, OwnedEndpoint)
+                else replace(endpoint_config, base_url=engine.api_base)
+            ),
             engine=engine,
         )
     finally:

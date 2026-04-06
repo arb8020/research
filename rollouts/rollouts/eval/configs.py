@@ -27,10 +27,14 @@ Example usage:
 
 from __future__ import annotations
 
+import subprocess
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
+
+import httpx
+import trio
 
 if TYPE_CHECKING:
     from rollouts.agents.types import AgentState
@@ -51,10 +55,14 @@ __all__ = [
     "AgentRunSpec",
     "AttemptExecutor",
     "EvalTaskSpec",
+    "EndpointCapabilities",
     "EndpointConfig",
     "EvalRunConfig",
     "EvalOutputConfig",
+    "ExternalEndpoint",
     "HardwareConfig",
+    "InferenceEndpoint",
+    "OwnedEndpoint",
     "SupportedStopHandler",
     "EvalStopHandler",
     "MaxTurnsStop",
@@ -134,7 +142,7 @@ class AgentRunSpec:
     # execution (`attempt_executor`). If the surface keeps growing, split this into
     # an explicit sum type instead of adding more branch-specific optional fields.
 
-    endpoint: EndpointConfig | None = None
+    endpoint: InferenceEndpoint | EndpointConfig | None = None
     external_runtime: ExternalRuntime | None = None
     prepare_messages: Callable[[dict[str, Any]], list[Any]] | None = None
     prompt_builder: PromptBuilder | None = None
@@ -173,20 +181,328 @@ class AgentRunSpec:
             )
 
 
+# ---------------------------------------------------------------------------
+# MIGRATION: Toward explicit lifecycle ownership
+#
+# The current EndpointConfig encodes a semantic distinction (do we own this
+# server's lifecycle?) implicitly via the presence/absence of base_url. That's
+# dishonest - the type looks the same whether we own the process or not.
+#
+# Target shape (see design discussion in docs/design/external_agent_observability_cleanup.md):
+#
+#   ExternalEndpoint - we don't own it, just a URL + wire format
+#   OwnedEndpoint    - we launch it, we kill it, we set its devices
+#
+#   InferenceEndpoint = ExternalEndpoint | OwnedEndpoint
+#
+# Both produce a base_url the eval harness can send requests to. The distinction
+# is at construction time (which type you use), not inferred from field presence.
+#
+# Migration plan:
+#   1. Introduce ExternalEndpoint + OwnedEndpoint as new types (below)
+#   2. Update endpoint_realization.py to dispatch on the sum type
+#   3. Update eval/run.py and eval/native.py to accept InferenceEndpoint
+#   4. Migrate callsites (32 files) from EndpointConfig → ExternalEndpoint
+#   5. Deprecate and remove EndpointConfig + InferenceServerConfig
+#
+# OwnedEndpoint also unifies eval and RL: RL currently owns inference server
+# lifecycle via SGLangEngine/VLLMEngine/EngineV2Engine, which duplicate the
+# same tmux+health-poll machinery. OwnedEndpoint extracts that into one place
+# and makes it reachable from eval without going through Modal.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ExternalEndpoint:
+    """An inference endpoint we do NOT own.
+
+    Use this when pointing at an already-running server (local or remote)
+    or an API provider. We just have a URL - no lifecycle management.
+
+    Examples:
+        # Local server started manually
+        ExternalEndpoint(
+            url="http://localhost:30000/v1",
+            model="Qwen/Qwen2.5-7B-Instruct",
+            provider="sglang",
+        )
+
+        # API provider
+        ExternalEndpoint(
+            url="https://api.anthropic.com/v1",
+            model="claude-sonnet-4-20250514",
+            provider="anthropic",
+        )
+    """
+
+    url: str
+    model: str
+    provider: Literal["anthropic", "openai", "google", "sglang", "vllm"]
+    api_key: str | None = None
+    temperature: float = 0.0
+    max_tokens: int = 4096
+    thinking: bool = False
+    thinking_budget: int | None = None
+    reasoning_effort: Literal["low", "medium", "high"] | None = None
+
+    @property
+    def base_url(self) -> str:
+        return self.url
+
+    @property
+    def requires_server(self) -> bool:
+        return False
+
+    def get_api_format(self) -> str:
+        formats = {
+            "anthropic": "anthropic-messages",
+            "openai": "openai-completions",
+            "google": "google-generative-ai",
+            "sglang": "openai-completions",
+            "vllm": "openai-completions",
+        }
+        return formats.get(self.provider, "openai-completions")
+
+
+@dataclass(frozen=True)
+class EndpointCapabilities:
+    """What an inference endpoint advertises it can do.
+
+    Advertised at construction time from the engine spec - not discovered
+    at runtime. Training checks weight_sync before attempting NCCL setup.
+    """
+
+    # None = inference-only (eval). Present = can receive weight updates (RL).
+    weight_sync: str | None = (
+        None  # name of InferenceSyncRealization, e.g. "sglang-http-path-reload"
+    )
+
+
+@dataclass(frozen=True)
+class OwnedEndpoint:
+    """An inference endpoint whose process lifecycle we own.
+
+    We launch it (tmux, survives parent crash), wait for /health, and kill
+    it on shutdown. The eval harness and RL training loop both use this -
+    the only difference is whether capabilities.weight_sync is set.
+
+    Device assignment is explicit here (cuda_device_ids → CUDA_VISIBLE_DEVICES
+    at launch), not reconstructed per-engine-class as it is today.
+
+    Examples:
+        # Eval - no weight sync
+        OwnedEndpoint(
+            spec="slime-sglang",
+            model="Qwen/Qwen2.5-7B-Instruct",
+            cuda_device_ids=(0,),
+            port=30000,
+            mem_fraction=0.9,
+            capabilities=EndpointCapabilities(weight_sync=None),
+        )
+
+        # RL - with weight sync (produced by InferenceConfig internally)
+        OwnedEndpoint(
+            spec="slime-sglang",
+            model="Qwen/Qwen2.5-7B-Instruct",
+            cuda_device_ids=(0,),
+            port=30000,
+            mem_fraction=0.55,
+            capabilities=EndpointCapabilities(weight_sync="sglang-http-path-reload"),
+        )
+
+    TODO: implement launch/wait_until_ready/shutdown here by extracting the
+    shared tmux+health-poll machinery from SGLangEngine/VLLMEngine/EngineV2Engine
+    in training/weight_sync.py (all three are copy-pastes of the same logic).
+    Those classes should then compose on OwnedEndpoint rather than reimplement it.
+    """
+
+    spec: str  # name of InferenceEngineSpec - determines launch_cmd
+    model: str
+    cuda_device_ids: tuple[int, ...]
+    port: int
+    capabilities: EndpointCapabilities
+    output_dir: Path | None = None
+    launch_cmd: str | None = None
+    mem_fraction: float = 0.7
+    startup_timeout: float = 300.0
+    temperature: float = 0.0
+    max_tokens: int = 4096
+
+    @property
+    def provider(self) -> Literal["sglang", "vllm"]:
+        from rollouts.training.inference_realizations import get_inference_engine_spec
+
+        provider = get_inference_engine_spec(self.spec).api_format
+        if provider not in ("sglang", "vllm"):
+            raise ValueError(f"OwnedEndpoint does not support provider {provider!r}")
+        return provider
+
+    @property
+    def base_url(self) -> str:
+        return f"http://localhost:{self.port}/v1"
+
+    @property
+    def health_url(self) -> str:
+        return f"http://localhost:{self.port}/health"
+
+    @property
+    def api_base(self) -> str:
+        return f"http://localhost:{self.port}"
+
+    @property
+    def requires_server(self) -> bool:
+        return True
+
+    @property
+    def session_name(self) -> str:
+        if self.output_dir is None:
+            raise ValueError("OwnedEndpoint.session_name requires output_dir")
+        return f"{self.spec}-{self.output_dir.name}-{self.port}"
+
+    @property
+    def log_path(self) -> Path:
+        if self.output_dir is None:
+            raise ValueError("OwnedEndpoint.log_path requires output_dir")
+        return self.output_dir / f"{self.provider}_{self.port}.log"
+
+    @property
+    def trace_path(self) -> Path | None:
+        if self.output_dir is None or self.provider != "sglang":
+            return None
+        return self.output_dir / f"{self.provider}_{self.port}_trace.jsonl"
+
+    def build_launch_cmd(self) -> str:
+        if self.launch_cmd is None:
+            raise ValueError("OwnedEndpoint.build_launch_cmd requires launch_cmd")
+        return self.launch_cmd
+
+    def get_api_format(self) -> str:
+        return "openai-completions"
+
+    def launch(self) -> str:
+        return _launch_in_tmux(
+            self.session_name,
+            self.build_launch_cmd(),
+            self.log_path,
+            trace_file=self.trace_path,
+            port=self.port,
+            cuda_device_ids=self.cuda_device_ids,
+        )
+
+    async def wait_until_ready(self, max_wait: float | None = None) -> None:
+        await _poll_until_healthy(
+            self.health_url,
+            self.session_name,
+            self.log_path,
+            self.startup_timeout if max_wait is None else max_wait,
+        )
+
+    def shutdown(self) -> None:
+        _kill_tmux_session(self.session_name)
+
+    def start_log_tailer(self) -> None:
+        return None
+
+
+# Sum type: the two honest variants. Use this as the type annotation wherever
+# code currently accepts EndpointConfig and needs to handle both cases.
+InferenceEndpoint = ExternalEndpoint | OwnedEndpoint
+
+
+def _launch_in_tmux(
+    session_name: str,
+    cmd: str,
+    log_file: Path,
+    *,
+    trace_file: Path | None,
+    port: int,
+    cuda_device_ids: tuple[int, ...],
+) -> str:
+    log_file.parent.mkdir(parents=True, exist_ok=True)
+    log_file.touch(exist_ok=True)
+    if trace_file is not None:
+        trace_file.parent.mkdir(parents=True, exist_ok=True)
+        trace_file.touch(exist_ok=True)
+
+    subprocess.run(
+        ["tmux", "kill-session", "-t", session_name],
+        capture_output=True,
+    )
+    subprocess.run(
+        f"fuser -k {port}/tcp 2>/dev/null || true",
+        shell=True,
+        capture_output=True,
+    )
+    for gpu_id in cuda_device_ids:
+        subprocess.run(
+            f"nvidia-smi --id={gpu_id} --query-compute-apps=pid --format=csv,noheader | xargs -r kill -9",
+            shell=True,
+            capture_output=True,
+        )
+
+    full_cmd = f"{cmd} 2>&1 | tee {log_file}"
+    subprocess.run(
+        ["tmux", "new-session", "-d", "-s", session_name, full_cmd],
+        check=True,
+    )
+    return session_name
+
+
+def _is_tmux_session_alive(session_name: str) -> bool:
+    result = subprocess.run(
+        ["tmux", "has-session", "-t", session_name],
+        capture_output=True,
+    )
+    return result.returncode == 0
+
+
+async def _poll_until_healthy(
+    health_url: str,
+    session_name: str,
+    log_file: Path,
+    max_wait: float,
+) -> None:
+    async with httpx.AsyncClient(timeout=5.0) as client:
+        for _attempt in range(int(max_wait)):
+            if not _is_tmux_session_alive(session_name):
+                raise RuntimeError(
+                    "Inference server crashed during startup. "
+                    f"session_name={session_name!r} log_path={log_file}"
+                )
+            try:
+                resp = await client.get(health_url)
+                if resp.status_code == 200:
+                    return
+            except Exception:
+                pass
+            await trio.sleep(1.0)
+
+    raise RuntimeError(
+        f"Inference server failed to become healthy within {max_wait}s. log_path={log_file}"
+    )
+
+
+def _kill_tmux_session(session_name: str) -> None:
+    subprocess.run(
+        ["tmux", "kill-session", "-t", session_name],
+        capture_output=True,
+    )
+
+
 @dataclass(frozen=True)
 class EndpointConfig:
     """LLM endpoint configuration.
 
+    DEPRECATED: Use ExternalEndpoint or OwnedEndpoint instead.
+
+    This type conflates two distinct cases:
+    - External endpoint (base_url set): we don't own the server
+    - Owned endpoint (base_url None): we launch and manage the server
+    That distinction should be explicit in the type, not inferred from
+    field presence. See migration comment above.
+
     Supports both API providers (Anthropic, OpenAI, Google) and
     self-hosted inference servers (SGLang, vLLM).
-
-    For API providers:
-        - API key is read from environment (ANTHROPIC_API_KEY, etc.)
-        - base_url defaults to the provider's public API
-
-    For SGLang/vLLM:
-        - If base_url is provided, connects to existing server
-        - If base_url is None and HardwareConfig is provided, provisions and launches server
     """
 
     provider: Literal["anthropic", "openai", "google", "sglang", "vllm"] = "anthropic"
@@ -272,8 +588,8 @@ def endpoint_and_server_for_role(
     )
 
 
-def materialize_endpoint(endpoint_config: EndpointConfig) -> Endpoint:
-    """Lower an eval EndpointConfig into the core Endpoint type.
+def materialize_endpoint(endpoint_config: InferenceEndpoint | EndpointConfig) -> Endpoint:
+    """Lower an eval endpoint surface into the core Endpoint type.
 
     This is the shared endpoint contract for:
     - native eval execution
@@ -294,7 +610,15 @@ def materialize_endpoint(endpoint_config: EndpointConfig) -> Endpoint:
     provider = endpoint_config.provider
     model = endpoint_config.model
 
-    api_key = endpoint_config.api_key or get_api_key(provider) or ""
+    if isinstance(endpoint_config, ExternalEndpoint):
+        configured_base_url = endpoint_config.url
+        api_key = endpoint_config.api_key or get_api_key(provider) or ""
+    elif isinstance(endpoint_config, OwnedEndpoint):
+        configured_base_url = endpoint_config.base_url
+        api_key = get_api_key(provider) or ""
+    else:
+        configured_base_url = endpoint_config.base_url
+        api_key = endpoint_config.api_key or get_api_key(provider) or ""
     if not api_key and provider in ("anthropic", "openai", "google"):
         raise ValueError(
             f"No API key found for {provider}. Set {provider.upper()}_API_KEY in environment."
@@ -323,7 +647,7 @@ def materialize_endpoint(endpoint_config: EndpointConfig) -> Endpoint:
 
     return Endpoint(
         model=f"{provider}/{model}",
-        base_url=endpoint_config.base_url or resolved_base_url or endpoint_config.get_base_url(),
+        base_url=configured_base_url or resolved_base_url or endpoint_config.get_base_url(),
         api_format=resolved_api_format or endpoint_config.get_api_format(),
         api_key=api_key,
         temperature=endpoint_config.temperature,

@@ -16,10 +16,11 @@ from rollouts.config_status import draft
 from rollouts.core import Message, Metric, Score
 from rollouts.eval import (
     AgentRunSpec,
+    EndpointCapabilities,
     EvalOutputConfig,
     EvalRunConfig,
     EvalTaskSpec,
-    endpoint_and_server_for_role,
+    OwnedEndpoint,
 )
 from rollouts.training.configs import (
     DepsConfig,
@@ -63,6 +64,17 @@ def reverse_text_eval_score_fn(sample: AttemptResult, _context: object) -> Score
     )
 
 
+# Keep this smoke on-distribution so it remains a lifecycle witness for
+# OwnedEndpoint rather than pretending to be a strong model-quality check.
+# In local manual probes, this SFT served requests correctly but missed exact
+# reversal on some simple handcrafted strings like "hello world" and
+# "prime intellect". Use representative examples from Prime's dataset here.
+SMOKE_TASKS = [
+    {"text": "The community in Bruck was merged into it"},
+    {"text": "In 1891 the community inaugurated its own cemetery"},
+]
+
+
 config_status = draft(
     "Smoke eval for the worker-topology actor path. Intended as the first native "
     "inference-worker eval witness before adding judge-worker bindings."
@@ -85,7 +97,7 @@ worker_topology = WorkerTopologyConfig(
     inference_workers=(
         InferenceWorkerConfig(
             worker_id="actor",
-            model="Qwen/Qwen2.5-0.5B-Instruct",
+            model="PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT",
             inference=InferenceConfig(
                 cuda_device_ids=(0,),
                 port=30000,
@@ -96,13 +108,19 @@ worker_topology = WorkerTopologyConfig(
     role_bindings=(InferenceRoleBinding(role="actor", worker_id="actor"),),
 )
 
-endpoint, server = endpoint_and_server_for_role(worker_topology, "actor")
+actor_worker = worker_topology.get_worker_for_role("actor")
+endpoint = OwnedEndpoint(
+    spec=actor_worker.inference.spec,
+    model=actor_worker.model,
+    cuda_device_ids=actor_worker.inference.cuda_device_ids,
+    port=actor_worker.inference.port,
+    mem_fraction=actor_worker.inference.mem_fraction,
+    startup_timeout=actor_worker.inference.startup_timeout,
+    capabilities=EndpointCapabilities(weight_sync=None),
+)
 
 eval_task = EvalTaskSpec(
-    tasks=[
-        {"text": "hello world"},
-        {"text": "prime intellect"},
-    ],
+    tasks=SMOKE_TASKS,
     run_spec=AgentRunSpec(
         endpoint=endpoint,
         prepare_messages=prepare_messages,
@@ -119,5 +137,4 @@ eval_task = EvalTaskSpec(
         experiment_name="smoke_reverse_text_native_sglang_worker",
     ),
     hardware=worker_topology.hardware,
-    server=server,
 )

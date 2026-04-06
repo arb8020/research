@@ -31,6 +31,11 @@ from typing import Any, Protocol
 import httpx
 import trio
 
+from rollouts.eval.configs import (
+    EndpointCapabilities,
+    OwnedEndpoint,
+)
+
 from .weight_sync_protocol import (
     ENGINE_V2_HTTP_PATH_RELOAD,
     SGLANG_HTTP_PATH_RELOAD,
@@ -85,8 +90,20 @@ def _resolve_socket_ifname_for_launch() -> tuple[str | None, str]:
 
 
 def _python_module_launch(module: str) -> str:
-    """Launch a Python module with the current interpreter."""
-    return f"{shlex.quote(sys.executable)} -m {module}"
+    """Launch a Python module with the inference python interpreter.
+
+    Reads ROLLOUTS_INFERENCE_PYTHON if set (split_env: inference venv differs
+    from the trainer venv). Falls back to sys.executable in shared_env.
+
+    TODO(split_env): sys.executable is wrong in principle even for shared_env —
+    it uses whatever python launched the training process, which happens to be
+    correct only because trainer and inference share one venv today. The right
+    fix is InferenceEngineBinding.python_executable, resolved at provision time
+    by the launcher (argus) and passed explicitly to the engine, not inferred
+    from the ambient interpreter. See docs/composer2_infra_gaps.md.
+    """
+    python = os.environ.get("ROLLOUTS_INFERENCE_PYTHON") or sys.executable
+    return f"{shlex.quote(python)} -m {module}"
 
 
 def _classify_sglang_startup_phase(line: str) -> tuple[str, dict[str, Any]] | None:
@@ -711,6 +728,35 @@ class ManagedChannelWeightSyncer:
 # Adapters (Casey Muratori: redundancy - multiple ways to do same thing)
 # ══════════════════════════════════════════════════════════════
 
+# ---------------------------------------------------------------------------
+# MIGRATION: Extract shared lifecycle machinery into OwnedEndpoint
+#
+# SGLangEngine, VLLMEngine, and EngineV2Engine all implement the same
+# tmux + health-poll + shutdown pattern. The only differences are:
+#   - build_launch_cmd(): engine-specific CLI flags
+#   - apply_weight_update(): engine-specific weight sync (RL only)
+#
+# Target: move the shared lifecycle into OwnedEndpoint (eval/configs.py),
+# and have these classes compose on it rather than reimplement it.
+#
+# Concretely, the shared logic to extract is:
+#   _launch_in_tmux(session_name, cmd, log_file)  - tmux new-session + port/gpu cleanup
+#   _poll_until_healthy(health_url, max_wait)      - async health check loop
+#   _kill_tmux_session(session_name)               - tmux kill-session
+#   _is_tmux_session_alive(session_name) -> bool   - tmux has-session check
+#
+# After extraction:
+#   SGLangEngine.launch()   -> builds cmd via build_launch_cmd(), delegates to _launch_in_tmux()
+#   SGLangEngine.shutdown() -> delegates to _kill_tmux_session()
+#   SGLangEngine.wait_until_ready() -> delegates to _poll_until_healthy()
+#   (same for VLLMEngine, EngineV2Engine)
+#
+# This also makes OwnedEndpoint.launch/wait_until_ready/shutdown (currently
+# NotImplementedError stubs) implementable without duplicating logic.
+#
+# See eval/configs.py for OwnedEndpoint definition and full migration plan.
+# ---------------------------------------------------------------------------
+
 
 @dataclass
 class SGLangEngine:
@@ -745,6 +791,9 @@ class SGLangEngine:
     max_prefill_tokens: int | None = None
     max_running_requests: int | None = None
     chunked_prefill_size: int | None = None
+    # Activation harvesting flags (harvest-sglang only; ignored by slime-sglang)
+    harvest_layers: tuple[int, ...] | None = None
+    harvest_output_dir: str | None = None
     timeout: float = 300.0
     realization_name: str = "slime-sglang"
     launch_module: str = "rollouts.inference.realizations.slime_sglang"
@@ -837,6 +886,10 @@ class SGLangEngine:
             extra_args.append(f"--max-running-requests {self.max_running_requests}")
         if self.chunked_prefill_size is not None:
             extra_args.append(f"--chunked-prefill-size {self.chunked_prefill_size}")
+        if self.harvest_layers:
+            extra_args.append("--harvest-layers " + " ".join(str(l) for l in self.harvest_layers))
+        if self.harvest_output_dir is not None:
+            extra_args.append(f"--harvest-output-dir {shlex.quote(self.harvest_output_dir)}")
         extra_args_str = ""
         if extra_args:
             extra_args_str = " " + " ".join(extra_args)
@@ -881,6 +934,19 @@ class SGLangEngine:
         # NOTE: NCCL weight sync uses HTTP API (/init_weights_update_group),
         # not SGLang CLI flags. The --rl-on-policy-target flag only supports 'fsdp'.
         return cmd
+
+    def as_owned_endpoint(self) -> OwnedEndpoint:
+        return OwnedEndpoint(
+            spec=self.realization_name,
+            model=self.model_name,
+            cuda_device_ids=self.cuda_device_ids,
+            port=self.port,
+            capabilities=EndpointCapabilities(weight_sync=self.default_sync_realization),
+            output_dir=self.output_dir,
+            launch_cmd=self.build_launch_cmd(),
+            mem_fraction=self.mem_fraction,
+            startup_timeout=self.timeout,
+        )
 
     def _startup_log_context(self) -> dict[str, Any]:
         return {
@@ -965,11 +1031,6 @@ class SGLangEngine:
         Returns:
             The tmux session name
         """
-        self.output_dir.mkdir(parents=True, exist_ok=True)
-        self._log_file.parent.mkdir(parents=True, exist_ok=True)
-        self._log_file.touch(exist_ok=True)
-        self._trace_file.parent.mkdir(parents=True, exist_ok=True)
-        self._trace_file.touch(exist_ok=True)
         _startup_logger.info(
             "inference log path ready",
             extra={
@@ -981,38 +1042,7 @@ class SGLangEngine:
             },
         )
 
-        # Kill existing session if present
-        subprocess.run(
-            ["tmux", "kill-session", "-t", self._session_name],
-            capture_output=True,
-        )
-
-        # Kill any process bound to our port (stale server from previous run)
-        subprocess.run(
-            f"fuser -k {self.port}/tcp 2>/dev/null || true",
-            shell=True,
-            capture_output=True,
-        )
-
-        # Kill any orphaned processes using our GPUs
-        for gpu_id in self.cuda_device_ids:
-            subprocess.run(
-                f"nvidia-smi --id={gpu_id} --query-compute-apps=pid --format=csv,noheader | xargs -r kill -9",
-                shell=True,
-                capture_output=True,
-            )
-
-        # Build command with log piping
-        cmd = self.build_launch_cmd()
-        full_cmd = f"{cmd} 2>&1 | tee {self._log_file}"
-
-        # Launch in tmux
-        subprocess.run(
-            ["tmux", "new-session", "-d", "-s", self._session_name, full_cmd],
-            check=True,
-        )
-
-        return self._session_name
+        return self.as_owned_endpoint().launch()
 
     def start_log_tailer(self) -> threading.Thread:
         """Start daemon thread that tails SGLang logs via Python logging.
@@ -1102,101 +1132,9 @@ class SGLangEngine:
         trace_thread.start()
         return thread
 
-    def _is_session_alive(self) -> bool:
-        """Check if tmux session is still running."""
-        result = subprocess.run(
-            ["tmux", "has-session", "-t", self._session_name],
-            capture_output=True,
-        )
-        return result.returncode == 0
-
     async def wait_until_ready(self, max_wait: float = 120.0) -> None:
         """Wait until SGLang health check passes."""
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            for attempt in range(int(max_wait)):
-                # Check if tmux session crashed
-                if not self._is_session_alive():
-                    self._emit_health_state(
-                        "session_dead",
-                        attempt=attempt,
-                    )
-                    _startup_logger.error(
-                        "inference startup failed",
-                        extra={
-                            "event": "inference_startup_failed",
-                            "failure_kind": "session_dead",
-                            "health_attempt": attempt,
-                            "last_startup_phase": self._last_startup_phase,
-                            "health_status_code": self._last_health_status_code,
-                            "health_detail": self._last_health_detail,
-                            "log_tail": _read_log_tail(self._log_file, max_lines=40),
-                            **self._startup_log_context(),
-                        },
-                    )
-                    msg = (
-                        "SGLang server crashed during startup! "
-                        f"last_phase={self._last_startup_phase!r} "
-                        f"log_path={self._log_file}"
-                    )
-                    raise RuntimeError(msg)
-
-                try:
-                    resp = await client.get(self.health_url)
-                    if resp.status_code == 200:
-                        self._emit_health_state(
-                            "healthy",
-                            attempt=attempt,
-                            status_code=resp.status_code,
-                        )
-                        self._emit_startup_phase(
-                            "http_ready",
-                            source="healthcheck",
-                        )
-                        return
-                    detail = None
-                    try:
-                        detail = resp.text[:400]
-                    except Exception:
-                        detail = "<failed to read response body>"
-                    self._emit_health_state(
-                        "service_unavailable",
-                        attempt=attempt,
-                        status_code=resp.status_code,
-                        detail=detail,
-                    )
-                    self._emit_health_stall_diagnostic(attempt=attempt)
-                except Exception:
-                    self._emit_health_state(
-                        "transport_pending",
-                        attempt=attempt,
-                        error="request_failed",
-                    )
-                    self._emit_health_stall_diagnostic(attempt=attempt)
-                await trio.sleep(1.0)
-
-        msg = (
-            f"SGLang failed to start after {max_wait}s. "
-            f"last_phase={self._last_startup_phase!r} "
-            f"last_health_state={self._last_health_state!r} "
-            f"last_health_status_code={self._last_health_status_code!r} "
-            f"last_health_detail={self._last_health_detail!r} "
-            f"log_path={self._log_file}"
-        )
-        _startup_logger.error(
-            "inference startup failed",
-            extra={
-                "event": "inference_startup_failed",
-                "failure_kind": "timeout",
-                "health_attempt": int(max_wait),
-                "last_startup_phase": self._last_startup_phase,
-                "health_state": self._last_health_state,
-                "health_status_code": self._last_health_status_code,
-                "health_detail": self._last_health_detail,
-                "log_tail": _read_log_tail(self._log_file, max_lines=40),
-                **self._startup_log_context(),
-            },
-        )
-        raise RuntimeError(msg)
+        await self.as_owned_endpoint().wait_until_ready(max_wait)
 
     async def apply_weight_update(self, update: InferenceWeightUpdate) -> dict[str, Any]:
         realization = resolve_inference_sync_realization(self.capabilities, update.realization)
@@ -1227,10 +1165,7 @@ class SGLangEngine:
                 **self._startup_log_context(),
             },
         )
-        subprocess.run(
-            ["tmux", "kill-session", "-t", self._session_name],
-            capture_output=True,
-        )
+        self.as_owned_endpoint().shutdown()
 
 
 @dataclass

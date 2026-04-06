@@ -98,6 +98,18 @@ def _apply_endpoint_env_overrides(endpoint_config: Any) -> Any:
     base_url_override = os.environ.get("ROLLOUTS_ENDPOINT_BASE_URL")
     if not base_url_override:
         return endpoint_config
+    from rollouts.eval.configs import ExternalEndpoint, OwnedEndpoint
+
+    if isinstance(endpoint_config, OwnedEndpoint):
+        return ExternalEndpoint(
+            url=base_url_override,
+            model=endpoint_config.model,
+            provider=endpoint_config.provider,
+            temperature=endpoint_config.temperature,
+            max_tokens=endpoint_config.max_tokens,
+        )
+    if isinstance(endpoint_config, ExternalEndpoint):
+        return replace(endpoint_config, url=base_url_override)
     return replace(endpoint_config, base_url=base_url_override)
 
 
@@ -413,7 +425,7 @@ Examples:
             print("Endpoint: direct-attempt executor")
         else:
             print(f"Endpoint: {endpoint_config.provider}/{endpoint_config.model}")
-            if endpoint_config.base_url:
+            if not endpoint_config.requires_server:
                 print(f"Base URL: {endpoint_config.base_url}")
         print(f"Max concurrent: {run_config.max_concurrent}")
         print(f"Output dir: {output_config.output_dir}")
@@ -459,7 +471,7 @@ Examples:
                     return results
 
                 if endpoint_config is not None and endpoint_config.provider in ("sglang", "vllm"):
-                    if endpoint_config.base_url:
+                    if not endpoint_config.requires_server:
                         return await run_with_sglang_local(
                             config_module,
                             endpoint_config,
@@ -477,10 +489,21 @@ Examples:
                             server_config,
                         )
 
-                    endpoint_with_url = replace(
-                        endpoint_config,
-                        base_url=endpoint_config.get_base_url(),
-                    )
+                    from rollouts.eval.configs import ExternalEndpoint, OwnedEndpoint
+
+                    if isinstance(endpoint_config, OwnedEndpoint):
+                        endpoint_with_url = ExternalEndpoint(
+                            url=endpoint_config.base_url,
+                            model=endpoint_config.model,
+                            provider=endpoint_config.provider,
+                            temperature=endpoint_config.temperature,
+                            max_tokens=endpoint_config.max_tokens,
+                        )
+                    else:
+                        endpoint_with_url = replace(
+                            endpoint_config,
+                            base_url=endpoint_config.get_base_url(),
+                        )
                     return await run_with_sglang_local(
                         config_module,
                         endpoint_with_url,
