@@ -44,6 +44,8 @@ hardware = HardwareConfig(
     gpu_type="A100",
     gpu_count=4,
     use_torchrun=False,  # single inference server process, not distributed training
+    keep_alive=True,  # keep sandbox alive after run - reuse via sandbox_id for fast iteration
+    # sandbox_id="sb-xxxx",  # uncomment and set to reuse an existing sandbox
     deps=DepsConfig(
         bootstrap_commands=(
             "~/.local/bin/uv pip install --python /opt/venvs/rollouts/bin/python torch transformers accelerate uvicorn fastapi",

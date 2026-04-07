@@ -279,6 +279,15 @@ class HardwareConfig:
     # Whether to use torchrun for multi-GPU (set False for torchtitan which handles FSDP internally)
     use_torchrun: bool = True
 
+    # Modal debugging: keep sandbox alive after run completes so you can reuse
+    # it on the next run via sandbox_id. Avoids re-provisioning and model reload.
+    # Usage:
+    #   1. Run once with keep_alive=True, note the sandbox_id from logs.
+    #   2. Subsequent runs: set sandbox_id="sb-xxxx" to reattach instantly.
+    # Ignored by non-Modal providers.
+    keep_alive: bool = False
+    sandbox_id: str | None = None
+
     def __post_init__(self) -> None:
         # Validate: Modal requires deps
         if self.provider == "modal" and self.deps is None:
@@ -572,6 +581,9 @@ class InferenceConfig:
     max_prefill_tokens: int | None = None
     max_running_requests: int | None = None
     chunked_prefill_size: int | None = None
+    # Activation harvesting (harvest-sglang only; ignored by other specs)
+    harvest_layers: tuple[int, ...] | None = None
+    harvest_output_dir: str | None = None
     tensor_parallel_size: int = 1  # GPUs per engine (1 = each GPU is its own engine)
     expert_parallel_size: int = 1  # For MoE models (SGLang --ep-size)
     startup_timeout: float = (

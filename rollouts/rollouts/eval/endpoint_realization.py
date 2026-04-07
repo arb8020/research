@@ -630,8 +630,9 @@ async def _realize_modal_endpoint(
         source_sync_policy=SourceSyncPolicy.committed_only(
             dirty_action="warn" if force_deploy_committed else "fail"
         ),
-        keep_alive=False,
-        cleanup_scope="run",
+        keep_alive=hardware_config.keep_alive,
+        sandbox_id=hardware_config.sandbox_id,
+        cleanup_scope="none" if hardware_config.sandbox_id else "run",
         run_name=run_name,
         tags={
             "control_plane": "argus",
