@@ -134,7 +134,23 @@ def _remote_service_spec(
     worker: InferenceWorkerConfig,
     output_dir: Path,
     remote_python: str,
+    owned_endpoint: OwnedEndpoint | None = None,
 ) -> tuple[str, str]:
+    # OwnedEndpoint with launch_module bypasses _build_engine entirely -
+    # the launch cmd is derived from the module path, which works remotely
+    # because the repo is synced to the Modal sandbox by bifrost.
+    if owned_endpoint is not None and owned_endpoint.launch_module is not None:
+        # Prepend workspace to PYTHONPATH so the synced rollouts source tree
+        # takes precedence over any installed package version in the venv.
+        # Must export inside the bash -lc so it survives the login shell env reset.
+        launch_cmd = (
+            f"export PYTHONPATH=/workspace/research/rollouts:${{PYTHONPATH:-}}; "
+            f"{remote_python} -m {owned_endpoint.launch_module} "
+            f"--model {owned_endpoint.model} "
+            f"--port {owned_endpoint.port}"
+        )
+        return launch_cmd, "/health"
+
     original_python = os.environ.get("ROLLOUTS_INFERENCE_PYTHON")
     os.environ["ROLLOUTS_INFERENCE_PYTHON"] = remote_python
     try:
@@ -657,6 +673,9 @@ async def _realize_modal_endpoint(
                     worker=worker,
                     output_dir=remote_output_dir,
                     remote_python=remote_python,
+                    owned_endpoint=endpoint_config
+                    if isinstance(endpoint_config, OwnedEndpoint)
+                    else None,
                 )
                 service = await session.serve_service(
                     ServiceSpec(

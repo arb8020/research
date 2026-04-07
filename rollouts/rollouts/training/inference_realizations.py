@@ -134,6 +134,87 @@ ENGINE_V2 = InferenceEngineSpec(
     default_sync_realization=ENGINE_V2_HTTP_PATH_RELOAD.name,
 )
 
+MINI_SGLANG = InferenceEngineSpec(
+    name="mini-sglang",
+    # python -m minisgl --model <model> --host 0.0.0.0 --port <port>
+    # Install: pip install -e git+https://github.com/sgl-project/mini-sglang.git
+    # Default port is 1919; pass --port explicitly to override.
+    launch_module="minisgl",
+    api_format="sglang",
+    deps=None,  # Caller installs minisgl from source; incompatible with slime-sglang in shared env
+    capability_notes=(
+        "Educational reference implementation of SGLang (~5k lines). "
+        "No live weight sync — weights load once at startup, restart required to update. "
+        "Inference-only until /update_weights_from_disk is added upstream or via local patch.",
+    ),
+)
+
+TRTLLM = InferenceEngineSpec(
+    name="trtllm",
+    # python -m tensorrt_llm.commands.serve <model> --host 0.0.0.0 --port <port> --backend pytorch
+    # Equivalent to the trtllm-serve console script.
+    # Install: pip install tensorrt_llm==1.2.0
+    # Hard env constraints: torch==2.10.0, CUDA 13.1. Incompatible with current trainer envs.
+    # Requires service_runtime_layout="separate_env" (not yet implemented in argus/bifrost).
+    launch_module="tensorrt_llm.commands.serve",
+    api_format="vllm",  # OpenAI-compatible; /v1/chat/completions, /health
+    deps=None,  # Caller provides tensorrt_llm install in a separate env
+    capability_notes=(
+        "Requires separate inference env: torch==2.10.0 + CUDA 13.1 are incompatible with "
+        "current trainer envs. service_runtime_layout='separate_env' is not yet implemented. "
+        "Weight sync: /update_weights endpoint exists (AsyncLLM backend only, --backend asyncllm), "
+        "but the weight-handle wire format is undocumented; no InferenceSyncRealization defined yet. "
+        "Logprobs known bugs: prompt logprob token ID mapping wrong (issue #12447, PR #12662 open); "
+        "avoid pipeline parallelism with logprobs (issue #12444). "
+        "For inference-only evals: usable with --backend pytorch once separate_env is available.",
+    ),
+)
+
+
+HARVEST_SGLANG = InferenceEngineSpec(
+    name="harvest-sglang",
+    # Same launcher as slime-sglang — slime_sglang.py handles startup, patching, weight sync.
+    # The harvesting behaviour is activated by passing --harvest-layers and
+    # --harvest-output-dir as extra SGLang server args at launch time.
+    launch_module="rollouts.inference.realizations.slime_sglang",
+    api_format="sglang",
+    deps=None,  # Caller supplies sglang install + patch via DepsConfig.bootstrap_commands.
+    # Patch: rollouts/third_party/miles_patches/v0.5.7/sglang.patch
+    # Apply with (patch paths are python/sglang/srt/..., site-packages needs -p2):
+    #   SITE=$(uv pip show sglang | grep -i '^Location' | awk '{print $2}')
+    #   patch -d $SITE -p2 < /workspace/rollouts/third_party/miles_patches/v0.5.7/sglang.patch
+    launch_env=(
+        ("AMEM_ENABLE", "1"),
+        ("NCCL_CUMEM_ENABLE", "0"),
+        ("NCCL_ASYNC_ERROR_HANDLING", "1"),
+        ("ROLLOUTS_SGLANG_FORCE_SYNC_BROADCAST", "1"),
+    ),
+    supported_sync_realizations=(SGLANG_HTTP_PATH_RELOAD.name,),
+    default_sync_realization=SGLANG_HTTP_PATH_RELOAD.name,
+    capability_notes=(
+        "SGLang patched for residual stream activation harvesting. "
+        "Requires sglang.patch applied on top of the installed sglang package. "
+        "Pass --harvest-layers <idx...> --harvest-output-dir <path> as extra SGLang args. "
+        "Gate 1: synchronous capture (proves hook fires). Async pipeline in later gates.",
+    ),
+)
+
+CUSTOM_HTTP = InferenceEngineSpec(
+    name="custom-http",
+    # Not a real launch module - OwnedEndpoint(spec="custom-http", launch_cmd=...) supplies
+    # the full command directly. The launch_module field is required by the dataclass but
+    # unused when launch_cmd is provided explicitly.
+    launch_module="__custom__",
+    api_format="sglang",  # OpenAI-compatible /v1/chat/completions + /health
+    deps=None,
+    capability_notes=(
+        "Escape hatch for arbitrary OpenAI-compatible HTTP servers (e.g. skeleton_server.py, "
+        "student implementations, experimental engines not yet registered as named specs). "
+        "No weight sync - inference-only. The caller must provide launch_cmd explicitly on "
+        "OwnedEndpoint. Example: "
+        "OwnedEndpoint(spec='custom-http', launch_cmd='python skeleton_server.py --model ... --port 30000', ...)",
+    ),
+)
 
 INFERENCE_ENGINE_SPECS: dict[str, InferenceEngineSpec] = {
     spec.name: spec
@@ -142,6 +223,10 @@ INFERENCE_ENGINE_SPECS: dict[str, InferenceEngineSpec] = {
         VLLM,
         QED_VLLM,
         ENGINE_V2,
+        MINI_SGLANG,
+        TRTLLM,
+        HARVEST_SGLANG,
+        CUSTOM_HTTP,
     )
 }
 

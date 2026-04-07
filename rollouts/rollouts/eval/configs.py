@@ -322,7 +322,13 @@ class OwnedEndpoint:
     port: int
     capabilities: EndpointCapabilities
     output_dir: Path | None = None
+    # Exactly one of launch_cmd or launch_module must be set.
+    # launch_cmd: full shell command, local paths only (use for local runs).
+    # launch_module: Python module path, e.g. "rollouts.inference.gold_server".
+    #   Runs as `python -m <launch_module> --model ... --port ...`.
+    #   Works locally and remotely (module path is repo-relative, survives bifrost sync).
     launch_cmd: str | None = None
+    launch_module: str | None = None
     mem_fraction: float = 0.7
     startup_timeout: float = 300.0
     temperature: float = 0.0
@@ -372,9 +378,11 @@ class OwnedEndpoint:
         return self.output_dir / f"{self.provider}_{self.port}_trace.jsonl"
 
     def build_launch_cmd(self) -> str:
-        if self.launch_cmd is None:
-            raise ValueError("OwnedEndpoint.build_launch_cmd requires launch_cmd")
-        return self.launch_cmd
+        if self.launch_cmd is not None:
+            return self.launch_cmd
+        if self.launch_module is not None:
+            return f"python -m {self.launch_module} --model {self.model} --port {self.port}"
+        raise ValueError("OwnedEndpoint requires either launch_cmd or launch_module")
 
     def get_api_format(self) -> str:
         return "openai-completions"
