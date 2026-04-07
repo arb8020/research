@@ -131,7 +131,10 @@ def _generate_glm(
         )
 
     output_ids = generated[0][prompt_len:]
+    # Log raw token ids to diagnose empty output issues (GLM-4.7-Flash MoE)
+    logger.info(f"GLM output token count: {len(output_ids)}, ids[:10]: {output_ids[:10].tolist()}")
     reply = _tokenizer.decode(output_ids, skip_special_tokens=True)
+    logger.info(f"GLM decoded reply: {repr(reply[:200])}")
     finish_reason = "length" if len(output_ids) >= max_tokens else "stop"
     return reply.strip(), finish_reason
 

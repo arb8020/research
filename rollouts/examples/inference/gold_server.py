@@ -11,10 +11,10 @@ Supported models:
 
 Usage:
     # Smoke test (Qwen3-0.6B, single GPU)
-    python gold_server.py --model Qwen/Qwen3-0.6B --port 30001
+    python -m rollouts.inference.gold_server --model Qwen/Qwen3-0.6B --port 30001
 
     # Assignment target (GLM-4.7-Flash, multi-GPU via device_map=auto)
-    python gold_server.py --model zai-org/GLM-4.7-Flash --port 30001
+    python -m rollouts.inference.gold_server --model zai-org/GLM-4.7-Flash --port 30001
 
     # Run the eval against this server
     python -m rollouts.eval.run --config examples/inference/eval_skeleton_server.py
@@ -131,7 +131,10 @@ def _generate_glm(
         )
 
     output_ids = generated[0][prompt_len:]
+    # Log raw token ids to diagnose empty output issues (GLM-4.7-Flash MoE)
+    logger.info(f"GLM output token count: {len(output_ids)}, ids[:10]: {output_ids[:10].tolist()}")
     reply = _tokenizer.decode(output_ids, skip_special_tokens=True)
+    logger.info(f"GLM decoded reply: {repr(reply[:200])}")
     finish_reason = "length" if len(output_ids) >= max_tokens else "stop"
     return reply.strip(), finish_reason
 
