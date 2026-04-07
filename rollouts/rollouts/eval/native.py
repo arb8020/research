@@ -2,6 +2,17 @@
 
 Design mirrors run_agent/run_agent_step for easy parallelization.
 Tiger Style: Pure functions, explicit configuration, no hidden state.
+
+MIGRATION: The core loop in this file (_evaluate_batch + evaluate_sample) should
+be replaced by training/loops/eval_loop.py using AsyncRolloutManager.generate_batch().
+
+Reason: eval and RL are the same pipeline (generate_fn → score → [optionally train]).
+_evaluate_batch duplicates the rollout collection logic from AsyncRolloutManager,
+but without the shared observability infrastructure. The RL path has no access to
+eval's per-sample progress/events; eval has no access to RL's oversampling/filtering.
+
+The migration target (training/loops/eval_loop.py) has the full plan.
+Until that migration is complete, this file remains the active eval implementation.
 """
 
 import json
