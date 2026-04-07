@@ -65,7 +65,8 @@ endpoint = OwnedEndpoint(
     port=PORT,
     capabilities=EndpointCapabilities(weight_sync=None),
     launch_module="rollouts.inference.gold_server",  # swap to skeleton_server to test students
-    startup_timeout=300.0,  # model download + load can be slow
+    startup_timeout=600.0,  # GLM-4.7-Flash is 60GB, takes 5-10min to load on 4x A100
+    max_tokens=128,  # short to avoid 120s request timeout on naive sequential baseline
 )
 
 # ---------------------------------------------------------------------------
@@ -130,7 +131,7 @@ eval_task = EvalTaskSpec(
     ),
     scorer=scorer,
     run=EvalRunConfig(
-        max_concurrent=4,  # GLM-4.7-Flash has low active params per token - can batch more
+        max_concurrent=1,  # serialize - naive HF baseline has no batching
         max_samples=len(tasks),
         max_turns=1,
         verbose=True,

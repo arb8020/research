@@ -333,6 +333,9 @@ class OwnedEndpoint:
     startup_timeout: float = 300.0
     temperature: float = 0.0
     max_tokens: int = 4096
+    # Per-request timeout in seconds. Naive HF inference (gold_server.py) on
+    # large MoE models can be slow; increase this if requests time out.
+    request_timeout: float = 120.0
 
     @property
     def provider(self) -> Literal["sglang", "vllm"]:
