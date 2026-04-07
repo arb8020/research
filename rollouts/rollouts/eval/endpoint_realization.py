@@ -673,6 +673,14 @@ async def _realize_modal_endpoint(
                 )
                 remote_output_dir = Path(workspace.root) / "results" / "eval" / run_name
                 remote_python = _remote_inference_python(hardware_config)
+
+                # On sandbox reuse, kill any server still running on the inference port
+                # so the new (updated) code takes effect when serve_service starts it.
+                if hardware_config.sandbox_id:
+                    port = worker.inference.port
+                    await session.exec(f"fuser -k {port}/tcp 2>/dev/null || true")
+                    _logger.info("Killed existing server on port %d (sandbox reuse)", port)
+
                 launch_cmd, readiness_target = _remote_service_spec(
                     worker=worker,
                     output_dir=remote_output_dir,
