@@ -28,14 +28,17 @@ What students should improve:
 """
 
 import argparse
+import json
 import logging
 import time
 import uuid
+from collections.abc import AsyncGenerator
 from threading import Lock
 
 import torch
 import uvicorn
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import StreamingResponse
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 logger = logging.getLogger(__name__)
@@ -179,10 +182,11 @@ def build_app(model_name: str) -> FastAPI:
         return {"status": "ok"}
 
     @app.post("/v1/chat/completions")
-    async def chat_completions(request: dict) -> dict:
+    async def chat_completions(request: dict) -> StreamingResponse | dict:
         messages = request.get("messages", [])
         max_tokens = request.get("max_tokens", 512)
         temperature = request.get("temperature", 0.0)
+        stream = request.get("stream", False)
         extra = {
             k: v
             for k, v in request.items()
@@ -206,11 +210,50 @@ def build_app(model_name: str) -> FastAPI:
             len(_tokenizer.encode(prompt_text)) if _tokenizer else len(prompt_text.split())
         )
         completion_tokens = len(_tokenizer.encode(reply)) if _tokenizer else len(reply.split())
+        completion_id = f"chatcmpl-{uuid.uuid4().hex[:8]}"
+        created = int(time.time())
+        usage = {
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": prompt_tokens + completion_tokens,
+        }
+
+        if stream:
+            # SSE streaming: emit full reply as one content chunk then a finish chunk.
+            # We don't token-stream (would require rewriting generate_reply), but this
+            # satisfies the eval harness which expects SSE format when stream=True.
+            async def sse() -> AsyncGenerator[str, None]:
+                chunk = {
+                    "id": completion_id,
+                    "object": "chat.completion.chunk",
+                    "created": created,
+                    "model": model_name,
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": {"role": "assistant", "content": reply},
+                            "finish_reason": None,
+                        }
+                    ],
+                }
+                yield f"data: {json.dumps(chunk)}\n\n"
+                done = {
+                    "id": completion_id,
+                    "object": "chat.completion.chunk",
+                    "created": created,
+                    "model": model_name,
+                    "choices": [{"index": 0, "delta": {}, "finish_reason": finish_reason}],
+                    "usage": usage,
+                }
+                yield f"data: {json.dumps(done)}\n\n"
+                yield "data: [DONE]\n\n"
+
+            return StreamingResponse(sse(), media_type="text/event-stream")
 
         return {
-            "id": f"chatcmpl-{uuid.uuid4().hex[:8]}",
+            "id": completion_id,
             "object": "chat.completion",
-            "created": int(time.time()),
+            "created": created,
             "model": model_name,
             "choices": [
                 {
@@ -219,11 +262,7 @@ def build_app(model_name: str) -> FastAPI:
                     "finish_reason": finish_reason,
                 }
             ],
-            "usage": {
-                "prompt_tokens": prompt_tokens,
-                "completion_tokens": completion_tokens,
-                "total_tokens": prompt_tokens + completion_tokens,
-            },
+            "usage": usage,
         }
 
     return app

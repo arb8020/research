@@ -11,21 +11,28 @@ Students replace `generate_reply` with their inference logic. Everything else
 should not need to change.
 
 Usage:
-    python skeleton_server.py --model <path-or-name> --port 30000
+    python -m rollouts.inference.skeleton_server --model <path-or-name> --port 30000
 
 The benchmark/eval harness will:
   1. Start this process with --model and --port
   2. Poll GET /health until 200
   3. POST requests to /v1/chat/completions and parse responses
+
+See also:
+    rollouts/inference/gold_server.py  - reference HF implementation (naive baseline)
+    examples/inference/eval_skeleton_server.py  - eval config that tests this server
 """
 
 import argparse
+import json
 import logging
 import time
 import uuid
+from collections.abc import AsyncGenerator
 
 import uvicorn
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import StreamingResponse
 
 logger = logging.getLogger(__name__)
 
@@ -73,10 +80,11 @@ def build_app(model_name: str) -> FastAPI:
         return {"status": "ok"}
 
     @app.post("/v1/chat/completions")
-    async def chat_completions(request: dict) -> dict:
+    async def chat_completions(request: dict) -> StreamingResponse | dict:
         messages = request.get("messages", [])
         max_tokens = request.get("max_tokens", 512)
         temperature = request.get("temperature", 0.0)
+        stream = request.get("stream", False)
 
         # Strip keys we've already captured so kwargs doesn't duplicate them
         extra = {
@@ -104,11 +112,48 @@ def build_app(model_name: str) -> FastAPI:
         prompt_text = " ".join(m.get("content", "") for m in messages)
         prompt_tokens = len(prompt_text.split())
         completion_tokens = len(reply.split())
+        completion_id = f"chatcmpl-{uuid.uuid4().hex[:8]}"
+        created = int(time.time())
+        usage = {
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": prompt_tokens + completion_tokens,
+        }
+
+        if stream:
+            # SSE streaming format - eval harness sends stream=True by default.
+            async def sse() -> AsyncGenerator[str, None]:
+                chunk = {
+                    "id": completion_id,
+                    "object": "chat.completion.chunk",
+                    "created": created,
+                    "model": model_name,
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": {"role": "assistant", "content": reply},
+                            "finish_reason": None,
+                        }
+                    ],
+                }
+                yield f"data: {json.dumps(chunk)}\n\n"
+                done = {
+                    "id": completion_id,
+                    "object": "chat.completion.chunk",
+                    "created": created,
+                    "model": model_name,
+                    "choices": [{"index": 0, "delta": {}, "finish_reason": finish_reason}],
+                    "usage": usage,
+                }
+                yield f"data: {json.dumps(done)}\n\n"
+                yield "data: [DONE]\n\n"
+
+            return StreamingResponse(sse(), media_type="text/event-stream")
 
         return {
-            "id": f"chatcmpl-{uuid.uuid4().hex[:8]}",
+            "id": completion_id,
             "object": "chat.completion",
-            "created": int(time.time()),
+            "created": created,
             "model": model_name,
             "choices": [
                 {
@@ -117,11 +162,7 @@ def build_app(model_name: str) -> FastAPI:
                     "finish_reason": finish_reason,
                 }
             ],
-            "usage": {
-                "prompt_tokens": prompt_tokens,
-                "completion_tokens": completion_tokens,
-                "total_tokens": prompt_tokens + completion_tokens,
-            },
+            "usage": usage,
         }
 
     return app
