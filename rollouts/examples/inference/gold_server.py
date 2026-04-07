@@ -119,6 +119,7 @@ def _generate_glm(
         add_generation_prompt=True,
         return_dict=True,
         return_tensors="pt",
+        enable_thinking=False,  # GLM-4.7-Flash: skip <think> block, answer directly
     ).to(_model.device)
     prompt_len = inputs["input_ids"].shape[1]
 
