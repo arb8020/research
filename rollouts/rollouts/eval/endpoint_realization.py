@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 import time
 from contextlib import asynccontextmanager
@@ -7,6 +8,8 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
+
+_logger = logging.getLogger(__name__)
 
 import trio
 
@@ -745,6 +748,22 @@ async def _realize_modal_endpoint(
                     finally:
                         nursery.cancel_scope.cancel()
             finally:
+                # Capture final service logs before sandbox teardown.
+                # This is the only window to read stdout/stderr from the
+                # inference server process (e.g. gold_server.py diagnostics).
+                final_log = await _service_logs_best_effort(service, tail=200)
+                if run_logger is not None:
+                    run_logger.event(
+                        "inference_service_final_log",
+                        log_blob=final_log,
+                        **startup_context,
+                    )
+                else:
+                    _logger.info(
+                        "inference service final log\n%s",
+                        final_log,
+                        extra={"event": "inference_service_final_log"},
+                    )
                 await terminate_modal_sandbox(sandbox_handle)
                 await _wait_for_modal_sandbox_baseline(
                     baseline_ids=baseline_sandbox_ids,
