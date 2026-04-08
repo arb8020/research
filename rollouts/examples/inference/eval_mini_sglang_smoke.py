@@ -25,7 +25,7 @@ hardware = HardwareConfig(
     deps=DepsConfig(
         bootstrap_commands=(
             "~/.local/bin/uv pip install --python /opt/venvs/rollouts/bin/python "
-            "torch transformers accelerate fastapi uvicorn "
+            "torch transformers accelerate fastapi uvicorn hf-transfer "
             "'minisgl @ git+https://github.com/sgl-project/mini-sglang.git'",
         ),
     ),
