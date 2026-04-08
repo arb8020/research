@@ -153,7 +153,7 @@ def _remote_service_spec(
             f"--model {owned_endpoint.model} "
             f"--port {owned_endpoint.port}"
         )
-        return launch_cmd, "/health"
+        return launch_cmd, owned_endpoint.readiness_path
 
     original_python = os.environ.get("ROLLOUTS_INFERENCE_PYTHON")
     os.environ["ROLLOUTS_INFERENCE_PYTHON"] = remote_python

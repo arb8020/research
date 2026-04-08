@@ -40,6 +40,7 @@ endpoint = OwnedEndpoint(
     launch_module="minisgl",
     startup_timeout=180.0,
     max_tokens=64,
+    readiness_path="/v1",
     extra_params={"chat_template_kwargs": {"enable_thinking": False}},
 )
 

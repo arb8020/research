@@ -335,6 +335,7 @@ class OwnedEndpoint:
     temperature: float = 0.0
     max_tokens: int = 4096
     extra_params: dict[str, Any] | None = None
+    readiness_path: str = "/health"
     # Per-request timeout in seconds. Naive HF inference (gold_server.py) on
     # large MoE models can be slow; increase this if requests time out.
     request_timeout: float = 120.0
@@ -354,7 +355,7 @@ class OwnedEndpoint:
 
     @property
     def health_url(self) -> str:
-        return f"http://localhost:{self.port}/health"
+        return f"http://localhost:{self.port}{self.readiness_path}"
 
     @property
     def api_base(self) -> str:
