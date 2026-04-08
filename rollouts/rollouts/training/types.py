@@ -203,11 +203,26 @@ class AttemptEvaluation:
 
 @dataclass
 class AttemptResult:
-    """Canonical result of one execution attempt."""
+    """Canonical result of one execution attempt.
 
-    # TODO: Rename AttemptResult / AttemptRow to reflect stage semantics more
-    # honestly. Current intent: AttemptResult is the raw execution result, while
-    # AttemptRow is the richer scored/training-oriented record.
+    DEPRECATED: Use AttemptRow directly. AttemptResult and AttemptRow model the
+    same concept (ProblemRow → run_agent() → Trajectory → score → result) from
+    two angles that grew in parallel:
+    - AttemptResult: used by eval path (eval/native.py, FunctionScorer)
+    - AttemptRow: used by training path (rollout_gen, agent_integration, grpo)
+
+    AttemptRow is a strict superset: it has everything AttemptResult has plus
+    group_index, weight_version, and training_sample (RL-specific, None for eval).
+    score/reward are stored flat on AttemptRow vs nested in AttemptEvaluation here.
+
+    Migration: replace AttemptResult with AttemptRow everywhere. Eval leaves
+    training_sample=None. score_rows() already handles AttemptRow directly.
+    FunctionScorer should accept AttemptRow instead of AttemptResult.
+    AttemptRow.to_result() and AttemptRow.from_result() can then be deleted.
+
+    The target name for the merged type is TBD (neither "Row" nor "Result" is
+    great - something like "Attempt" or "RolloutAttempt" would be more honest).
+    """
 
     attempt_id: str = ""
     problem: ProblemRow | None = None
