@@ -16,7 +16,7 @@ hardware = HardwareConfig(
     deps=DepsConfig(
         bootstrap_commands=(
             "~/.local/bin/uv pip install --python /opt/venvs/rollouts/bin/python "
-            "torch transformers accelerate fastapi uvicorn trio "
+            "torch transformers accelerate fastapi uvicorn trio hf-transfer "
             "'vllm>=0.13.0,<0.14.0'",
         ),
     ),
