@@ -1,8 +1,8 @@
-"""Fast smoke witness for the HuggingFace gold inference server.
+"""Fast smoke witness for the slime-sglang realization.
 
-Usage:
-    cd /Users/chiraagbalu/research/rollouts
-    ../.venv/bin/python -m rollouts.eval.run --config examples/inference/eval_gold_server_smoke.py
+This uses the named OwnedEndpoint path so eval owns the lifecycle and emits the
+same startup/health/stall telemetry we care about for inference-engine
+iteration.
 """
 
 from examples.inference.smoke_witness_lib import make_smoke_eval_task
@@ -10,7 +10,7 @@ from rollouts.eval.configs import EndpointCapabilities, OwnedEndpoint
 from rollouts.training.configs import DepsConfig, HardwareConfig
 
 MODEL = "Qwen/Qwen3-0.6B"
-PORT = 30001
+PORT = 30000
 
 hardware = HardwareConfig(
     provider="modal",
@@ -20,24 +20,26 @@ hardware = HardwareConfig(
     keep_alive=True,
     deps=DepsConfig(
         bootstrap_commands=(
-            "~/.local/bin/uv pip install --python /opt/venvs/rollouts/bin/python torch transformers accelerate uvicorn fastapi",
+            "~/.local/bin/uv pip install --python /opt/venvs/rollouts/bin/python "
+            "torch transformers accelerate fastapi uvicorn "
+            "'sglang[all] @ git+https://github.com/sgl-project/sglang.git@main#subdirectory=python'",
         ),
     ),
 )
 
 endpoint = OwnedEndpoint(
-    spec="custom-http",
+    spec="slime-sglang",
     model=MODEL,
     cuda_device_ids=(0,),
     port=PORT,
     capabilities=EndpointCapabilities(weight_sync=None),
-    launch_module="rollouts.inference.gold_server",
-    startup_timeout=180.0,
+    mem_fraction=0.6,
+    startup_timeout=300.0,
     max_tokens=64,
 )
 
 eval_task = make_smoke_eval_task(
     endpoint=endpoint,
     hardware=hardware,
-    experiment_name="gold_server_smoke_eval",
+    experiment_name="slime_sglang_smoke_eval",
 )
