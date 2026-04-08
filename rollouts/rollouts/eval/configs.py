@@ -244,6 +244,7 @@ class ExternalEndpoint:
     thinking: bool = False
     thinking_budget: int | None = None
     reasoning_effort: Literal["low", "medium", "high"] | None = None
+    extra_params: dict[str, Any] | None = None
 
     @property
     def base_url(self) -> str:
@@ -333,6 +334,7 @@ class OwnedEndpoint:
     startup_timeout: float = 300.0
     temperature: float = 0.0
     max_tokens: int = 4096
+    extra_params: dict[str, Any] | None = None
     # Per-request timeout in seconds. Naive HF inference (gold_server.py) on
     # large MoE models can be slow; increase this if requests time out.
     request_timeout: float = 120.0
@@ -663,7 +665,8 @@ def materialize_endpoint(endpoint_config: InferenceEndpoint | EndpointConfig) ->
         api_key=api_key,
         temperature=endpoint_config.temperature,
         max_tokens=endpoint_config.max_tokens,
-        reasoning_effort=endpoint_config.reasoning_effort,
+        reasoning_effort=getattr(endpoint_config, "reasoning_effort", None),
+        extra_params=getattr(endpoint_config, "extra_params", None),
     )
 
 

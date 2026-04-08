@@ -107,6 +107,7 @@ def _apply_endpoint_env_overrides(endpoint_config: Any) -> Any:
             provider=endpoint_config.provider,
             temperature=endpoint_config.temperature,
             max_tokens=endpoint_config.max_tokens,
+            extra_params=endpoint_config.extra_params,
         )
     if isinstance(endpoint_config, ExternalEndpoint):
         return replace(endpoint_config, url=base_url_override)

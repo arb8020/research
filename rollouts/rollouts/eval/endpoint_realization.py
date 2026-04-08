@@ -129,6 +129,7 @@ def _externalize_owned_endpoint(endpoint_config: OwnedEndpoint, url: str) -> Ext
         provider=endpoint_config.provider,
         temperature=endpoint_config.temperature,
         max_tokens=endpoint_config.max_tokens,
+        extra_params=endpoint_config.extra_params,
     )
 
 

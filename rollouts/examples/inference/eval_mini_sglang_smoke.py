@@ -40,6 +40,7 @@ endpoint = OwnedEndpoint(
     launch_module="minisgl",
     startup_timeout=180.0,
     max_tokens=64,
+    extra_params={"chat_template_kwargs": {"enable_thinking": False}},
 )
 
 eval_task = make_smoke_eval_task(
