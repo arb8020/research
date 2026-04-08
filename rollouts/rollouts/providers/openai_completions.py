@@ -665,8 +665,9 @@ async def rollout_openai(
     # Request usage info in streaming response (final chunk contains usage)
     params["stream_options"] = {"include_usage": True}
 
+    request_options: dict[str, Any] = {}
     if hasattr(actor.endpoint, "extra_params") and actor.endpoint.extra_params:
-        params.update(actor.endpoint.extra_params)
+        request_options["extra_body"] = actor.endpoint.extra_params.copy()
 
     # Wide event logging for API request
     from .base import log_api_request
@@ -721,7 +722,7 @@ async def rollout_openai(
     ttft_ms: float | None = None
 
     try:
-        stream = await client.chat.completions.create(**params)
+        stream = await client.chat.completions.create(**params, **request_options)
         completion, ttft_ms = await aggregate_stream(stream, on_chunk, request_start)
 
         request_duration_ms = (time.perf_counter() - request_start) * 1000
