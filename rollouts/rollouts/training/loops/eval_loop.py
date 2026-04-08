@@ -17,7 +17,7 @@ infrastructure (AsyncRolloutManager) rather than maintaining two separate loops.
 Current state:
   - eval/native.py has its own _evaluate_batch loop (duplicates RL rollout logic)
   - rl_loop.py uses AsyncRolloutManager correctly (slime-inspired)
-  - eval/native.py produces AttemptResult; RL produces AttemptRow (see types.py)
+  - eval/native.py produces AttemptResult; RL produces RowAttempt (see types.py)
   - Observability (events.jsonl, StreamChunk, progress) lives only in eval/native.py
     and is not available in the RL rollout path
 
@@ -40,14 +40,14 @@ Data flow (same for eval and RL):
     DataBuffer
         ↓ prompts
     generate_fn(prompts)          ← user-provided; calls run_agent(); hits inference engine
-        ↓ list[AttemptRow]        ← trajectory + score + (optionally) tokens/loss_mask
+        ↓ list[RowAttempt]        ← trajectory + score + (optionally) tokens/loss_mask
     scorer(attempt_row)           ← reward attached inline
         ↓ RolloutBatch
     [eval] report results         ← eval stops here
     [RL]   trainer.forward_backward() + sync_weights_to_engines()
 
-AttemptRow vs AttemptResult: see types.py deprecation note on AttemptResult.
-AttemptRow is the shared type. Eval leaves training_sample=None.
+RowAttempt vs AttemptResult: see types.py deprecation note on AttemptResult.
+RowAttempt is the shared type. Eval leaves training_sample=None.
 
 Environment/sandbox pattern (already works, no changes needed):
     generate_fn receives batch_prompts: list[dict]
@@ -85,15 +85,15 @@ async def run_eval(
         data_buffer: Prompt source (manages epoch/offset state)
         rollout_manager: Handles concurrent rollout collection + scoring.
             Constructed with RolloutRuntime(generate_fn=..., scorer=...).
-            generate_fn receives list[dict] prompts, returns list[AttemptRow].
-            Each AttemptRow carries trajectory + score (training_sample=None for eval).
+            generate_fn receives list[dict] prompts, returns list[RowAttempt].
+            Each RowAttempt carries trajectory + score (training_sample=None for eval).
         max_batches: Stop after N batches. None = run until data_buffer exhausted.
         scorer: Override scorer (takes precedence over rollout_manager's scorer).
         metrics_logger: Optional structured logging.
 
     Returns:
         List of RolloutBatch. Each batch has:
-            .attempts: list[AttemptRow] - trajectories with scores attached
+            .attempts: list[RowAttempt] - trajectories with scores attached
             .rewards: list[float] - scalar rewards per sample
             .rollout_log_probs: per-token logprobs (for inference engine verification)
             .tokens / .loss_masks: populated only if generate_fn produces TrainingSample
@@ -105,7 +105,7 @@ async def run_eval(
         >>>
         >>> async def my_generate_fn(prompts):
         ...     # calls run_agent() against your inference engine
-        ...     return [AttemptRow(trajectory=..., reward=0.0) for p in prompts]
+        ...     return [RowAttempt(trajectory=..., reward=0.0) for p in prompts]
         >>>
         >>> buffer = DataBuffer(prompts=[{"text": "hello"}, ...])
         >>> config = RolloutConfig(batch_size=4)

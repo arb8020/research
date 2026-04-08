@@ -5,7 +5,7 @@ from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
 from ..core import Score
-from .types import AttemptResult, AttemptRow, RolloutConfig, RolloutRuntime, Scorer, ScoringContext
+from .types import AttemptResult, RolloutConfig, RolloutRuntime, RowAttempt, Scorer, ScoringContext
 
 if TYPE_CHECKING:
     pass
@@ -67,9 +67,9 @@ async def score_results(
 
 async def score_rows(
     scorer: Scorer,
-    rows: list[AttemptRow],
+    rows: list[RowAttempt],
     contexts: list[ScoringContext | None] | None = None,
-) -> list[AttemptRow]:
+) -> list[RowAttempt]:
     if contexts is not None and len(contexts) != len(rows):
         raise ValueError("contexts length must match rows length")
 

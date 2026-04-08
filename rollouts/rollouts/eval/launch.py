@@ -24,7 +24,7 @@ from ..drivers.session_adapter import (
 from ..dtypes import StopReason, Trajectory
 from ..store import FileSessionStore
 from ..training.scoring import attach_score
-from ..training.types import AttemptResult, ProblemRow, ScoringContext, Status
+from ..training.types import AttemptResult, DatasetRow, ScoringContext, Status
 from .configs import EvalOutputConfig, EvalRunConfig, resolve_eval_run_spec, resolve_eval_task_spec
 from .native import _compute_score
 from .run import load_tasks_from_module
@@ -260,7 +260,7 @@ def _build_attempt(
 ) -> AttemptResult:
     return AttemptResult(
         attempt_id=sample_id,
-        problem=ProblemRow(
+        problem=DatasetRow(
             problem_id=sample_id,
             payload=dict(sample_data),
             metadata=(

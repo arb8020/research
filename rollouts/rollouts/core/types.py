@@ -30,7 +30,7 @@ from ..dtypes import (
     TrajectorySession,
     Usage,
 )
-from ..training.types import AttemptRow, ProblemRow, TrainingSample
+from ..training.types import DatasetRow, RowAttempt, TrainingSample
 from .eval import EnvironmentFactory, EvalConfig, Metric, PrepareMessagesFn, Score
 from .session import EnvironmentConfig, SessionSummary
 
@@ -50,9 +50,9 @@ __all__ = [
     "Logprobs",
     "Message",
     "Metric",
-    "ProblemRow",
+    "DatasetRow",
     "PrepareMessagesFn",
-    "AttemptRow",
+    "RowAttempt",
     "Score",
     "SessionSummary",
     "StopReason",

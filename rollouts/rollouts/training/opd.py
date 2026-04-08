@@ -23,7 +23,7 @@ from typing import TYPE_CHECKING
 import httpx
 
 if TYPE_CHECKING:
-    from .types import AttemptRow
+    from .types import RowAttempt
 
 logger = logging.getLogger(__name__)
 
@@ -83,7 +83,7 @@ async def compute_teacher_logprobs(
 
 async def compute_teacher_logprobs_batch(
     teacher_url: str,
-    samples: list[AttemptRow],
+    samples: list[RowAttempt],
     timeout: float = 120.0,
 ) -> None:
     """Compute teacher log probs for a batch of attempts in parallel.
@@ -101,7 +101,7 @@ async def compute_teacher_logprobs_batch(
     """
     import trio
 
-    async def compute_for_sample(sample: AttemptRow) -> None:
+    async def compute_for_sample(sample: RowAttempt) -> None:
         if not sample.tokens:
             logger.warning(
                 f"Attempt {sample.id} has no tokens, skipping teacher logprob computation"

@@ -15,7 +15,7 @@ from ..agents import Actor, RunConfig, rollout
 from ..core import Endpoint, Environment, EnvironmentFactory, Trajectory
 from ..dtypes import StreamEvent
 from ..training.scoring import score_result
-from ..training.types import AttemptResult, ProblemRow, Scorer, ScoringContext, Status
+from ..training.types import AttemptResult, DatasetRow, Scorer, ScoringContext, Status
 from .formatting import format_prompt
 from .types import PromptTemplate
 
@@ -78,7 +78,7 @@ async def evaluate_single_sample(
     ground_truth = sample.get("ground_truth") or sample.get("answer") or sample.get("label")
     result = AttemptResult(
         attempt_id=f"seed_{seed}",
-        problem=ProblemRow(
+        problem=DatasetRow(
             problem_id=f"seed_{seed}",
             payload=sample,
             ground_truth=ground_truth,

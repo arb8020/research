@@ -7,14 +7,14 @@ import pytest
 
 from rollouts.core import Message, Metric, Score, Trajectory
 from rollouts.eval.native import EvalReport
-from rollouts.training.types import AttemptEvaluation, AttemptResult, ProblemRow
+from rollouts.training.types import AttemptEvaluation, AttemptResult, DatasetRow
 
 
 @pytest.mark.trio
 async def test_eval_report_saves_full_canonical_sample_artifact(tmp_path: Path) -> None:
     sample = AttemptResult(
         attempt_id="sample_0000",
-        problem=ProblemRow(
+        problem=DatasetRow(
             problem_id="sample_0000",
             payload={"messages": [{"role": "user", "content": "hi"}]},
         ),

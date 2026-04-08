@@ -40,16 +40,19 @@ from ..training.lowering import (
     TorchTitanProvisioning,
 )
 from ..training.types import (
-    AttemptRow,
-    ProblemRow,
+    DatasetRow,
     RLTrainingConfig,
     RolloutBatch,
     RolloutConfig,
+    RowAttempt,
     SFTTrainingConfig,
     Status,
     TrainerConfig,
     TrainingSample,
 )
+
+ProblemRow = DatasetRow
+AttemptRow = RowAttempt
 
 
 def __getattr__(name: str) -> object:
@@ -228,6 +231,8 @@ __all__ = [
     "PretrainSourceConfig",
     "run_pretrain",
     # Types
+    "DatasetRow",
+    "RowAttempt",
     "ProblemRow",
     "AttemptRow",
     "TrainingSample",

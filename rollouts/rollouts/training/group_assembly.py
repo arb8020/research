@@ -2,21 +2,21 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from .types import AttemptRow, IncompleteGroupPolicy
+from .types import IncompleteGroupPolicy, RowAttempt
 
 
 @dataclass(frozen=True)
 class GroupAssemblyResult:
     """Result of assembling trainable groups from sample-level input."""
 
-    ready_samples: list[AttemptRow]
-    overflow_samples: list[AttemptRow]
-    dropped_incomplete_samples: list[AttemptRow]
+    ready_samples: list[RowAttempt]
+    overflow_samples: list[RowAttempt]
+    dropped_incomplete_samples: list[RowAttempt]
     ready_group_count: int
     dropped_incomplete_group_sizes: dict[int, int] = field(default_factory=dict)
 
 
-def count_complete_groups(samples: list[AttemptRow], samples_per_group: int) -> int:
+def count_complete_groups(samples: list[RowAttempt], samples_per_group: int) -> int:
     """Count how many complete groups are present in sample order."""
     assert samples_per_group > 0, "samples_per_group must be positive"
     if samples_per_group == 1:
@@ -35,15 +35,15 @@ def count_complete_groups(samples: list[AttemptRow], samples_per_group: int) -> 
 
 
 def collect_incomplete_groups(
-    samples: list[AttemptRow],
+    samples: list[RowAttempt],
     samples_per_group: int,
-) -> dict[int, list[AttemptRow]]:
+) -> dict[int, list[RowAttempt]]:
     """Collect incomplete groups keyed by stable group index."""
     assert samples_per_group > 0, "samples_per_group must be positive"
     if samples_per_group == 1:
         return {}
 
-    incomplete_groups: dict[int, list[AttemptRow]] = {}
+    incomplete_groups: dict[int, list[RowAttempt]] = {}
     for group_key, group_samples in _ordered_group_buckets(samples).items():
         group_size = len(group_samples)
         if group_size > samples_per_group:
@@ -56,7 +56,7 @@ def collect_incomplete_groups(
 
 
 def assemble_groups(
-    samples: list[AttemptRow],
+    samples: list[RowAttempt],
     target_num_groups: int,
     samples_per_group: int,
     incomplete_group_policy: IncompleteGroupPolicy = IncompleteGroupPolicy.DROP_INCOMPLETE,
@@ -81,9 +81,9 @@ def assemble_groups(
             ready_group_count=len(ready_samples),
         )
 
-    ready_samples: list[AttemptRow] = []
-    overflow_samples: list[AttemptRow] = []
-    dropped_incomplete_samples: list[AttemptRow] = []
+    ready_samples: list[RowAttempt] = []
+    overflow_samples: list[RowAttempt] = []
+    dropped_incomplete_samples: list[RowAttempt] = []
     dropped_incomplete_group_sizes: dict[int, int] = {}
     ready_group_count = 0
 
@@ -116,9 +116,9 @@ def assemble_groups(
     )
 
 
-def _ordered_group_buckets(samples: list[AttemptRow]) -> dict[int, list[AttemptRow]]:
+def _ordered_group_buckets(samples: list[RowAttempt]) -> dict[int, list[RowAttempt]]:
     """Bucket samples by stable group index, preserving first-seen order."""
-    grouped_samples: dict[int, list[AttemptRow]] = {}
+    grouped_samples: dict[int, list[RowAttempt]] = {}
     next_fallback_group = -1
 
     for sample in samples:

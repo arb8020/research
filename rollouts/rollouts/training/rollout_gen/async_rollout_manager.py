@@ -30,11 +30,11 @@ from ...training.rollout_gen.rollout_generation import convert_to_batch
 from ...training.runtime import resolve_rollout_runtime
 from ...training.scoring import resolve_scorer, score_rows
 from ...training.types import (
-    AttemptRow,
     IncompleteGroupPolicy,
     RolloutBatch,
     RolloutConfig,
     RolloutRuntime,
+    RowAttempt,
     Scorer,
 )
 
@@ -61,7 +61,7 @@ class AsyncRolloutManager:
     data_buffer: DataBuffer
     config: RolloutConfig
     runtime: RolloutRuntime | None = None
-    buffered_samples: list[AttemptRow] = field(default_factory=list)
+    buffered_samples: list[RowAttempt] = field(default_factory=list)
     _step_count: int = 0
     _abort_requested: bool = False
     _next_group_index: int = 0
@@ -241,7 +241,7 @@ class AsyncRolloutManager:
     async def _generate_samples_parallel(
         self,
         prompts: list[str | dict[str, Any]],
-    ) -> list[AttemptRow]:
+    ) -> list[RowAttempt]:
         """Generate samples for prompts in parallel.
 
         Creates n_samples_per_prompt for each prompt, all in parallel.
@@ -259,10 +259,10 @@ class AsyncRolloutManager:
         # Create tasks for parallel generation
         async def generate_for_prompt(
             prompt: str | dict[str, Any], group_idx: int
-        ) -> list[AttemptRow]:
+        ) -> list[RowAttempt]:
             """Generate sample for a single prompt with group index."""
             # Call user's generate function
-            # Note: User function should return list[AttemptRow]
+            # Note: User function should return list[RowAttempt]
             samples = await self._call_user_generate_fn([prompt])
             # Set group_index on all returned samples
             for sample in samples:
@@ -271,7 +271,7 @@ class AsyncRolloutManager:
 
         # Launch all tasks in parallel with trio
         async with trio.open_nursery() as nursery:
-            results: list[AttemptRow] = []
+            results: list[RowAttempt] = []
             results_lock = trio.Lock()
 
             async def run_task(prompt: str | dict[str, Any], group_idx: int) -> None:
@@ -288,8 +288,8 @@ class AsyncRolloutManager:
 
     async def _refill_incomplete_groups(
         self,
-        incomplete_groups: dict[int, list[AttemptRow]],
-    ) -> list[AttemptRow]:
+        incomplete_groups: dict[int, list[RowAttempt]],
+    ) -> list[RowAttempt]:
         """Request additional samples for the same prompts to complete groups."""
         refill_requests: list[tuple[str | dict[str, Any], int]] = []
         for group_idx, group_samples in incomplete_groups.items():
@@ -302,7 +302,7 @@ class AsyncRolloutManager:
             return []
 
         async with trio.open_nursery() as nursery:
-            refill_results: list[AttemptRow] = []
+            refill_results: list[RowAttempt] = []
             results_lock = trio.Lock()
 
             async def run_task(prompt: str | dict[str, Any], group_idx: int) -> None:
@@ -320,7 +320,7 @@ class AsyncRolloutManager:
     async def _call_user_generate_fn(
         self,
         prompts: list[str | dict[str, Any]],
-    ) -> list[AttemptRow]:
+    ) -> list[RowAttempt]:
         """Call user-provided generate function (async or sync).
 
         Handles both async and sync user functions transparently.
@@ -349,15 +349,15 @@ class AsyncRolloutManager:
 
         # Validate return type
         assert isinstance(samples, list), (
-            f"generate_fn must return list[AttemptRow], got {type(samples)}"
+            f"generate_fn must return list[RowAttempt], got {type(samples)}"
         )
-        assert all(isinstance(s, AttemptRow) for s in samples), (
-            "generate_fn must return list of AttemptRow objects"
+        assert all(isinstance(s, RowAttempt) for s in samples), (
+            "generate_fn must return list of RowAttempt objects"
         )
 
         return samples
 
-    def _apply_filter(self, samples: list[AttemptRow]) -> list[AttemptRow]:
+    def _apply_filter(self, samples: list[RowAttempt]) -> list[RowAttempt]:
         """Apply filter function to samples.
 
         SLIME-style: Filter can look at groups or individual samples.
@@ -376,7 +376,7 @@ class AsyncRolloutManager:
         # parallel generation can complete out of order.
         if self.config.n_samples_per_prompt > 1:
             filtered = []
-            grouped_samples: dict[int, list[AttemptRow]] = {}
+            grouped_samples: dict[int, list[RowAttempt]] = {}
             for sample in samples:
                 assert sample.group_index is not None, "group_index required for grouped filtering"
                 if sample.group_index not in grouped_samples:
@@ -424,7 +424,7 @@ class AsyncRolloutManager:
         self._step_count = state["step_count"]
         self._next_group_index = state.get("next_group_index", 0)
         buffered_samples = state.get("buffered_samples", state.get("partial_samples", []))
-        self.buffered_samples = [AttemptRow.from_dict(s) for s in buffered_samples]
+        self.buffered_samples = [RowAttempt.from_dict(s) for s in buffered_samples]
 
     def stats(self) -> dict[str, Any]:
         """Return explicit rollout-generation statistics."""

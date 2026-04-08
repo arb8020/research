@@ -5,7 +5,7 @@ import pytest
 from rollouts.agents import Actor, AgentState
 from rollouts.core import Message, StopReason, Trajectory
 from rollouts.training.agent_integration import agent_rollout_to_sample
-from rollouts.training.types import AttemptRow, ProblemRow, TrainingSample
+from rollouts.training.types import DatasetRow, RowAttempt, TrainingSample
 
 
 class _FakeEnvironment:
@@ -72,11 +72,11 @@ async def test_agent_rollout_to_sample_preserves_final_trajectory_metadata(
         trajectory: Trajectory,
         tokenizer: object,
         metadata: dict[str, object] | None = None,
-        problem_row: ProblemRow | None = None,
-    ) -> AttemptRow:
+        problem_row: DatasetRow | None = None,
+    ) -> RowAttempt:
         del trajectory, tokenizer
         captured["metadata"] = dict(metadata or {})
-        return AttemptRow(
+        return RowAttempt(
             problem=problem_row,
             trajectory=final_trajectory,
             training_sample=TrainingSample(tokens=[1], loss_mask=[1.0], response_length=1),
@@ -139,10 +139,10 @@ async def test_agent_rollout_to_sample_merges_final_environment_runtime_metadata
         trajectory: Trajectory,
         tokenizer: object,
         metadata: dict[str, object] | None = None,
-        problem_row: ProblemRow | None = None,
-    ) -> AttemptRow:
+        problem_row: DatasetRow | None = None,
+    ) -> RowAttempt:
         del trajectory, tokenizer
-        return AttemptRow(
+        return RowAttempt(
             problem=problem_row,
             trajectory=final_trajectory,
             training_sample=TrainingSample(tokens=[1], loss_mask=[1.0], response_length=1),

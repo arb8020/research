@@ -29,7 +29,7 @@ from ..drivers.codex import _CodexEventParser
 from ..drivers.runner import _EventAccumulator, _FlushAssistantMessage
 from ..dtypes import StreamChunk
 from ..environments.resources import SandboxWorkspaceResource, SessionExecSpec
-from ..training.types import AttemptResult, ProblemRow, Status
+from ..training.types import AttemptResult, DatasetRow, Status
 
 _event_logger = logging.getLogger("rollouts.eval.events")
 
@@ -217,7 +217,7 @@ def _result_from_artifact(
     sample_id: str,
     artifact: ExternalAttemptArtifact,
 ) -> AttemptResult:
-    problem = ProblemRow(
+    problem = DatasetRow(
         problem_id=sample_id,
         payload=dict(sample_data),
         metadata=_sample_metadata(sample_data),

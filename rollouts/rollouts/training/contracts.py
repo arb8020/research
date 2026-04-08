@@ -2,7 +2,7 @@
 
 These types are the clean semantic boundary for training code.
 
-They are intentionally separate from legacy bridge objects like `AttemptRow`.
+They are intentionally separate from legacy bridge objects like `RowAttempt`.
 Those bridge types can be converted into these contracts at the edge, but they
 should not define the core training ontology.
 """

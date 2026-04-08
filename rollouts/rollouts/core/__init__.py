@@ -1,10 +1,10 @@
 """Shared rollouts schema and passive contracts."""
 
 from .types import (
-    AttemptRow,
     ChatCompletion,
     Choice,
     ContentBlock,
+    DatasetRow,
     Endpoint,
     Environment,
     EnvironmentConfig,
@@ -18,7 +18,7 @@ from .types import (
     Message,
     Metric,
     PrepareMessagesFn,
-    ProblemRow,
+    RowAttempt,
     Score,
     SessionSummary,
     StopReason,
@@ -41,6 +41,11 @@ from .types import (
     Usage,
 )
 
+# charisma: update this compatibility re-export after charisma migrates to DatasetRow.
+ProblemRow = DatasetRow
+# charisma: update this compatibility re-export after charisma migrates to RowAttempt.
+AttemptRow = RowAttempt
+
 __all__ = [
     "ChatCompletion",
     "Choice",
@@ -57,8 +62,10 @@ __all__ = [
     "Logprobs",
     "Message",
     "Metric",
+    "DatasetRow",
     "ProblemRow",
     "PrepareMessagesFn",
+    "RowAttempt",
     "AttemptRow",
     "Score",
     "SessionSummary",

@@ -10,11 +10,11 @@ from rollouts.training.rollout_gen.async_rollout_manager import AsyncRolloutMana
 from rollouts.training.rollout_gen.pipelined_rollout_manager import PipelinedRolloutManager
 from rollouts.training.runtime import resolve_rollout_runtime
 from rollouts.training.types import (
-    AttemptRow,
+    DatasetRow,
     IncompleteGroupPolicy,
-    ProblemRow,
     RolloutConfig,
     RolloutRuntime,
+    RowAttempt,
     TrainingSample,
 )
 
@@ -27,7 +27,7 @@ def make_attempt(
     weight_version: int = 0,
     tokens: list[int] | None = None,
     loss_mask: list[float] | None = None,
-) -> AttemptRow:
+) -> RowAttempt:
     training_sample = None
     if tokens is not None or loss_mask is not None:
         resolved_tokens = list(tokens or [])
@@ -40,8 +40,8 @@ def make_attempt(
         )
     problem = None
     if prompt:
-        problem = ProblemRow(problem_id=prompt, payload={"prompt": prompt})
-    return AttemptRow(
+        problem = DatasetRow(problem_id=prompt, payload={"prompt": prompt})
+    return RowAttempt(
         attempt_id=prompt,
         problem=problem,
         group_index=group_index,
@@ -116,7 +116,7 @@ def test_resolve_rollout_runtime_prefers_explicit_runtime() -> None:
 async def test_async_rollout_manager_refills_incomplete_groups() -> None:
     call_counts: dict[str, int] = defaultdict(int)
 
-    async def generate_fn(prompts: list[str]) -> list[AttemptRow]:
+    async def generate_fn(prompts: list[str]) -> list[RowAttempt]:
         prompt = prompts[0]
         call_counts[prompt] += 1
         return [make_attempt(prompt=prompt, tokens=[1], loss_mask=[1.0], reward=0.0)]
@@ -152,7 +152,7 @@ async def test_async_rollout_manager_refills_incomplete_groups() -> None:
 async def test_pipelined_rollout_manager_refills_fully_stale_group_from_prompt_registry() -> None:
     call_counts: dict[str, int] = defaultdict(int)
 
-    async def generate_fn(prompts: list[str]) -> list[AttemptRow]:
+    async def generate_fn(prompts: list[str]) -> list[RowAttempt]:
         prompt = prompts[0]
         call_counts[prompt] += 1
         return [make_attempt(prompt=prompt, tokens=[1], loss_mask=[1.0], reward=0.0)]

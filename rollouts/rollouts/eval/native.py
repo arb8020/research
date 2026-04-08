@@ -47,7 +47,7 @@ from ..training.scoring import attach_score, score_result
 from ..training.types import (
     AttemptEvaluation,
     AttemptResult,
-    ProblemRow,
+    DatasetRow,
     Scorer,
     ScoringContext,
     Status,
@@ -1091,7 +1091,7 @@ async def evaluate_sample(
             if not sample.attempt_id:
                 sample.attempt_id = sample_id
             if sample.problem is None:
-                sample.problem = ProblemRow(
+                sample.problem = DatasetRow(
                     problem_id=sample_id,
                     payload=sample_data,
                     ground_truth=sample_data.get("ground_truth") or sample_data.get("answer"),
@@ -1148,7 +1148,7 @@ async def evaluate_sample(
                 )
             env_state = await _serialize_environment_state(final_env)
 
-            problem = ProblemRow(
+            problem = DatasetRow(
                 problem_id=sample_id,
                 payload=sample_data,
                 ground_truth=sample_data.get("ground_truth") or sample_data.get("answer"),

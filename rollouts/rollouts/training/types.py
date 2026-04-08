@@ -33,7 +33,7 @@ class IncompleteGroupPolicy(Enum):
 
 
 @dataclass(frozen=True)
-class ProblemRow:
+class DatasetRow:
     """Normalized input/problem data prior to execution."""
 
     problem_id: str
@@ -54,8 +54,8 @@ class ProblemRow:
         }
 
     @staticmethod
-    def from_dict(data: dict[str, Any]) -> "ProblemRow":
-        return ProblemRow(**data)
+    def from_dict(data: dict[str, Any]) -> "DatasetRow":
+        return DatasetRow(**data)
 
 
 @dataclass
@@ -153,7 +153,7 @@ def _extract_response_text(trajectory: "Trajectory | None") -> str:
 
 
 def _derive_prompt_preview(
-    problem: ProblemRow | None,
+    problem: DatasetRow | None,
     trajectory: "Trajectory | None",
 ) -> str | list[dict[str, str]]:
     if problem is not None:
@@ -205,27 +205,27 @@ class AttemptEvaluation:
 class AttemptResult:
     """Canonical result of one execution attempt.
 
-    DEPRECATED: Use AttemptRow directly. AttemptResult and AttemptRow model the
-    same concept (ProblemRow → run_agent() → Trajectory → score → result) from
+    DEPRECATED: Use RowAttempt directly. AttemptResult and RowAttempt model the
+    same concept (DatasetRow → run_agent() → Trajectory → score → result) from
     two angles that grew in parallel:
     - AttemptResult: used by eval path (eval/native.py, FunctionScorer)
-    - AttemptRow: used by training path (rollout_gen, agent_integration, grpo)
+    - RowAttempt: used by training path (rollout_gen, agent_integration, grpo)
 
-    AttemptRow is a strict superset: it has everything AttemptResult has plus
+    RowAttempt is a strict superset: it has everything AttemptResult has plus
     group_index, weight_version, and training_sample (RL-specific, None for eval).
-    score/reward are stored flat on AttemptRow vs nested in AttemptEvaluation here.
+    score/reward are stored flat on RowAttempt vs nested in AttemptEvaluation here.
 
-    Migration: replace AttemptResult with AttemptRow everywhere. Eval leaves
-    training_sample=None. score_rows() already handles AttemptRow directly.
-    FunctionScorer should accept AttemptRow instead of AttemptResult.
-    AttemptRow.to_result() and AttemptRow.from_result() can then be deleted.
+    Migration: replace AttemptResult with RowAttempt everywhere. Eval leaves
+    training_sample=None. score_rows() already handles RowAttempt directly.
+    FunctionScorer should accept RowAttempt instead of AttemptResult.
+    RowAttempt.to_result() and RowAttempt.from_result() can then be deleted.
 
     The target name for the merged type is TBD (neither "Row" nor "Result" is
     great - something like "Attempt" or "RolloutAttempt" would be more honest).
     """
 
     attempt_id: str = ""
-    problem: ProblemRow | None = None
+    problem: DatasetRow | None = None
     trajectory: "Trajectory | None" = None
     environment_state: dict[str, Any] | None = None
     status: Status = Status.PENDING
@@ -303,7 +303,7 @@ class AttemptResult:
 
         payload = data.copy()
         if payload.get("problem") is not None:
-            payload["problem"] = ProblemRow.from_dict(payload["problem"])
+            payload["problem"] = DatasetRow.from_dict(payload["problem"])
         if payload.get("trajectory") is not None:
             payload["trajectory"] = Trajectory.from_dict(payload["trajectory"])
         if payload.get("status") is not None:
@@ -314,11 +314,11 @@ class AttemptResult:
 
 
 @dataclass
-class AttemptRow:
+class RowAttempt:
     """One execution attempt plus scoring and provenance."""
 
     attempt_id: str = ""
-    problem: ProblemRow | None = None
+    problem: DatasetRow | None = None
     group_index: int | None = None
     trajectory: "Trajectory | None" = None
     training_sample: TrainingSample | None = None
@@ -419,12 +419,12 @@ class AttemptRow:
         return d
 
     @staticmethod
-    def from_dict(data: dict[str, Any]) -> "AttemptRow":
+    def from_dict(data: dict[str, Any]) -> "RowAttempt":
         from ..core import Trajectory
 
         payload = data.copy()
         if payload.get("problem") is not None:
-            payload["problem"] = ProblemRow.from_dict(payload["problem"])
+            payload["problem"] = DatasetRow.from_dict(payload["problem"])
         if payload.get("training_sample") is not None:
             payload["training_sample"] = TrainingSample.from_dict(payload["training_sample"])
         if payload.get("status") is not None:
@@ -433,7 +433,7 @@ class AttemptRow:
             payload["trajectory"] = Trajectory.from_dict(payload["trajectory"])
         if payload.get("score") is not None:
             payload["score"] = _score_from_dict(payload["score"])
-        return AttemptRow(**payload)
+        return RowAttempt(**payload)
 
     def to_result(self) -> AttemptResult:
         evaluation = None
@@ -456,8 +456,8 @@ class AttemptRow:
         training_sample: TrainingSample | None = None,
         group_index: int | None = None,
         weight_version: int = 0,
-    ) -> "AttemptRow":
-        return AttemptRow(
+    ) -> "RowAttempt":
+        return RowAttempt(
             attempt_id=result.attempt_id,
             problem=result.problem,
             group_index=group_index,
@@ -470,6 +470,11 @@ class AttemptRow:
             metadata=dict(result.metadata),
             weight_version=weight_version,
         )
+
+
+# Backward-compatible type aliases during the DatasetRow/RowAttempt rename.
+ProblemRow = DatasetRow
+AttemptRow = RowAttempt
 
 
 @dataclass
@@ -506,12 +511,12 @@ class RolloutBatch:
     group_indices: list[int] = field(default_factory=list)
     rollout_log_probs: list[list[float]] | None = None  # For TI/TO off-policy correction
     teacher_log_probs: list[list[float]] | None = None  # For on-policy distillation
-    attempts: list[AttemptRow] = field(default_factory=list)
+    attempts: list[RowAttempt] = field(default_factory=list)
     training_samples: list[TrainingSample] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
 
     @property
-    def samples(self) -> list[AttemptRow]:
+    def samples(self) -> list[RowAttempt]:
         """Compatibility alias for older training code."""
         return self.attempts
 
@@ -579,9 +584,9 @@ class RolloutConfig:
     Example:
         >>> async def my_generate(prompts, config):
         ...     return [
-        ...         AttemptRow(
+        ...         RowAttempt(
         ...             attempt_id=str(i),
-        ...             problem=ProblemRow(problem_id=str(i), payload={"prompt": p}),
+        ...             problem=DatasetRow(problem_id=str(i), payload={"prompt": p}),
         ...         )
         ...         for i, p in enumerate(prompts)
         ...     ]

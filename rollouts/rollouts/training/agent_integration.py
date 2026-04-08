@@ -5,8 +5,8 @@ Bridge between rollouts.agents (multi-turn execution) and rollouts.training (RL)
 Design pattern:
 - User provides Environment class
 - We run_agent() to get trajectory
-- Convert trajectory -> AttemptRow with attached TrainingSample
-- Return AttemptRow ready for training
+- Convert trajectory -> RowAttempt with attached TrainingSample
+- Return RowAttempt ready for training
 
 Tiger Style: Pure functions, explicit transformations, all parameters visible.
 Casey Muratori: Both high-level (coarse) and low-level (fine) APIs.
@@ -27,7 +27,7 @@ from ..dtypes import (
     ToolCallContent,
     Trajectory,
 )
-from ..training.types import AttemptRow, ProblemRow, Status, TrainingSample
+from ..training.types import DatasetRow, RowAttempt, Status, TrainingSample
 
 if TYPE_CHECKING:
     from ..dtypes import Environment
@@ -82,7 +82,7 @@ async def agent_rollout_to_sample(
     metadata: dict[str, Any] | None = None,
     environment_factory: Callable[[dict[str, Any]], Any] | None = None,
     sample_data: dict[str, Any] | None = None,
-) -> AttemptRow:
+) -> RowAttempt:
     """Single agent rollout: prompt → multi-turn execution → training sample.
 
     Based on clicker/run_rollouts.py:46-120 pattern.
@@ -104,7 +104,7 @@ async def agent_rollout_to_sample(
         sample_data: Original prompt/sample dict passed through to environment_factory.
 
     Returns:
-        AttemptRow with attached TrainingSample
+        RowAttempt with attached TrainingSample
 
     Example (string prompt):
         >>> from ..environments.calculator import CalculatorEnvironment
@@ -177,7 +177,7 @@ async def agent_rollout_to_sample(
     #
     # TODO(training-denotation): Stop treating trajectory.metadata as an ambient
     # side channel for environment summaries. Project the final environment/eval
-    # summary onto AttemptResult/AttemptRow explicitly at this boundary.
+    # summary onto AttemptResult/RowAttempt explicitly at this boundary.
     enriched_metadata = {
         **(metadata or {}),
         **dict(final_state.actor.trajectory.metadata),
@@ -192,7 +192,7 @@ async def agent_rollout_to_sample(
     if runtime_metadata is not None:
         enriched_metadata.update(runtime_metadata)
 
-    problem_row = ProblemRow(
+    problem_row = DatasetRow(
         problem_id=(sample_data or {}).get("id", ""),
         payload=sample_data or {},
         metadata=dict(metadata or {}),
@@ -271,7 +271,7 @@ async def generate_rollout_batch(
     tokenizer: Any,
     max_turns: int = 10,
     metadata_list: list[dict[str, Any]] | None = None,
-) -> list[AttemptRow]:
+) -> list[RowAttempt]:
     """Batch agent rollout generation (for SLIME-style training).
 
     This is the function you'd pass as RolloutConfig.generate_fn.
@@ -317,7 +317,7 @@ async def generate_rollout_batch(
 
     # Generate all rollouts in parallel (trio structured concurrency)
     # Use list to collect results from concurrent tasks
-    samples: list[AttemptRow | None] = [None] * len(prompts)  # pre-allocated, filled by gen_one
+    samples: list[RowAttempt | None] = [None] * len(prompts)  # pre-allocated, filled by gen_one
 
     async def gen_one(index: int, prompt: str, metadata: dict) -> None:
         sample = await agent_rollout_to_sample(
@@ -340,7 +340,7 @@ async def generate_rollout_batch(
         assert sample is not None  # for type narrowing
         assert sample.loss_mask, "all samples should have loss_mask"
 
-    return cast(list[AttemptRow], samples)
+    return cast(list[RowAttempt], samples)
 
 
 # ──────────────────────── Low-Level API (Fine-Grained) ───────────────────────
@@ -350,8 +350,8 @@ def trajectory_to_sample(
     trajectory: Trajectory,
     tokenizer: Any,
     metadata: dict[str, Any] | None = None,
-    problem_row: ProblemRow | None = None,
-) -> AttemptRow:
+    problem_row: DatasetRow | None = None,
+) -> RowAttempt:
     """Convert agent trajectory → training sample with loss_mask.
 
     Based on clicker/rollouts/training/sample_prep.py:17-71.
@@ -362,7 +362,7 @@ def trajectory_to_sample(
         metadata: Optional metadata
 
     Returns:
-        AttemptRow with attached TrainingSample
+        RowAttempt with attached TrainingSample
 
     Tiger Style: Explicit, bounded, pure transformation.
 
@@ -464,7 +464,7 @@ def trajectory_to_sample(
     )
 
     # Tiger Style: Explicit construction
-    sample = AttemptRow(
+    sample = RowAttempt(
         problem=problem_row,
         trajectory=trajectory,  # Store full trajectory - response property extracts from this
         training_sample=training_sample,
@@ -491,7 +491,7 @@ def trajectory_to_samples(
     tokenizer: Any,
     strategy: str = "interleaved",
     metadata: dict[str, Any] | None = None,
-) -> list[AttemptRow]:
+) -> list[RowAttempt]:
     """Convert agent trajectory → training sample(s) based on strategy.
 
     Args:
@@ -539,7 +539,7 @@ def _branching_trajectory_to_samples(
     trajectory: Trajectory,
     tokenizer: Any,
     metadata: dict[str, Any] | None = None,
-) -> list[AttemptRow]:
+) -> list[RowAttempt]:
     """Convert trajectory to samples using branching strategy.
 
     Each assistant turn becomes a separate sample:
@@ -549,7 +549,7 @@ def _branching_trajectory_to_samples(
 
     This mirrors deployed usage exactly - each generation is independent.
     """
-    samples: list[AttemptRow] = []
+    samples: list[RowAttempt] = []
     completion_idx = 0
 
     for msg_idx, msg in enumerate(trajectory.messages):
@@ -623,7 +623,7 @@ def _branching_trajectory_to_samples(
             if input_messages
             else ""
         )
-        sample = AttemptRow(
+        sample = RowAttempt(
             trajectory=None,
             training_sample=TrainingSample(
                 tokens=tokens,
