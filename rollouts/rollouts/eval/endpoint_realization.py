@@ -658,6 +658,8 @@ async def _realize_modal_endpoint(
             baseline_sandbox_ids = await _list_modal_sandbox_ids()
             sandbox_handle = await create_modal_sandbox(request)
             session = ModalExecutionSession(sandbox_handle=sandbox_handle, local_root=REPO_ROOT)
+            service = None
+            startup_context: dict[str, Any] | None = None
             try:
                 await _refresh_modal_parent_lease(sandbox_handle.sandbox)
                 emit_modal_event(
@@ -760,14 +762,18 @@ async def _realize_modal_endpoint(
                 # Capture final service logs before sandbox teardown.
                 # This is the only window to read stdout/stderr from the
                 # inference server process (e.g. gold_server.py diagnostics).
-                final_log = await _service_logs_best_effort(service, tail=200)
-                if run_logger is not None:
+                final_log = (
+                    await _service_logs_best_effort(service, tail=200)
+                    if service is not None
+                    else ""
+                )
+                if run_logger is not None and startup_context is not None:
                     run_logger.event(
                         "inference_service_final_log",
                         log_blob=final_log,
                         **startup_context,
                     )
-                else:
+                elif final_log:
                     _logger.info(
                         "inference service final log\n%s",
                         final_log,

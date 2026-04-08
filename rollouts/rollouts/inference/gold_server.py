@@ -181,7 +181,10 @@ def build_app(model_name: str) -> FastAPI:
     async def health() -> dict:
         return {"status": "ok"}
 
-    @app.post("/v1/chat/completions")
+    # FastAPI/Pydantic cannot materialize a response model from
+    # `StreamingResponse | dict`, so keep the explicit union return value but
+    # disable response-model generation at the route boundary.
+    @app.post("/v1/chat/completions", response_model=None)
     async def chat_completions(request: dict) -> StreamingResponse | dict:
         messages = request.get("messages", [])
         max_tokens = request.get("max_tokens", 512)

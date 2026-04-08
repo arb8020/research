@@ -4,14 +4,15 @@ import pytest
 
 from rollouts.agents import Actor, AgentState
 from rollouts.core import EvalConfig, Metric, Score
-from rollouts.dtypes import Message, StopReason, Trajectory
+from rollouts.dtypes import LLMCallEnd, Message, StopReason, Trajectory
 from rollouts.eval.native import (
     EvalRuntime,
     _AgentRunResult,
     compute_summary_metrics,
     evaluate_sample,
 )
-from rollouts.training.types import RowAttempt, ScoringContext, Status
+from rollouts.training.scoring import FunctionScorer
+from rollouts.training.types import DatasetRow, RowAttempt, ScoringContext, Status
 
 
 class _FakeEnvironment:
@@ -274,3 +275,116 @@ def test_compute_summary_metrics_excludes_aborted_from_completion_and_success() 
     assert summary["successful_samples"] == 1
     assert summary["success_rate"] == 0.5
     assert summary["completion_rate"] == 2 / 3
+
+
+@pytest.mark.trio
+async def test_evaluate_sample_preserves_llm_runtime_metrics() -> None:
+    async def _attempt_executor(
+        sample_data: dict[str, str],
+        sample_id: str,
+        environment: object,
+        run_config: object,
+    ) -> RowAttempt:
+        del environment
+        await run_config.on_chunk(  # type: ignore[attr-defined]
+            LLMCallEnd(
+                duration_ms=123.4,
+                ttft_ms=45.6,
+                provider="openai",
+                model="test-model",
+                tokens_in=12,
+                tokens_out=7,
+                status="success",
+            )
+        )
+        return RowAttempt(
+            attempt_id=sample_id,
+            problem=DatasetRow(problem_id=sample_id, payload=sample_data),
+            trajectory=Trajectory(messages=[Message(role="assistant", content="ok")]),
+            metadata={"status": "success"},
+        )
+
+    config = EvalConfig(
+        endpoint=None,
+        prepare_messages=lambda _: [],
+        attempt_executor=_attempt_executor,
+        scorer=FunctionScorer(lambda _sample, _context: Score(metrics=())),
+        verbose=False,
+        show_progress=False,
+    )
+    runtime = EvalRuntime(config=config)
+
+    result = await evaluate_sample(
+        sample_data={"prompt": "hello"},
+        sample_id="sample_0000",
+        runtime=runtime,
+    )
+
+    assert result.metadata["llm_call_count"] == 1
+    assert result.metadata["llm_tokens_in_total"] == 12
+    assert result.metadata["llm_tokens_out_total"] == 7
+    assert result.metadata["llm_duration_ms_mean"] == 123.4
+    assert result.metadata["llm_ttft_ms_mean"] == 45.6
+    llm_metrics = result.metadata["llm_call_metrics"]
+    assert isinstance(llm_metrics, list)
+    assert llm_metrics[0]["model"] == "test-model"
+
+
+def test_compute_summary_metrics_includes_llm_runtime_telemetry() -> None:
+    first = RowAttempt(
+        attempt_id="sample-1",
+        status=Status.COMPLETED,
+        metadata={
+            "status": "success",
+            "turns_used": 1,
+            "total_tokens": 10,
+            "duration_seconds": 2.0,
+            "llm_call_metrics": [
+                {
+                    "duration_ms": 100.0,
+                    "ttft_ms": 40.0,
+                    "tokens_in": 8,
+                    "tokens_out": 4,
+                    "status": "success",
+                }
+            ],
+            "tool_execution_metrics": [],
+        },
+    )
+    second = RowAttempt(
+        attempt_id="sample-2",
+        status=Status.COMPLETED,
+        metadata={
+            "status": "failed",
+            "error": "ValueError: boom",
+            "turns_used": 1,
+            "total_tokens": 12,
+            "duration_seconds": 4.0,
+            "llm_call_metrics": [
+                {
+                    "duration_ms": 200.0,
+                    "ttft_ms": 80.0,
+                    "tokens_in": 16,
+                    "tokens_out": 6,
+                    "status": "error",
+                }
+            ],
+            "tool_execution_metrics": [
+                {
+                    "duration_ms": 55.0,
+                    "status": "success",
+                }
+            ],
+        },
+    )
+
+    summary = compute_summary_metrics([first, second])
+
+    assert summary["llm_call_count_total"] == 2
+    assert summary["llm_call_error_count"] == 1
+    assert summary["llm_tokens_in_total"] == 24
+    assert summary["llm_tokens_out_total"] == 10
+    assert summary["llm_duration_ms_mean"] == 150.0
+    assert summary["llm_ttft_ms_p50"] == 60.0
+    assert summary["sample_duration_seconds_mean"] == 3.0
+    assert summary["tool_execution_count_total"] == 1

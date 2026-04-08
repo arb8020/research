@@ -392,6 +392,68 @@ def _log_sample_completion(
         logger.info(f"  {metric_str}")
 
 
+def _build_sample_runtime_metrics(
+    *,
+    llm_call_metrics: list[dict[str, Any]],
+    tool_execution_metrics: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Summarize per-sample runtime telemetry for report/sample artifacts.
+
+    Keep the raw event-derived lists in metadata for later inspection, but also
+    attach a compact aggregate so smoke witnesses can reason about engine
+    behavior without parsing events.jsonl first.
+    """
+    metrics: dict[str, Any] = {
+        "llm_call_metrics": llm_call_metrics,
+        "tool_execution_metrics": tool_execution_metrics,
+        "llm_call_count": len(llm_call_metrics),
+        "tool_execution_count": len(tool_execution_metrics),
+    }
+
+    if llm_call_metrics:
+        llm_durations = [float(call["duration_ms"]) for call in llm_call_metrics]
+        llm_ttfts = [
+            float(call["ttft_ms"]) for call in llm_call_metrics if call.get("ttft_ms") is not None
+        ]
+        llm_tokens_in = [
+            int(call["tokens_in"]) for call in llm_call_metrics if call.get("tokens_in") is not None
+        ]
+        llm_tokens_out = [
+            int(call["tokens_out"])
+            for call in llm_call_metrics
+            if call.get("tokens_out") is not None
+        ]
+        metrics.update({
+            "llm_call_success_count": sum(
+                1 for call in llm_call_metrics if call.get("status") == "success"
+            ),
+            "llm_call_error_count": sum(
+                1 for call in llm_call_metrics if call.get("status") != "success"
+            ),
+            "llm_duration_ms_total": sum(llm_durations),
+            "llm_duration_ms_mean": sum(llm_durations) / len(llm_durations),
+            "llm_tokens_in_total": sum(llm_tokens_in),
+            "llm_tokens_out_total": sum(llm_tokens_out),
+        })
+        if llm_ttfts:
+            metrics["llm_ttft_ms_mean"] = sum(llm_ttfts) / len(llm_ttfts)
+
+    if tool_execution_metrics:
+        tool_durations = [float(call["duration_ms"]) for call in tool_execution_metrics]
+        metrics.update({
+            "tool_execution_success_count": sum(
+                1 for call in tool_execution_metrics if call.get("status") == "success"
+            ),
+            "tool_execution_error_count": sum(
+                1 for call in tool_execution_metrics if call.get("status") != "success"
+            ),
+            "tool_execution_duration_ms_total": sum(tool_durations),
+            "tool_execution_duration_ms_mean": sum(tool_durations) / len(tool_durations),
+        })
+
+    return metrics
+
+
 def _map_exec_status(status: str) -> Status:
     """Map eval metadata status strings onto canonical RowAttempt status."""
     if status == "aborted":
@@ -450,6 +512,41 @@ def _build_base_run_config(
         )
 
     return base_run_config
+
+
+def _percentile(values: list[float], percentile: float) -> float:
+    """Compute percentile using linear interpolation over a sorted sample."""
+    assert 0.0 <= percentile <= 100.0, "percentile must be in [0, 100]"
+    if not values:
+        return 0.0
+    if len(values) == 1:
+        return float(values[0])
+
+    sorted_values = sorted(float(value) for value in values)
+    rank = (len(sorted_values) - 1) * (percentile / 100.0)
+    lower_index = int(rank)
+    upper_index = min(lower_index + 1, len(sorted_values) - 1)
+    lower = sorted_values[lower_index]
+    upper = sorted_values[upper_index]
+    fraction = rank - lower_index
+    return lower + (upper - lower) * fraction
+
+
+def _add_distribution_summary(
+    summary: dict[str, Any],
+    *,
+    name: str,
+    values: list[float],
+) -> None:
+    """Attach mean/p50/p95/max summaries for a numeric metric family."""
+    if not values:
+        return
+
+    mean_value = sum(values) / len(values)
+    summary[f"{name}_mean"] = mean_value
+    summary[f"{name}_p50"] = _percentile(values, 50.0)
+    summary[f"{name}_p95"] = _percentile(values, 95.0)
+    summary[f"{name}_max"] = max(values)
 
 
 # EvalSample deleted - use Sample from training.types instead
@@ -851,6 +948,8 @@ async def evaluate_sample(
     base_on_chunk = base_run_config.on_chunk
     last_status: dict[str, str] = {}  # Track last status to avoid duplicate events
     current_turn: dict[str, int] = {}  # Track current turn per sample for wide events
+    llm_call_metrics: list[dict[str, Any]] = []
+    tool_execution_metrics: list[dict[str, Any]] = []
 
     async def on_chunk_with_sample_id(event: object) -> None:
         nonlocal last_status, current_turn
@@ -966,6 +1065,17 @@ async def evaluate_sample(
                 },
             )
         elif isinstance(event, LLMCallEnd):
+            llm_call_metrics.append({
+                "turn": sample_turn,
+                "duration_ms": round(event.duration_ms, 1),
+                "ttft_ms": round(event.ttft_ms, 1) if event.ttft_ms is not None else None,
+                "provider": event.provider,
+                "model": event.model,
+                "tokens_in": event.tokens_in,
+                "tokens_out": event.tokens_out,
+                "status": event.status,
+                "error": event.error,
+            })
             _event_logger.info(
                 "llm_call",
                 extra={
@@ -982,6 +1092,14 @@ async def evaluate_sample(
                 },
             )
         elif isinstance(event, ToolExecutionEnd):
+            tool_execution_metrics.append({
+                "turn": sample_turn,
+                "tool_name": event.tool_name,
+                "duration_ms": round(event.duration_ms, 1),
+                "status": event.status,
+                "is_error": event.is_error,
+                "result_summary": event.result_summary,
+            })
             _event_logger.info(
                 "tool_execution",
                 extra={
@@ -1196,7 +1314,14 @@ async def evaluate_sample(
                 exec_metadata["status"] = "success"
 
         assert final_trajectory is not None
-        sample.metadata = {**sample.metadata, **exec_metadata}
+        sample.metadata = {
+            **sample.metadata,
+            **exec_metadata,
+            **_build_sample_runtime_metrics(
+                llm_call_metrics=llm_call_metrics,
+                tool_execution_metrics=tool_execution_metrics,
+            ),
+        }
         sample.status = _map_exec_status(exec_metadata["status"])
 
         score: Score | None = None
@@ -1540,6 +1665,68 @@ def compute_summary_metrics(results: list[RowAttempt]) -> dict[str, float]:
     summary["total_samples"] = len(results)
     summary["avg_turns"] = sum(r.metadata.get("turns_used", 0) for r in results) / len(results)
     summary["avg_tokens"] = sum(r.metadata.get("total_tokens", 0) for r in results) / len(results)
+    sample_durations = [
+        float(r.metadata["duration_seconds"])
+        for r in results
+        if r.metadata.get("duration_seconds") is not None
+    ]
+    _add_distribution_summary(
+        summary,
+        name="sample_duration_seconds",
+        values=sample_durations,
+    )
+
+    llm_calls = [
+        call
+        for result in results
+        for call in result.metadata.get("llm_call_metrics", [])
+        if isinstance(call, dict)
+    ]
+    summary["llm_call_count_total"] = len(llm_calls)
+    summary["llm_call_error_count"] = sum(
+        1 for call in llm_calls if call.get("status") != "success"
+    )
+    if llm_calls:
+        summary["llm_tokens_in_total"] = sum(
+            int(call["tokens_in"]) for call in llm_calls if call.get("tokens_in") is not None
+        )
+        summary["llm_tokens_out_total"] = sum(
+            int(call["tokens_out"]) for call in llm_calls if call.get("tokens_out") is not None
+        )
+        _add_distribution_summary(
+            summary,
+            name="llm_duration_ms",
+            values=[
+                float(call["duration_ms"])
+                for call in llm_calls
+                if call.get("duration_ms") is not None
+            ],
+        )
+        _add_distribution_summary(
+            summary,
+            name="llm_ttft_ms",
+            values=[
+                float(call["ttft_ms"]) for call in llm_calls if call.get("ttft_ms") is not None
+            ],
+        )
+
+    tool_calls = [
+        call
+        for result in results
+        for call in result.metadata.get("tool_execution_metrics", [])
+        if isinstance(call, dict)
+    ]
+    summary["tool_execution_count_total"] = len(tool_calls)
+    summary["tool_execution_error_count"] = sum(
+        1 for call in tool_calls if call.get("status") != "success"
+    )
+    _add_distribution_summary(
+        summary,
+        name="tool_execution_duration_ms",
+        values=[
+            float(call["duration_ms"]) for call in tool_calls if call.get("duration_ms") is not None
+        ],
+    )
 
     # Separate provider errors from actual failures
     # Provider errors (rate limits, timeouts) are excluded from accuracy calculation
