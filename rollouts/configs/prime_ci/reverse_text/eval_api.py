@@ -16,7 +16,7 @@ from rollouts.eval import (
     EvalTaskSpec,
 )
 from rollouts.training.scoring import FunctionScorer
-from rollouts.training.types import AttemptResult
+from rollouts.training.types import RowAttempt
 
 config_status = import_tested(
     "70bce1bf",
@@ -39,7 +39,7 @@ def prepare_messages(sample: dict[str, str]) -> list[Message]:
     ]
 
 
-def reverse_text_eval_score_fn(sample: AttemptResult, _context: object) -> Score:
+def reverse_text_eval_score_fn(sample: RowAttempt, _context: object) -> Score:
     expected = sample.input["text"][::-1]
     response = sample.response
     parsed = parse_reversed_text(response)

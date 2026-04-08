@@ -113,7 +113,7 @@ async def run_on_modal(model: str, limit: int) -> dict:
         from rollouts.core import Endpoint, EvalConfig, Message, Metric, Score, StopReason
         from rollouts.eval import evaluate
         from rollouts.training.scoring import FunctionScorer
-        from rollouts.training.types import AttemptResult
+        from rollouts.training.types import RowAttempt
 
         # Tasks
         tasks = [
@@ -140,7 +140,7 @@ async def run_on_modal(model: str, limit: int) -> dict:
                 ),
             ]
 
-        def score_fn(sample: AttemptResult, _context: object) -> Score:
+        def score_fn(sample: RowAttempt, _context: object) -> Score:
             input_data = sample.input
             expected = input_data["text"][::-1]
 

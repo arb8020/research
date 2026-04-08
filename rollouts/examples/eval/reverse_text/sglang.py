@@ -22,7 +22,7 @@ from rollouts.eval import (
     InferenceServerConfig,
 )
 from rollouts.training.scoring import FunctionScorer
-from rollouts.training.types import AttemptResult
+from rollouts.training.types import RowAttempt
 
 # =============================================================================
 # Endpoint Configuration
@@ -113,7 +113,7 @@ def prepare_messages(sample: dict) -> list[Message]:
     ]
 
 
-def score_fn(sample: AttemptResult, _context: object) -> Score:
+def score_fn(sample: RowAttempt, _context: object) -> Score:
     """Score the response by checking if reversal is correct."""
     import re
 

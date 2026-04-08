@@ -25,8 +25,8 @@ Legacy shape still supported:
 
     - tasks: list[dict] OR tasks_path: Path (one required)
     - prepare_messages: Callable[[dict], list[Message]]
-    - attempt_executor: Callable[[dict, str, Environment | None, RunConfig], AttemptResult] (optional)
-    - scorer: explicit scoring stage over AttemptResult
+    - attempt_executor: Callable[[dict, str, Environment | None, RunConfig], RowAttempt] (optional)
+    - scorer: explicit scoring stage over RowAttempt
     - make_environment: Callable[[], Environment] (optional)
 """
 

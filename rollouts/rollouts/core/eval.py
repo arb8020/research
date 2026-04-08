@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from ..training.types import AttemptResult, Scorer
+from ..training.types import RowAttempt, Scorer
 
 if TYPE_CHECKING:
     from ..agents import RunConfig
@@ -37,7 +37,7 @@ PrepareMessagesFn = Callable[[dict[str, Any]], list[Any]]
 EnvironmentFactory = Callable[[dict[str, Any]], Any]
 AttemptExecutor = Callable[
     [dict[str, Any], str, "Environment | None", "RunConfig"],
-    AttemptResult | Awaitable[AttemptResult],
+    RowAttempt | Awaitable[RowAttempt],
 ]
 
 

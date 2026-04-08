@@ -45,9 +45,8 @@ from ..export_html import run_to_html, sample_to_html
 from ..progress import MultiProgress
 from ..training.scoring import attach_score, score_result
 from ..training.types import (
-    AttemptEvaluation,
-    AttemptResult,
     DatasetRow,
+    RowAttempt,
     Scorer,
     ScoringContext,
     Status,
@@ -206,8 +205,8 @@ def _extract_text_from_content(content: object) -> str:
 async def _evaluate_batch(
     samples: list[tuple[str, dict[str, Any]]],
     runtime: EvalRuntime,
-    on_sample_complete: Callable[[AttemptResult, list[AttemptResult]], None] | None = None,
-) -> list[AttemptResult]:
+    on_sample_complete: Callable[[RowAttempt, list[RowAttempt]], None] | None = None,
+) -> list[RowAttempt]:
     """Evaluate a batch of samples, handling sequential vs parallel execution.
 
     This is the core evaluation loop, used for both initial runs and retries.
@@ -221,10 +220,10 @@ async def _evaluate_batch(
     """
     config = runtime.config
     progress = runtime.progress
-    results: list[AttemptResult] = []
+    results: list[RowAttempt] = []
     results_lock = trio.Lock()
 
-    async def run_one(sample_id: str, sample_data: dict[str, Any]) -> AttemptResult:
+    async def run_one(sample_id: str, sample_data: dict[str, Any]) -> RowAttempt:
         """Evaluate a single sample."""
         task_name = sample_data.get("name", sample_id)
         if progress:
@@ -304,15 +303,15 @@ async def _run_attempt_executor(
     sample_id: str,
     environment: Environment | None,
     run_config: RunConfig,
-) -> AttemptResult:
+) -> RowAttempt:
     """Run a custom per-sample executor and normalize the result shape."""
     sample = attempt_executor(sample_data, sample_id, environment, run_config)
     if isawaitable(sample):
         sample = await sample
-    if isinstance(sample, AttemptResult):
+    if isinstance(sample, RowAttempt):
         result = sample
     else:
-        raise TypeError(f"attempt_executor must return AttemptResult (got {type(sample).__name__})")
+        raise TypeError(f"attempt_executor must return RowAttempt (got {type(sample).__name__})")
     if result.trajectory is None:
         raise ValueError("attempt_executor must populate attempt trajectory")
     if not result.attempt_id:
@@ -331,7 +330,7 @@ async def _serialize_environment_state(environment: Environment | None) -> dict[
 
 
 async def _compute_score(
-    result: AttemptResult,
+    result: RowAttempt,
     scorer: Scorer,
     scoring_context: ScoringContext | None = None,
 ) -> Score:
@@ -394,7 +393,7 @@ def _log_sample_completion(
 
 
 def _map_exec_status(status: str) -> Status:
-    """Map eval metadata status strings onto canonical AttemptResult status."""
+    """Map eval metadata status strings onto canonical RowAttempt status."""
     if status == "aborted":
         return Status.ABORTED
     return Status.COMPLETED
@@ -549,7 +548,7 @@ def _get_git_info() -> dict[str, Any]:
     return info
 
 
-def _extract_evaluator_provenance(results: list[AttemptResult]) -> dict[str, Any] | None:
+def _extract_evaluator_provenance(results: list[RowAttempt]) -> dict[str, Any] | None:
     """Best-effort scoring-runtime provenance extracted from sample metadata."""
     for sample in results:
         provenance = sample.metadata.get("evaluator_provenance")
@@ -568,7 +567,7 @@ def _extract_evaluator_provenance(results: list[AttemptResult]) -> dict[str, Any
     return None
 
 
-def _build_report_provenance(config: EvalConfig, results: list[AttemptResult]) -> dict[str, Any]:
+def _build_report_provenance(config: EvalConfig, results: list[RowAttempt]) -> dict[str, Any]:
     """Assemble report-level provenance from config metadata and sample outputs."""
     provenance: dict[str, Any] = {}
 
@@ -590,7 +589,7 @@ class EvalReport:
     dataset_path: str
     total_samples: int
     summary_metrics: dict[str, float]
-    sample_results: list[AttemptResult]
+    sample_results: list[RowAttempt]
     config: dict[str, Any]
     provenance: dict[str, Any] = field(default_factory=dict)
     timestamp: str = field(default_factory=lambda: datetime.now().isoformat())
@@ -637,7 +636,7 @@ class EvalReport:
 
 def _write_partial_report(
     output_dir: Path,
-    results: list[AttemptResult],
+    results: list[RowAttempt],
     config: EvalConfig,
     interrupted: bool = False,
     resume_from: int = 0,
@@ -675,7 +674,7 @@ def _write_partial_report(
     )
 
 
-def _sample_result_dict(sample: AttemptResult) -> dict[str, Any]:
+def _sample_result_dict(sample: RowAttempt) -> dict[str, Any]:
     """Create the canonical per-sample attempt artifact."""
     sample_dict = sample.to_dict()
 
@@ -687,7 +686,7 @@ def _sample_result_dict(sample: AttemptResult) -> dict[str, Any]:
 
 def _write_sample_results(
     samples_dir: Path,
-    results: list[AttemptResult],
+    results: list[RowAttempt],
 ) -> None:
     samples_dir.mkdir(exist_ok=True)
     for sample in results:
@@ -701,7 +700,7 @@ def _write_html_exports(
     output_dir: Path,
     trace_id: str,
     report: dict[str, Any],
-    results: list[AttemptResult],
+    results: list[RowAttempt],
 ) -> None:
     samples_dir = output_dir / "samples"
     sample_payloads: list[dict[str, Any]] = []
@@ -824,7 +823,7 @@ async def evaluate_sample(
     sample_id: str,
     runtime: EvalRuntime,
     environment: Environment | None = None,
-) -> AttemptResult:
+) -> RowAttempt:
     """Evaluate a single sample - analogous to run_agent_step.
 
     This is the atomic unit of evaluation that can be easily parallelized.
@@ -837,7 +836,7 @@ async def evaluate_sample(
         environment: Fresh Environment instance for this sample (None for tool-free eval)
 
     Returns:
-        AttemptResult with trajectory and derived evaluation attached
+        RowAttempt with trajectory and derived evaluation attached
     """
     # Unpack runtime for convenience
     config = runtime.config
@@ -1165,7 +1164,7 @@ async def evaluate_sample(
                     extra_metadata = runtime_metadata()
                     if isinstance(extra_metadata, dict):
                         combined_metadata.update(extra_metadata)
-            sample = AttemptResult(
+            sample = RowAttempt(
                 attempt_id=sample_id,
                 problem=problem,
                 trajectory=final_trajectory,
@@ -1218,10 +1217,6 @@ async def evaluate_sample(
             sample_id, reward, exec_metadata, final_trajectory, score, config.verbose
         )
 
-        # Attach derived evaluation to the canonical execution result.
-        if score is not None:
-            sample.evaluation = AttemptEvaluation(reward=score.reward, score=score)
-
         # Emit sample_end event for frontend live streaming
         await run_config.on_chunk(
             StreamChunk(
@@ -1267,7 +1262,7 @@ async def evaluate(
     runtime_owner = config.environment_factory or config.environment
     eval_logging: EvalLoggingContext | None = None
     progress: MultiProgress | None = None
-    results: list[AttemptResult] = []
+    results: list[RowAttempt] = []
     _interrupted = False
 
     # Cancel scope used by the SIGTERM handler so finally runs cleanly on kill.
@@ -1342,8 +1337,8 @@ async def evaluate(
             resume_from = 0
 
             def on_sample_complete(
-                sample: AttemptResult,
-                all_results: list[AttemptResult],
+                sample: RowAttempt,
+                all_results: list[RowAttempt],
             ) -> None:
                 nonlocal last_report_count
                 if not config.output_dir:
@@ -1493,7 +1488,7 @@ async def evaluate(
     return report
 
 
-def compute_summary_metrics(results: list[AttemptResult]) -> dict[str, float]:
+def compute_summary_metrics(results: list[RowAttempt]) -> dict[str, float]:
     """Compute summary statistics from results using Score.
 
     Aggregates metrics from Score objects across all results.
@@ -1656,9 +1651,9 @@ async def simple_evaluate(
 
 
 def group_by(
-    results: list[AttemptResult],
-    key: Callable[[AttemptResult], str],
-) -> dict[str, list[AttemptResult]]:
+    results: list[RowAttempt],
+    key: Callable[[RowAttempt], str],
+) -> dict[str, list[RowAttempt]]:
     """Group evaluation results by a key function.
 
     Pure function for slicing results by metadata.
@@ -1674,7 +1669,7 @@ def group_by(
     Returns:
         Dict mapping group keys to lists of samples
     """
-    groups: dict[str, list[AttemptResult]] = {}
+    groups: dict[str, list[RowAttempt]] = {}
     for result in results:
         k = key(result)
         if k not in groups:
@@ -1683,7 +1678,7 @@ def group_by(
     return groups
 
 
-def summarize(results: list[AttemptResult]) -> dict[str, float]:
+def summarize(results: list[RowAttempt]) -> dict[str, float]:
     """Compute summary statistics for a list of evaluation results.
 
     Pure function for aggregating metrics.

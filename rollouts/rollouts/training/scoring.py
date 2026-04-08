@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from ..core import Score
-from .types import AttemptResult, RolloutConfig, RolloutRuntime, RowAttempt, Scorer, ScoringContext
+from .types import RolloutConfig, RolloutRuntime, RowAttempt, Scorer, ScoringContext
 
 if TYPE_CHECKING:
     pass
@@ -15,11 +15,11 @@ if TYPE_CHECKING:
 class FunctionScorer:
     """Explicit scorer wrapper for function-authored configs and examples."""
 
-    fn: Callable[[AttemptResult, ScoringContext], Score | Awaitable[Score]]
+    fn: Callable[[RowAttempt, ScoringContext], Score | Awaitable[Score]]
 
     async def score(
         self,
-        result: AttemptResult,
+        result: RowAttempt,
         context: ScoringContext,
     ) -> Score:
         scored = self.fn(result, context)
@@ -32,7 +32,7 @@ class FunctionScorer:
 
 async def score_result(
     scorer: Scorer,
-    result: AttemptResult,
+    result: RowAttempt,
     context: ScoringContext | None = None,
 ) -> Score:
     from ..core import Score
@@ -44,7 +44,7 @@ async def score_result(
     return score
 
 
-def attach_score(result: AttemptResult, score: Score) -> AttemptResult:
+def attach_score(result: RowAttempt, score: Score) -> RowAttempt:
     result.score = score
     result.reward = score.reward
     return result
@@ -52,13 +52,13 @@ def attach_score(result: AttemptResult, score: Score) -> AttemptResult:
 
 async def score_results(
     scorer: Scorer,
-    results: list[AttemptResult],
+    results: list[RowAttempt],
     contexts: list[ScoringContext | None] | None = None,
-) -> list[AttemptResult]:
+) -> list[RowAttempt]:
     if contexts is not None and len(contexts) != len(results):
         raise ValueError("contexts length must match results length")
 
-    scored_results: list[AttemptResult] = []
+    scored_results: list[RowAttempt] = []
     for index, result in enumerate(results):
         context = contexts[index] if contexts is not None else None
         scored_results.append(attach_score(result, await score_result(scorer, result, context)))
@@ -72,17 +72,7 @@ async def score_rows(
 ) -> list[RowAttempt]:
     if contexts is not None and len(contexts) != len(rows):
         raise ValueError("contexts length must match rows length")
-
-    results = [row.to_result() for row in rows]
-    await score_results(scorer, results, contexts=contexts)
-
-    for index, (row, result) in enumerate(zip(rows, results, strict=True)):
-        rows[index] = replace(
-            row,
-            reward=result.reward,
-            score=result.score,
-        )
-    return rows
+    return await score_results(scorer, rows, contexts=contexts)
 
 
 def resolve_scorer(

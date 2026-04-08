@@ -41,7 +41,7 @@ if TYPE_CHECKING:
     from rollouts.agents.types import RunConfig as AgentRunConfig
     from rollouts.core import Endpoint
     from rollouts.eval.external_attempts import ExternalRuntime
-    from rollouts.training.types import AttemptResult, Scorer
+    from rollouts.training.types import RowAttempt, Scorer
 
 # Reuse HardwareConfig from training
 from rollouts.training.configs import (
@@ -118,7 +118,7 @@ SupportedStopHandler = MaxTurnsStop | TokenBudgetStop | CostBudgetStop | WallClo
 EvalStopHandler = SupportedStopHandler | Callable[["AgentState"], "AgentState"]
 AttemptExecutor = Callable[
     [dict[str, Any], str, Any | None, "AgentRunConfig"],
-    "AttemptResult | Awaitable[AttemptResult]",
+    "RowAttempt | Awaitable[RowAttempt]",
 ]
 PromptBuilder = Callable[[dict[str, Any]], str]
 

@@ -177,7 +177,7 @@ async def agent_rollout_to_sample(
     #
     # TODO(training-denotation): Stop treating trajectory.metadata as an ambient
     # side channel for environment summaries. Project the final environment/eval
-    # summary onto AttemptResult/RowAttempt explicitly at this boundary.
+    # summary onto RowAttempt/RowAttempt explicitly at this boundary.
     enriched_metadata = {
         **(metadata or {}),
         **dict(final_state.actor.trajectory.metadata),

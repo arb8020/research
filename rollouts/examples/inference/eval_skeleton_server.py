@@ -31,7 +31,7 @@ from rollouts.eval import (
 from rollouts.eval.configs import EndpointCapabilities, OwnedEndpoint
 from rollouts.training.configs import DepsConfig, HardwareConfig
 from rollouts.training.scoring import FunctionScorer
-from rollouts.training.types import AttemptResult
+from rollouts.training.types import RowAttempt
 
 # Smoke test uses Qwen3-0.6B: small enough to load fast, proves lifecycle works.
 # For the real assignment eval against GLM-4.7-Flash, see eval_gold_server.py.
@@ -98,7 +98,7 @@ def prepare_messages(sample: dict) -> list[Message]:
     ]
 
 
-def score_fn(sample: AttemptResult, _context: object) -> Score:
+def score_fn(sample: RowAttempt, _context: object) -> Score:
     import re
 
     expected = sample.input["text"][::-1]

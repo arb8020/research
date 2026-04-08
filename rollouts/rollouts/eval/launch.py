@@ -24,7 +24,7 @@ from ..drivers.session_adapter import (
 from ..dtypes import StopReason, Trajectory
 from ..store import FileSessionStore
 from ..training.scoring import attach_score
-from ..training.types import AttemptResult, DatasetRow, ScoringContext, Status
+from ..training.types import DatasetRow, RowAttempt, ScoringContext, Status
 from .configs import EvalOutputConfig, EvalRunConfig, resolve_eval_run_spec, resolve_eval_task_spec
 from .native import _compute_score
 from .run import load_tasks_from_module
@@ -196,7 +196,7 @@ def _interactive_codex_launch_kwargs(
     }
 
 
-async def _score_attempt(config_module: Any, env: Any | None, attempt: AttemptResult) -> None:
+async def _score_attempt(config_module: Any, env: Any | None, attempt: RowAttempt) -> None:
     eval_task = resolve_eval_task_spec(config_module)
     scorer = eval_task.scorer
     if scorer is None:
@@ -257,8 +257,8 @@ def _build_attempt(
     runtime: str,
     control_mode: str,
     metadata: dict[str, Any] | None = None,
-) -> AttemptResult:
-    return AttemptResult(
+) -> RowAttempt:
+    return RowAttempt(
         attempt_id=sample_id,
         problem=DatasetRow(
             problem_id=sample_id,
@@ -482,7 +482,7 @@ async def launch_sample(
     output_config: EvalOutputConfig,
     model: str | None = None,
     session_store: FileSessionStore | None = None,
-) -> tuple[AttemptResult, str]:
+) -> tuple[RowAttempt, str]:
     if runtime not in {"claude_code", "codex"}:
         raise ValueError(f"Unsupported runtime for eval launch: {runtime}")
     if not sys.stdin.isatty() or not sys.stdout.isatty():

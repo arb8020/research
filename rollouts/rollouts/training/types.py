@@ -180,140 +180,6 @@ def _derive_prompt_preview(
 
 
 @dataclass
-class AttemptEvaluation:
-    """Derived evaluation data attached to an execution result."""
-
-    reward: float = 0.0
-    score: "Score | None" = None
-    metadata: dict[str, Any] = field(default_factory=dict)
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "reward": self.reward,
-            "score": _score_to_dict(self.score),
-            "metadata": self.metadata,
-        }
-
-    @staticmethod
-    def from_dict(data: dict[str, Any]) -> "AttemptEvaluation":
-        payload = data.copy()
-        payload["score"] = _score_from_dict(payload.get("score"))
-        return AttemptEvaluation(**payload)
-
-
-@dataclass
-class AttemptResult:
-    """Canonical result of one execution attempt.
-
-    DEPRECATED: Use RowAttempt directly. AttemptResult and RowAttempt model the
-    same concept (DatasetRow → run_agent() → Trajectory → score → result) from
-    two angles that grew in parallel:
-    - AttemptResult: used by eval path (eval/native.py, FunctionScorer)
-    - RowAttempt: used by training path (rollout_gen, agent_integration, grpo)
-
-    RowAttempt is a strict superset: it has everything AttemptResult has plus
-    group_index, weight_version, and training_sample (RL-specific, None for eval).
-    score/reward are stored flat on RowAttempt vs nested in AttemptEvaluation here.
-
-    Migration: replace AttemptResult with RowAttempt everywhere. Eval leaves
-    training_sample=None. score_rows() already handles RowAttempt directly.
-    FunctionScorer should accept RowAttempt instead of AttemptResult.
-    RowAttempt.to_result() and RowAttempt.from_result() can then be deleted.
-
-    The target name for the merged type is TBD (neither "Row" nor "Result" is
-    great - something like "Attempt" or "RolloutAttempt" would be more honest).
-    """
-
-    attempt_id: str = ""
-    problem: DatasetRow | None = None
-    trajectory: "Trajectory | None" = None
-    environment_state: dict[str, Any] | None = None
-    status: Status = Status.PENDING
-    metadata: dict[str, Any] = field(default_factory=dict)
-    evaluation: AttemptEvaluation | None = None
-
-    @property
-    def id(self) -> str:
-        return self.attempt_id
-
-    @property
-    def input(self) -> dict[str, Any]:
-        return self.problem.payload if self.problem is not None else {}
-
-    @property
-    def ground_truth(self) -> Any | None:
-        return self.problem.ground_truth if self.problem is not None else None
-
-    @property
-    def response(self) -> str:
-        return _extract_response_text(self.trajectory)
-
-    @property
-    def prompt(self) -> str | list[dict[str, str]]:
-        return _derive_prompt_preview(self.problem, self.trajectory)
-
-    @property
-    def score(self) -> "Score | None":
-        if self.evaluation is None:
-            return None
-        return self.evaluation.score
-
-    @score.setter
-    def score(self, value: "Score | None") -> None:
-        if self.evaluation is None:
-            self.evaluation = AttemptEvaluation(score=value)
-            return
-        self.evaluation.score = value
-
-    @property
-    def reward(self) -> float:
-        if self.evaluation is None:
-            return 0.0
-        return self.evaluation.reward
-
-    @reward.setter
-    def reward(self, value: float) -> None:
-        if self.evaluation is None:
-            self.evaluation = AttemptEvaluation(reward=value)
-            return
-        self.evaluation.reward = value
-
-    def to_dict(self) -> dict[str, Any]:
-        import json
-
-        from ..core import Trajectory
-
-        result: dict[str, Any] = {
-            "attempt_id": self.attempt_id,
-            "problem": self.problem.to_dict() if self.problem is not None else None,
-            "environment_state": self.environment_state,
-            "status": self.status.value,
-            "metadata": self.metadata,
-            "evaluation": self.evaluation.to_dict() if self.evaluation is not None else None,
-        }
-        if isinstance(self.trajectory, Trajectory):
-            result["trajectory"] = json.loads(self.trajectory.to_json())
-        else:
-            result["trajectory"] = self.trajectory
-        return result
-
-    @staticmethod
-    def from_dict(data: dict[str, Any]) -> "AttemptResult":
-        from ..core import Trajectory
-
-        payload = data.copy()
-        if payload.get("problem") is not None:
-            payload["problem"] = DatasetRow.from_dict(payload["problem"])
-        if payload.get("trajectory") is not None:
-            payload["trajectory"] = Trajectory.from_dict(payload["trajectory"])
-        if payload.get("status") is not None:
-            payload["status"] = Status(payload["status"])
-        if payload.get("evaluation") is not None:
-            payload["evaluation"] = AttemptEvaluation.from_dict(payload["evaluation"])
-        return AttemptResult(**payload)
-
-
-@dataclass
 class RowAttempt:
     """One execution attempt plus scoring and provenance."""
 
@@ -423,6 +289,7 @@ class RowAttempt:
         from ..core import Trajectory
 
         payload = data.copy()
+        legacy_evaluation = payload.pop("evaluation", None)
         if payload.get("problem") is not None:
             payload["problem"] = DatasetRow.from_dict(payload["problem"])
         if payload.get("training_sample") is not None:
@@ -433,43 +300,12 @@ class RowAttempt:
             payload["trajectory"] = Trajectory.from_dict(payload["trajectory"])
         if payload.get("score") is not None:
             payload["score"] = _score_from_dict(payload["score"])
+        if legacy_evaluation is not None:
+            if payload.get("reward") is None:
+                payload["reward"] = legacy_evaluation.get("reward", 0.0)
+            if payload.get("score") is None:
+                payload["score"] = _score_from_dict(legacy_evaluation.get("score"))
         return RowAttempt(**payload)
-
-    def to_result(self) -> AttemptResult:
-        evaluation = None
-        if self.score is not None or self.reward != 0.0:
-            evaluation = AttemptEvaluation(reward=self.reward, score=self.score)
-        return AttemptResult(
-            attempt_id=self.attempt_id,
-            problem=self.problem,
-            trajectory=self.trajectory,
-            environment_state=self.environment_state,
-            status=self.status,
-            metadata=dict(self.metadata),
-            evaluation=evaluation,
-        )
-
-    @staticmethod
-    def from_result(
-        result: AttemptResult,
-        *,
-        training_sample: TrainingSample | None = None,
-        group_index: int | None = None,
-        weight_version: int = 0,
-    ) -> "RowAttempt":
-        return RowAttempt(
-            attempt_id=result.attempt_id,
-            problem=result.problem,
-            group_index=group_index,
-            trajectory=result.trajectory,
-            training_sample=training_sample,
-            reward=result.reward,
-            score=result.score,
-            environment_state=result.environment_state,
-            status=result.status,
-            metadata=dict(result.metadata),
-            weight_version=weight_version,
-        )
 
 
 # Backward-compatible type aliases during the DatasetRow/RowAttempt rename.
@@ -545,7 +381,7 @@ class Scorer(Protocol):
 
     async def score(
         self,
-        result: AttemptResult,
+        result: RowAttempt,
         context: ScoringContext,
     ) -> "Score": ...
 

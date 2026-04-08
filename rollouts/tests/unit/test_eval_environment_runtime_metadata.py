@@ -11,7 +11,7 @@ from rollouts.eval.native import (
     compute_summary_metrics,
     evaluate_sample,
 )
-from rollouts.training.types import AttemptResult, ScoringContext, Status
+from rollouts.training.types import RowAttempt, ScoringContext, Status
 
 
 class _FakeEnvironment:
@@ -54,7 +54,7 @@ class _FakeEnvironment:
 
 
 class _ContextualScorer:
-    async def score(self, result: AttemptResult, context: ScoringContext) -> Score:
+    async def score(self, result: RowAttempt, context: ScoringContext) -> Score:
         del result
         metadata = context.environment.get_runtime_metadata()
         correct = 1.0 if metadata["has_correct_kernel"] else 0.0
@@ -213,7 +213,7 @@ async def test_evaluate_sample_marks_aborted_runs_honestly(
             final_trajectory=aborted_trajectory,
         )
 
-    async def _fail_if_scored(result: AttemptResult, context: ScoringContext) -> Score:
+    async def _fail_if_scored(result: RowAttempt, context: ScoringContext) -> Score:
         del result, context
         raise AssertionError("aborted samples should not be scored")
 
@@ -245,12 +245,12 @@ async def test_evaluate_sample_marks_aborted_runs_honestly(
 
 
 def test_compute_summary_metrics_excludes_aborted_from_completion_and_success() -> None:
-    aborted = AttemptResult(
+    aborted = RowAttempt(
         attempt_id="aborted",
         status=Status.ABORTED,
         metadata={"status": "aborted", "turns_used": 0, "total_tokens": 10},
     )
-    failed = AttemptResult(
+    failed = RowAttempt(
         attempt_id="failed",
         status=Status.COMPLETED,
         metadata={
@@ -260,7 +260,7 @@ def test_compute_summary_metrics_excludes_aborted_from_completion_and_success() 
             "total_tokens": 20,
         },
     )
-    success = AttemptResult(
+    success = RowAttempt(
         attempt_id="success",
         status=Status.COMPLETED,
         metadata={"status": "success", "turns_used": 2, "total_tokens": 30},

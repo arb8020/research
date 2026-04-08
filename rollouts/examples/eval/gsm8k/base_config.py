@@ -26,7 +26,7 @@ import trio
 if TYPE_CHECKING:
     from rollouts.core import Endpoint, Score
     from rollouts.training.datasets.data_buffer import DataBuffer
-    from rollouts.training.types import AttemptResult
+    from rollouts.training.types import RowAttempt
 
 # ──────────────────────── Config Dataclasses ────────────────────────────────
 
@@ -232,7 +232,7 @@ def load_gsm8k_dataset(config: DatasetConfig) -> list[dict[str, Any]]:
     return load_samples_from_config(config)
 
 
-def create_gsm8k_samples(config: DatasetConfig) -> list[AttemptRow]:
+def create_gsm8k_samples(config: DatasetConfig) -> list[RowAttempt]:
     """Create attempt rows from GSM8K for RL training.
 
     Returns attempt rows with:
@@ -245,7 +245,7 @@ def create_gsm8k_samples(config: DatasetConfig) -> list[AttemptRow]:
         state = BufferState(seed=config.seed)
         batch, state = get_samples_flat(samples, state, n=32)
     """
-    from rollouts.training.types import AttemptRow, ProblemRow
+    from rollouts.training.types import DatasetRow, RowAttempt
 
     dataset = load_samples_from_config(config)
 
@@ -253,9 +253,9 @@ def create_gsm8k_samples(config: DatasetConfig) -> list[AttemptRow]:
     for i, row in enumerate(dataset):
         ground_truth = row["answer"]
         samples.append(
-            AttemptRow(
+            RowAttempt(
                 attempt_id=str(i),
-                problem=ProblemRow(
+                problem=DatasetRow(
                     problem_id=str(i),
                     payload={"prompt": row["prompt"]},
                     ground_truth=ground_truth,
@@ -341,7 +341,7 @@ def normalize_answer(answer: str) -> float | None:
         return None
 
 
-def gsm8k_score_fn(sample: AttemptResult, _context: object) -> Score:
+def gsm8k_score_fn(sample: RowAttempt, _context: object) -> Score:
     """Score function for GSM8K (single-turn mode).
 
     Extracts answer from \\boxed{} and compares to ground truth.
@@ -388,7 +388,7 @@ def gsm8k_score_fn(sample: AttemptResult, _context: object) -> Score:
     )
 
 
-def gsm8k_tool_score_fn(sample: AttemptResult, _context: object) -> Score:
+def gsm8k_tool_score_fn(sample: RowAttempt, _context: object) -> Score:
     """Score function for GSM8K with calculator tools (multi-turn mode).
 
     Extracts answer from complete_task tool call or tool results.
@@ -512,7 +512,7 @@ def _get_endpoint(config: GSM8KConfig) -> Endpoint:
     )
 
 
-def _single_turn_score_fn(sample: AttemptResult, _context: object) -> Score:
+def _single_turn_score_fn(sample: RowAttempt, _context: object) -> Score:
     """Score function for single-turn GSM8K using rollouts evaluation types."""
     from rollouts.core import Metric, Score
 

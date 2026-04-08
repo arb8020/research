@@ -5,11 +5,11 @@ import pytest
 import rollouts.fingerprint as fingerprint_module
 from rollouts.core import Endpoint, EvalConfig, Message, Metric, Score
 from rollouts.fingerprint import fingerprint_eval
-from rollouts.training.types import AttemptResult
+from rollouts.training.types import RowAttempt
 
 
 class _FingerprintScorer:
-    async def score(self, result: AttemptResult, context: object) -> Score:
+    async def score(self, result: RowAttempt, context: object) -> Score:
         del result, context
         return Score(metrics=(Metric("reward", 0.0, weight=1.0),))
 

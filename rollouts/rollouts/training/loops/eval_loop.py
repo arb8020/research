@@ -17,7 +17,7 @@ infrastructure (AsyncRolloutManager) rather than maintaining two separate loops.
 Current state:
   - eval/native.py has its own _evaluate_batch loop (duplicates RL rollout logic)
   - rl_loop.py uses AsyncRolloutManager correctly (slime-inspired)
-  - eval/native.py produces AttemptResult; RL produces RowAttempt (see types.py)
+  - eval/native.py produces RowAttempt; RL produces RowAttempt (see types.py)
   - Observability (events.jsonl, StreamChunk, progress) lives only in eval/native.py
     and is not available in the RL rollout path
 
@@ -46,7 +46,7 @@ Data flow (same for eval and RL):
     [eval] report results         ← eval stops here
     [RL]   trainer.forward_backward() + sync_weights_to_engines()
 
-RowAttempt vs AttemptResult: see types.py deprecation note on AttemptResult.
+RowAttempt vs RowAttempt: see types.py deprecation note on RowAttempt.
 RowAttempt is the shared type. Eval leaves training_sample=None.
 
 Environment/sandbox pattern (already works, no changes needed):

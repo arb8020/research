@@ -15,7 +15,7 @@ from ..agents import Actor, RunConfig, rollout
 from ..core import Endpoint, Environment, EnvironmentFactory, Trajectory
 from ..dtypes import StreamEvent
 from ..training.scoring import score_result
-from ..training.types import AttemptResult, DatasetRow, Scorer, ScoringContext, Status
+from ..training.types import DatasetRow, RowAttempt, Scorer, ScoringContext, Status
 from .formatting import format_prompt
 from .types import PromptTemplate
 
@@ -76,7 +76,7 @@ async def evaluate_single_sample(
 
     # Build raw execution result for scoring.
     ground_truth = sample.get("ground_truth") or sample.get("answer") or sample.get("label")
-    result = AttemptResult(
+    result = RowAttempt(
         attempt_id=f"seed_{seed}",
         problem=DatasetRow(
             problem_id=f"seed_{seed}",

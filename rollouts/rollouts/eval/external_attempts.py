@@ -29,7 +29,7 @@ from ..drivers.codex import _CodexEventParser
 from ..drivers.runner import _EventAccumulator, _FlushAssistantMessage
 from ..dtypes import StreamChunk
 from ..environments.resources import SandboxWorkspaceResource, SessionExecSpec
-from ..training.types import AttemptResult, DatasetRow, Status
+from ..training.types import DatasetRow, RowAttempt, Status
 
 _event_logger = logging.getLogger("rollouts.eval.events")
 
@@ -216,13 +216,13 @@ def _result_from_artifact(
     sample_data: dict[str, Any],
     sample_id: str,
     artifact: ExternalAttemptArtifact,
-) -> AttemptResult:
+) -> RowAttempt:
     problem = DatasetRow(
         problem_id=sample_id,
         payload=dict(sample_data),
         metadata=_sample_metadata(sample_data),
     )
-    return AttemptResult(
+    return RowAttempt(
         attempt_id=sample_id,
         problem=problem,
         trajectory=artifact.trajectory,
@@ -240,7 +240,7 @@ async def execute_external_attempt(
     *,
     prompt_builder: PromptBuilder,
     trajectory_adapter: TrajectoryAdapter,
-) -> AttemptResult:
+) -> RowAttempt:
     # TODO(external-agent-args): once that helper exists, decide whether
     # `AgentRunSpec.external_agent_args` should lower into this path too, or
     # remain explicitly launcher-only. The built-in helper now exists, but
@@ -294,12 +294,12 @@ def make_external_attempt_executor(
     *,
     prompt_builder: PromptBuilder,
     **trajectory_kwargs: Any,
-) -> Callable[[dict[str, Any], str, Any | None, Any], Awaitable[AttemptResult]]:
+) -> Callable[[dict[str, Any], str, Any | None, Any], Awaitable[RowAttempt]]:
     """Build the standard autonomous external-runtime attempt executor.
 
     Config authors supply the prompt builder, choose a built-in runtime, and
     pass runtime-specific kwargs directly. The shared lowering from prompt ->
-    external runtime -> AttemptResult stays inside rollouts.
+    external runtime -> RowAttempt stays inside rollouts.
     """
 
     trajectory_adapter = partial(

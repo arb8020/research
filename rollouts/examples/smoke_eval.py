@@ -15,12 +15,12 @@ from rollouts.config.tiers import EndpointConfig, OutputConfig, RunConfig
 from rollouts.core import Message, Metric, Score
 from rollouts.eval_runner import EvalSpec, run_eval_from_spec
 from rollouts.training.scoring import FunctionScorer
-from rollouts.training.types import AttemptResult
+from rollouts.training.types import RowAttempt
 
 # ── Score function ──
 
 
-def score_addition(sample: AttemptResult, _context: object) -> Score:
+def score_addition(sample: RowAttempt, _context: object) -> Score:
     """Check if the model's response contains the correct sum."""
     sample_data = sample.trajectory.metadata.get("sample_data", {}) if sample.trajectory else {}
     expected = sample_data.get("expected", "")

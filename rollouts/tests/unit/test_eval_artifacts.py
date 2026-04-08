@@ -7,12 +7,12 @@ import pytest
 
 from rollouts.core import Message, Metric, Score, Trajectory
 from rollouts.eval.native import EvalReport
-from rollouts.training.types import AttemptEvaluation, AttemptResult, DatasetRow
+from rollouts.training.types import DatasetRow, RowAttempt
 
 
 @pytest.mark.trio
 async def test_eval_report_saves_full_canonical_sample_artifact(tmp_path: Path) -> None:
-    sample = AttemptResult(
+    sample = RowAttempt(
         attempt_id="sample_0000",
         problem=DatasetRow(
             problem_id="sample_0000",
@@ -30,10 +30,8 @@ async def test_eval_report_saves_full_canonical_sample_artifact(tmp_path: Path) 
             "sample_data": {"messages": [{"role": "user", "content": "hi"}]},
             "turn_history": [{"turn": 1, "has_code": False}],
         },
-        evaluation=AttemptEvaluation(
-            reward=1.0,
-            score=Score(metrics=(Metric("reward", 1.0, weight=1.0),)),
-        ),
+        reward=1.0,
+        score=Score(metrics=(Metric("reward", 1.0, weight=1.0),)),
     )
 
     report = EvalReport(
@@ -52,8 +50,8 @@ async def test_eval_report_saves_full_canonical_sample_artifact(tmp_path: Path) 
     sample_html = (tmp_path / "samples" / "sample_0000.html").read_text()
     assert sample_json["trajectory"]["messages"][1]["content"] == "hello"
     assert "sample_data" not in sample_json["metadata"]
-    assert sample_json["evaluation"]["reward"] == 1.0
-    assert sample_json["evaluation"]["score"]["metrics"][0]["name"] == "reward"
+    assert sample_json["reward"] == 1.0
+    assert sample_json["score"]["metrics"][0]["name"] == "reward"
     assert not (tmp_path / "trajectories").exists()
     assert "sample_0000" in report_html
     assert 'href="samples/sample_0000.html"' in report_html

@@ -8,7 +8,7 @@ from rollouts.agents import RunConfig
 from rollouts.core import EvalConfig, Message, Metric, Score, Trajectory
 from rollouts.dtypes import StreamChunk
 from rollouts.eval.native import EvalRuntime, evaluate_sample
-from rollouts.training.types import AttemptResult
+from rollouts.training.types import RowAttempt
 
 
 class _FakeEnvironment:
@@ -20,7 +20,7 @@ class _FakeEnvironment:
 
 
 class _ExactMatchScorer:
-    async def score(self, result: AttemptResult, context: object) -> Score:
+    async def score(self, result: RowAttempt, context: object) -> Score:
         del context
         return Score(
             metrics=(
@@ -50,12 +50,12 @@ async def test_evaluate_sample_accepts_direct_attempt_executor(
         sample_id: str,
         environment: object,
         run_config: object,
-    ) -> AttemptResult:
+    ) -> RowAttempt:
         del run_config
         assert sample_data["text"] == "hello"
         assert sample_id == "sample_0000"
         assert environment is not None
-        return AttemptResult(
+        return RowAttempt(
             attempt_id=sample_id,
             trajectory=Trajectory(
                 messages=[
@@ -107,9 +107,9 @@ async def test_retry_runtime_does_not_emit_sample_start_twice(
         sample_id: str,
         environment: object,
         run_config: object,
-    ) -> AttemptResult:
+    ) -> RowAttempt:
         del sample_data, sample_id, environment, run_config
-        return AttemptResult(
+        return RowAttempt(
             attempt_id="sample_0000",
             trajectory=Trajectory(
                 messages=[Message(role="assistant", content="olleh")],

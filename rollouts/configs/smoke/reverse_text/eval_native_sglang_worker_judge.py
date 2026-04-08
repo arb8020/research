@@ -35,7 +35,7 @@ from rollouts.training.configs import (
     WorkerTopologyConfig,
 )
 from rollouts.training.scoring import FunctionScorer
-from rollouts.training.types import AttemptResult
+from rollouts.training.types import RowAttempt
 
 
 def prepare_messages(sample: dict[str, str]) -> list[Message]:
@@ -131,7 +131,7 @@ judge_endpoint = replace(
 )
 
 
-async def reverse_text_llm_judge_score_fn(sample: AttemptResult, _context: object) -> Score:
+async def reverse_text_llm_judge_score_fn(sample: RowAttempt, _context: object) -> Score:
     expected = sample.input["text"][::-1]
     response = sample.response
     parsed = parse_reversed_text(response)

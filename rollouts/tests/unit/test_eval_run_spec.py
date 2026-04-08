@@ -8,11 +8,11 @@ import pytest
 from rollouts.config_contracts import validate_eval_config_module
 from rollouts.core import Metric, Score
 from rollouts.eval import AgentRunSpec, EndpointConfig
-from rollouts.training.types import AttemptResult
+from rollouts.training.types import RowAttempt
 
 
 class _NoopScorer:
-    async def score(self, result: AttemptResult, context: object) -> Score:
+    async def score(self, result: RowAttempt, context: object) -> Score:
         del result, context
         return Score(metrics=(Metric("reward", 0.0, weight=1.0),))
 
@@ -45,7 +45,7 @@ def test_validate_eval_config_rejects_non_agent_run_spec() -> None:
 def test_validate_eval_config_accepts_direct_attempt_executor() -> None:
     run_spec = AgentRunSpec(
         endpoint=None,
-        attempt_executor=lambda sample, sample_id, environment, run_config: AttemptResult(
+        attempt_executor=lambda sample, sample_id, environment, run_config: RowAttempt(
             attempt_id=str(sample.get("id", sample_id))
         ),
     )

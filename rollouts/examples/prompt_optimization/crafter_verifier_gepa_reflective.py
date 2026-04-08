@@ -33,7 +33,7 @@ import trio
 from rollouts.core import Endpoint, Metric, Score
 from rollouts.prompt_optimization import GEPAConfig, optimize_prompt
 from rollouts.training.scoring import FunctionScorer
-from rollouts.training.types import AttemptResult
+from rollouts.training.types import RowAttempt
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -282,7 +282,7 @@ def extract_predicted_score(response: str) -> float | None:
     return None
 
 
-def score_fn(sample: AttemptResult, _context: object) -> Score:
+def score_fn(sample: RowAttempt, _context: object) -> Score:
     """Score the verifier based on how close its prediction is to human score.
 
     Uses mean squared error - lower is better, so we convert to (1 - MSE).

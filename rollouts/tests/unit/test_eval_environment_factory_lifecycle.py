@@ -5,7 +5,7 @@ import trio
 
 from rollouts.core import Endpoint, EvalConfig, Metric, Score
 from rollouts.eval.native import evaluate
-from rollouts.training.types import AttemptResult
+from rollouts.training.types import RowAttempt
 
 
 class _FactoryWithLifecycle:
@@ -85,7 +85,7 @@ async def test_eval_environment_factory_stop_is_shielded_from_cancellation() -> 
         sample_id: str,
         environment: object,
         run_config: object,
-    ) -> AttemptResult:
+    ) -> RowAttempt:
         del sample_data, sample_id, environment, run_config
         await trio.sleep_forever()
 
