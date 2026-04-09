@@ -45,6 +45,35 @@ from .base import _prepare_messages_for_llm, calculate_cost_from_usage, sanitize
 logger = logging.getLogger(__name__)
 
 
+def _serialize_top_logprob_entry(entry: Any) -> dict[str, Any]:
+    """Normalize one SDK top-logprob entry into plain data."""
+    token = getattr(entry, "token", "")
+    logprob = getattr(entry, "logprob", 0.0)
+    token_id = getattr(entry, "token_id", None)
+    raw_bytes = getattr(entry, "bytes", None)
+    return {
+        "token": token,
+        "logprob": float(logprob),
+        "bytes": list(raw_bytes) if raw_bytes else [],
+        "token_id": token_id,
+    }
+
+
+def _build_logprob_from_sdk_entry(entry: Any) -> Logprob:
+    top_candidates = []
+    raw_top = getattr(entry, "top_logprobs", None)
+    if raw_top:
+        top_candidates = [_serialize_top_logprob_entry(candidate) for candidate in raw_top]
+    return Logprob(
+        token=getattr(entry, "token", ""),
+        logprob=getattr(entry, "logprob", 0.0),
+        bytes=list(entry.bytes) if hasattr(entry, "bytes") and entry.bytes else [],
+        top_logprobs=[candidate["logprob"] for candidate in top_candidates],
+        top_candidates=top_candidates,
+        token_id=getattr(entry, "token_id", None),
+    )
+
+
 def _normalize_openai_stream_chunk_payload(payload: str) -> dict[str, Any] | None:
     """Parse one SSE payload line from an OpenAI-compatible stream."""
     stripped = payload.strip()
@@ -285,7 +314,29 @@ def _parse_completion(resp: Any) -> ChatCompletion:
             content=content_blocks if content_blocks else c.message.content,
         )
         assert msg is not None
-        choices.append(Choice(c.index, msg, c.finish_reason))
+        choice_logprobs = None
+        if hasattr(c, "logprobs") and c.logprobs is not None:
+            lp_content = getattr(c.logprobs, "content", None)
+            if lp_content:
+                choice_logprobs = Logprobs(
+                    content=[_build_logprob_from_sdk_entry(entry) for entry in lp_content]
+                )
+        token_ids = None
+        if choice_logprobs is not None:
+            candidate_token_ids = tuple(
+                entry.token_id for entry in choice_logprobs.content if entry.token_id is not None
+            )
+            if candidate_token_ids:
+                token_ids = candidate_token_ids
+        choices.append(
+            Choice(
+                c.index,
+                msg,
+                c.finish_reason,
+                logprobs=choice_logprobs,
+                token_ids=token_ids,
+            )
+        )
 
     assert len(choices) > 0
     result = ChatCompletion(
@@ -387,14 +438,7 @@ async def aggregate_stream(
             if lp_content:
                 for lp in lp_content:
                     # Convert OpenAI logprob to our Logprob format
-                    accumulated_logprobs.append(
-                        Logprob(
-                            token=lp.token if hasattr(lp, "token") else "",
-                            logprob=lp.logprob if hasattr(lp, "logprob") else 0.0,
-                            bytes=list(lp.bytes) if hasattr(lp, "bytes") and lp.bytes else [],
-                            token_id=getattr(lp, "token_id", None),
-                        )
-                    )
+                    accumulated_logprobs.append(_build_logprob_from_sdk_entry(lp))
 
         if response_id is None:
             response_id = chunk.id
@@ -585,13 +629,24 @@ async def aggregate_stream(
     # Build logprobs for Choice (for GRPO importance sampling)
     choice_logprobs = Logprobs(content=accumulated_logprobs) if accumulated_logprobs else None
 
+    token_ids = tuple(
+        entry.token_id for entry in accumulated_logprobs if entry.token_id is not None
+    )
     completion = ChatCompletion(
         id=response_id or "unknown",
         object="chat.completion",
         created=created or 0,
         model="",
         usage=stream_usage or Usage(),  # From final chunk if stream_options.include_usage=True
-        choices=[Choice(0, final_message, finish_reason or "stop", logprobs=choice_logprobs)],
+        choices=[
+            Choice(
+                0,
+                final_message,
+                finish_reason or "stop",
+                logprobs=choice_logprobs,
+                token_ids=token_ids or None,
+            )
+        ],
     )
 
     assert completion is not None

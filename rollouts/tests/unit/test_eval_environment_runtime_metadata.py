@@ -4,10 +4,21 @@ import pytest
 
 from rollouts.agents import Actor, AgentState
 from rollouts.core import EvalConfig, Metric, Score
-from rollouts.dtypes import LLMCallEnd, Message, StopReason, Trajectory
+from rollouts.dtypes import (
+    ChatCompletion,
+    Choice,
+    LLMCallEnd,
+    Logprob,
+    Logprobs,
+    Message,
+    StopReason,
+    Trajectory,
+    Usage,
+)
 from rollouts.eval.native import (
     EvalRuntime,
     _AgentRunResult,
+    _build_semantic_trace,
     compute_summary_metrics,
     evaluate_sample,
 )
@@ -243,6 +254,65 @@ async def test_evaluate_sample_marks_aborted_runs_honestly(
     assert result.status == Status.ABORTED
     assert result.score is None
     assert result.reward == 0.0
+
+
+def test_build_semantic_trace_from_trajectory_completion() -> None:
+    trajectory = Trajectory(
+        completions=[
+            ChatCompletion(
+                id="cmpl-1",
+                object="chat.completion",
+                created=123,
+                model="stub-model",
+                usage=Usage(input_tokens=4, output_tokens=3),
+                prompt_token_ids=(1, 2, 3, 4),
+                choices=[
+                    Choice(
+                        0,
+                        Message(role="assistant", content="<answer>stub</answer>"),
+                        "stop",
+                        logprobs=Logprobs(
+                            content=[
+                                Logprob(
+                                    token="<answer>",
+                                    logprob=-0.01,
+                                    token_id=11,
+                                    top_candidates=[
+                                        {
+                                            "token": "<answer>",
+                                            "logprob": -0.01,
+                                            "token_id": 11,
+                                            "bytes": [],
+                                        },
+                                        {
+                                            "token": "<think>",
+                                            "logprob": -4.2,
+                                            "token_id": 12,
+                                            "bytes": [],
+                                        },
+                                    ],
+                                ),
+                                Logprob(token="stub", logprob=-0.02, token_id=13),
+                            ]
+                        ),
+                        token_ids=(11, 13),
+                    )
+                ],
+            )
+        ]
+    )
+
+    semantic_trace = _build_semantic_trace(trajectory)
+
+    assert semantic_trace is not None
+    assert semantic_trace["completion_count"] == 1
+    call = semantic_trace["llm_calls"][0]
+    assert call["prompt_token_ids"] == [1, 2, 3, 4]
+    assert call["output_token_ids"] == [11, 13]
+    assert call["output_tokens"] == ["<answer>", "stub"]
+    assert call["output_token_logprobs"] == [-0.01, -0.02]
+    assert call["output_top_logprobs"][0][0]["token"] == "<answer>"
+    assert call["finish_reason"] == "stop"
 
 
 def test_compute_summary_metrics_excludes_aborted_from_completion_and_success() -> None:

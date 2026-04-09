@@ -98,3 +98,53 @@ async def test_aggregate_openai_compatible_sse_accepts_minisglang_style_chunks()
     assert isinstance(events[0], StreamStart)
     assert any(isinstance(event, TextDelta) and event.delta == "olle" for event in events)
     assert isinstance(events[-1], StreamDone)
+
+
+@pytest.mark.trio
+async def test_aggregate_stream_preserves_top_logprob_candidates() -> None:
+    chunk = SimpleNamespace(
+        id="cmpl-1",
+        created=123,
+        usage=None,
+        choices=[
+            SimpleNamespace(
+                delta=SimpleNamespace(content="stub", tool_calls=None),
+                finish_reason="stop",
+                logprobs=SimpleNamespace(
+                    content=[
+                        SimpleNamespace(
+                            token="stub",
+                            logprob=-0.02,
+                            bytes=[115, 116, 117, 98],
+                            token_id=42,
+                            top_logprobs=[
+                                SimpleNamespace(
+                                    token="stub", logprob=-0.02, bytes=[115], token_id=42
+                                ),
+                                SimpleNamespace(
+                                    token="hello", logprob=-4.4, bytes=[104], token_id=99
+                                ),
+                            ],
+                        )
+                    ]
+                ),
+            )
+        ],
+    )
+
+    async def _stream() -> object:
+        yield chunk
+
+    events: list[object] = []
+
+    async def _on_chunk(event: object) -> None:
+        events.append(event)
+
+    completion, _ttft_ms = await openai_completions.aggregate_stream(_stream(), _on_chunk)
+
+    logprob = completion.choices[0].logprobs.content[0]
+    assert logprob.token == "stub"
+    assert logprob.token_id == 42
+    assert logprob.top_candidates[0]["token"] == "stub"
+    assert logprob.top_candidates[1]["token"] == "hello"
+    assert completion.choices[0].token_ids == (42,)

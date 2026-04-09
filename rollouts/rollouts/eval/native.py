@@ -454,6 +454,69 @@ def _build_sample_runtime_metrics(
     return metrics
 
 
+def _semantic_top_candidates(entry: Any) -> list[dict[str, Any]] | None:
+    top_candidates = getattr(entry, "top_candidates", None)
+    if top_candidates:
+        return [dict(candidate) for candidate in top_candidates]
+
+    top_logprobs = getattr(entry, "top_logprobs", None)
+    if top_logprobs:
+        return [{"logprob": float(logprob)} for logprob in top_logprobs]
+    return None
+
+
+def _completion_semantic_trace(completion: Any, completion_index: int) -> dict[str, Any]:
+    choice = completion.choices[0] if getattr(completion, "choices", None) else None
+    logprob_entries = []
+    if choice is not None and getattr(choice, "logprobs", None) is not None:
+        logprob_entries = list(choice.logprobs.content)
+
+    output_token_ids = None
+    if choice is not None and getattr(choice, "token_ids", None):
+        output_token_ids = list(choice.token_ids)
+    else:
+        candidate_ids = [entry.token_id for entry in logprob_entries if entry.token_id is not None]
+        if candidate_ids:
+            output_token_ids = candidate_ids
+
+    trace = {
+        "completion_index": completion_index,
+        "completion_id": completion.id,
+        "model": completion.model,
+        "finish_reason": choice.finish_reason if choice is not None else None,
+        "prompt_token_ids": (
+            list(completion.prompt_token_ids)
+            if getattr(completion, "prompt_token_ids", None)
+            else None
+        ),
+        "output_token_ids": output_token_ids,
+        "output_tokens": [entry.token for entry in logprob_entries] or None,
+        "output_token_logprobs": [float(entry.logprob) for entry in logprob_entries] or None,
+        "output_top_logprobs": [_semantic_top_candidates(entry) for entry in logprob_entries]
+        or None,
+        "usage": {
+            "input_tokens": completion.usage.input_tokens,
+            "output_tokens": completion.usage.output_tokens,
+            "reasoning_tokens": completion.usage.reasoning_tokens,
+            "cache_read_tokens": completion.usage.cache_read_tokens,
+        },
+    }
+    return trace
+
+
+def _build_semantic_trace(trajectory: Trajectory | None) -> dict[str, Any] | None:
+    if trajectory is None or not trajectory.completions:
+        return None
+
+    return {
+        "completion_count": len(trajectory.completions),
+        "llm_calls": [
+            _completion_semantic_trace(completion, completion_index=index)
+            for index, completion in enumerate(trajectory.completions)
+        ],
+    }
+
+
 def _map_exec_status(status: str) -> Status:
     """Map eval metadata status strings onto canonical RowAttempt status."""
     if status == "aborted":
@@ -1314,8 +1377,10 @@ async def evaluate_sample(
                 exec_metadata["status"] = "success"
 
         assert final_trajectory is not None
+        semantic_trace = _build_semantic_trace(final_trajectory)
         sample.metadata = {
             **sample.metadata,
+            **({"semantic_trace": semantic_trace} if semantic_trace is not None else {}),
             **exec_metadata,
             **_build_sample_runtime_metrics(
                 llm_call_metrics=llm_call_metrics,
