@@ -7,7 +7,8 @@ then shuts down.
 
 The eval task is simple (reverse text) so results are deterministic and easy to
 verify by hand. It's a functional correctness check, not a model quality check -
-the skeleton stub returns NotImplementedError which will surface immediately.
+the untouched skeleton returns a deterministic stub answer with fixed logprobs,
+which proves the serving contract while still scoring poorly.
 
 Usage (against a real implementation):
     # First implement generate_reply in skeleton_server.py, then:
