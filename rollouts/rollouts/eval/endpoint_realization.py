@@ -781,11 +781,12 @@ async def _realize_modal_endpoint(
                         extra={"event": "inference_service_final_log"},
                     )
                 await terminate_modal_sandbox(sandbox_handle)
-                await _wait_for_modal_sandbox_baseline(
-                    baseline_ids=baseline_sandbox_ids,
-                    run_logger=run_logger,
-                    run_name=run_name,
-                )
+                if not sandbox_handle.keep_alive:
+                    await _wait_for_modal_sandbox_baseline(
+                        baseline_ids=baseline_sandbox_ids,
+                        run_logger=run_logger,
+                        run_name=run_name,
+                    )
 
 
 @asynccontextmanager

@@ -374,8 +374,19 @@ async def test_run_with_sglang_provision_prefers_topology_actor_worker(
 
 
 @pytest.mark.trio
+@pytest.mark.parametrize(
+    ("keep_alive", "expected_terminated", "expected_baseline_wait"),
+    [
+        (False, True, True),
+        (True, False, False),
+    ],
+)
 async def test_modal_endpoint_exposes_port_at_sandbox_creation(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    keep_alive: bool,
+    expected_terminated: bool,
+    expected_baseline_wait: bool,
 ) -> None:
     captured: dict[str, object] = {}
 
@@ -419,9 +430,15 @@ async def test_modal_endpoint_exposes_port_at_sandbox_creation(
 
     async def fake_create_modal_sandbox(request: object) -> object:
         captured["request"] = request
-        return SimpleNamespace(sandbox=_FakeSandbox(), sandbox_id="sb-test")
+        return SimpleNamespace(
+            sandbox=_FakeSandbox(),
+            sandbox_id="sb-test",
+            keep_alive=getattr(request, "keep_alive", False),
+        )
 
-    async def fake_terminate_modal_sandbox(_handle: object) -> None:
+    async def fake_terminate_modal_sandbox(handle: object) -> None:
+        if getattr(handle, "keep_alive", False):
+            return
         captured["terminated"] = True
 
     async def fake_refresh_modal_parent_lease(_sandbox: object) -> None:
@@ -429,6 +446,9 @@ async def test_modal_endpoint_exposes_port_at_sandbox_creation(
 
     async def fake_maintain_modal_parent_lease(_sandbox: object, _emit: object) -> None:
         await trio.sleep_forever()
+
+    async def fake_wait_for_modal_sandbox_baseline(**_kwargs: object) -> None:
+        captured["baseline_waited"] = True
 
     @asynccontextmanager
     async def fake_open_loop() -> AsyncIterator[None]:
@@ -450,13 +470,22 @@ async def test_modal_endpoint_exposes_port_at_sandbox_creation(
         "bifrost.modal_backend._maintain_modal_parent_lease",
         fake_maintain_modal_parent_lease,
     )
+    monkeypatch.setattr(
+        "rollouts.eval.endpoint_realization._wait_for_modal_sandbox_baseline",
+        fake_wait_for_modal_sandbox_baseline,
+    )
     monkeypatch.setattr("modal.enable_output", fake_enable_output)
     monkeypatch.setattr("trio_asyncio.open_loop", fake_open_loop)
 
     async with realize_worker_backed_endpoint(
         endpoint_config=EndpointConfig(provider="sglang", model="Qwen/Qwen2.5-0.5B-Instruct"),
         output_dir=tmp_path,
-        hardware_config=HardwareConfig(provider="modal", gpu_count=1, deps=DepsConfig()),
+        hardware_config=HardwareConfig(
+            provider="modal",
+            gpu_count=1,
+            keep_alive=keep_alive,
+            deps=DepsConfig(),
+        ),
         server_config=None,
         worker=InferenceWorkerConfig(
             worker_id="actor",
@@ -470,4 +499,5 @@ async def test_modal_endpoint_exposes_port_at_sandbox_creation(
     request = captured["request"]
     assert request.encrypted_ports == (30000,)
     assert captured["lease_initialized"] is True
-    assert captured["terminated"] is True
+    assert captured.get("terminated", False) is expected_terminated
+    assert captured.get("baseline_waited", False) is expected_baseline_wait

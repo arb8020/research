@@ -620,6 +620,7 @@ class ModalSandboxHandle:
 
     sandbox: Any
     sandbox_id: str
+    keep_alive: bool = False
     backend: str = "modal"
 
 
@@ -1269,7 +1270,11 @@ async def create_modal_sandbox(request: ModalExecutionRequest) -> ModalSandboxHa
         assert sandbox is not None, f"Failed to reattach to sandbox: {request.sandbox_id}"
         assert sandbox.object_id, "Sandbox missing object_id"
         logger.info("Reattached to sandbox: %s", sandbox.object_id)
-        return ModalSandboxHandle(sandbox=sandbox, sandbox_id=sandbox.object_id)
+        return ModalSandboxHandle(
+            sandbox=sandbox,
+            sandbox_id=sandbox.object_id,
+            keep_alive=request.keep_alive,
+        )
 
     logger.info("Looking up app: %s", MODAL_APP_NAME)
     app = await trio_asyncio.aio_as_trio(
@@ -1562,7 +1567,11 @@ async def create_modal_sandbox(request: ModalExecutionRequest) -> ModalSandboxHa
         except Exception as exc:
             emit("modal_sandbox_tags_failed", error=f"{type(exc).__name__}: {exc}")
 
-    return ModalSandboxHandle(sandbox=sandbox, sandbox_id=sandbox.object_id)
+    return ModalSandboxHandle(
+        sandbox=sandbox,
+        sandbox_id=sandbox.object_id,
+        keep_alive=request.keep_alive,
+    )
 
 
 async def materialize_modal_workspace(
@@ -1585,6 +1594,9 @@ async def materialize_modal_workspace(
 
 async def terminate_modal_sandbox(sandbox: ModalSandboxHandle) -> None:
     """Terminate a live Modal sandbox."""
+
+    if sandbox.keep_alive:
+        return
 
     def _terminate() -> None:
         try:

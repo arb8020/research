@@ -27,16 +27,41 @@ from bifrost import (
     read_lifecycle_events,
 )
 from bifrost.modal_backend import (
+    ModalSandboxHandle,
     _consume_modal_diag_stream_chunk,
     _exception_is_operator_interrupt,
     _modal_supervisor_exit_code,
     _normalize_run_logger_event_payload,
     _wait_for_modal_exec_ready,
+    terminate_modal_sandbox,
 )
 from bifrost.path_utils import build_path_rewrite_map, normalize_remote_workspace_root
 from bifrost.server import server_is_healthy
 from bifrost.service_launch import build_detached_service_launch_command
 from bifrost.types import ExecResult, JobInfo, ServerInfo
+
+
+def test_terminate_modal_sandbox_skips_keep_alive() -> None:
+    class _Sandbox:
+        def __init__(self) -> None:
+            self.terminated = False
+
+        def terminate(self) -> None:
+            self.terminated = True
+
+    async def _exercise() -> None:
+        sandbox = _Sandbox()
+        await terminate_modal_sandbox(
+            ModalSandboxHandle(sandbox=sandbox, sandbox_id="sb-test", keep_alive=True)
+        )
+        assert sandbox.terminated is False
+
+        await terminate_modal_sandbox(
+            ModalSandboxHandle(sandbox=sandbox, sandbox_id="sb-test", keep_alive=False)
+        )
+        assert sandbox.terminated is True
+
+    trio.run(_exercise)
 
 
 def test_job_info_exposes_process_handle_shape() -> None:
