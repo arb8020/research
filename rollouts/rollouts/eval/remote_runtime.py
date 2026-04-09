@@ -25,7 +25,7 @@ from ..drivers.runner import (
     _FlushAssistantMessage,
     _make_raw_driver_line_handler,
 )
-from ..environments.resources import SandboxWorkspaceResource, SessionExecSpec
+from ..environments.resources import ExecSpec, SandboxWorkspaceResource
 from ..eval.types import ExternalAttemptArtifact
 
 _event_logger = logging.getLogger("rollouts.eval.events")
@@ -48,7 +48,7 @@ async def _workspace_exec(
     timeout: float,
 ) -> Any:
     return await workspace.exec(
-        SessionExecSpec(
+        ExecSpec(
             command=command,
             cwd=cwd,
             timeout=timeout,

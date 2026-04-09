@@ -10,7 +10,7 @@ from typing import Any
 import trio
 
 from ..infra_errors import WorkspaceInfraError
-from .resources import CommandExecutionResult, SessionExecSpec
+from .resources import CommandExecutionResult, ExecSpec
 from .runtime_probe import build_gpu_runtime_probe_script
 
 logger = logging.getLogger(__name__)
@@ -173,7 +173,7 @@ class SshBifrostWorkspaceResource:
             if await local_tmp.exists():
                 await local_tmp.unlink()
 
-    async def exec(self, spec: SessionExecSpec) -> CommandExecutionResult:
+    async def exec(self, spec: ExecSpec) -> CommandExecutionResult:
         return await self.run(
             spec.command,
             cwd=spec.cwd,
@@ -337,9 +337,9 @@ class BrokerBifrostWorkspaceLeasePoolConfig:
 @dataclass
 class BrokerBifrostWorkspaceResource:
     # TODO(session-first): this should become the canonical
-    # `InspectableRemoteSession` example. The honest substrate is Bifrost exec
+    # `InspectableRemoteConnection` example. The honest substrate is Bifrost exec
     # + upload/download over a live SSH session; the workspace shape should be
-    # derived via `SessionBackedWorkspaceHandle`.
+    # derived via `ConnectionBackedWorkspaceHandle`.
     config: BrokerBifrostWorkspaceResourceConfig
     sample_data: dict[str, Any] = field(default_factory=dict)
     _instance_id: str | None = field(default=None, repr=False)
@@ -513,7 +513,7 @@ class BrokerBifrostWorkspaceResource:
             if await local_tmp.exists():
                 await local_tmp.unlink()
 
-    async def exec(self, spec: SessionExecSpec) -> CommandExecutionResult:
+    async def exec(self, spec: ExecSpec) -> CommandExecutionResult:
         return await self.run(
             spec.command,
             cwd=spec.cwd,
@@ -787,7 +787,7 @@ class ManagedBrokerBifrostWorkspaceResource:
             cancel_scope=cancel_scope,
         )
 
-    async def exec(self, spec: SessionExecSpec) -> CommandExecutionResult:
+    async def exec(self, spec: ExecSpec) -> CommandExecutionResult:
         resource = await self._ensure_resource()
         return await resource.exec(spec)
 

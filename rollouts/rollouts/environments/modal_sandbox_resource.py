@@ -17,7 +17,7 @@ import trio
 from ..image_spec import ImageSpec, RuntimeOverlay
 from ..infra_errors import WorkspaceInfraError
 from ..training.configs import DepsConfig
-from .resources import CommandExecutionResult, SessionExecSpec
+from .resources import CommandExecutionResult, ExecSpec
 from .runtime_probe import build_gpu_runtime_probe_script
 
 if TYPE_CHECKING:
@@ -81,7 +81,7 @@ class ModalSandboxLease:
 @dataclass
 class ModalSandboxResource:
     # TODO(session-first): this should eventually be split into a Modal-backed
-    # `InspectableRemoteSession` plus a `SessionBackedWorkspaceHandle`. The
+    # `InspectableRemoteConnection` plus a `ConnectionBackedWorkspaceHandle`. The
     # actual substrate here is modal exec + file movement, not the flattened
     # workspace protocol.
     config: ModalSandboxResourceConfig
@@ -239,7 +239,7 @@ class ModalSandboxResource:
         if returncode != 0:
             raise RuntimeError(stderr or stdout or f"Failed to write {resolved}")
 
-    async def exec(self, spec: SessionExecSpec) -> CommandExecutionResult:
+    async def exec(self, spec: ExecSpec) -> CommandExecutionResult:
         return await self.run(
             spec.command,
             cwd=spec.cwd,
@@ -598,7 +598,7 @@ class ManagedModalSandboxResource:
             cancel_scope=cancel_scope,
         )
 
-    async def exec(self, spec: SessionExecSpec) -> CommandExecutionResult:
+    async def exec(self, spec: ExecSpec) -> CommandExecutionResult:
         resource = await self._ensure_resource()
         return await resource.exec(spec)
 

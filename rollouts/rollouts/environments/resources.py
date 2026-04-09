@@ -63,7 +63,7 @@ class CommandExecutionResult:
 
 
 @dataclass(frozen=True)
-class SessionExecSpec:
+class ExecSpec:
     """Process spec at the execution-substrate boundary.
 
     This is intentionally smaller than the current workspace-facing protocol.
@@ -79,7 +79,7 @@ class SessionExecSpec:
 
 
 @runtime_checkable
-class RemoteSession(Protocol):
+class RemoteConnection(Protocol):
     """Live execution/session substrate.
 
     Concrete implementations may lower this into Modal sandbox calls, SSH/Bifrost
@@ -94,7 +94,7 @@ class RemoteSession(Protocol):
     functions collapse to a single implementation per runtime.
     """
 
-    async def exec(self, spec: SessionExecSpec) -> CommandExecutionResult: ...
+    async def exec(self, spec: ExecSpec) -> CommandExecutionResult: ...
 
     async def upload_bytes(self, remote_path: str, content: bytes) -> None: ...
 
@@ -104,7 +104,7 @@ class RemoteSession(Protocol):
 
 
 @runtime_checkable
-class InspectableRemoteSession(RemoteSession, Protocol):
+class InspectableRemoteConnection(RemoteConnection, Protocol):
     async def describe_runtime(self) -> dict[str, Any]: ...
 
     def stats(self) -> dict[str, Any]: ...
@@ -114,8 +114,8 @@ class InspectableRemoteSession(RemoteSession, Protocol):
 class CodingWorkspaceResource(Protocol):
     # TODO(session-first): this is a convenience facade for environment/tool
     # code, not the honest execution substrate. New backends should prefer
-    # implementing `InspectableRemoteSession` and only expose this shape via
-    # `SessionBackedWorkspaceHandle`.
+    # implementing `InspectableRemoteConnection` and only expose this shape via
+    # `ConnectionBackedWorkspaceHandle`.
     working_dir: str
 
     def resolve_path(self, current_working_dir: str, path: str) -> str: ...
@@ -142,12 +142,12 @@ class CommandRunner(Protocol):
 
 
 @dataclass
-class SessionBackedWorkspaceHandle:
+class ConnectionBackedWorkspaceHandle:
     """Task-facing workspace façade layered over a lower-level remote session.
 
     The environment layer should usually depend on a workspace handle. Modal,
     RunPod/SSH, or local Docker should implement the lower-level
-    `InspectableRemoteSession`, then opt into the existing workspace semantics
+    `InspectableRemoteConnection`, then opt into the existing workspace semantics
     by wrapping it here.
 
     TODO(session-first): once the concrete backends migrate, make this the
@@ -155,7 +155,7 @@ class SessionBackedWorkspaceHandle:
     implement the flattened workspace protocol directly.
     """
 
-    session: InspectableRemoteSession
+    session: InspectableRemoteConnection
     working_dir: str
 
     def resolve_path(self, current_working_dir: str, path: str) -> str:
@@ -184,7 +184,7 @@ class SessionBackedWorkspaceHandle:
         cancel_scope: Any | None = None,
     ) -> CommandExecutionResult:
         return await self.session.exec(
-            SessionExecSpec(
+            ExecSpec(
                 command=command,
                 cwd=self.resolve_path(self.working_dir, cwd),
                 timeout=timeout,
@@ -209,7 +209,7 @@ class SessionBackedWorkspaceHandle:
         serialize = getattr(self.session, "serialize_state", None)
         if not callable(serialize):
             raise TypeError(
-                "SessionBackedWorkspaceHandle requires the wrapped session to expose "
+                "ConnectionBackedWorkspaceHandle requires the wrapped session to expose "
                 "serialize_state() for environment checkpointing."
             )
         return {
@@ -219,7 +219,7 @@ class SessionBackedWorkspaceHandle:
         }
 
     @classmethod
-    def deserialize_state(cls, data: dict[str, Any]) -> SessionBackedWorkspaceHandle:
+    def deserialize_state(cls, data: dict[str, Any]) -> ConnectionBackedWorkspaceHandle:
         session_state = data["session"]
         kind = session_state.get("kind")
         if kind == "managed_modal_sandbox_resource":
@@ -247,8 +247,8 @@ class SessionBackedWorkspaceHandle:
 class SandboxWorkspaceResource(CodingWorkspaceResource, CommandRunner, Protocol):
     # TODO(session-first): this currently reads like the core sandbox protocol,
     # but it is really an adapter shape. After the backend migration, narrow
-    # environment-facing code to `SessionBackedWorkspaceHandle` or another
-    # explicit workspace facade built on `InspectableRemoteSession`.
+    # environment-facing code to `ConnectionBackedWorkspaceHandle` or another
+    # explicit workspace facade built on `InspectableRemoteConnection`.
     async def start(self) -> None: ...
 
     async def close(self) -> None: ...

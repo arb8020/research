@@ -247,7 +247,7 @@ def make_remote_external_trajectory_adapter(
     with a session-file polling approach: launch the CLI in the background inside
     the sandbox, then poll the native session file it writes
     (~/.claude/projects/.../session.jsonl or ~/.codex/sessions/.../rollout-*.jsonl)
-    via repeated workspace.exec(SessionExecSpec(command="tail -c +{offset} {path}", ...))
+    via repeated workspace.exec(ExecSpec(command="tail -c +{offset} {path}", ...))
     calls, feeding each new
     line through the canonical _ClaudeEventParser / _CodexEventParser from
     drivers/claude.py and drivers/codex.py. This gives live progress and uses the
