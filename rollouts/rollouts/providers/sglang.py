@@ -42,6 +42,43 @@ from .openai_completions import _message_to_openai, _tool_to_openai, aggregate_s
 logger = logging.getLogger(__name__)
 
 
+def _decode_top_candidates(
+    tokenizer: Any,
+    top_logprob_dict: dict[Any, float] | None,
+) -> tuple[list[float], list[dict[str, Any]]]:
+    """Normalize backend top-k data into semantic trace-friendly candidate records."""
+    if not top_logprob_dict:
+        return [], []
+
+    top_logprobs: list[float] = []
+    top_candidates: list[dict[str, Any]] = []
+    for raw_token, raw_logprob in top_logprob_dict.items():
+        logprob = float(raw_logprob)
+        top_logprobs.append(logprob)
+
+        token_id: int | None = None
+        token_text = ""
+        if isinstance(raw_token, int):
+            token_id = raw_token
+        elif isinstance(raw_token, str):
+            try:
+                token_id = int(raw_token)
+            except ValueError:
+                token_text = raw_token
+
+        if token_id is not None:
+            token_text = tokenizer.decode([token_id])
+
+        top_candidates.append({
+            "token": token_text,
+            "token_id": token_id,
+            "logprob": logprob,
+            "bytes": list(token_text.encode("utf-8")),
+        })
+
+    return top_logprobs, top_candidates
+
+
 def _normalize_vllm_api_base(api_base: str) -> str:
     """Normalize API base URL to include /chat/completions. Pure function."""
     assert isinstance(api_base, str), f"api_base must be str, got {type(api_base)}"
@@ -606,14 +643,17 @@ async def rollout_sglang_token_level(
         token_str = tokenizer.decode([token_id])
         token_bytes = list(token_str.encode("utf-8"))
         top_lps = []
+        top_candidates: list[dict[str, Any]] = []
         if result.top_logprobs and i < len(result.top_logprobs):
-            top_lps = list(result.top_logprobs[i].values())
+            top_lps, top_candidates = _decode_top_candidates(tokenizer, result.top_logprobs[i])
         logprob_content.append(
             Logprob(
                 token=token_str,
                 logprob=lp,
                 bytes=token_bytes,
                 top_logprobs=top_lps,
+                top_candidates=top_candidates,
+                token_id=token_id,
             )
         )
 
@@ -637,6 +677,7 @@ async def rollout_sglang_token_level(
             output_tokens=len(result.output_ids),
         ),
         choices=[choice],
+        prompt_token_ids=tuple(input_ids),
     )
 
     # Debug: check if our tokens match what chat template would produce
@@ -772,17 +813,19 @@ async def rollout_vllm_token_level(
         token_str = tokenizer.decode([token_id])
         token_bytes = list(token_str.encode("utf-8"))
         top_lps = []
+        top_candidates: list[dict[str, Any]] = []
         if result.top_logprobs and i < len(result.top_logprobs):
-            # vLLM returns dict with string keys, convert if needed
             top_lp_dict = result.top_logprobs[i]
             if isinstance(top_lp_dict, dict):
-                top_lps = list(top_lp_dict.values())
+                top_lps, top_candidates = _decode_top_candidates(tokenizer, top_lp_dict)
         logprob_content.append(
             Logprob(
                 token=token_str,
                 logprob=lp,
                 bytes=token_bytes,
                 top_logprobs=top_lps,
+                top_candidates=top_candidates,
+                token_id=token_id,
             )
         )
 
@@ -806,6 +849,7 @@ async def rollout_vllm_token_level(
             output_tokens=len(result.output_ids),
         ),
         choices=[choice],
+        prompt_token_ids=tuple(input_ids),
     )
 
     # Debug: check if our tokens match what chat template would produce
