@@ -6,7 +6,7 @@ import pytest
 
 from rollouts.agents.types import Actor
 from rollouts.core import Endpoint, Message, Trajectory
-from rollouts.dtypes import ChatCompletion, Choice, Usage
+from rollouts.dtypes import ChatCompletion, Choice, StreamDone, StreamStart, TextDelta, Usage
 from rollouts.providers import openai_completions
 
 
@@ -69,3 +69,32 @@ async def test_rollout_openai_passes_extra_params_via_extra_body(
     assert "chat_template_kwargs" not in capture.kwargs
     assert capture.kwargs["extra_body"] == {"chat_template_kwargs": {"enable_thinking": False}}
     assert updated.trajectory.messages[-1].role == "assistant"
+
+
+@pytest.mark.trio
+async def test_aggregate_openai_compatible_sse_accepts_minisglang_style_chunks() -> None:
+    async def _stream() -> object:
+        chunks = [
+            ' {"id":"cmpl-1","object":"text_completion.chunk","choices":[{"delta":{"role":"assistant"},"index":0,"finish_reason":null}]} ',
+            '{"id":"cmpl-1","object":"text_completion.chunk","choices":[{"delta":{"content":"olle"},"index":0,"finish_reason":null}]}',
+            '{"id":"cmpl-1","object":"text_completion.chunk","choices":[{"delta":{"content":"h"},"index":0,"finish_reason":null}]}',
+            '{"id":"cmpl-1","object":"text_completion.chunk","choices":[{"delta":{},"index":0,"finish_reason":"stop"}]}',
+            "[DONE]",
+        ]
+        for chunk in chunks:
+            yield chunk
+
+    events: list[object] = []
+
+    async def _on_chunk(event: object) -> None:
+        events.append(event)
+
+    completion, _ttft_ms = await openai_completions.aggregate_openai_compatible_sse(
+        _stream(),
+        _on_chunk,
+    )
+
+    assert completion.choices[0].message.content == "olleh"
+    assert isinstance(events[0], StreamStart)
+    assert any(isinstance(event, TextDelta) and event.delta == "olle" for event in events)
+    assert isinstance(events[-1], StreamDone)

@@ -8,6 +8,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import replace
 from typing import Any
 
+import httpx
 from openai import AsyncOpenAI
 from openai.types import CompletionUsage
 from openai.types.chat import ChatCompletionMessageParam
@@ -42,6 +43,14 @@ from ..dtypes import (
 from .base import _prepare_messages_for_llm, calculate_cost_from_usage, sanitize_request_for_logging
 
 logger = logging.getLogger(__name__)
+
+
+def _normalize_openai_stream_chunk_payload(payload: str) -> dict[str, Any] | None:
+    """Parse one SSE payload line from an OpenAI-compatible stream."""
+    stripped = payload.strip()
+    if not stripped or stripped == "[DONE]":
+        return None
+    return json.loads(stripped)
 
 
 def _message_to_openai(m: Message) -> ChatCompletionMessageParam:
@@ -591,6 +600,136 @@ async def aggregate_stream(
     return completion, ttft_ms
 
 
+async def aggregate_openai_compatible_sse(
+    stream: AsyncIterator[str],
+    on_chunk: Callable[[StreamEvent], Awaitable[None]],
+    request_start: float | None = None,
+) -> tuple[ChatCompletion, float | None]:
+    """Aggregate a raw SSE stream from a loosely OpenAI-compatible backend.
+
+    This is the compatibility path for servers that speak the same transport
+    shape as OpenAI chat completions but do not satisfy the Python SDK's stricter
+    response model assumptions.
+    """
+    import time
+
+    assert stream is not None
+    assert on_chunk is not None
+
+    await on_chunk(StreamStart())
+
+    accumulated_content = ""
+    ttft_ms: float | None = None
+    finish_reason = None
+    response_id = None
+    created = None
+    model = ""
+    text_started = False
+
+    async for payload in stream:
+        chunk = _normalize_openai_stream_chunk_payload(payload)
+        if chunk is None:
+            continue
+
+        if response_id is None:
+            response_id = chunk.get("id")
+        if created is None:
+            created = chunk.get("created")
+        if not model:
+            model = chunk.get("model", "")
+
+        choices = chunk.get("choices") or []
+        if not choices:
+            continue
+
+        choice = choices[0]
+        delta = choice.get("delta") or {}
+
+        if (
+            ttft_ms is None
+            and request_start is not None
+            and (delta.get("content") or delta.get("reasoning_content") or delta.get("tool_calls"))
+        ):
+            ttft_ms = (time.perf_counter() - request_start) * 1000
+            await on_chunk(FirstToken(ttft_ms=ttft_ms))
+
+        if content_delta := delta.get("content"):
+            if not text_started:
+                await on_chunk(TextStart(content_index=0))
+                text_started = True
+            accumulated_content += content_delta
+            await on_chunk(TextDelta(content_index=0, delta=content_delta))
+
+        if choice.get("finish_reason"):
+            finish_reason = choice["finish_reason"]
+
+    if text_started:
+        await on_chunk(TextEnd(content_index=0, content=accumulated_content))
+    await on_chunk(StreamDone(finish_reason=finish_reason or "stop"))
+
+    return (
+        ChatCompletion(
+            id=response_id or "unknown",
+            object="chat.completion",
+            created=created or 0,
+            model=model,
+            usage=Usage(),
+            choices=[
+                Choice(
+                    0,
+                    Message(role="assistant", content=accumulated_content),
+                    finish_reason or "stop",
+                )
+            ],
+        ),
+        ttft_ms,
+    )
+
+
+async def _iter_openai_sse_payloads(response: httpx.Response) -> AsyncIterator[str]:
+    """Yield raw `data:` payloads from an SSE response body."""
+    async for line in response.aiter_lines():
+        if not line.startswith("data:"):
+            continue
+        yield line[len("data:") :].strip()
+
+
+async def _rollout_openai_raw_sse(
+    *,
+    actor: Actor,
+    params: dict[str, Any],
+    request_options: dict[str, Any],
+    on_chunk: Callable[[StreamEvent], Awaitable[None]],
+    request_start: float,
+) -> tuple[ChatCompletion, float | None]:
+    """Fallback for self-hosted OpenAI-compatible servers with looser streams."""
+    headers: dict[str, str] = {}
+    if actor.endpoint.api_key:
+        headers["Authorization"] = f"Bearer {actor.endpoint.api_key}"
+
+    payload = dict(params)
+    extra_body = request_options.get("extra_body")
+    if isinstance(extra_body, dict):
+        payload.update(extra_body)
+
+    api_base = actor.endpoint.api_base.rstrip("/")
+    url = (
+        f"{api_base}/chat/completions"
+        if api_base.endswith("/v1")
+        else f"{api_base}/v1/chat/completions"
+    )
+
+    timeout = httpx.Timeout(actor.endpoint.timeout)
+    async with httpx.AsyncClient(timeout=timeout, headers=headers) as client:
+        async with client.stream("POST", url, json=payload) as response:
+            response.raise_for_status()
+            return await aggregate_openai_compatible_sse(
+                _iter_openai_sse_payloads(response),
+                on_chunk,
+                request_start,
+            )
+
+
 async def rollout_openai(
     actor: Actor,
     on_chunk: Callable[[StreamEvent], Awaitable[None]],
@@ -788,33 +927,81 @@ async def rollout_openai(
             ) from e
 
         # For other transient errors (network issues, 5xx, etc), wrap as ProviderError
-        import httpx
         from openai import APIConnectionError, APITimeoutError, InternalServerError
 
         # Transient network/API errors that should trigger retry
         if isinstance(
             e, (APIConnectionError, APITimeoutError, InternalServerError, httpx.RemoteProtocolError)
         ):
-            from .base import ProviderError
+            fallback_succeeded = False
+            if actor.endpoint.provider == "sglang":
+                logger.warning(
+                    "OpenAI SDK stream failed for %s; retrying via raw SSE compatibility path",
+                    actor.endpoint.model,
+                    extra={"exception": str(e), "request_params": sanitized},
+                )
+                try:
+                    completion, ttft_ms = await _rollout_openai_raw_sse(
+                        actor=actor,
+                        params=params,
+                        request_options=request_options,
+                        on_chunk=on_chunk,
+                        request_start=request_start,
+                    )
+                    request_duration_ms = (time.perf_counter() - request_start) * 1000
+                except Exception:
+                    logger.exception(
+                        "Raw SSE compatibility fallback also failed for %s",
+                        actor.endpoint.model,
+                        extra={"exception": str(e), "request_params": sanitized},
+                    )
+                else:
+                    from .base import log_api_response
 
-            msg_list = params.get("messages", [])
-            msg_count = len(cast(list, msg_list)) if isinstance(msg_list, list) else 0
-            logger.exception(
-                f"OpenAI API call failed: {e}\n"
-                f"  Model: {actor.endpoint.model}\n"
-                f"  Messages: {msg_count} messages",
-                extra={
-                    "exception": str(e),
-                    "request_params": sanitized,
-                    "model": actor.endpoint.model,
-                },
-            )
-            raise ProviderError(
-                f"OpenAI API error after retries: {e}",
-                original_error=e,
-                attempts=actor.endpoint.max_retries,
-                provider="openai",
-            ) from e
+                    log_api_response(
+                        provider="openai",
+                        model=actor.endpoint.model,
+                        attempt=1,
+                        success=True,
+                        input_tokens=completion.usage.input_tokens if completion.usage else None,
+                        output_tokens=completion.usage.output_tokens if completion.usage else None,
+                        cache_read_tokens=completion.usage.cache_read_tokens
+                        if completion.usage
+                        else None,
+                        reasoning_tokens=completion.usage.reasoning_tokens
+                        if completion.usage
+                        else None,
+                        stop_reason=completion.choices[0].stop_reason
+                        if completion.choices
+                        else None,
+                        has_tool_calls=bool(completion.choices[0].message.get_tool_calls())
+                        if completion.choices
+                        else False,
+                    )
+                    fallback_succeeded = True
+            if fallback_succeeded:
+                completion = replace(completion, model=actor.endpoint.model)
+            else:
+                from .base import ProviderError
+
+                msg_list = params.get("messages", [])
+                msg_count = len(cast(list, msg_list)) if isinstance(msg_list, list) else 0
+                logger.exception(
+                    f"OpenAI API call failed: {e}\n"
+                    f"  Model: {actor.endpoint.model}\n"
+                    f"  Messages: {msg_count} messages",
+                    extra={
+                        "exception": str(e),
+                        "request_params": sanitized,
+                        "model": actor.endpoint.model,
+                    },
+                )
+                raise ProviderError(
+                    f"OpenAI API error after retries: {e}",
+                    original_error=e,
+                    attempts=actor.endpoint.max_retries,
+                    provider="openai",
+                ) from e
 
         # For other errors, log and re-raise as-is (likely bugs)
         msg_list = params.get("messages", [])
