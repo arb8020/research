@@ -18,6 +18,26 @@ if TYPE_CHECKING:
     from ..store import SessionStore
 
 
+# TODO(session-harness-decoupling): the session here is the durable log of what
+# happened — messages, tool calls, environment config. The harness (run_agent)
+# is the loop that drives turns. These are partially decoupled already:
+# ensure_persisted_session writes messages per-turn, and the session can be
+# reconstructed from the store on wake.
+#
+# The remaining coupling: environment state is stored as a serialized blob on
+# the session, meaning the session knows about environment internals. The cleaner
+# model (per the Anthropic managed-agents article) is that the session stores
+# only the environment *type* and *config* (enough to reprovision), and the
+# environment is reprovisioned fresh on wake rather than deserialized from state.
+#
+# Concretely: environment_to_session_config currently stores only class name,
+# which is correct. But state_to_persisted_trajectory threads environment_bundle.state
+# through, meaning deserialized mutable state can end up in the session log.
+# On wake, callers should call environment.initialize() rather than
+# environment.deserialize(session.environment.state).
+#
+# This also applies to the external agent path: once run_external_agent has a
+# session, ensure_persisted_session should work identically for both paths.
 def environment_to_session_config(
     environment: Environment | None,
     confirm_tools: bool = False,

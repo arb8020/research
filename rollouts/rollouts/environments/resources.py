@@ -84,6 +84,14 @@ class RemoteSession(Protocol):
 
     Concrete implementations may lower this into Modal sandbox calls, SSH/Bifrost
     exec + SFTP, or `docker exec` + `docker cp`.
+
+    TODO(streaming-exec): add `exec_streaming(spec) -> AsyncIterator[str]` once
+    bifrost exposes per-line stdout via SSH channel multiplexing. Current workaround
+    for remote runtimes: launch CLI in background (nohup/tmux + redirect), then poll
+    the session/log file it writes to disk via repeated `download_bytes`. The polling
+    loop in `remote_runtime._run_remote_external_runtime_session_file` is the concrete
+    expression of this workaround. With streaming exec, local and remote trajectory
+    functions collapse to a single implementation per runtime.
     """
 
     async def exec(self, spec: SessionExecSpec) -> CommandExecutionResult: ...

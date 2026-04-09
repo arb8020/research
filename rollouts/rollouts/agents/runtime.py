@@ -860,6 +860,20 @@ async def resume_session(
     )
 
 
+# TODO(run-agent-run-external-agent-convergence): run_agent (native SDK) and
+# run_external_agent (external CLI runtimes) should converge to the same
+# signature: (state: AgentState, run_config: RunConfig). Both paths should:
+#   - read/write the same session store per turn
+#   - treat the environment on AgentState as the tool/MCP surface
+#   - return list[AgentState] with consistent stop reasons
+#
+# Currently run_external_agent doesn't exist as a peer function — external
+# agents go through execute_external_attempt which discards the environment,
+# has no per-turn persistence, and returns RowAttempt instead of list[AgentState].
+#
+# Unlocks: running native SDK and external CLI agents through one orchestration
+# path; comparing trajectories across runtimes in the same schema; resume after
+# crash on the external agent path.
 async def run_agent(
     state: AgentState,
     run_config: RunConfig,
@@ -960,6 +974,21 @@ async def run_agent(
 
     # Save final state
     await handle_checkpoint_event(current_state, "final", run_config, current_state.session_id)
+
+    # TODO(environment-state-durability): environment state is serialized and
+    # saved only at run-end. If the harness crashes mid-run, the session log
+    # has the message history but the environment state (which GPU was assigned,
+    # what files are on disk, verifier results) is lost.
+    #
+    # The article's model: environments are cattle, reprovisioned from a recipe
+    # rather than checkpointed. For our use case this means: on wake, re-run
+    # environment.initialize() from the session config rather than deserializing
+    # mutable state. environment.serialize() at run-end is still useful for
+    # diagnostics, but should not be the resume mechanism.
+    #
+    # Near-term fix: move environment.serialize() into process_pending_tools
+    # so at least per-tool state is captured. Longer-term: define a provision()
+    # recipe on Environment and use it in wake() instead of deserialize().
 
     # Save final stop reason and environment state
     if session_store and current_state.session_id:

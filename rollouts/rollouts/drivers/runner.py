@@ -27,6 +27,7 @@ from typing import TYPE_CHECKING, Any
 from ..dtypes import (
     ContentBlock,
     Message,
+    StreamChunk,
     StreamEvent,
     TextContent,
     TextDelta,
@@ -48,6 +49,49 @@ if TYPE_CHECKING:
     from .protocol import ExternalAgentDriver
 
 _event_logger = logging.getLogger("rollouts.eval.events")
+
+
+def _make_raw_driver_line_handler(
+    run_config: Any | None,
+    *,
+    driver: str,
+) -> Callable[[str], Awaitable[None]] | None:
+    # TODO(observability): `raw_driver_line` is a raw boundary observation, not
+    # a normalized domain event. Keep it available for parser/runtime debugging,
+    # but move the canonical info-level journal toward parsed StreamEvents with
+    # an explicit event envelope (`source` / `kind` / `payload`) instead of
+    # treating escaped vendor JSON as a primary analysis surface.
+    on_chunk = getattr(run_config, "on_chunk", None)
+    if on_chunk is None:
+        return None
+
+    async def emit(raw_line: str) -> None:
+        await on_chunk(
+            StreamChunk(
+                "raw_driver_line",
+                {
+                    "driver": driver,
+                    "raw_line": raw_line,
+                },
+            )
+        )
+
+    return emit
+
+
+def _make_external_progress_emitter(
+    run_config: Any | None,
+    *,
+    driver: str,
+) -> Callable[[str, dict[str, Any]], Awaitable[None]] | None:
+    on_chunk = getattr(run_config, "on_chunk", None)
+    if on_chunk is None:
+        return None
+
+    async def emit(event_type: str, payload: dict[str, Any]) -> None:
+        await on_chunk(StreamChunk(event_type, {"driver": driver, **payload}))
+
+    return emit
 
 
 @dataclass
@@ -135,6 +179,11 @@ async def run_driver_to_trajectory(
     sample_id: str | None = None,
     on_event: Callable[[StreamEvent], Awaitable[None]] | None = None,
 ) -> Trajectory:
+    # TODO(observability): This is the clean external-driver normalization
+    # boundary: raw runtime/wire events should be debug-only, and normalized
+    # StreamEvents should be the primary info-level analysis surface. Keep
+    # `turn`/`assistant_message` as downstream derived projections rather than
+    # treating them as the canonical external-driver event model.
     accumulator = _EventAccumulator()
 
     async for event in driver.run(prompt):

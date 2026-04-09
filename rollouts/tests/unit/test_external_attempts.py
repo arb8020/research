@@ -5,14 +5,15 @@ from collections.abc import AsyncIterator
 import pytest
 
 from rollouts.core import Message, Trajectory
-from rollouts.drivers.runner import run_driver_to_trajectory
+from rollouts.drivers.runner import _make_raw_driver_line_handler, run_driver_to_trajectory
 from rollouts.dtypes import StreamChunk, StreamEvent, TextContent, TextDelta, TextEnd, TextStart
 from rollouts.eval.external_attempts import (
     ExternalAttemptArtifact,
-    _make_raw_driver_line_handler,
-    _message_from_openhands_event,
-    _parse_openhands_json_events,
     execute_external_attempt,
+)
+from rollouts.eval.openhands import (
+    _append_openhands_event,
+    _extract_json_objects_from_marked_output,
 )
 from rollouts.training.types import Status
 
@@ -145,7 +146,7 @@ async def test_run_driver_to_trajectory_forwards_live_events() -> None:
     assert content[0].text == "hello"
 
 
-def test_parse_openhands_json_events_extracts_pretty_json_blocks() -> None:
+def test_extract_json_objects_from_marked_output_extracts_pretty_json_blocks() -> None:
     stdout = """
 Initializing agent...
 --JSON Event--
@@ -169,13 +170,13 @@ Agent is working
 }
 """
 
-    events = _parse_openhands_json_events(stdout)
+    events = _extract_json_objects_from_marked_output(stdout, marker="--JSON Event--")
     assert len(events) == 2
     assert events[0]["source"] == "user"
     assert events[1]["source"] == "agent"
 
 
-def test_message_from_openhands_event_extracts_text_message() -> None:
+def test_append_openhands_event_extracts_text_message() -> None:
     event = {
         "kind": "MessageEvent",
         "source": "agent",
@@ -185,7 +186,8 @@ def test_message_from_openhands_event_extracts_text_message() -> None:
         },
     }
 
-    message = _message_from_openhands_event(event)
-    assert message is not None
-    assert message.role == "assistant"
-    assert message.content == "hello"
+    messages: list[Message] = []
+    _append_openhands_event(messages, event)
+    assert len(messages) == 1
+    assert messages[0].role == "assistant"
+    assert messages[0].content == "hello"

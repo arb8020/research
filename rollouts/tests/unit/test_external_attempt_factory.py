@@ -11,6 +11,7 @@ from rollouts.eval.external_attempts import (
     ExternalAttemptArtifact,
     RemoteRuntimePreparation,
     _remote_acp_uv_prepare_command,
+    _remote_codex_acp_auth_payload,
     make_external_attempt_executor,
     make_external_trajectory_adapter,
 )
@@ -256,3 +257,14 @@ def test_remote_runtime_preparation_keeps_uv_config_explicit() -> None:
     assert "--config-file /tmp/rollouts-external-runtime/claude_acp/uv.toml" in command
     assert "NPM_CONFIG_USERCONFIG=/tmp/rollouts-external-runtime/claude_acp/.npmrc" in command
     assert "npx -y @agentclientprotocol/claude-agent-acp --help" not in command
+
+
+def test_remote_codex_acp_auth_payload_materializes_apikey_mode() -> None:
+    payload = _remote_codex_acp_auth_payload("sk-test")
+
+    assert payload == {
+        "auth_mode": "apikey",
+        "OPENAI_API_KEY": "sk-test",
+        "tokens": None,
+        "last_refresh": None,
+    }
