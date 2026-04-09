@@ -20,6 +20,9 @@ Usage (against a running server you started manually):
 
 The OwnedEndpoint approach is preferred for automated testing - it owns the
 full lifecycle and tears down cleanly on failure.
+
+Student-facing assignment docs:
+    examples/inference/README.md
 """
 
 from rollouts.core import Message, Metric, Score
