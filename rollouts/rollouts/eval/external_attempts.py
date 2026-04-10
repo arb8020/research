@@ -24,9 +24,6 @@ from .mini_swe_agent import trajectory_from_mini_swe_agent
 from .openhands import trajectory_from_openhands
 from .remote_runtime import (
     _make_eval_on_event,
-    RemoteRuntimePreparation,
-    _remote_acp_uv_prepare_command,
-    _remote_codex_acp_auth_payload,
 )
 from .types import ExternalAttemptArtifact
 
@@ -54,32 +51,6 @@ TrajectoryAdapter = Callable[
 ]
 
 WorkspaceResource = SandboxWorkspaceResource | LocalWorkspaceResource
-
-
-def _trajectory_adapter_kwargs(
-    trajectory_adapter: TrajectoryAdapter,
-    workspace: WorkspaceResource,
-    *,
-    run_config: Any | None,
-) -> dict[str, Any]:
-    signature = inspect.signature(trajectory_adapter)
-    parameters = signature.parameters
-    accepts_var_kwargs = any(
-        parameter.kind == inspect.Parameter.VAR_KEYWORD for parameter in parameters.values()
-    )
-
-    adapter_kwargs: dict[str, Any] = {}
-    if "workspace" in parameters:
-        adapter_kwargs["workspace"] = workspace
-    elif "cwd" in parameters:
-        adapter_kwargs["cwd"] = workspace.working_dir
-    elif accepts_var_kwargs:
-        adapter_kwargs["workspace"] = workspace
-
-    if "run_config" in parameters or accepts_var_kwargs:
-        adapter_kwargs["run_config"] = run_config
-
-    return adapter_kwargs
 
 
 def _sample_metadata(sample_data: dict[str, Any]) -> dict[str, Any]:
@@ -135,16 +106,12 @@ async def execute_external_attempt(
     #
     workspace = _coerce_workspace_for_attempt(environment)
     prompt = prompt_builder(sample_data)
-    adapter_kwargs = _trajectory_adapter_kwargs(
-        trajectory_adapter,
-        workspace,
-        run_config=run_config,
-    )
     artifact_or_trajectory = trajectory_adapter(
         prompt,
         sample_id,
         sample_data,
-        **adapter_kwargs,
+        workspace,
+        run_config=run_config,
     )
     if inspect.isawaitable(artifact_or_trajectory):
         artifact_or_trajectory = await artifact_or_trajectory
@@ -225,19 +192,13 @@ def make_external_trajectory_adapter(
         workspace: WorkspaceResource,
         run_config: Any,
     ) -> ExternalAttemptArtifact:
-        adapter_kwargs = dict(
-            _trajectory_adapter_kwargs(
-                base_adapter,
-                workspace,
-                run_config=run_config,
-            )
-        )
-        adapter_kwargs.update(trajectory_kwargs)
         artifact_or_trajectory = base_adapter(
             prompt,
             sample_id,
             sample_data,
-            **adapter_kwargs,
+            workspace,
+            run_config=run_config,
+            **trajectory_kwargs,
         )
         if inspect.isawaitable(artifact_or_trajectory):
             artifact_or_trajectory = await artifact_or_trajectory

@@ -103,50 +103,6 @@ async def test_execute_external_attempt_passes_run_config_when_adapter_accepts_i
 
 
 @pytest.mark.trio
-async def test_execute_external_attempt_adapts_to_cwd_trajectory_adapter(
-    tmp_path: Path,
-) -> None:
-    observed_cwd: str | None = None
-    observed_run_config: object | None = None
-
-    async def _trajectory_adapter(
-        prompt: str,
-        sample_id: str,
-        sample_data: dict[str, str],
-        *,
-        cwd: str,
-        run_config: object,
-    ) -> ExternalAttemptArtifact:
-        nonlocal observed_cwd, observed_run_config
-        observed_cwd = cwd
-        observed_run_config = run_config
-        assert prompt == "prompt:hello"
-        assert sample_id == "sample-1"
-        assert sample_data["text"] == "hello"
-        return ExternalAttemptArtifact(
-            trajectory=Trajectory(messages=[Message(role="assistant", content="ok")]),
-            metadata={"runtime": "fake"},
-            status=Status.COMPLETED,
-        )
-
-    run_config = object()
-    workspace = LocalWorkspaceResource.from_existing(tmp_path)
-    environment = type("Env", (), {"workspace": workspace})()
-    sample = await execute_external_attempt(
-        {"text": "hello"},
-        "sample-1",
-        environment,
-        run_config,
-        prompt_builder=lambda sample: f"prompt:{sample['text']}",
-        trajectory_adapter=_trajectory_adapter,
-    )
-
-    assert sample.metadata["runtime"] == "fake"
-    assert observed_cwd == str(tmp_path)
-    assert observed_run_config is run_config
-
-
-@pytest.mark.trio
 async def test_make_raw_driver_line_handler_emits_stream_chunk() -> None:
     observed: list[StreamChunk] = []
 

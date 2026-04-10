@@ -14,6 +14,8 @@ import trio
 
 from ..core import Message, Trajectory
 from ..drivers.runner import _make_external_progress_emitter, _make_raw_driver_line_handler
+from ..environments.local_workspace_resource import LocalWorkspaceResource
+from ..environments.resources import SandboxWorkspaceResource
 from ..training.types import Status
 from .remote_runtime import _sample_id_slug
 from .types import ExternalAttemptArtifact
@@ -53,7 +55,7 @@ async def trajectory_from_mini_swe_agent(
     sample_id: str,
     sample_data: dict[str, Any],
     *,
-    cwd: Path | None = None,
+    workspace: SandboxWorkspaceResource | LocalWorkspaceResource | None = None,
     run_config: Any | None = None,
     model: str | None = None,
     timeout_seconds: float = 600.0,
@@ -64,7 +66,9 @@ async def trajectory_from_mini_swe_agent(
 ) -> ExternalAttemptArtifact:
     del sample_data
 
-    workdir = Path(cwd or Path.cwd()).resolve()
+    workdir = (
+        Path(workspace.working_dir).resolve() if workspace is not None else Path.cwd().resolve()
+    )
     output_path = workdir / f".mini-swe-agent-{_sample_id_slug(sample_id)}.traj.json"
     if output_path.exists():
         output_path.unlink()

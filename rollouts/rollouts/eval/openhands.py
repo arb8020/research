@@ -15,6 +15,8 @@ import trio
 
 from ..core import Message, Trajectory
 from ..drivers.runner import _make_raw_driver_line_handler
+from ..environments.local_workspace_resource import LocalWorkspaceResource
+from ..environments.resources import SandboxWorkspaceResource
 from ..training.types import Status
 from .types import ExternalAttemptArtifact
 
@@ -303,7 +305,7 @@ async def trajectory_from_openhands(
     sample_id: str,
     sample_data: dict[str, Any],
     *,
-    cwd: Path | None = None,
+    workspace: SandboxWorkspaceResource | LocalWorkspaceResource | None = None,
     run_config: Any | None = None,
     model: str | None = None,
     timeout_seconds: float = 600.0,
@@ -325,7 +327,9 @@ async def trajectory_from_openhands(
             "OpenHands CLI not found. Install from https://docs.all-hands.dev/usage/installation"
         )
 
-    workdir = Path(cwd or Path.cwd()).resolve()
+    workdir = (
+        Path(workspace.working_dir).resolve() if workspace is not None else Path.cwd().resolve()
+    )
     if allowed_tools:
         raise ValueError(
             "OpenHands CLI no longer accepts benchmark-level allowed tool filtering; "

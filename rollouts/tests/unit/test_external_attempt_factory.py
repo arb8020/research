@@ -62,15 +62,16 @@ async def test_make_external_attempt_executor_builds_codex_attempt(
 
     assert attempt.response == "ok"
     assert attempt.metadata["runtime"] == "codex"
+    assert isinstance(observed["workspace"], LocalWorkspaceResource)
     assert observed == {
         "prompt": "prompt:hello",
         "sample_id": "sample-1",
         "sample_data": {"text": "hello"},
+        "workspace": observed["workspace"],
         "model": "gpt-5.1-codex-mini",
         "sandbox": "workspace-write",
         "run_config": run_config,
     }
-    assert isinstance(observed["workspace"], LocalWorkspaceResource)
 
 
 def test_make_external_attempt_executor_rejects_unknown_runtime() -> None:
@@ -247,62 +248,6 @@ async def test_make_external_trajectory_adapter_supports_codex_acp(
         "workspace": workspace,
         "run_config": run_config,
         "model": "codex-acp",
-    }
-
-
-@pytest.mark.trio
-async def test_make_external_trajectory_adapter_falls_back_to_cwd_for_cwd_only_runtime(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    observed: dict[str, object] = {}
-
-    async def _fake_openhands_adapter(
-        prompt: str,
-        sample_id: str,
-        sample_data: dict[str, str],
-        *,
-        cwd: str,
-        run_config: object,
-        model: str | None = None,
-    ) -> ExternalAttemptArtifact:
-        observed["prompt"] = prompt
-        observed["sample_id"] = sample_id
-        observed["sample_data"] = sample_data
-        observed["cwd"] = cwd
-        observed["run_config"] = run_config
-        observed["model"] = model
-        return ExternalAttemptArtifact(
-            trajectory=Trajectory(messages=[Message(role="assistant", content="ok")]),
-            metadata={"runtime": "openhands"},
-            status=Status.COMPLETED,
-        )
-
-    monkeypatch.setattr(external_attempts, "trajectory_from_openhands", _fake_openhands_adapter)
-
-    adapter = make_external_trajectory_adapter(
-        "openhands",
-        model="gpt-4o",
-    )
-
-    run_config = object()
-    workspace = LocalWorkspaceResource.from_existing(tmp_path)
-    artifact = await adapter(
-        "prompt:hello",
-        "sample-1",
-        {"text": "hello"},
-        workspace,
-        run_config,
-    )
-
-    assert artifact.metadata["runtime"] == "openhands"
-    assert observed == {
-        "prompt": "prompt:hello",
-        "sample_id": "sample-1",
-        "sample_data": {"text": "hello"},
-        "cwd": str(tmp_path),
-        "run_config": run_config,
-        "model": "gpt-4o",
     }
 
 
