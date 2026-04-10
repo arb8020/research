@@ -3,9 +3,6 @@ import { EditorView, keymap, lineNumbers, drawSelection, highlightActiveLine, sc
 import { EditorState } from '@codemirror/state'
 import { json } from '@codemirror/lang-json'
 import { yaml } from '@codemirror/lang-yaml'
-import { python } from '@codemirror/lang-python'
-import { StreamLanguage } from '@codemirror/language'
-import { shell } from '@codemirror/legacy-modes/mode/shell'
 import { foldKeymap, indentOnInput, syntaxHighlighting, defaultHighlightStyle, bracketMatching, foldGutter } from '@codemirror/language'
 import { defaultKeymap } from '@codemirror/commands'
 import { vscodeDark } from '@uiw/codemirror-theme-vscode'
@@ -18,6 +15,7 @@ const baseTheme = EditorView.theme({
     borderRadius: '2px',
     border: '1px solid #1e1e1e',
     height: '100%',
+    minHeight: '200px',
   },
   '.cm-scroller': {
     overflow: 'auto',
@@ -61,36 +59,23 @@ export function CodeMirrorViewer({
   value,
   lang,
   onViewReady,
-  minHeight,
-  autoHeight,
 }: {
   value: string
-  lang: 'json' | 'yaml' | 'python' | 'shell'
+  lang: 'json' | 'yaml'
   onViewReady?: (view: EditorView) => void
-  minHeight?: number
-  autoHeight?: boolean
 }) {
   const containerRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     if (!containerRef.current) return
 
-    const langExt = lang === 'json' ? json()
-      : lang === 'yaml' ? yaml()
-      : lang === 'python' ? python()
-      : StreamLanguage.define(shell)
-
-    const autoHeightTheme = autoHeight ? EditorView.theme({
-      '&': { height: 'auto' },
-      '.cm-scroller': { overflow: 'visible' },
-    }) : []
+    const langExt = lang === 'json' ? json() : yaml()
 
     const state = EditorState.create({
       doc: value,
       extensions: [
         vscodeDark,
         baseTheme,
-        autoHeightTheme,
         langExt,
         lineNumbers(),
         foldGutter({
@@ -106,7 +91,7 @@ export function CodeMirrorViewer({
         indentOnInput(),
         syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
         highlightActiveLine(),
-        ...(autoHeight ? [] : [scrollPastEnd()]),
+        scrollPastEnd(),
         keymap.of([...defaultKeymap, ...foldKeymap]),
         EditorState.readOnly.of(true),
         EditorView.lineWrapping,
@@ -119,6 +104,6 @@ export function CodeMirrorViewer({
     return () => { view.destroy() }
   }, [value, lang]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  return <div ref={containerRef} style={autoHeight ? {} : { height: '100%', minHeight: minHeight ?? 200 }} />
+  return <div ref={containerRef} style={{ height: '100%', minHeight: 200 }} />
 }
 

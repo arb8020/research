@@ -1277,61 +1277,6 @@ async def fetch_anthropic_models(api_key: str) -> list[dict]:
         return resp.json()["data"]
 
 
-def _is_syncable_openai_model_id(model_id: str) -> bool:
-    """Return whether an OpenAI model ID belongs in the text-generation registry sync.
-
-    `/v1/models` includes embeddings, moderation, image, audio, and other non-chat
-    products that this registry does not model. Sync should compare only the
-    text-generation families that rollouts can actually route through its provider
-    abstraction.
-    """
-
-    if not model_id:
-        return False
-
-    excluded_substrings = (
-        "audio",
-        "embedding",
-        "image",
-        "moderation",
-        "realtime",
-        "search",
-        "transcribe",
-        "tts",
-        "whisper",
-    )
-    if any(substr in model_id for substr in excluded_substrings):
-        return False
-
-    included_prefixes = (
-        "gpt-4.1",
-        "gpt-4o",
-        "gpt-5",
-        "o1",
-        "o3",
-        "o4",
-        "codex-",
-    )
-    return model_id.startswith(included_prefixes)
-
-
-async def fetch_openai_models(api_key: str) -> list[dict]:
-    """Fetch models from the OpenAI `/v1/models` endpoint.
-
-    Returns the raw `data` array from the API response.
-    """
-
-    import httpx
-
-    async with httpx.AsyncClient() as client:
-        resp = await client.get(
-            "https://api.openai.com/v1/models",
-            headers={"Authorization": f"Bearer {api_key}"},
-        )
-        resp.raise_for_status()
-        return resp.json()["data"]
-
-
 async def fetch_anthropic_docs() -> dict[str, dict]:
     """Scrape model metadata from Anthropic docs.
 
@@ -1495,29 +1440,6 @@ async def sync_anthropic_models(api_key: str) -> ModelDiff:
                 diff.updated[model_id] = changes
 
     return diff
-
-
-async def sync_openai_models(api_key: str) -> ModelDiff:
-    """Sync OpenAI model IDs from `/v1/models`.
-
-    OpenAI's models endpoint exposes model IDs and ownership metadata, but not the
-    semantic fields this registry cares about: pricing, context window, max tokens,
-    modalities, or reasoning semantics. So this sync intentionally does only one
-    honest thing: compare the live set of relevant text-generation model IDs
-    against the curated `MODELS["openai"]` registry.
-    """
-
-    api_models_result = await fetch_openai_models(api_key)
-    api_model_ids = {
-        model["id"] for model in api_models_result if _is_syncable_openai_model_id(model["id"])
-    }
-    registry_model_ids = set(MODELS.get("openai", {}).keys())
-
-    return ModelDiff(
-        missing=sorted(api_model_ids - registry_model_ids),
-        extra=sorted(registry_model_ids - api_model_ids),
-        updated={},
-    )
 
 
 def update_models_file(diff: ModelDiff, docs_metadata: dict[str, dict]) -> str:

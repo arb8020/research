@@ -1,34 +1,5 @@
 # Code Style Guide
 
-## Start Here By Task
-
-- **Designing a new boundary or product type**
-  - [earned_compression.md](earned_compression.md) - Use this when you are deciding whether an abstraction is real or premature.
-  - [codex_codestyle_interview.md](codex_codestyle_interview.md) - Use this when you need honest product types, sum types, and boundary normalization.
-  - [cheatsheet.md](cheatsheet.md) - Use this for quick local reminders while designing.
-
-- **Designing system/session architecture**
-  - [sean_goedecke_system_design.md](sean_goedecke_system_design.md) - Use this when deciding service boundaries, state ownership, queues, and background work.
-  - [code_philosophy_essay.md](code_philosophy_essay.md) - Use this for the overall workflow: usage code, testing, refactoring.
-  - [other/templates/DESIGN_TEMPLATE.md](other/templates/DESIGN_TEMPLATE.md) - Use this when you want to crystallize the design into a written spec.
-
-- **Debugging a bug or failure**
-  - [debugging_draft.md](debugging_draft.md) - Use this to find the first dishonest boundary or violated invariant.
-  - [grugbrain_testing.md](grugbrain_testing.md) - Use this to choose a stable integration/regression test cut point.
-  - [cheatsheet.md](cheatsheet.md) - Use this as a quick reminder for assertions, control flow, and error handling.
-
-- **LLM/agent coding workflow**
-  - [keeping_llm_code_honest.md](keeping_llm_code_honest.md) - Use this for verification and compression-oriented agent workflow.
-  - [llm_coding_workflow.md](llm_coding_workflow.md) - Use this for practical LLM collaboration notes.
-  - [code_philosophy_essay.md](code_philosophy_essay.md) - Use this when you want the full workflow in one place.
-
-## Suggested Reading Order
-
-- Start with [cheatsheet.md](cheatsheet.md) for a quick working-memory refresh.
-- Then read [earned_compression.md](earned_compression.md) to calibrate abstraction pressure.
-- Then pick one task-specific doc from the sections above.
-- Only go deeper into the extended references if the current docs do not answer the design question.
-
 ## Working Set
 
 - **[cheatsheet.md](cheatsheet.md)** - Comprehensive synthesis: all principles with examples, organized by topic

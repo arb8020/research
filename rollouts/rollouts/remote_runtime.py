@@ -37,13 +37,6 @@ class RuntimeContract:
     persistent_volume_location: str | None
     use_torchrun: bool
 
-    # Modal-specific storage. Ignored for non-Modal providers.
-    # TODO(broker): once PersistentVolumeAttachment supports Modal's name-based
-    # volume semantics, fold modal_volume_mounts into persistent_volume and
-    # modal_snapshot_registry into a BootImageSnapshot field here.
-    modal_volume_mounts: tuple[tuple[str, str], ...] = ()
-    modal_snapshot_registry: tuple[str, str] | None = None
-
 
 @dataclass(frozen=True)
 class MaterializationPlan:
@@ -78,8 +71,6 @@ def runtime_contract_from_hardware(hardware: HardwareConfig) -> RuntimeContract:
         persistent_volume_mount_path=hardware.persistent_volume_mount_path,
         persistent_volume_location=hardware.persistent_volume_location,
         use_torchrun=hardware.use_torchrun,
-        modal_volume_mounts=hardware.modal_volume_mounts,
-        modal_snapshot_registry=hardware.modal_snapshot_registry,
     )
 
 

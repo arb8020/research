@@ -39,10 +39,6 @@ conversation*.txt
 
 # Test/debug scripts (keep out of git)
 scripts/
-
-# Experiment area - new experiments should not be auto-committed
-# (existing tracked dev/ files remain in git)
-dev/
 dev/speedrun/scripts/
 dev/outlier-features/fetch_model_params.py
 dev/outlier-features/scrape_model_params_from_readme.py

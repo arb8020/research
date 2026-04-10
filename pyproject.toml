@@ -117,23 +117,6 @@ dev-speedrun = [
     "kernels; sys_platform == 'linux'",
 ]
 
-# Emotion concept replication (Sofroniew et al. 2026)
-dev-emotions-replication = [
-    "torch>=2.4.0",
-    "transformers>=5.0.0",
-    "accelerate>=0.20.0",
-    "datasets>=4.0.0",
-    "huggingface-hub>=1.0.0",
-    "numpy>=1.24.0",
-    "scikit-learn>=1.3.0",
-    "anthropic>=0.40.0",       # story generation + LLM judge
-    "umap-learn>=0.5.5",       # UMAP visualization
-    "matplotlib>=3.7.0",       # plots
-    "scipy>=1.10.0",           # hierarchical clustering, RSA
-    "python-dotenv>=1.0.0",    # ANTHROPIC_API_KEY from .env
-    "tqdm>=4.65.0",
-]
-
 [project.scripts]
 corpus-proximity = "corpus_proximity_cli:main"
 

@@ -3,7 +3,6 @@ from __future__ import annotations
 import logging
 import tempfile
 import time
-import shlex
 from dataclasses import asdict, dataclass, field
 from pathlib import PurePosixPath
 from typing import Any
@@ -186,41 +185,8 @@ class SshBifrostWorkspaceResource:
     async def upload_bytes(self, remote_path: str, content: bytes) -> None:
         await self.write_file(remote_path, content)
 
-    async def download_bytes(self, remote_path: str, offset: int = 0) -> bytes:
+    async def download_bytes(self, remote_path: str) -> bytes:
         return await self.read_file(remote_path)
-
-    async def exec_background(
-        self,
-        command: str,
-        *,
-        cwd: str,
-        env: dict[str, str] | None = None,
-        stdout_path: str,
-        stderr_path: str,
-    ) -> int:
-        env_prefix = ""
-        if env:
-            env_prefix = " ".join(
-                f"{shlex.quote(key)}={shlex.quote(value)}" for key, value in env.items()
-            )
-
-        background_command = (
-            f"{env_prefix} {command if env_prefix else command} >{shlex.quote(stdout_path)} "
-            f"2>{shlex.quote(stderr_path)} & echo $!"
-        ).strip()
-        result = await self.run(
-            background_command,
-            cwd=cwd,
-            timeout=30.0,
-        )
-        if result.returncode != 0:
-            raise RuntimeError(result.stderr or result.stdout or "failed to launch background process")
-        pid_text = result.stdout.strip().splitlines()[0].strip() if result.stdout else ""
-        if not pid_text.isdigit():
-            raise RuntimeError(
-                "failed to capture background pid: " + (result.stdout.strip() or result.stderr.strip())
-            )
-        return int(pid_text)
 
     async def run(
         self,
@@ -559,40 +525,7 @@ class BrokerBifrostWorkspaceResource:
     async def upload_bytes(self, remote_path: str, content: bytes) -> None:
         await self.write_file(remote_path, content)
 
-    async def exec_background(
-        self,
-        command: str,
-        *,
-        cwd: str,
-        env: dict[str, str] | None = None,
-        stdout_path: str,
-        stderr_path: str,
-    ) -> int:
-        env_prefix = ""
-        if env:
-            env_prefix = " ".join(
-                f"{shlex.quote(key)}={shlex.quote(value)}" for key, value in env.items()
-            )
-
-        background_command = (
-            f"{env_prefix} {command if env_prefix else command} >{shlex.quote(stdout_path)} "
-            f"2>{shlex.quote(stderr_path)} & echo $!"
-        ).strip()
-        result = await self.run(
-            background_command,
-            cwd=cwd,
-            timeout=30.0,
-        )
-        if result.returncode != 0:
-            raise RuntimeError(result.stderr or result.stdout or "failed to launch background process")
-        pid_text = result.stdout.strip().splitlines()[0].strip() if result.stdout else ""
-        if not pid_text.isdigit():
-            raise RuntimeError(
-                "failed to capture background pid: " + (result.stdout.strip() or result.stderr.strip())
-            )
-        return int(pid_text)
-
-    async def download_bytes(self, remote_path: str, offset: int = 0) -> bytes:
+    async def download_bytes(self, remote_path: str) -> bytes:
         return await self.read_file(remote_path)
 
     async def run(
@@ -862,27 +795,9 @@ class ManagedBrokerBifrostWorkspaceResource:
         resource = await self._ensure_resource()
         await resource.upload_bytes(remote_path, content)
 
-    async def exec_background(
-        self,
-        command: str,
-        *,
-        cwd: str,
-        env: dict[str, str] | None = None,
-        stdout_path: str,
-        stderr_path: str,
-    ) -> int:
+    async def download_bytes(self, remote_path: str) -> bytes:
         resource = await self._ensure_resource()
-        return await resource.exec_background(
-            command,
-            cwd=cwd,
-            env=env,
-            stdout_path=stdout_path,
-            stderr_path=stderr_path,
-        )
-
-    async def download_bytes(self, remote_path: str, offset: int = 0) -> bytes:
-        resource = await self._ensure_resource()
-        return await resource.download_bytes(remote_path, offset=offset)
+        return await resource.download_bytes(remote_path)
 
     async def _ensure_resource(self) -> BrokerBifrostWorkspaceResource:
         if self._resource is not None:

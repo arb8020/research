@@ -97,27 +97,6 @@ class GPUQuery:
     persistent_volume_location: str | None = None
     persistent_volume: PersistentVolumeAttachment | None = None
 
-    # Provider-specific overrides passed opaquely to broker.create() as **kwargs.
-    # Use this for anything that is specific to one provider and shouldn't
-    # pollute the shared GPUQuery surface.
-    #
-    # Examples:
-    #   Modal volumes + snapshot:
-    #     provider_overrides={
-    #         "modal_volumes": [("vol-name", "/mount/path")],
-    #         "modal_snapshot_registry": ("registry-name", "key"),
-    #     }
-    #   RunPod-specific (future, once legacy aliases are retired):
-    #     provider_overrides={"template_id": "...", "datacenter_id": "..."}
-    #   Vast.ai-specific:
-    #     provider_overrides={"bid_price": 0.5}
-    #
-    # TODO(broker): as provider-specific patterns stabilize, consider promoting
-    # common ones to typed ProviderOverrides dataclasses (ModalOverrides,
-    # RunPodOverrides, etc.) and storing them here as a union. For now a plain
-    # dict is the right amount of structure.
-    provider_overrides: dict[str, Any] = field(default_factory=dict)
-
     def __post_init__(self) -> None:
         if self.boot_image is None:
             object.__setattr__(self, "boot_image", ProvisionImage(reference=self.image))
@@ -285,10 +264,6 @@ async def acquire_node(
         enable_http_proxy=provision.enable_http_proxy,
         sort=lambda x: x.price_per_hour,
         min_cuda_version=provision.min_cuda,
-        # Provider-specific overrides passed opaquely via **kwargs -> raw_data.
-        # Each provider's provision_instance() reads what it needs from
-        # request.raw_data. GPUQuery stays clean.
-        **provision.provider_overrides,
     )
     if instance is None:
         raise RuntimeError("Failed to provision instance - no suitable GPU offers found")

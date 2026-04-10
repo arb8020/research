@@ -25,7 +25,6 @@ Usage pattern (following the Environment.deserialize convention):
 
 from __future__ import annotations
 
-import os
 import json
 import shutil
 import subprocess
@@ -59,7 +58,6 @@ class LocalWorkspaceResource:
     logical_working_dir: str | None = None
     _working_dir: str = field(default="", repr=False)
     _tempdir: str | None = field(default=None, repr=False)
-    _owns_tempdir: bool = field(default=True, repr=False)
     _runtime_description: dict[str, Any] | None = field(default=None, repr=False)
 
     @classmethod
@@ -68,16 +66,6 @@ class LocalWorkspaceResource:
         resource = cls(source_dir=source_dir)
         await resource.start()
         return resource
-
-    @classmethod
-    def from_existing(cls, source_dir: Path) -> LocalWorkspaceResource:
-        """Wrap an existing directory without copying."""
-        return cls(
-            source_dir=source_dir,
-            _tempdir=str(source_dir),
-            _working_dir=str(source_dir),
-            _owns_tempdir=False,
-        )
 
     async def start(self) -> None:
         if self._tempdir is not None:
@@ -96,12 +84,9 @@ class LocalWorkspaceResource:
 
         self._tempdir = await trio.to_thread.run_sync(_copy)
         self._working_dir = self.logical_working_dir or self._tempdir
-        self._owns_tempdir = True
 
     async def close(self) -> None:
         if self._tempdir is None:
-            return
-        if not self._owns_tempdir:
             return
 
         def _rm() -> None:
@@ -156,54 +141,6 @@ class LocalWorkspaceResource:
             p.write_bytes(content)
 
         await trio.to_thread.run_sync(_write)
-
-    async def exec_background(
-        self,
-        command: str,
-        *,
-        cwd: str,
-        env: dict[str, str] | None = None,
-        stdout_path: str,
-        stderr_path: str,
-    ) -> int:
-        def _start() -> int:
-            combined_env = dict(os.environ)
-            if env is not None:
-                combined_env.update(env)
-
-            host_cwd = self._to_host_path(cwd)
-            host_stdout = self._to_host_path(stdout_path)
-            host_stderr = self._to_host_path(stderr_path)
-            Path(host_stdout).parent.mkdir(parents=True, exist_ok=True)
-            Path(host_stderr).parent.mkdir(parents=True, exist_ok=True)
-
-            with (
-                open(host_stdout, "ab") as stdout_file,
-                open(host_stderr, "ab") as stderr_file,
-            ):
-                process = subprocess.Popen(
-                    ["bash", "-lc", command],
-                    cwd=host_cwd,
-                    env=combined_env,
-                    stdout=stdout_file,
-                    stderr=stderr_file,
-                    stdin=subprocess.DEVNULL,
-                    start_new_session=True,
-                )
-            return process.pid
-
-        return await trio.to_thread.run_sync(_start)
-
-    async def download_bytes(self, remote_path: str, offset: int = 0) -> bytes:
-        resolved = self._to_host_path(self.resolve_path(self.working_dir, remote_path))
-        byte_offset = max(0, offset)
-
-        def _read() -> bytes:
-            with open(resolved, "rb") as file:
-                file.seek(byte_offset)
-                return file.read()
-
-        return await trio.to_thread.run_sync(_read)
 
     # ── CommandRunner ─────────────────────────────────────────────────────────
 

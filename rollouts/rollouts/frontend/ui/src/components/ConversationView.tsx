@@ -5,83 +5,6 @@ import { CodeMirrorViewer } from './CodeMirrorViewer'
 import type { EditorView } from '@codemirror/view'
 import { foldAll, unfoldAll } from '@codemirror/language'
 
-const EXT_LANGS: Record<string, 'python' | 'shell' | 'json' | 'yaml'> = {
-  py: 'python', pyi: 'python',
-  sh: 'shell', bash: 'shell', zsh: 'shell',
-  json: 'json',
-  yaml: 'yaml', yml: 'yaml',
-}
-
-function langFromPath(path: string | undefined): 'python' | 'shell' | 'json' | 'yaml' | null {
-  if (!path) return null
-  const ext = path.split('.').pop()?.toLowerCase() ?? ''
-  return EXT_LANGS[ext] ?? null
-}
-
-// tool name + arg key → fixed lang, or 'from_path' to derive from sibling path arg
-const TOOL_ARG_LANGS: Record<string, Record<string, 'shell' | 'from_path'>> = {
-  bash:      { command: 'shell' },
-  shell:     { command: 'shell' },
-  write:     { content: 'from_path' },
-  edit:      { new_text: 'from_path', old_text: 'from_path' },
-  file_edit: { new_text: 'from_path', old_text: 'from_path' },
-}
-
-function resolveArgLang(
-  toolName: string,
-  argKey: string,
-  args: Record<string, unknown>,
-): 'python' | 'shell' | 'json' | 'yaml' | null {
-  const rule = TOOL_ARG_LANGS[toolName]?.[argKey]
-  if (!rule) return null
-  if (rule === 'shell') return 'shell'
-  if (rule === 'from_path') return langFromPath(args.path as string | undefined)
-  return null
-}
-
-function ArgValue({ toolName, argKey, args }: { toolName: string; argKey: string; args: Record<string, unknown> }) {
-  const value = args[argKey]
-  const labelStyle: React.CSSProperties = {
-    fontFamily: '"IBM Plex Mono", monospace',
-    fontSize: 9,
-    textTransform: 'uppercase' as const,
-    letterSpacing: '0.08em',
-    color: '#636363',
-    marginBottom: 3,
-    marginTop: 6,
-  }
-
-  const lang = resolveArgLang(toolName, argKey, args)
-
-  if (typeof value === 'string' && lang && value.includes('\n')) {
-    return (
-      <div>
-        <div style={labelStyle}>{argKey}</div>
-        <CodeMirrorViewer value={value} lang={lang} autoHeight />
-      </div>
-    )
-  }
-
-  // plain string: render directly, not through JSON serialization
-  if (typeof value === 'string') {
-    return (
-      <div>
-        <div style={labelStyle}>{argKey}</div>
-        <pre className="rv-pre" style={{ marginTop: 0, whiteSpace: 'pre-wrap' }}>{value}</pre>
-      </div>
-    )
-  }
-
-  return (
-    <div>
-      <div style={labelStyle}>{argKey}</div>
-      <pre className="rv-pre" style={{ marginTop: 0 }}
-        dangerouslySetInnerHTML={{ __html: highlightJson(value) }}
-      />
-    </div>
-  )
-}
-
 // ─── Styles (ported from rollout-viewer.html) ─────────────────────────────────
 const css = `
 .rv-msg { border-radius: 2px; margin-bottom: 4px; }
@@ -196,6 +119,10 @@ const css = `
   white-space: pre-wrap;
   word-break: break-word;
   line-height: 1.5;
+  max-height: 400px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: #333 transparent;
 }
 
 .rv-text-block {
@@ -427,8 +354,7 @@ interface ParsedBlock {
   id?: string
   name?: string
   arguments?: Record<string, unknown>
-  result?: string   // inlined tool result for toolCall blocks
-  // result/image
+  // result
   mediaType?: string
   data?: string
 }
@@ -443,17 +369,14 @@ interface ParsedMessage {
 function parseMessages(messages: TraceSample['trajectory']['messages']): ParsedMessage[] {
   if (!messages) return []
 
-  // Build tool_call_id -> result text map from tool messages
-  const resultMap: Record<string, string> = {}
+  // Build tool_call_id -> call info map
+  const callMap: Record<string, { name: string; arguments: unknown }> = {}
   for (const msg of messages) {
-    if (msg.role === 'tool' && msg.tool_call_id) {
-      const content = msg.content
-      if (Array.isArray(content)) {
-        resultMap[msg.tool_call_id as string] = (content as Array<Record<string, unknown>>)
-          .map(b => typeof b.text === 'string' ? b.text : JSON.stringify(b))
-          .join('\n')
-      } else {
-        resultMap[msg.tool_call_id as string] = typeof content === 'string' ? content : JSON.stringify(content, null, 2)
+    if (msg.role === 'assistant' && Array.isArray(msg.content)) {
+      for (const block of msg.content as Array<Record<string, unknown>>) {
+        if (block.type === 'toolCall' && block.id) {
+          callMap[block.id as string] = { name: block.name as string, arguments: block.arguments as unknown }
+        }
       }
     }
   }
@@ -468,20 +391,29 @@ function parseMessages(messages: TraceSample['trajectory']['messages']): ParsedM
       parsed.push({ role, timestamp: msg.timestamp as string | undefined, blocks: [{ type: 'text', text }] })
 
     } else if (role === 'tool') {
-      // tool results are inlined into the matching toolCall block — skip as standalone rows
+      const ref = callMap[msg.tool_call_id as string] || {}
+      let blocks: ParsedBlock[]
+      if (Array.isArray(content)) {
+        blocks = (content as Array<Record<string, unknown>>).map(b => {
+          if (b.type === 'image') return { type: 'image' as const, mediaType: b.media_type as string || 'image/png', data: b.data as string }
+          return { type: 'result' as const, text: typeof b.text === 'string' ? b.text : JSON.stringify(b) }
+        })
+      } else {
+        blocks = [{ type: 'result', text: typeof content === 'string' ? content : JSON.stringify(content, null, 2) }]
+      }
+      parsed.push({
+        role: 'tool',
+        timestamp: msg.timestamp as string | undefined,
+        subtitle: (ref.name as string) ? `${ref.name} (${msg.tool_call_id})` : msg.tool_call_id as string,
+        blocks,
+      })
 
     } else if (role === 'assistant') {
       const rawBlocks = Array.isArray(content) ? content as Array<Record<string, unknown>> : [{ type: 'text', text: content }]
       const normalized: ParsedBlock[] = rawBlocks.map(b => {
         if (b.type === 'thinking') return { type: 'thinking' as const, thinking: b.thinking as string || '', encrypted: !b.thinking }
         if (b.type === 'text') return { type: 'text' as const, text: b.text as string || '' }
-        if (b.type === 'toolCall') return {
-          type: 'toolCall' as const,
-          id: b.id as string,
-          name: b.name as string,
-          arguments: b.arguments as Record<string, unknown>,
-          result: resultMap[b.id as string],
-        }
+        if (b.type === 'toolCall') return { type: 'toolCall' as const, id: b.id as string, name: b.name as string, arguments: b.arguments as Record<string, unknown> }
         return { type: 'text' as const, text: JSON.stringify(b) }
       })
       parsed.push({ role: 'assistant', timestamp: msg.timestamp as string | undefined, blocks: normalized })
@@ -551,13 +483,9 @@ function toggleSetEntry(current: Set<number>, index: number, isOpen: boolean): S
 
 function Message({ msg, isPinned, isSelectedTurn, onTogglePin, onSelectTurn }: { msg: ParsedMessage; isPinned?: boolean; isSelectedTurn?: boolean; onTogglePin?: () => void; onSelectTurn?: () => void }) {
   const [open, setOpen] = useState(false)
-  const [openText, setOpenText] = useState<Set<number>>(
-    () => new Set(msg.blocks.map((b, i) => b.type === 'text' ? i : -1).filter(i => i !== -1))
-  )
+  const [openText, setOpenText] = useState<Set<number>>(new Set())
   const [openThinking, setOpenThinking] = useState<Set<number>>(new Set())
-  const [openToolCalls, setOpenToolCalls] = useState<Set<number>>(
-    () => new Set(msg.blocks.map((b, i) => b.type === 'toolCall' ? i : -1).filter(i => i !== -1))
-  )
+  const [openToolCalls, setOpenToolCalls] = useState<Set<number>>(new Set())
 
   const preview = msg.subtitle || msgPreview(msg.blocks)
 
@@ -686,12 +614,6 @@ function Message({ msg, isPinned, isSelectedTurn, onTogglePin, onSelectTurn }: {
             if (block.type === 'toolCall') {
               const isOpen = openToolCalls.has(i)
               const hasArgs = block.arguments && Object.keys(block.arguments).length > 0
-              const argsPreview = hasArgs
-                ? Object.entries(block.arguments!).map(([k, v]) => {
-                    const s = typeof v === 'string' ? v : JSON.stringify(v)
-                    return `${k}=${s.length > 40 ? s.slice(0, 40) + '…' : s}`
-                  }).join(', ')
-                : ''
               return (
                 <div key={i} className="rv-tool-call">
                   <div
@@ -702,28 +624,16 @@ function Message({ msg, isPinned, isSelectedTurn, onTogglePin, onSelectTurn }: {
                     }}
                   >
                     <span className="rv-tool-name">{block.name || '?'}</span>
-                    {argsPreview && (
-                      <span className="rv-tool-id">({argsPreview})</span>
-                    )}
-                    <span className="rv-collapse-icon" style={{ transform: isOpen ? '' : 'rotate(-90deg)', marginLeft: 'auto' }}>▾</span>
+                    <span className="rv-tool-id">{block.id || ''}</span>
+                    <span className="rv-collapse-icon" style={{ transform: isOpen ? '' : 'rotate(-90deg)' }}>▾</span>
                   </div>
                   {isOpen && (
                     <div className="rv-tool-call-body">
                       {hasArgs && (
-                        <div>
-                          <div style={{ fontFamily: '"IBM Plex Mono", monospace', fontSize: 9, textTransform: 'uppercase', letterSpacing: '0.08em', color: '#f59e0b', marginBottom: 4 }}>args</div>
-                          {Object.keys(block.arguments!).map(k => (
-                            <ArgValue key={k} toolName={block.name || ''} argKey={k} args={block.arguments!} />
-                          ))}
-                        </div>
-                      )}
-                      {block.result !== undefined && (
-                        <div style={{ marginTop: hasArgs ? 8 : 0 }}>
-                          <div style={{ fontFamily: '"IBM Plex Mono", monospace', fontSize: 9, textTransform: 'uppercase', letterSpacing: '0.08em', color: '#86efac', marginBottom: 4 }}>result</div>
-                          <div style={{ background: '#0e1a0e', border: '1px solid #1a2e1a', borderRadius: 2, padding: '8px 10px' }}>
-                            <pre style={{ fontFamily: '"IBM Plex Mono", monospace', fontSize: 11, color: '#a3a3a3', whiteSpace: 'pre-wrap', wordBreak: 'break-word', lineHeight: 1.5, margin: 0 }}>{block.result}</pre>
-                          </div>
-                        </div>
+                        <pre
+                          className="rv-pre"
+                          dangerouslySetInnerHTML={{ __html: highlightJson(block.arguments) }}
+                        />
                       )}
                     </div>
                   )}

@@ -96,19 +96,9 @@ class RemoteConnection(Protocol):
 
     async def exec(self, spec: ExecSpec) -> CommandExecutionResult: ...
 
-    async def exec_background(
-        self,
-        command: str,
-        *,
-        cwd: str,
-        env: dict[str, str] | None = None,
-        stdout_path: str,
-        stderr_path: str,
-    ) -> int: ...
-
     async def upload_bytes(self, remote_path: str, content: bytes) -> None: ...
 
-    async def download_bytes(self, remote_path: str, offset: int = 0) -> bytes: ...
+    async def download_bytes(self, remote_path: str) -> bytes: ...
 
     async def close(self) -> None: ...
 
@@ -183,23 +173,6 @@ class ConnectionBackedWorkspaceHandle:
     async def write_file(self, path: str, content: bytes) -> None:
         resolved = self.resolve_path(self.working_dir, path)
         await self.session.upload_bytes(resolved, content)
-
-    async def exec_background(
-        self,
-        command: str,
-        *,
-        cwd: str,
-        env: dict[str, str] | None = None,
-        stdout_path: str,
-        stderr_path: str,
-    ) -> int:
-        return await self.session.exec_background(
-            command,
-            cwd=self.resolve_path(self.working_dir, cwd),
-            env=env,
-            stdout_path=self.resolve_path(self.working_dir, stdout_path),
-            stderr_path=self.resolve_path(self.working_dir, stderr_path),
-        )
 
     async def run(
         self,
