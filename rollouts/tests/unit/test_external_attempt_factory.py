@@ -6,6 +6,7 @@ from typing import cast
 import pytest
 
 from rollouts.core import Message, Trajectory
+from rollouts.environments.local_workspace_resource import LocalWorkspaceResource
 from rollouts.eval import external_attempts
 from rollouts.eval.external_attempts import (
     ExternalAttemptArtifact,
@@ -28,6 +29,7 @@ async def test_make_external_attempt_executor_builds_codex_attempt(
         prompt: str,
         sample_id: str,
         sample_data: dict[str, str],
+        workspace: object,
         *,
         model: str,
         sandbox: str,
@@ -36,6 +38,7 @@ async def test_make_external_attempt_executor_builds_codex_attempt(
         observed["prompt"] = prompt
         observed["sample_id"] = sample_id
         observed["sample_data"] = sample_data
+        observed["workspace"] = workspace
         observed["model"] = model
         observed["sandbox"] = sandbox
         observed["run_config"] = run_config
@@ -67,6 +70,7 @@ async def test_make_external_attempt_executor_builds_codex_attempt(
         "sandbox": "workspace-write",
         "run_config": run_config,
     }
+    assert isinstance(observed["workspace"], LocalWorkspaceResource)
 
 
 def test_make_external_attempt_executor_rejects_unknown_runtime() -> None:
@@ -80,6 +84,7 @@ def test_make_external_attempt_executor_rejects_unknown_runtime() -> None:
 @pytest.mark.trio
 async def test_make_external_trajectory_adapter_passes_projected_cwd_and_run_config(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     observed: dict[str, object] = {}
 
@@ -87,15 +92,15 @@ async def test_make_external_trajectory_adapter_passes_projected_cwd_and_run_con
         prompt: str,
         sample_id: str,
         sample_data: dict[str, str],
+        workspace: object,
         *,
-        cwd: object,
-        run_config: object,
         model: str,
+        run_config: object,
     ) -> ExternalAttemptArtifact:
         observed["prompt"] = prompt
         observed["sample_id"] = sample_id
         observed["sample_data"] = sample_data
-        observed["cwd"] = cwd
+        observed["workspace"] = workspace
         observed["run_config"] = run_config
         observed["model"] = model
         return ExternalAttemptArtifact(
@@ -112,11 +117,12 @@ async def test_make_external_trajectory_adapter_passes_projected_cwd_and_run_con
     )
 
     run_config = object()
+    workspace = LocalWorkspaceResource.from_existing(tmp_path)
     artifact = await adapter(
         "prompt:hello",
         "sample-1",
         {"text": "hello"},
-        Path("/tmp/workdir"),
+        workspace,
         run_config,
     )
 
@@ -125,7 +131,7 @@ async def test_make_external_trajectory_adapter_passes_projected_cwd_and_run_con
         "prompt": "prompt:hello",
         "sample_id": "sample-1",
         "sample_data": {"text": "hello"},
-        "cwd": Path("/tmp/workdir"),
+        "workspace": workspace,
         "run_config": run_config,
         "model": "sonnet",
     }
@@ -134,6 +140,7 @@ async def test_make_external_trajectory_adapter_passes_projected_cwd_and_run_con
 @pytest.mark.trio
 async def test_make_external_trajectory_adapter_supports_claude_acp(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     observed: dict[str, object] = {}
 
@@ -141,15 +148,15 @@ async def test_make_external_trajectory_adapter_supports_claude_acp(
         prompt: str,
         sample_id: str,
         sample_data: dict[str, str],
+        workspace: object,
         *,
-        cwd: object,
-        run_config: object,
         model: str,
+        run_config: object,
     ) -> ExternalAttemptArtifact:
         observed["prompt"] = prompt
         observed["sample_id"] = sample_id
         observed["sample_data"] = sample_data
-        observed["cwd"] = cwd
+        observed["workspace"] = workspace
         observed["run_config"] = run_config
         observed["model"] = model
         return ExternalAttemptArtifact(
@@ -166,11 +173,13 @@ async def test_make_external_trajectory_adapter_supports_claude_acp(
     )
 
     run_config = object()
+    workspace = LocalWorkspaceResource.from_existing(tmp_path)
+
     artifact = await adapter(
         "prompt:hello",
         "sample-1",
         {"text": "hello"},
-        Path("/tmp/workdir"),
+        workspace,
         run_config,
     )
 
@@ -179,7 +188,7 @@ async def test_make_external_trajectory_adapter_supports_claude_acp(
         "prompt": "prompt:hello",
         "sample_id": "sample-1",
         "sample_data": {"text": "hello"},
-        "cwd": Path("/tmp/workdir"),
+        "workspace": workspace,
         "run_config": run_config,
         "model": "claude-agent-acp",
     }
@@ -188,6 +197,7 @@ async def test_make_external_trajectory_adapter_supports_claude_acp(
 @pytest.mark.trio
 async def test_make_external_trajectory_adapter_supports_codex_acp(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     observed: dict[str, object] = {}
 
@@ -195,15 +205,15 @@ async def test_make_external_trajectory_adapter_supports_codex_acp(
         prompt: str,
         sample_id: str,
         sample_data: dict[str, str],
+        workspace: object,
         *,
-        cwd: object,
         run_config: object,
         model: str,
     ) -> ExternalAttemptArtifact:
         observed["prompt"] = prompt
         observed["sample_id"] = sample_id
         observed["sample_data"] = sample_data
-        observed["cwd"] = cwd
+        observed["workspace"] = workspace
         observed["run_config"] = run_config
         observed["model"] = model
         return ExternalAttemptArtifact(
@@ -220,11 +230,12 @@ async def test_make_external_trajectory_adapter_supports_codex_acp(
     )
 
     run_config = object()
+    workspace = LocalWorkspaceResource.from_existing(tmp_path)
     artifact = await adapter(
         "prompt:hello",
         "sample-1",
         {"text": "hello"},
-        Path("/tmp/workdir"),
+        workspace,
         run_config,
     )
 
@@ -233,9 +244,65 @@ async def test_make_external_trajectory_adapter_supports_codex_acp(
         "prompt": "prompt:hello",
         "sample_id": "sample-1",
         "sample_data": {"text": "hello"},
-        "cwd": Path("/tmp/workdir"),
+        "workspace": workspace,
         "run_config": run_config,
         "model": "codex-acp",
+    }
+
+
+@pytest.mark.trio
+async def test_make_external_trajectory_adapter_falls_back_to_cwd_for_cwd_only_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    observed: dict[str, object] = {}
+
+    async def _fake_openhands_adapter(
+        prompt: str,
+        sample_id: str,
+        sample_data: dict[str, str],
+        *,
+        cwd: str,
+        run_config: object,
+        model: str | None = None,
+    ) -> ExternalAttemptArtifact:
+        observed["prompt"] = prompt
+        observed["sample_id"] = sample_id
+        observed["sample_data"] = sample_data
+        observed["cwd"] = cwd
+        observed["run_config"] = run_config
+        observed["model"] = model
+        return ExternalAttemptArtifact(
+            trajectory=Trajectory(messages=[Message(role="assistant", content="ok")]),
+            metadata={"runtime": "openhands"},
+            status=Status.COMPLETED,
+        )
+
+    monkeypatch.setattr(external_attempts, "trajectory_from_openhands", _fake_openhands_adapter)
+
+    adapter = make_external_trajectory_adapter(
+        "openhands",
+        model="gpt-4o",
+    )
+
+    run_config = object()
+    workspace = LocalWorkspaceResource.from_existing(tmp_path)
+    artifact = await adapter(
+        "prompt:hello",
+        "sample-1",
+        {"text": "hello"},
+        workspace,
+        run_config,
+    )
+
+    assert artifact.metadata["runtime"] == "openhands"
+    assert observed == {
+        "prompt": "prompt:hello",
+        "sample_id": "sample-1",
+        "sample_data": {"text": "hello"},
+        "cwd": str(tmp_path),
+        "run_config": run_config,
+        "model": "gpt-4o",
     }
 
 

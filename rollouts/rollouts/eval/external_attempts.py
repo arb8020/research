@@ -17,16 +17,13 @@ from ..drivers import (
     run_driver_to_trajectory,
 )
 from ..drivers.runner import _make_raw_driver_line_handler
+from ..environments.local_workspace_resource import LocalWorkspaceResource
 from ..environments.resources import SandboxWorkspaceResource
 from ..training.types import DatasetRow, RowAttempt
 from .mini_swe_agent import trajectory_from_mini_swe_agent
 from .openhands import trajectory_from_openhands
 from .remote_runtime import (
     _make_eval_on_event,
-    trajectory_from_remote_claude_acp,
-    trajectory_from_remote_claude_code,
-    trajectory_from_remote_codex,
-    trajectory_from_remote_codex_acp,
 )
 from .types import ExternalAttemptArtifact
 
@@ -53,25 +50,33 @@ TrajectoryAdapter = Callable[
     ExternalAttemptResult | Awaitable[ExternalAttemptResult],
 ]
 
-ProjectedTrajectoryAdapter = Callable[
-    [str, str, dict[str, Any], Path, Any],
-    Awaitable[ExternalAttemptArtifact],
-]
-
-RemoteTrajectoryAdapter = Callable[
-    [str, str, dict[str, Any], SandboxWorkspaceResource, str, Any],
-    Awaitable[ExternalAttemptArtifact],
-]
+WorkspaceResource = SandboxWorkspaceResource | LocalWorkspaceResource
 
 
-def _trajectory_adapter_accepts_run_config(trajectory_adapter: TrajectoryAdapter) -> bool:
-    params = inspect.signature(trajectory_adapter).parameters.values()
-    for param in params:
-        if param.kind is inspect.Parameter.VAR_KEYWORD:
-            return True
-        if param.name == "run_config":
-            return True
-    return False
+def _trajectory_adapter_kwargs(
+    trajectory_adapter: TrajectoryAdapter,
+    workspace: WorkspaceResource,
+    *,
+    run_config: Any | None,
+) -> dict[str, Any]:
+    signature = inspect.signature(trajectory_adapter)
+    parameters = signature.parameters
+    accepts_var_kwargs = any(
+        parameter.kind == inspect.Parameter.VAR_KEYWORD for parameter in parameters.values()
+    )
+
+    adapter_kwargs: dict[str, Any] = {}
+    if "workspace" in parameters:
+        adapter_kwargs["workspace"] = workspace
+    elif "cwd" in parameters:
+        adapter_kwargs["cwd"] = workspace.working_dir
+    elif accepts_var_kwargs:
+        adapter_kwargs["workspace"] = workspace
+
+    if "run_config" in parameters or accepts_var_kwargs:
+        adapter_kwargs["run_config"] = run_config
+
+    return adapter_kwargs
 
 
 def _sample_metadata(sample_data: dict[str, Any]) -> dict[str, Any]:
@@ -125,19 +130,19 @@ async def execute_external_attempt(
     #   2. Write turns to the session store as they arrive (not just at run-end)
     #   3. Resume from a prior session_id on the environment if one exists
     #
-    # Prerequisite: topology-adapters cleanup above — once the adapter signature
-    # is unified, environment can be passed through without another branch.
-    del environment
+    workspace = _coerce_workspace_for_attempt(environment)
     prompt = prompt_builder(sample_data)
-    if _trajectory_adapter_accepts_run_config(trajectory_adapter):
-        artifact_or_trajectory = trajectory_adapter(
-            prompt,
-            sample_id,
-            sample_data,
-            run_config=run_config,
-        )
-    else:
-        artifact_or_trajectory = trajectory_adapter(prompt, sample_id, sample_data)
+    adapter_kwargs = _trajectory_adapter_kwargs(
+        trajectory_adapter,
+        workspace,
+        run_config=run_config,
+    )
+    artifact_or_trajectory = trajectory_adapter(
+        prompt,
+        sample_id,
+        sample_data,
+        **adapter_kwargs,
+    )
     if inspect.isawaitable(artifact_or_trajectory):
         artifact_or_trajectory = await artifact_or_trajectory
 
@@ -198,7 +203,9 @@ def make_external_attempt_executor(
 def make_external_trajectory_adapter(
     runtime: ExternalRuntime,
     **trajectory_kwargs: Any,
-) -> ProjectedTrajectoryAdapter:
+) -> Callable[
+    [str, str, dict[str, Any], WorkspaceResource, Any], Awaitable[ExternalAttemptArtifact]
+]:
     """Build the standard runtime adapter for projected workspaces.
 
     This is the shared lower-level piece for benchmark-specific wrappers that
@@ -212,16 +219,22 @@ def make_external_trajectory_adapter(
         prompt: str,
         sample_id: str,
         sample_data: dict[str, Any],
-        cwd: Path,
+        workspace: WorkspaceResource,
         run_config: Any,
     ) -> ExternalAttemptArtifact:
+        adapter_kwargs = dict(
+            _trajectory_adapter_kwargs(
+                base_adapter,
+                workspace,
+                run_config=run_config,
+            )
+        )
+        adapter_kwargs.update(trajectory_kwargs)
         artifact_or_trajectory = base_adapter(
             prompt,
             sample_id,
             sample_data,
-            cwd=cwd,
-            run_config=run_config,
-            **trajectory_kwargs,
+            **adapter_kwargs,
         )
         if inspect.isawaitable(artifact_or_trajectory):
             artifact_or_trajectory = await artifact_or_trajectory
@@ -232,38 +245,16 @@ def make_external_trajectory_adapter(
     return projected_adapter
 
 
-def make_remote_external_trajectory_adapter(
-    runtime: ExternalRuntime,
-    **trajectory_kwargs: Any,
-) -> RemoteTrajectoryAdapter:
-    """Build a remote-runtime adapter for real workspace-backed execution.
-
-    TODO(remote-external-runtime): this currently bootstraps Claude Code / Codex
-    inside the remote workspace on demand. Once that path is stable, bake the
-    CLIs into the runtime image instead of doing per-attempt npm installs.
-
-    TODO(remote-external-runtime-streaming): this only reconstructs the final
-    trajectory after the remote process exits. Replace _run_remote_external_runtime
-    with a session-file polling approach: launch the CLI in the background inside
-    the sandbox, then poll the native session file it writes
-    (~/.claude/projects/.../session.jsonl or ~/.codex/sessions/.../rollout-*.jsonl)
-    via repeated workspace.exec(ExecSpec(command="tail -c +{offset} {path}", ...))
-    calls, feeding each new
-    line through the canonical _ClaudeEventParser / _CodexEventParser from
-    drivers/claude.py and drivers/codex.py. This gives live progress and uses the
-    authoritative session file (which has complete tool arguments) rather than the
-    buffered stdout. Falls back to full stdout parse if the session file is not found.
-    """
-
-    if runtime == "claude_code":
-        return partial(trajectory_from_remote_claude_code, **trajectory_kwargs)
-    if runtime == "claude_acp":
-        return partial(trajectory_from_remote_claude_acp, **trajectory_kwargs)
-    if runtime == "codex":
-        return partial(trajectory_from_remote_codex, **trajectory_kwargs)
-    if runtime == "codex_acp":
-        return partial(trajectory_from_remote_codex_acp, **trajectory_kwargs)
-    raise ValueError(f"Unsupported remote external runtime: {runtime}")
+def _coerce_workspace_for_attempt(environment: Any | None) -> WorkspaceResource:
+    workspace = getattr(environment, "workspace", environment)
+    if isinstance(workspace, WorkspaceResource):
+        return workspace
+    if environment is None:
+        return LocalWorkspaceResource.from_existing(Path.cwd())
+    raise TypeError(
+        "trajectory_adapter requires a workspace-backed environment "
+        "with a .workspace attribute or WorkspaceResource itself"
+    )
 
 
 async def trajectory_from_claude_code(
@@ -271,7 +262,7 @@ async def trajectory_from_claude_code(
     sample_id: str,
     sample_data: dict[str, Any],
     *,
-    cwd: Path,
+    workspace: WorkspaceResource,
     run_config: Any | None = None,
     model: str = "sonnet",
     include_partial: bool = True,
@@ -280,8 +271,13 @@ async def trajectory_from_claude_code(
     timeout_seconds: float = 600.0,
 ) -> ExternalAttemptArtifact:
     del sample_data
+    if not isinstance(workspace, LocalWorkspaceResource):
+        raise TypeError(
+            "trajectory_from_claude_code requires a LocalWorkspaceResource for local execution"
+        )
+    cwd = workspace.working_dir
     driver = ClaudeDriver(
-        cwd=cwd,
+        cwd=Path(cwd),
         model=model,
         include_partial=include_partial,
         system_prompt=system_prompt,
@@ -302,7 +298,7 @@ async def trajectory_from_claude_code(
             "runtime": "claude_code",
             "driver": "claude",
             "model": model,
-            "cwd": str(cwd),
+            "cwd": cwd,
             "session_id": driver.session_id,
         },
     )
@@ -313,15 +309,20 @@ async def trajectory_from_codex(
     sample_id: str,
     sample_data: dict[str, Any],
     *,
-    cwd: Path,
+    workspace: WorkspaceResource,
     run_config: Any | None = None,
     model: str = "gpt-5.1-codex-mini",
     sandbox: str = "read-only",
     timeout_seconds: float = 600.0,
 ) -> ExternalAttemptArtifact:
     del sample_data
+    if not isinstance(workspace, LocalWorkspaceResource):
+        raise TypeError(
+            "trajectory_from_codex requires a LocalWorkspaceResource for local execution"
+        )
+    cwd = workspace.working_dir
     driver = CodexDriver(
-        cwd=cwd,
+        cwd=Path(cwd),
         model=model,
         sandbox=sandbox,
         timeout_seconds=timeout_seconds,
@@ -340,7 +341,7 @@ async def trajectory_from_codex(
             "runtime": "codex",
             "driver": "codex",
             "model": model,
-            "cwd": str(cwd),
+            "cwd": cwd,
             "sandbox": sandbox,
             "session_id": driver.session_id,
         },
@@ -352,11 +353,16 @@ async def trajectory_from_claude_acp(
     sample_id: str,
     sample_data: dict[str, Any],
     *,
-    cwd: Path,
+    workspace: WorkspaceResource,
     run_config: Any | None = None,
     model: str = "claude-agent-acp",
 ) -> ExternalAttemptArtifact:
     del sample_data
+    if not isinstance(workspace, LocalWorkspaceResource):
+        raise TypeError(
+            "trajectory_from_claude_acp requires a LocalWorkspaceResource for local execution"
+        )
+    cwd = workspace.working_dir
     driver = ClaudeACPDriver(cwd=cwd, model=model)
     on_event = _make_eval_on_event(sample_id, getattr(run_config, "on_chunk", None))
     trajectory = await run_driver_to_trajectory(
@@ -371,7 +377,7 @@ async def trajectory_from_claude_acp(
             "runtime": "claude_acp",
             "driver": "claude_acp",
             "model": model,
-            "cwd": str(cwd),
+            "cwd": cwd,
         },
     )
 
@@ -381,11 +387,16 @@ async def trajectory_from_codex_acp(
     sample_id: str,
     sample_data: dict[str, Any],
     *,
-    cwd: Path,
+    workspace: WorkspaceResource,
     run_config: Any | None = None,
     model: str = "codex-acp",
 ) -> ExternalAttemptArtifact:
     del sample_data
+    if not isinstance(workspace, LocalWorkspaceResource):
+        raise TypeError(
+            "trajectory_from_codex_acp requires a LocalWorkspaceResource for local execution"
+        )
+    cwd = workspace.working_dir
     driver = CodexACPDriver(cwd=cwd, model=model)
     on_event = _make_eval_on_event(sample_id, getattr(run_config, "on_chunk", None))
     trajectory = await run_driver_to_trajectory(
@@ -400,7 +411,7 @@ async def trajectory_from_codex_acp(
             "runtime": "codex_acp",
             "driver": "codex_acp",
             "model": model,
-            "cwd": str(cwd),
+            "cwd": cwd,
         },
     )
 

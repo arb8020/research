@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from pathlib import Path
 
 import pytest
 
 from rollouts.core import Message, Trajectory
 from rollouts.drivers.runner import _make_raw_driver_line_handler, run_driver_to_trajectory
 from rollouts.dtypes import StreamChunk, StreamEvent, TextContent, TextDelta, TextEnd, TextStart
+from rollouts.environments.local_workspace_resource import LocalWorkspaceResource
 from rollouts.eval.external_attempts import (
     ExternalAttemptArtifact,
     execute_external_attempt,
@@ -24,10 +26,15 @@ async def test_execute_external_attempt_builds_attempt_row() -> None:
         prompt: str,
         sample_id: str,
         sample_data: dict[str, str],
+        workspace: object,
+        *,
+        run_config: object,
     ) -> ExternalAttemptArtifact:
         assert prompt == "prompt:hello"
         assert sample_id == "sample-1"
         assert sample_data["text"] == "hello"
+        assert workspace is not None
+        assert run_config is None
         return ExternalAttemptArtifact(
             trajectory=Trajectory(
                 messages=[Message(role="assistant", content="<reversed_text>olleh</reversed_text>")]
@@ -54,13 +61,16 @@ async def test_execute_external_attempt_builds_attempt_row() -> None:
 
 
 @pytest.mark.trio
-async def test_execute_external_attempt_passes_run_config_when_adapter_accepts_it() -> None:
+async def test_execute_external_attempt_passes_run_config_when_adapter_accepts_it(
+    tmp_path: Path,
+) -> None:
     observed_run_config: object | None = None
 
     async def _trajectory_adapter(
         prompt: str,
         sample_id: str,
         sample_data: dict[str, str],
+        workspace: object,
         *,
         run_config: object,
     ) -> ExternalAttemptArtifact:
@@ -76,16 +86,63 @@ async def test_execute_external_attempt_passes_run_config_when_adapter_accepts_i
         )
 
     run_config = object()
+    workspace = LocalWorkspaceResource.from_existing(tmp_path)
+    environment = type("Env", (), {"workspace": workspace})()
     sample = await execute_external_attempt(
         {"text": "hello"},
         "sample-1",
-        None,
+        environment,
         run_config,
         prompt_builder=lambda sample: f"prompt:{sample['text']}",
         trajectory_adapter=_trajectory_adapter,
     )
 
     assert sample.metadata["runtime"] == "fake"
+    assert observed_run_config is run_config
+    assert environment.workspace is workspace
+
+
+@pytest.mark.trio
+async def test_execute_external_attempt_adapts_to_cwd_trajectory_adapter(
+    tmp_path: Path,
+) -> None:
+    observed_cwd: str | None = None
+    observed_run_config: object | None = None
+
+    async def _trajectory_adapter(
+        prompt: str,
+        sample_id: str,
+        sample_data: dict[str, str],
+        *,
+        cwd: str,
+        run_config: object,
+    ) -> ExternalAttemptArtifact:
+        nonlocal observed_cwd, observed_run_config
+        observed_cwd = cwd
+        observed_run_config = run_config
+        assert prompt == "prompt:hello"
+        assert sample_id == "sample-1"
+        assert sample_data["text"] == "hello"
+        return ExternalAttemptArtifact(
+            trajectory=Trajectory(messages=[Message(role="assistant", content="ok")]),
+            metadata={"runtime": "fake"},
+            status=Status.COMPLETED,
+        )
+
+    run_config = object()
+    workspace = LocalWorkspaceResource.from_existing(tmp_path)
+    environment = type("Env", (), {"workspace": workspace})()
+    sample = await execute_external_attempt(
+        {"text": "hello"},
+        "sample-1",
+        environment,
+        run_config,
+        prompt_builder=lambda sample: f"prompt:{sample['text']}",
+        trajectory_adapter=_trajectory_adapter,
+    )
+
+    assert sample.metadata["runtime"] == "fake"
+    assert observed_cwd == str(tmp_path)
     assert observed_run_config is run_config
 
 
