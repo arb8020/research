@@ -915,9 +915,6 @@ async def _run_agent_in_workspace(
         if session_file is None:
             return b""
         raw_session_bytes = await workspace.download_bytes(session_file, offset=file_offset)
-        if file_offset > 0 and not raw_session_bytes:
-            file_offset = 0
-            return b""
         if not raw_session_bytes:
             return b""
         return raw_session_bytes

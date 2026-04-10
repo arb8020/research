@@ -14,7 +14,15 @@ from typing import Any
 
 import trio
 
-from ..types import GPUInstance, GPUOffer, InstanceStatus, ProvisionRequest, SSHResult
+from ..types import (
+    GPUInstance,
+    GPUOffer,
+    InstanceStatus,
+    ModalFilesystemSnapshot,
+    ModalVolumeMount,
+    ProvisionRequest,
+    SSHResult,
+)
 from .modal_image import build_modal_image
 
 logger = logging.getLogger(__name__)
@@ -115,6 +123,75 @@ def _sandbox_exec_sync(sandbox: Any, command: str, timeout: int = 300) -> SSHRes
     )
 
 
+def _resolve_volumes(
+    modal: Any,
+    volume_mounts: list[ModalVolumeMount],
+) -> dict[str, Any]:
+    """Resolve ModalVolumeMount list into the dict Modal's Sandbox.create() expects.
+
+    Args:
+        modal: The modal module (lazy-imported).
+        volume_mounts: List of named volumes to mount.
+
+    Returns:
+        Dict mapping mount paths to modal.Volume instances.
+
+    # TODO(broker): add volume creation helper — right now callers must
+    # pre-create volumes manually or via modal CLI. A first-class broker API
+    # would be:
+    #   broker.modal.ensure_volume(name, size_gb) -> ModalVolumeMount
+    # analogous to runpod's create_network_volume().
+    """
+    volumes = {}
+    for mount in volume_mounts:
+        vol = modal.Volume.from_name(mount.volume_name, create_if_missing=True)
+        if mount.read_only:
+            vol = vol.read_only()
+        volumes[mount.mount_path] = vol
+        logger.info("Modal volume: %s -> %s (read_only=%s)", mount.volume_name, mount.mount_path, mount.read_only)
+    return volumes
+
+
+def _resolve_image(
+    modal: Any,
+    request: ProvisionRequest,
+    deps: Any | None,
+    gpu_type: str,
+) -> tuple[Any, bool]:
+    """Resolve the sandbox base image, preferring a filesystem snapshot if available.
+
+    If request.modal_snapshot is set and resolves to a known image ID, uses
+    modal.Image.from_id() to restore from the snapshot. Otherwise builds from
+    DepsConfig (or default image). Returns (image, from_snapshot).
+
+    On first run (snapshot not yet created), returns (built_image, False).
+    After the first run, snapshot_sandbox() should be called to create the
+    snapshot so subsequent runs use (snapshot_image, True).
+
+    # TODO(broker): make snapshot fallback automatic — if snapshot resolves to
+    # None, build the image, run a one-shot download function, snapshot, save
+    # the image ID, then provision the actual training sandbox from the snapshot.
+    # This "lazy snapshot" pattern would make first-run cost transparent.
+    """
+    snapshot = request.modal_snapshot
+    if snapshot is not None:
+        image_id = snapshot.resolve_image_id()
+        if image_id is not None:
+            logger.info("Using filesystem snapshot image: %s", image_id)
+            return modal.Image.from_id(image_id), True
+        else:
+            logger.info(
+                "Snapshot not yet created (registry=%s key=%s) — building from deps",
+                snapshot.snapshot_registry_name,
+                snapshot.snapshot_registry_key,
+            )
+
+    # Fall back to building from DepsConfig or default
+    if deps is not None:
+        return _build_image_from_deps(modal, deps, gpu_type), False
+    return _build_default_image(modal, gpu_type), False
+
+
 def _create_sandbox_sync(
     request: ProvisionRequest,
     deps: Any | None = None,
@@ -127,6 +204,9 @@ def _create_sandbox_sync(
               builds the image from explicit deps. Otherwise falls back
               to a default torch-only image.
 
+    Respects request.modal_volumes (named volume mounts) and
+    request.modal_snapshot (filesystem snapshot as base image).
+
     Returns (sandbox, modal_module) tuple.
     """
     modal = _import_modal()
@@ -137,12 +217,15 @@ def _create_sandbox_sync(
         create_if_missing=True,
     )
 
-    # Build image — explicit deps if available, fallback otherwise
     gpu_type = request.gpu_type or "T4"
-    if deps is not None:
-        image = _build_image_from_deps(modal, deps, gpu_type)
-    else:
-        image = _build_default_image(modal, gpu_type)
+
+    # Resolve image — snapshot if available, else build from deps
+    image, from_snapshot = _resolve_image(modal, request, deps, gpu_type)
+
+    # Resolve volume mounts
+    # TODO(broker): validate that volume mount paths don't overlap with
+    # image paths — Modal doesn't error cleanly on path conflicts.
+    volumes = _resolve_volumes(modal, request.modal_volumes)
 
     # Build GPU spec
     gpu_count = request.gpu_count or 1
@@ -160,26 +243,97 @@ def _create_sandbox_sync(
 
     # Create sandbox with provider-supported max lifetime.
     sandbox_timeout_seconds = request.max_lifetime_seconds or 60 * 60 * 24
-    sandbox = modal.Sandbox.create(
-        app=app,
-        image=image,
-        gpu=gpu_spec,
-        timeout=sandbox_timeout_seconds,
-        name=sandbox_name,
-    )
+
+    sandbox_kwargs: dict[str, Any] = {
+        "app": app,
+        "image": image,
+        "gpu": gpu_spec,
+        "timeout": sandbox_timeout_seconds,
+        "name": sandbox_name,
+    }
+    if volumes:
+        sandbox_kwargs["volumes"] = volumes
+
+    sandbox = modal.Sandbox.create(**sandbox_kwargs)
 
     assert sandbox is not None, "Sandbox.create() returned None"
     assert sandbox.object_id, "Sandbox missing object_id"
 
     logger.info(
-        "Modal sandbox created: %s (gpu=%s, name=%s, ttl_seconds=%s)",
+        "Modal sandbox created: %s (gpu=%s, name=%s, ttl_seconds=%s, "
+        "volumes=%s, from_snapshot=%s)",
         sandbox.object_id,
         gpu_spec,
         sandbox_name,
         sandbox_timeout_seconds,
+        list(volumes.keys()) if volumes else [],
+        from_snapshot,
     )
 
     return sandbox, modal
+
+
+# ============================================================================
+# Snapshot API
+# ============================================================================
+
+
+async def snapshot_sandbox(
+    instance_id: str,
+    snapshot: ModalFilesystemSnapshot | None = None,
+) -> str:
+    """Snapshot a running sandbox's filesystem and return the image ID.
+
+    The snapshot captures the full sandbox filesystem as a Modal Image.
+    Use this after a one-shot setup sandbox (e.g. model weight download)
+    to create a reusable base image for future sandboxes.
+
+    Args:
+        instance_id: The sandbox object_id to snapshot.
+        snapshot: Optional ModalFilesystemSnapshot to auto-persist the image ID.
+                  If provided, saves the image ID to the snapshot registry so
+                  future ProvisionRequests with the same snapshot config will
+                  use this image automatically.
+
+    Returns:
+        The Modal image ID (pass as ModalFilesystemSnapshot.image_id for reuse).
+
+    Example:
+        # One-time setup: download weights + snapshot
+        instance = await provision_instance(setup_request)
+        await exec_on_sandbox(instance.id, "python download_weights.py")
+        image_id = await snapshot_sandbox(instance.id, snapshot=my_snapshot_config)
+        await terminate_instance(instance.id)
+
+        # Subsequent runs: start from snapshot automatically
+        train_request = ProvisionRequest(modal_snapshot=my_snapshot_config, ...)
+        train_instance = await provision_instance(train_request)
+
+    # TODO(broker): make this a first-class broker operation exposed via CLI:
+    #   broker modal snapshot <instance-id> [--registry NAME --key KEY]
+    # Currently only accessible programmatically.
+
+    # TODO(broker): add snapshot_directory() support for partial snapshots
+    # (beta feature in Modal SDK). Useful for snapshotting just /root/.cache
+    # without the full filesystem, which would be faster and smaller.
+    """
+
+    def _snapshot_sync() -> str:
+        modal = _import_modal()
+        sandbox = modal.Sandbox.from_id(instance_id)
+        image = sandbox.snapshot_filesystem()
+        image_id = image.object_id
+        logger.info("Snapshot created: sandbox=%s image_id=%s", instance_id, image_id)
+        if snapshot is not None:
+            snapshot.save_image_id(image_id)
+            logger.info(
+                "Snapshot image ID saved to registry=%s key=%s",
+                snapshot.snapshot_registry_name,
+                snapshot.snapshot_registry_key,
+            )
+        return image_id
+
+    return await trio.to_thread.run_sync(_snapshot_sync)
 
 
 # ============================================================================
