@@ -919,7 +919,10 @@ async def _run_agent_in_workspace(
             return b""
         return raw_session_bytes
 
-    def _append_session_entries(chunk: bytes) -> int:
+    _store = getattr(run_config, "session_store", None)
+    _harness_session_id = getattr(run_config, "session_id", None)
+
+    async def _append_session_entries(chunk: bytes) -> int:
         nonlocal session_id, assistant_turn
         if not chunk:
             return 0
@@ -935,26 +938,42 @@ async def _run_agent_in_workspace(
                 continue
             if runtime == "claude_code":
                 if session_id is None:
-                    session_id = entry.get("sessionId")
-                msg = claude_message_to_rollouts(entry)
+                    cli_session_id = entry.get("sessionId")
+                    if cli_session_id is not None:
+                        session_id = cli_session_id
+                        if _store is not None and _harness_session_id is not None:
+                            await _store.update(
+                                _harness_session_id,
+                                tags={"cli_session_id": cli_session_id},
+                            )
+                new_msgs = claude_message_to_rollouts(entry)
             else:
                 if session_id is None and entry.get("type") == "session_meta":
-                    session_id = entry.get("payload", {}).get("id")
-                msg = codex_message_to_rollouts(entry)
-            if msg is None:
-                continue
-            messages.append(msg)
-            added += 1
-            if msg.role == "assistant":
-                _event_logger.info(
-                    "turn",
-                    extra={
-                        "sample_id": sample_id,
-                        "turn": assistant_turn,
-                        "status": "streaming...",
-                    },
-                )
-                assistant_turn += 1
+                    cli_session_id = entry.get("payload", {}).get("id")
+                    if cli_session_id is not None:
+                        session_id = cli_session_id
+                        if _store is not None and _harness_session_id is not None:
+                            await _store.update(
+                                _harness_session_id,
+                                tags={"cli_session_id": cli_session_id},
+                            )
+                codex_msg = codex_message_to_rollouts(entry)
+                new_msgs = [codex_msg] if codex_msg is not None else []
+            for msg in new_msgs:
+                messages.append(msg)
+                if _store is not None and _harness_session_id is not None:
+                    await _store.append_message(_harness_session_id, msg)
+                added += 1
+                if msg.role == "assistant":
+                    _event_logger.info(
+                        "turn",
+                        extra={
+                            "sample_id": sample_id,
+                            "turn": assistant_turn,
+                            "status": "streaming...",
+                        },
+                    )
+                    assistant_turn += 1
         return added
 
     # Poll for the run process and parse its session log in-flight.
@@ -993,7 +1012,7 @@ async def _run_agent_in_workspace(
             session_bytes = await _read_new_session_bytes()
             if session_bytes:
                 file_offset += len(session_bytes)
-                _append_session_entries(session_bytes)
+                await _append_session_entries(session_bytes)
 
         alive_command = f"kill -0 {pid} 2>/dev/null && echo alive || echo dead"
         if is_remote_workspace:
@@ -1013,7 +1032,7 @@ async def _run_agent_in_workspace(
     if session_file is not None:
         final_session_bytes = await _read_new_session_bytes()
         file_offset += len(final_session_bytes)
-        _append_session_entries(final_session_bytes)
+        await _append_session_entries(final_session_bytes)
 
     if is_remote_workspace:
         stdout_bytes = await workspace.download_bytes(stdout_path)

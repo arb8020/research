@@ -23,7 +23,10 @@ from ..training.types import DatasetRow, RowAttempt
 from .mini_swe_agent import trajectory_from_mini_swe_agent
 from .openhands import trajectory_from_openhands
 from .remote_runtime import (
+    RemoteRuntimePreparation,  # noqa: F401 — re-exported for callers
     _make_eval_on_event,
+    _remote_acp_uv_prepare_command,  # noqa: F401 — re-exported for callers
+    _remote_codex_acp_auth_payload,  # noqa: F401 — re-exported for callers
 )
 from .types import ExternalAttemptArtifact
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import trio
 
@@ -16,6 +16,9 @@ from ..dtypes import (
     ToolConfirmResult,
     ToolResult,
 )
+
+if TYPE_CHECKING:
+    from ..dtypes import Endpoint, Environment, Trajectory
 
 
 @dataclass(frozen=True)
@@ -75,5 +78,6 @@ class RunConfig:
     cancel_scope: trio.CancelScope | None = None
     interrupt_flag: list[bool] | None = None
     session_store: Any | None = None
+    session_id: str | None = None
     api_limiter: trio.CapacityLimiter | None = None
     tool_limiter: trio.CapacityLimiter | None = None
