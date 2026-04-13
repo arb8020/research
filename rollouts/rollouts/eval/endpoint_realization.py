@@ -151,10 +151,11 @@ def _remote_service_spec(
         assert remote_workspace_root is not None, (
             "remote_workspace_root is required when launching a Python module remotely"
         )
+        remote_pythonpath_root = remote_workspace_root / "rollouts"
         # Prepend workspace to PYTHONPATH so the synced rollouts source tree
         # takes precedence over any installed package version in the venv.
         launch_cmd = (
-            f"export PYTHONPATH={shlex.quote(str(remote_workspace_root))}:${{PYTHONPATH:-}}; "
+            f"export PYTHONPATH={shlex.quote(str(remote_pythonpath_root))}:${{PYTHONPATH:-}}; "
             f"{remote_python} -m {owned_endpoint.launch_module} "
             f"--model {owned_endpoint.model} "
             f"--port {owned_endpoint.port}"

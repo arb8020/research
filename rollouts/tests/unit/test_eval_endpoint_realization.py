@@ -161,7 +161,7 @@ def test_remote_service_spec_uses_materialized_workspace_for_launch_module() -> 
         ),
     )
 
-    assert "export PYTHONPATH=/tmp/workspace:${PYTHONPATH:-};" in launch_cmd
+    assert "export PYTHONPATH=/tmp/workspace/rollouts:${PYTHONPATH:-};" in launch_cmd
     assert launch_cmd.endswith(
         "-m rollouts.inference.realizations.slime_sglang --model Qwen/Qwen2.5-0.5B-Instruct --port 31000"
     )
