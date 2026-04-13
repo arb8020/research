@@ -205,7 +205,9 @@ def _ssh_workspace_bootstrap_commands(
     uv_root = _ssh_workspace_uv_root(workspace_root)
     uv_bin = uv_root / "uv"
     venv_python = Path(_ssh_workspace_python(workspace_root))
-    path_prefix = f"{venv_python.parent}:{uv_root}:$PATH"
+    path_export = (
+        f"export PATH={shlex.quote(str(venv_python.parent))}:{shlex.quote(str(uv_root))}:$PATH"
+    )
     commands: list[str] = [
         (
             "set -euo pipefail; "
@@ -230,7 +232,7 @@ def _ssh_workspace_bootstrap_commands(
     if deps is None:
         return tuple(commands)
     for cmd in deps.bootstrap_commands:
-        commands.append(f"export PATH={shlex.quote(path_prefix)}; {cmd}")
+        commands.append(f"{path_export}; {cmd}")
     return tuple(commands)
 
 
