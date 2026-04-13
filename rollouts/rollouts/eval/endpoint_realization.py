@@ -209,9 +209,9 @@ def _ssh_workspace_bootstrap_commands(
     commands: list[str] = [
         (
             "set -euo pipefail; "
-            "if ! command -v curl >/dev/null 2>&1; then "
+            "if ! command -v curl >/dev/null 2>&1 || ! command -v git >/dev/null 2>&1; then "
             "sudo apt-get update && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y "
-            "curl ca-certificates; "
+            "curl ca-certificates git; "
             "fi; "
             f"mkdir -p {shlex.quote(str(uv_root.parent))}; "
             f"if [ ! -x {shlex.quote(str(uv_bin))} ]; then "
