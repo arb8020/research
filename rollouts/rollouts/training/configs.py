@@ -240,7 +240,7 @@ class HardwareConfig:
 
     gpu_type: str = "A100"
     gpu_count: int = 1
-    provider: Literal["modal", "runpod", "lambdalabs", "vast", "local"] = "runpod"
+    provider: Literal["modal", "runpod", "lambdalabs", "vast", "local", "ssh"] = "runpod"
 
     # Shared runtime deps for the current single-env runners.
     # Current launchers still realize one environment for the whole workload,
@@ -253,6 +253,8 @@ class HardwareConfig:
     persistent_volume_id: str | None = None
     persistent_volume_mount_path: str = "/workspace"
     persistent_volume_location: str | None = None
+    ssh: str | None = None
+    ssh_key_path: str | None = None
 
     # Modal-specific: named volumes to mount inside the sandbox.
     # Each entry is a (volume_name, mount_path) tuple.
@@ -295,6 +297,16 @@ class HardwareConfig:
                 "HardwareConfig with provider='modal' requires deps. "
                 "Example: deps=DepsConfig(pip_packages=('torch>=2.4', 'sglang[all]'))"
             )
+        if self.provider == "ssh":
+            if self.deps is None:
+                raise ValueError(
+                    "HardwareConfig with provider='ssh' requires deps. "
+                    "Declare a DepsConfig in hardware.deps."
+                )
+            if self.ssh is None:
+                raise ValueError("HardwareConfig with provider='ssh' requires ssh")
+            if self.ssh_key_path is None:
+                raise ValueError("HardwareConfig with provider='ssh' requires ssh_key_path")
         if self.provider in {"runpod", "lambdalabs", "vast"} and self.deps is None:
             raise ValueError(
                 "HardwareConfig for SSH providers requires explicit deps. "

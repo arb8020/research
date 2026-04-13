@@ -619,7 +619,7 @@ class AsyncBifrostClient:
 
         self.logger.debug(f"📁 Deploying to workspace: {workspace_path}")
 
-        await trio.to_thread.run_sync(_check_dirty_workspace_sync, allow_dirty)
+        await trio.to_thread.run_sync(lambda: _check_dirty_workspace_sync(allow_dirty=allow_dirty))
         bundle_path, commit_hash = await trio.to_thread.run_sync(_create_git_bundle_sync)
         remote_bundle = f"/tmp/bifrost-bundle-{os.getpid()}-{int(time.time())}.bundle"
 

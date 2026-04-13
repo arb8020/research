@@ -314,6 +314,103 @@ async def test_realize_worker_backed_endpoint_launches_and_shuts_down(
 
 
 @pytest.mark.trio
+async def test_realize_worker_backed_endpoint_ssh_returns_forwarded_local_url(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    captured: dict[str, object] = {}
+
+    class _FakeService:
+        def __init__(self) -> None:
+            self.stopped = False
+
+        async def stop(self) -> None:
+            self.stopped = True
+
+        async def logs(self, tail: int = 120) -> str:
+            del tail
+            return "== stdout ==\n== stderr ==\n"
+
+    fake_service = _FakeService()
+
+    class _FakeAsyncBifrostClient:
+        def __init__(self, ssh_connection: str, ssh_key_path: str) -> None:
+            captured["ssh_connection"] = ssh_connection
+            captured["ssh_key_path"] = ssh_key_path
+
+        async def __aenter__(self) -> _FakeAsyncBifrostClient:
+            return self
+
+        async def __aexit__(self, exc_type: object, exc: object, tb: object) -> None:
+            del exc_type, exc, tb
+
+        async def materialize(self, _spec: object) -> object:
+            captured["materialized"] = True
+            return SimpleNamespace(root="/remote/workspace")
+
+        async def serve_service(self, _service_spec: object, **_kwargs: object) -> _FakeService:
+            captured["service_started"] = True
+            return fake_service
+
+    async def fake_wait_for_ssh_service_ready(**_kwargs: object) -> None:
+        captured["waited_for_ready"] = True
+
+    @asynccontextmanager
+    async def fake_forward_ssh_port(**_kwargs: object) -> AsyncIterator[int]:
+        captured["forward_started"] = True
+        try:
+            yield 43123
+        finally:
+            captured["forward_stopped"] = True
+
+    monkeypatch.setattr("bifrost.AsyncBifrostClient", _FakeAsyncBifrostClient, raising=False)
+    monkeypatch.setattr(
+        "rollouts.eval.endpoint_realization._wait_for_ssh_service_ready",
+        fake_wait_for_ssh_service_ready,
+    )
+    monkeypatch.setattr(
+        "rollouts.eval.endpoint_realization._wait_for_forwarded_health",
+        fake_wait_for_ssh_service_ready,
+    )
+    monkeypatch.setattr(
+        "rollouts.eval.endpoint_realization._forward_ssh_port",
+        fake_forward_ssh_port,
+    )
+
+    async with realize_worker_backed_endpoint(
+        endpoint_config=EndpointConfig(provider="sglang", model="Qwen/Qwen2.5-0.5B-Instruct"),
+        output_dir=tmp_path,
+        hardware_config=HardwareConfig(
+            provider="ssh",
+            gpu_count=1,
+            ssh="ubuntu@146.88.195.10:22",
+            ssh_key_path="~/.ssh/id_ed25519",
+            deps=DepsConfig(bootstrap_commands=("echo bootstrap",)),
+        ),
+        server_config=None,
+        worker=InferenceWorkerConfig(
+            worker_id="actor",
+            model="Qwen/Qwen2.5-0.5B-Instruct",
+            inference=InferenceConfig(port=30000, startup_timeout=5.0),
+        ),
+        run_name="eval-ssh-test",
+    ) as realized:
+        assert realized.endpoint_config.base_url == "http://127.0.0.1:43123/v1"
+        assert realized.metadata == {
+            "provider": "ssh",
+            "ssh_target": "ubuntu@146.88.195.10:22",
+            "remote_port": 30000,
+            "local_port": 43123,
+        }
+
+    assert captured["materialized"] is True
+    assert captured["service_started"] is True
+    assert captured["waited_for_ready"] is True
+    assert captured["forward_started"] is True
+    assert captured["forward_stopped"] is True
+    assert fake_service.stopped is True
+
+
+@pytest.mark.trio
 async def test_run_with_sglang_provision_prefers_topology_actor_worker(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

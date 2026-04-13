@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import logging
 import os
+import socket
+import threading
 import time
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, replace
@@ -594,6 +596,399 @@ async def _wait_for_modal_tunnel(
             await trio.sleep(1.0)
 
 
+def _pick_free_local_port() -> int:
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
+    finally:
+        sock.close()
+
+
+async def _wait_for_local_port_ready(*, port: int, timeout_s: float) -> None:
+    deadline = trio.current_time() + timeout_s
+    while True:
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout=0.5):
+                return
+        except OSError as exc:
+            if trio.current_time() >= deadline:
+                raise RuntimeError(
+                    f"SSH tunnel local port {port} did not become ready"
+                ) from exc
+            await trio.sleep(0.1)
+
+
+async def _wait_for_forwarded_health(
+    *,
+    local_port: int,
+    readiness_target: str,
+    timeout_s: float,
+) -> None:
+    import urllib.error
+    import urllib.request
+
+    target = readiness_target if readiness_target.startswith("/") else "/health"
+    url = f"http://127.0.0.1:{local_port}{target}"
+    deadline = trio.current_time() + timeout_s
+    while True:
+        try:
+            await trio.to_thread.run_sync(
+                lambda: urllib.request.urlopen(url, timeout=1.0).read(),
+            )
+            return
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            if trio.current_time() >= deadline:
+                raise RuntimeError(
+                    f"Forwarded SSH endpoint did not become healthy at {url} within {timeout_s}s"
+                ) from exc
+            await trio.sleep(0.2)
+
+
+@asynccontextmanager
+async def _forward_ssh_port(
+    *,
+    ssh_target: str,
+    ssh_key_path: str,
+    remote_port: int,
+    local_port: int | None = None,
+) -> Any:
+    import getpass
+
+    import paramiko
+
+    ssh_key_path = os.path.expanduser(ssh_key_path)
+    local_port = _pick_free_local_port() if local_port is None else local_port
+
+    ssh_target_parts = ssh_target.split("@", 1)
+    if len(ssh_target_parts) == 2:
+        username, host_port = ssh_target_parts
+    else:
+        username, host_port = getpass.getuser(), ssh_target_parts[0]
+    host, _, port_text = host_port.partition(":")
+    ssh_port = int(port_text) if port_text else 22
+
+    ssh_client = paramiko.SSHClient()
+    ssh_client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+
+    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    server.bind(("127.0.0.1", local_port))
+    server.listen(4)
+    server.settimeout(0.5)
+
+    stop_event = threading.Event()
+
+    def _forward(src: socket.socket, dst: socket.socket) -> None:
+        try:
+            while not stop_event.is_set():
+                data = src.recv(4096)
+                if not data:
+                    break
+                dst.sendall(data)
+        except (OSError, EOFError):
+            pass
+        finally:
+            try:
+                src.close()
+            except (OSError, EOFError):
+                pass
+            try:
+                dst.close()
+            except (OSError, EOFError):
+                pass
+
+    def _accept_loop() -> None:
+        transport = ssh_client.get_transport()
+        assert transport is not None, "SSH transport unavailable for local port forward"
+        while not stop_event.is_set():
+            try:
+                client_sock, addr = server.accept()
+            except TimeoutError:
+                continue
+            except OSError:
+                break
+            try:
+                channel = transport.open_channel(
+                    "direct-tcpip",
+                    ("127.0.0.1", remote_port),
+                    addr,
+                )
+            except Exception:
+                client_sock.close()
+                if stop_event.is_set():
+                    break
+                continue
+            threading.Thread(target=_forward, args=(client_sock, channel), daemon=True).start()
+            threading.Thread(target=_forward, args=(channel, client_sock), daemon=True).start()
+
+    await trio.to_thread.run_sync(
+        lambda: ssh_client.connect(
+            hostname=host,
+            port=ssh_port,
+            username=username,
+            key_filename=ssh_key_path,
+            timeout=30,
+        )
+    )
+    tunnel_thread = threading.Thread(target=_accept_loop, daemon=True)
+    tunnel_thread.start()
+    try:
+        await _wait_for_local_port_ready(port=local_port, timeout_s=5.0)
+        yield local_port
+    finally:
+        stop_event.set()
+        try:
+            server.close()
+        except OSError:
+            pass
+        await trio.to_thread.run_sync(ssh_client.close)
+        tunnel_thread.join(timeout=1.0)
+
+
+async def _wait_for_ssh_service_ready(
+    *,
+    service: Any,
+    session: Any,
+    worker: InferenceWorkerConfig,
+    startup_timeout: float,
+    run_logger: Any | None,
+    startup_context: dict[str, Any],
+    remote_output_dir: Path,
+) -> None:
+    started = time.monotonic()
+    last_health_state: str | None = None
+    last_health_detail: str | None = None
+    emitted_startup_phases: set[str] = set()
+    seen_lines: dict[str, set[str]] = {"stdout": set(), "stderr": set()}
+    attempt = 0
+
+    if run_logger is not None:
+        run_logger.event(
+            "inference_healthcheck_start",
+            startup_timeout=startup_timeout,
+            **startup_context,
+        )
+
+    async def _emit_health_state(
+        state: str,
+        *,
+        attempt: int,
+        detail: str | None = None,
+        error: str | None = None,
+    ) -> None:
+        nonlocal last_health_state, last_health_detail
+        last_health_detail = detail
+        if last_health_state == state:
+            return
+        last_health_state = state
+        if run_logger is not None:
+            run_logger.event(
+                "inference_health_state",
+                health_state=state,
+                health_attempt=attempt,
+                health_detail=detail,
+                error=error,
+                **startup_context,
+            )
+
+    while time.monotonic() - started < startup_timeout:
+        is_running = await service.is_running()
+        if not is_running:
+            await _emit_health_state("exited", attempt=attempt)
+            break
+
+        is_healthy = await service.is_healthy()
+        log_blob = await _service_logs_best_effort(service, tail=120)
+        _emit_log_lines(
+            run_logger=run_logger,
+            log_blob=log_blob,
+            seen_lines=seen_lines,
+            emitted_startup_phases=emitted_startup_phases,
+            startup_context=startup_context,
+        )
+
+        if is_healthy:
+            await _emit_health_state("healthy", attempt=attempt)
+            return
+
+        await _emit_health_state("waiting", attempt=attempt, detail="remote /health not ready yet")
+
+        if (
+            attempt > 0
+            and attempt % STARTUP_STALL_DIAGNOSTIC_INTERVAL == 0
+            and run_logger is not None
+        ):
+            trace_tail = await _tail_remote_trace(
+                session=session,
+                trace_path=remote_output_dir / f"sglang_{worker.inference.port}_trace.jsonl",
+                max_lines=20,
+            )
+            run_logger.event(
+                "inference_health_stall",
+                health_attempt=attempt,
+                last_health_state=last_health_state,
+                last_health_detail=last_health_detail,
+                log_tail=log_blob,
+                trace_tail=trace_tail,
+                **startup_context,
+            )
+        attempt += 1
+        await trio.sleep(1.0)
+
+    log_blob = await _service_logs_best_effort(service, tail=120)
+    trace_tail = await _tail_remote_trace(
+        session=session,
+        trace_path=remote_output_dir / f"sglang_{worker.inference.port}_trace.jsonl",
+    )
+    if run_logger is not None:
+        run_logger.event(
+            "inference_startup_failed",
+            failure_kind="timeout" if last_health_state != "exited" else "exited",
+            health_attempt=attempt,
+            last_health_state=last_health_state,
+            last_health_detail=last_health_detail,
+            log_tail=log_blob,
+            trace_tail=trace_tail,
+            **startup_context,
+        )
+    raise RuntimeError(
+        f"SSH eval endpoint failed to become healthy within {startup_timeout}s.\n"
+        f"Recent service logs:\n{log_blob}\n"
+        f"Recent trace logs:\n{trace_tail}"
+    )
+
+
+@asynccontextmanager
+async def _realize_ssh_endpoint(
+    *,
+    endpoint_config: EndpointConfig | OwnedEndpoint,
+    output_dir: Path,
+    hardware_config: HardwareConfig,
+    worker: InferenceWorkerConfig,
+    run_name: str,
+    run_logger: Any | None,
+) -> Any:
+    from bifrost import AsyncBifrostClient
+    from bifrost.types import ProcessSpec, ReadinessProbe, ServiceSpec, WorkspaceMaterializationSpec
+
+    assert hardware_config.ssh is not None, "ssh provider requires hardware_config.ssh"
+    assert hardware_config.ssh_key_path is not None, (
+        "ssh provider requires hardware_config.ssh_key_path"
+    )
+
+    service = None
+    startup_context: dict[str, Any] | None = None
+    remote_output_dir: Path | None = None
+
+    async with AsyncBifrostClient(
+        hardware_config.ssh,
+        ssh_key_path=hardware_config.ssh_key_path,
+    ) as session:
+        workspace = await session.materialize(
+            WorkspaceMaterializationSpec(
+                requested_root="~/.bifrost/workspaces/rollouts-eval",
+                bootstrap_commands=hardware_config.deps.bootstrap_commands
+                if hardware_config.deps is not None
+                else (),
+            )
+        )
+        remote_output_dir = Path(workspace.root) / "results" / "eval" / run_name
+        remote_python = _remote_inference_python(hardware_config)
+        launch_cmd, readiness_target = _remote_service_spec(
+            worker=worker,
+            output_dir=remote_output_dir,
+            remote_python=remote_python,
+            owned_endpoint=endpoint_config if isinstance(endpoint_config, OwnedEndpoint) else None,
+        )
+        service = await session.serve_service(
+            ServiceSpec(
+                process=ProcessSpec(
+                    command="bash",
+                    args=("-lc", launch_cmd),
+                    cwd=workspace.root,
+                ),
+                port=worker.inference.port,
+                readiness_probe=ReadinessProbe(kind="http", target=readiness_target),
+            ),
+            name=f"eval-endpoint-{run_name}",
+            workspace=workspace,
+            log_file=f"{remote_output_dir}/endpoint_service",
+        )
+        startup_context = {
+            "provider": "ssh",
+            "ssh_target": hardware_config.ssh,
+            "service_name": f"eval-endpoint-{run_name}",
+            "engine_name": worker.inference.spec,
+            "engine_port": worker.inference.port,
+            "engine_cuda_device_ids": list(worker.inference.cuda_device_ids),
+            "model_name": worker.model,
+            "engine_log_path": f"{remote_output_dir}/endpoint_service",
+            "engine_trace_path": str(
+                remote_output_dir / f"sglang_{worker.inference.port}_trace.jsonl"
+            ),
+        }
+        if run_logger is not None:
+            run_logger.event(
+                "inference_engine_launch",
+                engine_launch_cmd=launch_cmd,
+                readiness_target=readiness_target,
+                **startup_context,
+            )
+        try:
+            await _wait_for_ssh_service_ready(
+                service=service,
+                session=session,
+                worker=worker,
+                startup_timeout=worker.inference.startup_timeout,
+                run_logger=run_logger,
+                startup_context=startup_context,
+                remote_output_dir=remote_output_dir,
+            )
+            async with _forward_ssh_port(
+                ssh_target=hardware_config.ssh,
+                ssh_key_path=hardware_config.ssh_key_path,
+                remote_port=worker.inference.port,
+            ) as local_port:
+                await _wait_for_forwarded_health(
+                    local_port=local_port,
+                    readiness_target=readiness_target,
+                    timeout_s=10.0,
+                )
+                base_url = f"http://127.0.0.1:{local_port}/v1"
+                yield RealizedEvalEndpoint(
+                    endpoint_config=(
+                        _externalize_owned_endpoint(endpoint_config, base_url)
+                        if isinstance(endpoint_config, OwnedEndpoint)
+                        else replace(endpoint_config, base_url=base_url)
+                    ),
+                    metadata={
+                        "provider": "ssh",
+                        "ssh_target": hardware_config.ssh,
+                        "remote_port": worker.inference.port,
+                        "local_port": local_port,
+                    },
+                )
+        finally:
+            final_log = (
+                await _service_logs_best_effort(service, tail=200) if service is not None else ""
+            )
+            if run_logger is not None and startup_context is not None:
+                run_logger.event(
+                    "inference_service_final_log",
+                    log_blob=final_log,
+                    **startup_context,
+                )
+            elif final_log:
+                _logger.info(
+                    "inference service final log\n%s",
+                    final_log,
+                    extra={"event": "inference_service_final_log"},
+                )
+            if service is not None:
+                await service.stop()
+
+
 @asynccontextmanager
 async def _realize_modal_endpoint(
     *,
@@ -842,10 +1237,21 @@ async def realize_worker_backed_endpoint(
         ) as realized:
             yield realized
         return
+    if hardware_config.provider == "ssh":
+        async with _realize_ssh_endpoint(
+            endpoint_config=endpoint_config,
+            output_dir=output_dir,
+            hardware_config=hardware_config,
+            worker=realized_worker,
+            run_name=run_name,
+            run_logger=run_logger,
+        ) as realized:
+            yield realized
+        return
     if hardware_config.provider != "local":
         raise NotImplementedError(
             "Worker-backed eval endpoint auto-realization currently supports only "
-            "hardware.provider in {'local', 'modal'}."
+            "hardware.provider in {'local', 'modal', 'ssh'}."
         )
 
     engine = _build_engine(worker=realized_worker, output_dir=output_dir)
