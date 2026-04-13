@@ -9,7 +9,7 @@ has a different CLI surface, so keep this ugly-but-honest compatibility path
 until the shared launcher learns the real mini-sglang process contract.
 
 Usage:
-    argus run --config inference.eval_mini_sglang_smoke
+    python -m argus run --config inference.eval_mini_sglang_smoke
 
     # Monitor progress:
     tail -f results/eval/<run>/events.jsonl | jq .

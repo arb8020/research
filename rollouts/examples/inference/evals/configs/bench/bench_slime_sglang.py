@@ -10,7 +10,7 @@ Drives the server with concurrent synthetic load and reports:
 No correctness scorer — this is a perf characterization run, not an accuracy check.
 
 Usage:
-    argus run --config bench.bench_slime_sglang
+    python -m argus run --config bench.bench_slime_sglang
 
     # Monitor progress:
     tail -f results/eval/<run>/events.jsonl | jq .

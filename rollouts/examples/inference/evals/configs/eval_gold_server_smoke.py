@@ -1,7 +1,7 @@
 """Fast smoke witness for the HuggingFace gold inference server.
 
 Usage:
-    argus run --config inference.eval_gold_server_smoke
+    python -m argus run --config inference.eval_gold_server_smoke
 
     # Monitor progress:
     tail -f results/eval/<run>/events.jsonl | jq .

@@ -4,8 +4,8 @@
 Runs evals against API endpoints or SGLang/vLLM servers.
 
 Preferred usage (fire-and-forget, monitor via jsonl):
-    argus run --config examples/eval/reverse_text/smoke.py
-    argus run --config inference.eval_skeleton_server
+    python -m argus run --config examples/eval/reverse_text/smoke.py
+    python -m argus run --config inference.eval_skeleton_server
 
     # Then monitor:
     tail -f results/eval/<run>/events.jsonl | jq .
@@ -355,8 +355,8 @@ def main() -> int:
         epilog="""
 Examples:
     # Preferred: fire-and-forget via argus (monitor via events.jsonl)
-    argus run --config inference.eval_skeleton_server
-    argus run --config examples/eval/reverse_text/smoke.py
+    python -m argus run --config inference.eval_skeleton_server
+    python -m argus run --config examples/eval/reverse_text/smoke.py
 
     # Direct: interactive, all output to terminal (useful for debugging)
     python -m rollouts.eval.run --config examples/eval/reverse_text/smoke.py
