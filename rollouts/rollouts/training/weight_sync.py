@@ -67,6 +67,8 @@ def _read_log_tail(path: Path, max_lines: int = 40) -> str:
 
 
 def _resolve_socket_ifname_for_launch() -> tuple[str | None, str]:
+    if os.environ.get("ROLLOUTS_DISABLE_SOCKET_IFNAME"):
+        return None, "env:disable"
     explicit = os.environ.get("NCCL_SOCKET_IFNAME") or os.environ.get("GLOO_SOCKET_IFNAME")
     if explicit:
         return explicit, "env"

@@ -142,6 +142,7 @@ def _remote_service_spec(
     output_dir: Path,
     remote_python: str,
     remote_workspace_root: Path | None = None,
+    disable_socket_ifname: bool = False,
     owned_endpoint: OwnedEndpoint | None = None,
 ) -> tuple[str, str]:
     # OwnedEndpoint with launch_module bypasses _build_engine entirely -
@@ -163,7 +164,10 @@ def _remote_service_spec(
         return launch_cmd, owned_endpoint.readiness_path
 
     original_python = os.environ.get("ROLLOUTS_INFERENCE_PYTHON")
+    original_disable_socket_ifname = os.environ.get("ROLLOUTS_DISABLE_SOCKET_IFNAME")
     os.environ["ROLLOUTS_INFERENCE_PYTHON"] = remote_python
+    if disable_socket_ifname:
+        os.environ["ROLLOUTS_DISABLE_SOCKET_IFNAME"] = "1"
     try:
         engine = _build_engine(worker=worker, output_dir=output_dir)
         parsed_health_url = urlsplit(engine.health_url)
@@ -178,6 +182,10 @@ def _remote_service_spec(
             os.environ.pop("ROLLOUTS_INFERENCE_PYTHON", None)
         else:
             os.environ["ROLLOUTS_INFERENCE_PYTHON"] = original_python
+        if original_disable_socket_ifname is None:
+            os.environ.pop("ROLLOUTS_DISABLE_SOCKET_IFNAME", None)
+        else:
+            os.environ["ROLLOUTS_DISABLE_SOCKET_IFNAME"] = original_disable_socket_ifname
 
 
 def _remote_inference_python(hardware_config: HardwareConfig) -> str:
@@ -965,6 +973,7 @@ async def _realize_ssh_endpoint(
             output_dir=remote_output_dir,
             remote_python=remote_python,
             remote_workspace_root=Path(workspace.root),
+            disable_socket_ifname=True,
             owned_endpoint=endpoint_config if isinstance(endpoint_config, OwnedEndpoint) else None,
         )
         service = await session.serve_service(
