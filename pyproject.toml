@@ -16,7 +16,7 @@ members = [
 name = "gpu-research-tools"
 version = "0.1.0"
 description = "Research workspace for GPU provisioning and remote execution tools"
-requires-python = ">=3.10"
+requires-python = ">=3.12"
 
 # Core workspace members
 dependencies = [

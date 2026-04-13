@@ -2,7 +2,7 @@
 name = "argus"
 version = "0.1.0"
 description = "Run supervision primitives for detached experiment execution"
-requires-python = ">=3.10"
+requires-python = ">=3.12"
 dependencies = []
 
 [project.optional-dependencies]

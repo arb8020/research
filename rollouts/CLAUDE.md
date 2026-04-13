@@ -8,7 +8,7 @@ Always use the **workspace root venv**, not the rollouts-local one:
 
 ```bash
 # From /Users/chiraagbalu/research (workspace root)
-uv sync --extra deploy   # includes bifrost, broker, infra-utils, miniray
+uv sync   # installs all workspace members including bifrost, broker, argus
 ```
 
 The rollouts-local `.venv` is missing `bifrost`/`broker` and won't work for remote jobs.
