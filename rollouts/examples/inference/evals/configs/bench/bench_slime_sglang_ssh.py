@@ -1,7 +1,32 @@
 """Throughput/latency benchmark for the slime-sglang realization over SSH.
 
+Drives the server with concurrent synthetic load and reports:
+  - requests_per_sec (wall-time)
+  - total_output_tokens_per_sec (wall-time)
+  - llm_ttft_ms_* (mean/p50/p95/max)
+  - llm_output_tokens_per_sec_* (mean/p50/p95/max)
+  - llm_duration_ms_* (mean/p50/p95/max)
+
+Primary metrics to watch in `report.json`:
+  - requests_per_sec
+  - total_output_tokens_per_sec
+  - llm_duration_ms_p50
+  - llm_duration_ms_p95
+  - llm_output_tokens_per_sec_mean
+
+No correctness scorer — this is a perf characterization run, not an accuracy check.
+
 Usage:
     python -m argus run --config examples/inference/evals/configs/bench/bench_slime_sglang_ssh.py
+
+    # Inspect the benchmark summary:
+    jq '.summary_metrics | {
+      requests_per_sec,
+      total_output_tokens_per_sec,
+      llm_duration_ms_p50,
+      llm_duration_ms_p95,
+      llm_output_tokens_per_sec_mean
+    }' results/eval/<run>/report.json
 """
 
 from examples.inference.bench_workload_lib import make_random_tasks, prepare_bench_messages
@@ -12,6 +37,14 @@ from rollouts.training.configs import DepsConfig, HardwareConfig
 from rollouts.training.scoring import FunctionScorer
 
 _no_op_scorer = FunctionScorer(lambda attempt, _ctx: Score(metrics=()))
+
+WATCH_METRICS = (
+    "requests_per_sec",
+    "total_output_tokens_per_sec",
+    "llm_duration_ms_p50",
+    "llm_duration_ms_p95",
+    "llm_output_tokens_per_sec_mean",
+)
 
 MODEL = "Qwen/Qwen3-0.6B"
 PORT = 30000
