@@ -152,6 +152,7 @@ def _upload_file_via_rsync_sync(
                 "rsync",
                 "-az",
                 "--partial",
+                "--inplace",
                 "-e",
                 ssh_cmd,
                 local_path,
@@ -166,9 +167,14 @@ def _upload_file_via_rsync_sync(
         last_error = result.stderr or result.stdout
         if attempt < 2:
             time.sleep(2.0 * (attempt + 1))
-    raise RuntimeError(
-        f"rsync upload failed after 3 attempts: {last_error}"
-    )
+    raise RuntimeError(f"rsync upload failed after 3 attempts: {last_error}")
+
+
+def _remote_workspace_bundle_path(workspace_path: str) -> str:
+    workspace = Path(workspace_path.rstrip("/"))
+    workspace_name = workspace.name or "workspace"
+    staging_dir = workspace.parent / ".bifrost-staging"
+    return str(staging_dir / f"{workspace_name}.bundle")
 
 
 class AsyncBifrostClient:
@@ -666,7 +672,17 @@ class AsyncBifrostClient:
         expanded_workspace_path = await self.expand_path(workspace_path)
         await trio.to_thread.run_sync(lambda: _check_dirty_workspace_sync(allow_dirty=allow_dirty))
         bundle_path, commit_hash = await trio.to_thread.run_sync(_create_git_bundle_sync)
-        remote_bundle = f"/tmp/bifrost-bundle-{os.getpid()}-{int(time.time())}.bundle"
+        remote_bundle = _remote_workspace_bundle_path(expanded_workspace_path)
+
+        staging_dir = str(Path(remote_bundle).parent)
+        mkdir_result = await self.exec(
+            f"mkdir -p {shlex.quote(staging_dir)}",
+            working_dir="~",
+        )
+        if mkdir_result.exit_code != 0:
+            raise RuntimeError(
+                f"Failed to create remote bundle staging dir {staging_dir}: {mkdir_result.stderr}"
+            )
 
         await trio.to_thread.run_sync(
             lambda: _upload_file_via_rsync_sync(
@@ -685,8 +701,7 @@ class AsyncBifrostClient:
             update_cmd = (
                 f"cd {shlex.quote(expanded_workspace_path)} && "
                 f"git fetch {shlex.quote(remote_bundle)} HEAD && "
-                "git reset --hard FETCH_HEAD && "
-                f"rm {shlex.quote(remote_bundle)}"
+                "git reset --hard FETCH_HEAD"
             )
             update_result = await self.exec(update_cmd, working_dir="~")
             if update_result.exit_code != 0:
@@ -695,8 +710,7 @@ class AsyncBifrostClient:
             workspace_parent = os.path.dirname(expanded_workspace_path.rstrip("/"))
             create_cmd = (
                 f"mkdir -p {shlex.quote(workspace_parent)} && "
-                f"git clone {shlex.quote(remote_bundle)} {shlex.quote(expanded_workspace_path)} && "
-                f"rm {shlex.quote(remote_bundle)}"
+                f"git clone {shlex.quote(remote_bundle)} {shlex.quote(expanded_workspace_path)}"
             )
             create_result = await self.exec(create_cmd, working_dir="~")
             if create_result.exit_code != 0:
