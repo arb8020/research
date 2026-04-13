@@ -36,7 +36,18 @@ hardware = HardwareConfig(
     use_torchrun=False,
     deps=DepsConfig(
         bootstrap_commands=(
-            "~/.local/bin/uv pip install --python /opt/venvs/rollouts/bin/python "
+            "set -euo pipefail && "
+            "if ! command -v uv >/dev/null 2>&1; then "
+            '  if [ -x "$HOME/.local/bin/uv" ]; then export PATH="$HOME/.local/bin:$PATH"; '
+            "  else "
+            "    if ! command -v curl >/dev/null 2>&1; then "
+            "      sudo apt-get update && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y curl ca-certificates; "
+            "    fi; "
+            "    curl -LsSf https://astral.sh/uv/install.sh | sh; "
+            '    export PATH="$HOME/.local/bin:$PATH"; '
+            "  fi; "
+            "fi && "
+            "uv pip install --python /opt/venvs/rollouts/bin/python "
             "torch transformers accelerate fastapi uvicorn "
             "'sglang[all] @ git+https://github.com/sgl-project/sglang.git@main#subdirectory=python'",
         ),
