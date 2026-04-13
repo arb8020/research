@@ -3,14 +3,17 @@
 
 Runs evals against API endpoints or SGLang/vLLM servers.
 
-Usage:
-    # Against API (reads ANTHROPIC_API_KEY from env)
+Preferred usage (fire-and-forget, monitor via jsonl):
+    argus run --config examples/eval/reverse_text/smoke.py
+    argus run --config inference.eval_skeleton_server
+
+    # Then monitor:
+    tail -f results/eval/<run>/events.jsonl | jq .
+    jq 'select(.message == "eval_end")' results/eval/<run>/events.jsonl
+
+Direct usage (interactive, all output to terminal - useful for debugging):
     python -m rollouts.eval.run --config examples/eval/reverse_text/smoke.py
-
-    # Against local SGLang server (must be running)
     python -m rollouts.eval.run --config examples/eval/reverse_text/sglang.py
-
-    # Launch one sample interactively in an external runtime
     python -m rollouts.eval.run launch --config examples/eval/reverse_text/smoke.py --sample 0 --runtime codex
 
 Config files should export:
@@ -55,6 +58,33 @@ from .endpoint_realization import realize_worker_backed_endpoint
 logger = logging.getLogger(__name__)
 
 REPO_ROOT = Path(__file__).parent.parent.parent
+
+_INFERENCE_EVALS_ROOT = REPO_ROOT / "examples" / "inference" / "evals" / "configs"
+
+
+def _resolve_config_path(config: Path) -> Path:
+    """Resolve --config to an absolute path.
+
+    Accepts:
+    - Absolute path
+    - Relative path (resolved from REPO_ROOT)
+    - Dotted inference config id: e.g. "eval_skeleton_server" or
+      "inference.eval_skeleton_server" (both resolve under examples/inference/evals/configs/)
+    """
+    raw = str(config)
+
+    # Absolute or explicitly relative path: take as-is
+    if config.is_absolute() or raw.startswith("."):
+        return config.resolve()
+
+    # Dotted id: strip leading "inference." prefix if present, then look up in configs dir
+    dotted = raw.removeprefix("inference.")
+    candidate = (_INFERENCE_EVALS_ROOT / Path(*dotted.split("."))).with_suffix(".py")
+    if candidate.is_file():
+        return candidate
+
+    # Fall back: resolve relative to REPO_ROOT
+    return (REPO_ROOT / config).resolve()
 
 
 def _find_config_project_root(config_path: Path) -> Path:
@@ -324,10 +354,12 @@ def main() -> int:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-    # Against Anthropic API
-    python -m rollouts.eval.run --config examples/eval/reverse_text/smoke.py
+    # Preferred: fire-and-forget via argus (monitor via events.jsonl)
+    argus run --config inference.eval_skeleton_server
+    argus run --config examples/eval/reverse_text/smoke.py
 
-    # Against local SGLang server
+    # Direct: interactive, all output to terminal (useful for debugging)
+    python -m rollouts.eval.run --config examples/eval/reverse_text/smoke.py
     python -m rollouts.eval.run --config examples/eval/reverse_text/sglang.py
 
     # Launch one sample interactively in Codex
@@ -382,9 +414,7 @@ Examples:
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     )
 
-    config_path = args.config
-    if not config_path.is_absolute():
-        config_path = REPO_ROOT / config_path
+    config_path = _resolve_config_path(args.config)
 
     if not config_path.exists():
         print(f"Config not found: {config_path}", file=sys.stderr)

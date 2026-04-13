@@ -82,6 +82,29 @@ is incompatible with `huggingface_hub>=1.4` (`is_offline_mode` removed). The boo
 `rollouts/run.py` installs SGLang first, then force-upgrades `transformers>=5.0.0` and
 `huggingface_hub>=1.4.0` on top. If SGLang crashes on import, this override may have failed.
 
+## Running evals
+
+```bash
+# Fire-and-forget (preferred)
+argus run --config inference.eval_skeleton_server
+argus run --config bench.bench_slime_sglang
+
+# Monitor — stdout/stderr during a run is bifrost/sandbox noise, ignore it
+tail -f results/eval/<run>/events.jsonl | jq .
+
+# Query specific signals
+jq 'select(.message == "eval_end")' results/eval/<run>/events.jsonl
+jq 'select(.message == "sample_end")' results/eval/<run>/events.jsonl | jq '{id:.sample_id, status:.status, reward:.reward}'
+
+# Direct invocation (interactive, all output to terminal — use for debugging only)
+python -m rollouts.eval.run --config inference.eval_skeleton_server
+```
+
+Eval artifacts in `results/eval/<run>/`:
+- `events.jsonl` — structured event stream, ground truth for what happened
+- `report.json` — summary metrics aggregated across all samples
+- `samples/` — per-sample trajectories and metrics
+
 ## Key files
 
 - `rollouts/run.py` — remote job launcher (bootstrap, deploy, submit)

@@ -7,6 +7,15 @@ TODO(mini-sglang-owned-endpoint): the named ``mini-sglang`` inference spec in
 SGLang CLI flags like ``--model-path`` and ``--mem-fraction-static``. mini-sglang
 has a different CLI surface, so keep this ugly-but-honest compatibility path
 until the shared launcher learns the real mini-sglang process contract.
+
+Usage:
+    argus run --config inference.eval_mini_sglang_smoke
+
+    # Monitor progress:
+    tail -f results/eval/<run>/events.jsonl | jq .
+
+    # Direct invocation (interactive debug mode):
+    python -m rollouts.eval.run --config inference.eval_mini_sglang_smoke
 """
 
 from examples.inference.smoke_witness_lib import make_smoke_eval_task

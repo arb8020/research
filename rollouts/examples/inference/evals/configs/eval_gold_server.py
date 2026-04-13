@@ -14,10 +14,16 @@ Two configs here:
 
 Usage:
     # Against the gold server (naive HF baseline)
-    python -m rollouts.eval.run --config examples/inference/eval_gold_server.py --server gold
+    argus run --config inference.eval_gold_server
 
     # Against a student server
-    python -m rollouts.eval.run --config examples/inference/eval_gold_server.py --server /path/to/student_server.py
+    argus run --config inference.eval_gold_server --server /path/to/student_server.py
+
+    # Monitor progress:
+    tail -f results/eval/<run>/events.jsonl | jq .
+
+    # Direct invocation (interactive debug mode):
+    python -m rollouts.eval.run --config inference.eval_gold_server
 """
 
 from rollouts.core import Message, Metric, Score

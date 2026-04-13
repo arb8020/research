@@ -1466,6 +1466,7 @@ async def evaluate(
     _old_sigterm = _signal.signal(_signal.SIGTERM, _handle_sigterm)
 
     report: EvalReport | None = None
+    eval_wall_start: float | None = None
     try:
         with _outer_scope:
             if runtime_owner is not None:
@@ -1543,6 +1544,7 @@ async def evaluate(
                     )
                     last_report_count = len(all_results)
 
+            eval_wall_start = time.monotonic()
             results = await _evaluate_batch(samples_to_eval, runtime, on_sample_complete)
 
             if progress:
@@ -1581,6 +1583,7 @@ async def evaluate(
                 )
                 retry_results = await _evaluate_batch(failed_samples, retry_runtime)
                 results.extend(retry_results)
+                eval_wall_start = time.monotonic()  # reset after retry sleep
 
                 still_failed = sum(
                     1 for r in retry_results if r.metadata.get("status") == "provider_error"
@@ -1598,32 +1601,47 @@ async def evaluate(
             progress.__exit__(None, None, None)
 
         # Write report and emit eval_end regardless of how we exited.
-        # results is [] if we were killed before any samples completed.
+        # results is [] if we were killed before any samples completed, OR if
+        # _evaluate_batch raised after completing all samples (e.g. trio nursery
+        # cleanup exception). In the latter case a valid partial report.json
+        # already exists on disk — do not overwrite it with an empty one.
+        eval_wall_seconds = (
+            time.monotonic() - eval_wall_start if eval_wall_start is not None else None
+        )
         if config.output_dir:
-            summary_metrics = compute_summary_metrics(results)
-            endpoint_config = (
-                sanitize_api_keys(asdict(config.endpoint)) if config.endpoint else None
-            )
-            report = EvalReport(
-                eval_name=config.eval_name,
-                dataset_path=config.eval_name,
-                total_samples=len(results),
-                summary_metrics=summary_metrics,
-                sample_results=results,
-                config={
-                    "endpoint": endpoint_config,
-                    "max_samples": config.max_samples,
-                    "max_concurrent": config.max_concurrent,
-                    "evaluation_timestamp": datetime.now().isoformat(),
-                    "interrupted": _interrupted,
-                },
-                provenance=_build_report_provenance(config, results),
-                config_path=config.config_path,
-            )
-            await report.save(config.output_dir)
+            partial_exists = (config.output_dir / "report.json").exists()
+            if results or not partial_exists:
+                summary_metrics = compute_summary_metrics(
+                    results, wall_time_seconds=eval_wall_seconds
+                )
+                endpoint_config = (
+                    sanitize_api_keys(asdict(config.endpoint)) if config.endpoint else None
+                )
+                report = EvalReport(
+                    eval_name=config.eval_name,
+                    dataset_path=config.eval_name,
+                    total_samples=len(results),
+                    summary_metrics=summary_metrics,
+                    sample_results=results,
+                    config={
+                        "endpoint": endpoint_config,
+                        "max_samples": config.max_samples,
+                        "max_concurrent": config.max_concurrent,
+                        "evaluation_timestamp": datetime.now().isoformat(),
+                        "interrupted": _interrupted,
+                    },
+                    provenance=_build_report_provenance(config, results),
+                    config_path=config.config_path,
+                )
+                await report.save(config.output_dir)
+            else:
+                logger.warning(
+                    "evaluate() finished with empty results but a partial report.json exists — "
+                    "preserving partial report. Check for an exception in _evaluate_batch."
+                )
         elif not _interrupted:
             # output_dir not set — build report in memory for return value only
-            summary_metrics = compute_summary_metrics(results)
+            summary_metrics = compute_summary_metrics(results, wall_time_seconds=eval_wall_seconds)
             endpoint_config = (
                 sanitize_api_keys(asdict(config.endpoint)) if config.endpoint else None
             )
@@ -1678,7 +1696,11 @@ async def evaluate(
     return report
 
 
-def compute_summary_metrics(results: list[RowAttempt]) -> dict[str, float]:
+def compute_summary_metrics(
+    results: list[RowAttempt],
+    *,
+    wall_time_seconds: float | None = None,
+) -> dict[str, float]:
     """Compute summary statistics from results using Score.
 
     Aggregates metrics from Score objects across all results.
@@ -1774,6 +1796,29 @@ def compute_summary_metrics(results: list[RowAttempt]) -> dict[str, float]:
                 float(call["ttft_ms"]) for call in llm_calls if call.get("ttft_ms") is not None
             ],
         )
+
+        # Output tokens/sec per call: how fast the server generated tokens.
+        # Excludes calls where tokens_out or duration_ms is missing/zero.
+        output_tok_per_sec = [
+            float(call["tokens_out"]) / (float(call["duration_ms"]) / 1000.0)
+            for call in llm_calls
+            if call.get("tokens_out") and call.get("duration_ms")
+        ]
+        _add_distribution_summary(
+            summary,
+            name="llm_output_tokens_per_sec",
+            values=output_tok_per_sec,
+        )
+
+    # Wall-time throughput: measures the server under actual concurrent load.
+    # Only meaningful when multiple samples run concurrently; single-sample
+    # runs will just reflect end-to-end latency.
+    if wall_time_seconds and wall_time_seconds > 0 and results:
+        summary["wall_time_seconds"] = wall_time_seconds
+        summary["requests_per_sec"] = len(results) / wall_time_seconds
+        total_tokens_out = summary.get("llm_tokens_out_total", 0.0)
+        if total_tokens_out:
+            summary["total_output_tokens_per_sec"] = total_tokens_out / wall_time_seconds
 
     tool_calls = [
         call

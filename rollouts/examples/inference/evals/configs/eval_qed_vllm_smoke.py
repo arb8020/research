@@ -1,4 +1,14 @@
-"""Fast smoke witness for the patched qed-vllm realization."""
+"""Fast smoke witness for the patched qed-vllm realization.
+
+Usage:
+    argus run --config inference.eval_qed_vllm_smoke
+
+    # Monitor progress:
+    tail -f results/eval/<run>/events.jsonl | jq .
+
+    # Direct invocation (interactive debug mode):
+    python -m rollouts.eval.run --config inference.eval_qed_vllm_smoke
+"""
 
 from examples.inference.smoke_witness_lib import make_smoke_eval_task
 from rollouts.eval.configs import EndpointCapabilities, OwnedEndpoint

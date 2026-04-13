@@ -140,6 +140,8 @@ class EngineThread:
                     break
         except queue.Empty:
             pass
+        if results:
+            logger.info(f"get_results: returning {len(results)} results")
         return results
 
     def _run_loop(self) -> None:
@@ -155,11 +157,20 @@ class EngineThread:
             while not self._stop_event.is_set():
                 self._drain_queue()
 
-                if not self.engine.has_pending():
+                has_work = self.engine.has_pending()
+                if step_count % 100 == 0:
+                    logger.info(
+                        f"_run_loop: step={step_count}, has_pending={has_work}, queue_size={self._request_queue.qsize()}"
+                    )
+
+                if not has_work:
                     try:
                         msg = self._request_queue.get(timeout=0.1)
                         if msg is None:
                             break
+                        logger.info(
+                            f"_run_loop: got msg from queue, has_pending now={self.engine.has_pending()}"
+                        )
                     except queue.Empty:
                         continue
 
@@ -180,6 +191,9 @@ class EngineThread:
                     last_token = req.input_ids[-1].item()
                     is_eos = last_token == self.engine.eos_token_id
                     finish_reason = "stop" if is_eos else "length"
+                    logger.info(
+                        f"_run_loop: request uid={req.uid} finished, reason={finish_reason}"
+                    )
                     self._result_queue.put(
                         EngineResult(uid=req.uid, req=req, finish_reason=finish_reason)
                     )
