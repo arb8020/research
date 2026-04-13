@@ -9,12 +9,19 @@ from types import SimpleNamespace
 import pytest
 import trio
 
-from rollouts.eval.configs import EndpointConfig, InferenceServerConfig
+from rollouts.eval.configs import (
+    EndpointCapabilities,
+    EndpointConfig,
+    InferenceServerConfig,
+    OwnedEndpoint,
+)
 from rollouts.eval.endpoint_realization import (
     _emit_log_lines,
     _legacy_worker_from_eval_surface,
     _remote_inference_python,
     _remote_service_spec,
+    _ssh_workspace_bootstrap_commands,
+    _ssh_workspace_python,
     _tail_remote_trace,
     _wait_for_modal_sandbox_baseline,
     realize_worker_backed_endpoint,
@@ -132,6 +139,50 @@ def test_remote_service_spec_builds_with_remote_python(monkeypatch: pytest.Monke
     assert launch_cmd == "/opt/venvs/rollouts/bin/python"
     assert readiness_target == "/health"
     assert "ROLLOUTS_INFERENCE_PYTHON" not in os.environ
+
+
+def test_remote_service_spec_uses_materialized_workspace_for_launch_module() -> None:
+    launch_cmd, readiness_target = _remote_service_spec(
+        worker=InferenceWorkerConfig(
+            worker_id="actor",
+            model="Qwen/Qwen2.5-0.5B-Instruct",
+            inference=InferenceConfig(port=31000),
+        ),
+        output_dir=Path("/tmp/unused"),
+        remote_python="/tmp/workspace/.venv/bin/python",
+        remote_workspace_root=Path("/tmp/workspace"),
+        owned_endpoint=OwnedEndpoint(
+            spec="slime-sglang",
+            model="Qwen/Qwen2.5-0.5B-Instruct",
+            cuda_device_ids=(0,),
+            port=31000,
+            capabilities=EndpointCapabilities(weight_sync=None),
+            launch_module="rollouts.inference.realizations.slime_sglang",
+        ),
+    )
+
+    assert "export PYTHONPATH=/tmp/workspace:${PYTHONPATH:-};" in launch_cmd
+    assert launch_cmd.endswith(
+        "-m rollouts.inference.realizations.slime_sglang --model Qwen/Qwen2.5-0.5B-Instruct --port 31000"
+    )
+    assert readiness_target == "/health"
+
+
+def test_ssh_workspace_bootstrap_commands_build_workspace_local_uv_and_venv() -> None:
+    workspace_root = Path("/tmp/remote-workspace")
+
+    commands = _ssh_workspace_bootstrap_commands(
+        workspace_root=workspace_root,
+        deps=DepsConfig(bootstrap_commands=("uv pip install --python .venv/bin/python sglang",)),
+    )
+
+    assert _ssh_workspace_python(workspace_root) == "/tmp/remote-workspace/.venv/bin/python"
+    assert "/tmp/remote-workspace/.local/uv/uv" in commands[0]
+    assert "/tmp/remote-workspace/.venv" in commands[1]
+    assert (
+        "export PATH=/tmp/remote-workspace/.venv/bin:/tmp/remote-workspace/.local/uv:$PATH; "
+        "uv pip install --python .venv/bin/python sglang"
+    ) == commands[2]
 
 
 def test_emit_log_lines_emits_startup_phase_once() -> None:

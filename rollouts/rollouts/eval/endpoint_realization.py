@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
+import shlex
 import socket
 import threading
 import time
@@ -140,17 +141,20 @@ def _remote_service_spec(
     worker: InferenceWorkerConfig,
     output_dir: Path,
     remote_python: str,
+    remote_workspace_root: Path | None = None,
     owned_endpoint: OwnedEndpoint | None = None,
 ) -> tuple[str, str]:
     # OwnedEndpoint with launch_module bypasses _build_engine entirely -
     # the launch cmd is derived from the module path, which works remotely
     # because the repo is synced to the Modal sandbox by bifrost.
     if owned_endpoint is not None and owned_endpoint.launch_module is not None:
+        assert remote_workspace_root is not None, (
+            "remote_workspace_root is required when launching a Python module remotely"
+        )
         # Prepend workspace to PYTHONPATH so the synced rollouts source tree
         # takes precedence over any installed package version in the venv.
-        # Must export inside the bash -lc so it survives the login shell env reset.
         launch_cmd = (
-            f"export PYTHONPATH=/workspace/research/rollouts:${{PYTHONPATH:-}}; "
+            f"export PYTHONPATH={shlex.quote(str(remote_workspace_root))}:${{PYTHONPATH:-}}; "
             f"{remote_python} -m {owned_endpoint.launch_module} "
             f"--model {owned_endpoint.model} "
             f"--port {owned_endpoint.port}"
@@ -183,6 +187,51 @@ def _remote_inference_python(hardware_config: HardwareConfig) -> str:
     if image.python_runtime == "image_owned":
         return image.python_executable
     return REMOTE_VENV_PYTHON
+
+
+def _ssh_workspace_uv_root(workspace_root: Path) -> Path:
+    return workspace_root / ".local" / "uv"
+
+
+def _ssh_workspace_python(workspace_root: Path) -> str:
+    return str(workspace_root / ".venv" / "bin" / "python")
+
+
+def _ssh_workspace_bootstrap_commands(
+    *,
+    workspace_root: Path,
+    deps: Any | None,
+) -> tuple[str, ...]:
+    uv_root = _ssh_workspace_uv_root(workspace_root)
+    uv_bin = uv_root / "uv"
+    venv_python = Path(_ssh_workspace_python(workspace_root))
+    path_prefix = f"{venv_python.parent}:{uv_root}:$PATH"
+    commands: list[str] = [
+        (
+            "set -euo pipefail; "
+            "if ! command -v curl >/dev/null 2>&1; then "
+            "sudo apt-get update && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y "
+            "curl ca-certificates; "
+            "fi; "
+            f"mkdir -p {shlex.quote(str(uv_root.parent))}; "
+            f"if [ ! -x {shlex.quote(str(uv_bin))} ]; then "
+            "curl -LsSf https://astral.sh/uv/install.sh | "
+            f"env UV_UNMANAGED_INSTALL={shlex.quote(str(uv_root))} sh; "
+            "fi"
+        ),
+        (
+            "set -euo pipefail; "
+            f"if [ ! -x {shlex.quote(str(venv_python))} ]; then "
+            f"{shlex.quote(str(uv_bin))} venv {shlex.quote(str(venv_python.parent.parent))} "
+            "--python /usr/bin/python3; "
+            "fi"
+        ),
+    ]
+    if deps is None:
+        return tuple(commands)
+    for cmd in deps.bootstrap_commands:
+        commands.append(f"export PATH={shlex.quote(path_prefix)}; {cmd}")
+    return tuple(commands)
 
 
 def _startup_log_context(
@@ -613,9 +662,7 @@ async def _wait_for_local_port_ready(*, port: int, timeout_s: float) -> None:
                 return
         except OSError as exc:
             if trio.current_time() >= deadline:
-                raise RuntimeError(
-                    f"SSH tunnel local port {port} did not become ready"
-                ) from exc
+                raise RuntimeError(f"SSH tunnel local port {port} did not become ready") from exc
             await trio.sleep(0.1)
 
 
@@ -888,17 +935,29 @@ async def _realize_ssh_endpoint(
         workspace = await session.materialize(
             WorkspaceMaterializationSpec(
                 requested_root="~/.bifrost/workspaces/rollouts-eval",
-                bootstrap_commands=hardware_config.deps.bootstrap_commands
-                if hardware_config.deps is not None
-                else (),
+                bootstrap_commands=(),
             )
         )
         remote_output_dir = Path(workspace.root) / "results" / "eval" / run_name
-        remote_python = _remote_inference_python(hardware_config)
+        remote_python = _ssh_workspace_python(Path(workspace.root))
+        bootstrap_commands = _ssh_workspace_bootstrap_commands(
+            workspace_root=Path(workspace.root),
+            deps=hardware_config.deps,
+        )
+        for bootstrap_cmd in bootstrap_commands:
+            result = await session.exec(bootstrap_cmd, working_dir=workspace.root)
+            if result.exit_code != 0:
+                raise RuntimeError(
+                    "SSH workspace bootstrap failed:\n"
+                    f"command: {bootstrap_cmd}\n"
+                    f"stderr: {result.stderr}\n"
+                    f"stdout: {result.stdout}"
+                )
         launch_cmd, readiness_target = _remote_service_spec(
             worker=worker,
             output_dir=remote_output_dir,
             remote_python=remote_python,
+            remote_workspace_root=Path(workspace.root),
             owned_endpoint=endpoint_config if isinstance(endpoint_config, OwnedEndpoint) else None,
         )
         service = await session.serve_service(
@@ -1083,6 +1142,7 @@ async def _realize_modal_endpoint(
                     worker=worker,
                     output_dir=remote_output_dir,
                     remote_python=remote_python,
+                    remote_workspace_root=Path(workspace.root),
                     owned_endpoint=endpoint_config
                     if isinstance(endpoint_config, OwnedEndpoint)
                     else None,
