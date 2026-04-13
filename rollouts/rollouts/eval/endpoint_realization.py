@@ -1028,7 +1028,7 @@ async def _realize_ssh_endpoint(
                 await _wait_for_forwarded_health(
                     local_port=local_port,
                     readiness_target=readiness_target,
-                    timeout_s=10.0,
+                    timeout_s=60.0,
                 )
                 base_url = f"http://127.0.0.1:{local_port}/v1"
                 yield RealizedEvalEndpoint(
