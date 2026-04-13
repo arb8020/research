@@ -663,6 +663,7 @@ class AsyncBifrostClient:
 
         self.logger.debug(f"📁 Deploying to workspace: {workspace_path}")
 
+        expanded_workspace_path = await self.expand_path(workspace_path)
         await trio.to_thread.run_sync(lambda: _check_dirty_workspace_sync(allow_dirty=allow_dirty))
         bundle_path, commit_hash = await trio.to_thread.run_sync(_create_git_bundle_sync)
         remote_bundle = f"/tmp/bifrost-bundle-{os.getpid()}-{int(time.time())}.bundle"
@@ -678,11 +679,11 @@ class AsyncBifrostClient:
         await trio.to_thread.run_sync(os.unlink, bundle_path)
 
         workspace_exists = (
-            await self.exec(f"test -d {shlex.quote(workspace_path)}", working_dir="~")
+            await self.exec(f"test -d {shlex.quote(expanded_workspace_path)}", working_dir="~")
         ).exit_code == 0
         if workspace_exists:
             update_cmd = (
-                f"cd {shlex.quote(workspace_path)} && "
+                f"cd {shlex.quote(expanded_workspace_path)} && "
                 f"git fetch {shlex.quote(remote_bundle)} HEAD && "
                 "git reset --hard FETCH_HEAD && "
                 f"rm {shlex.quote(remote_bundle)}"
@@ -691,8 +692,10 @@ class AsyncBifrostClient:
             if update_result.exit_code != 0:
                 raise RuntimeError(f"Git update from bundle failed: {update_result.stderr}")
         else:
+            workspace_parent = os.path.dirname(expanded_workspace_path.rstrip("/"))
             create_cmd = (
-                f"git clone {shlex.quote(remote_bundle)} {shlex.quote(workspace_path)} && "
+                f"mkdir -p {shlex.quote(workspace_parent)} && "
+                f"git clone {shlex.quote(remote_bundle)} {shlex.quote(expanded_workspace_path)} && "
                 f"rm {shlex.quote(remote_bundle)}"
             )
             create_result = await self.exec(create_cmd, working_dir="~")
@@ -700,7 +703,7 @@ class AsyncBifrostClient:
                 raise RuntimeError(f"Git clone from bundle failed: {create_result.stderr}")
 
         verify_result = await self.exec(
-            f"cd {shlex.quote(workspace_path)} && git rev-parse HEAD",
+            f"cd {shlex.quote(expanded_workspace_path)} && git rev-parse HEAD",
             working_dir="~",
         )
         deployed_hash = verify_result.stdout.strip()
@@ -714,7 +717,7 @@ class AsyncBifrostClient:
             )
         await self._materialize_extra_python_projects(
             conn=conn,
-            workspace_root=workspace_path,
+            workspace_root=expanded_workspace_path,
             extra_python_projects=extra_python_projects,
             allow_dirty=allow_dirty,
         )
@@ -727,13 +730,13 @@ class AsyncBifrostClient:
             for index, cmd in enumerate(bootstrap_steps):
                 if on_bootstrap_step is not None:
                     on_bootstrap_step(cmd, index, total_steps)
-                result = await self.exec(cmd, working_dir=workspace_path)
+                result = await self.exec(cmd, working_dir=expanded_workspace_path)
                 if result.exit_code != 0:
                     raise RuntimeError(
                         f"Bootstrap step {index + 1}/{total_steps} failed: {cmd}\n{result.stderr}"
                     )
 
-        root = workspace_path
+        root = expanded_workspace_path
         self._last_workspace = root
         return root
 
