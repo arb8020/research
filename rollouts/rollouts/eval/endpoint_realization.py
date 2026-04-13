@@ -681,32 +681,6 @@ async def _wait_for_local_port_ready(*, port: int, timeout_s: float) -> None:
             await trio.sleep(0.1)
 
 
-async def _wait_for_forwarded_health(
-    *,
-    local_port: int,
-    readiness_target: str,
-    timeout_s: float,
-) -> None:
-    import urllib.error
-    import urllib.request
-
-    target = readiness_target if readiness_target.startswith("/") else "/health"
-    url = f"http://127.0.0.1:{local_port}{target}"
-    deadline = trio.current_time() + timeout_s
-    while True:
-        try:
-            await trio.to_thread.run_sync(
-                lambda: urllib.request.urlopen(url, timeout=1.0).read(),
-            )
-            return
-        except (urllib.error.URLError, TimeoutError, OSError) as exc:
-            if trio.current_time() >= deadline:
-                raise RuntimeError(
-                    f"Forwarded SSH endpoint did not become healthy at {url} within {timeout_s}s"
-                ) from exc
-            await trio.sleep(0.2)
-
-
 @asynccontextmanager
 async def _forward_ssh_port(
     *,
@@ -1025,11 +999,6 @@ async def _realize_ssh_endpoint(
                 ssh_key_path=hardware_config.ssh_key_path,
                 remote_port=worker.inference.port,
             ) as local_port:
-                await _wait_for_forwarded_health(
-                    local_port=local_port,
-                    readiness_target=readiness_target,
-                    timeout_s=60.0,
-                )
                 base_url = f"http://127.0.0.1:{local_port}/v1"
                 yield RealizedEvalEndpoint(
                     endpoint_config=(
