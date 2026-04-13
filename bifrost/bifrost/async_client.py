@@ -127,6 +127,45 @@ def _create_git_bundle_sync() -> tuple[str, str]:
     return bundle_path, commit_hash
 
 
+def _upload_file_via_rsync_sync(
+    *,
+    local_path: str,
+    remote_path: str,
+    remote_config: RemoteConfig,
+) -> None:
+    ssh_cmd = shlex.join((
+        "ssh",
+        "-i",
+        remote_config.key_path,
+        "-p",
+        str(remote_config.port),
+        "-o",
+        "BatchMode=yes",
+        "-o",
+        "ConnectTimeout=30",
+    ))
+    destination = f"{remote_config.user}@{remote_config.host}:{remote_path}"
+    result = subprocess.run(
+        [
+            "rsync",
+            "-az",
+            "--partial",
+            "-e",
+            ssh_cmd,
+            local_path,
+            destination,
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"rsync upload failed with exit code {result.returncode}: "
+            f"{result.stderr or result.stdout}"
+        )
+
+
 class AsyncBifrostClient:
     """
     Async Bifrost SDK client for remote GPU execution and job management.
@@ -623,22 +662,15 @@ class AsyncBifrostClient:
         bundle_path, commit_hash = await trio.to_thread.run_sync(_create_git_bundle_sync)
         remote_bundle = f"/tmp/bifrost-bundle-{os.getpid()}-{int(time.time())}.bundle"
 
+        await trio.to_thread.run_sync(
+            lambda: _upload_file_via_rsync_sync(
+                local_path=bundle_path,
+                remote_path=remote_bundle,
+                remote_config=self._remote_config,
+            )
+        )
         conn = await self._get_connection()
-        sftp = await _trio_wrap(conn.start_sftp_client)()
-        try:
-            if self.progress_callback is None:
-                await _trio_wrap(sftp.put)(bundle_path, remote_bundle)
-            else:
-                await _trio_wrap(sftp.put)(
-                    bundle_path,
-                    remote_bundle,
-                    progress_handler=lambda _src, _dst, transferred, total: self.progress_callback(
-                        remote_bundle, transferred, total
-                    ),
-                )
-        finally:
-            await _close_sftp_client(sftp)
-            await trio.to_thread.run_sync(os.unlink, bundle_path)
+        await trio.to_thread.run_sync(os.unlink, bundle_path)
 
         workspace_exists = (
             await self.exec(f"test -d {shlex.quote(workspace_path)}", working_dir="~")
