@@ -29,7 +29,7 @@ tasks = make_random_tasks(
 
 hardware = HardwareConfig(
     provider="ssh",
-    ssh="ubuntu@146.88.195.10:22",
+    ssh="ubuntu@146.88.195.10:2222",
     ssh_key_path="~/.ssh/id_ed25519",
     gpu_type="B200",
     gpu_count=2,
