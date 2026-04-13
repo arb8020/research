@@ -145,25 +145,30 @@ def _upload_file_via_rsync_sync(
         "ConnectTimeout=30",
     ))
     destination = f"{remote_config.user}@{remote_config.host}:{remote_path}"
-    result = subprocess.run(
-        [
-            "rsync",
-            "-az",
-            "--partial",
-            "-e",
-            ssh_cmd,
-            local_path,
-            destination,
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if result.returncode != 0:
-        raise RuntimeError(
-            f"rsync upload failed with exit code {result.returncode}: "
-            f"{result.stderr or result.stdout}"
+    last_error: str | None = None
+    for attempt in range(3):
+        result = subprocess.run(
+            [
+                "rsync",
+                "-az",
+                "--partial",
+                "-e",
+                ssh_cmd,
+                local_path,
+                destination,
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
         )
+        if result.returncode == 0:
+            return
+        last_error = result.stderr or result.stdout
+        if attempt < 2:
+            time.sleep(2.0 * (attempt + 1))
+    raise RuntimeError(
+        f"rsync upload failed after 3 attempts: {last_error}"
+    )
 
 
 class AsyncBifrostClient:
