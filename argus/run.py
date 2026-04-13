@@ -2085,8 +2085,6 @@ Examples:
         #   3. invoke the selected launcher
         # The current file still interleaves those state machines.
         # Dispatch based on workload/provider
-        from rollouts.inference.benchmark.config import BenchmarkConfig
-
         if workload_kind == "evaluation":
             if args.node_id or multi_node is not None:
                 raise ValueError(
@@ -2121,6 +2119,8 @@ Examples:
                 return 0
 
             return _launch_eval_monitor(run_dir=local_run_dir, tail=args.tail)
+
+        from rollouts.inference.benchmark.config import BenchmarkConfig
 
         if not isinstance(config_module.config, BenchmarkConfig):
             train_fn = getattr(config_module, "train", None)
