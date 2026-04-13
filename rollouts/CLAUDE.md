@@ -86,8 +86,8 @@ is incompatible with `huggingface_hub>=1.4` (`is_offline_mode` removed). The boo
 
 ```bash
 # Fire-and-forget (preferred)
-python -m argus run --config inference.eval_skeleton_server
-python -m argus run --config bench.bench_slime_sglang
+python -m argus run --config examples/inference/evals/configs/eval_skeleton_server.py
+python -m argus run --config examples/inference/evals/configs/bench/bench_slime_sglang.py
 
 # Monitor — stdout/stderr during a run is bifrost/sandbox noise, ignore it
 tail -f results/eval/<run>/events.jsonl | jq .

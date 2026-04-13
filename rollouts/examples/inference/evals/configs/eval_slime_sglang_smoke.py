@@ -5,7 +5,7 @@ same startup/health/stall telemetry we care about for inference-engine
 iteration.
 
 Usage:
-    python -m argus run --config inference.eval_slime_sglang_smoke
+    python -m argus run --config examples/inference/evals/configs/eval_slime_sglang_smoke.py
 
     # Monitor progress:
     tail -f results/eval/<run>/events.jsonl | jq .

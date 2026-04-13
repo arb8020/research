@@ -12,7 +12,7 @@ which proves the serving contract while still scoring poorly.
 
 Usage (against a real implementation):
     # First implement generate_reply in skeleton_server.py, then:
-    python -m argus run --config inference.eval_skeleton_server
+    python -m argus run --config examples/inference/evals/configs/eval_skeleton_server.py
 
     # Monitor progress (stdout/stderr are noise - use the jsonl):
     tail -f results/eval/<run>/events.jsonl | jq .

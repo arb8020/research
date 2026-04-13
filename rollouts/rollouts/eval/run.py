@@ -5,7 +5,7 @@ Runs evals against API endpoints or SGLang/vLLM servers.
 
 Preferred usage (fire-and-forget, monitor via jsonl):
     python -m argus run --config examples/eval/reverse_text/smoke.py
-    python -m argus run --config inference.eval_skeleton_server
+    python -m argus run --config examples/inference/evals/configs/eval_skeleton_server.py
 
     # Then monitor:
     tail -f results/eval/<run>/events.jsonl | jq .
@@ -355,7 +355,7 @@ def main() -> int:
         epilog="""
 Examples:
     # Preferred: fire-and-forget via argus (monitor via events.jsonl)
-    python -m argus run --config inference.eval_skeleton_server
+    python -m argus run --config examples/inference/evals/configs/eval_skeleton_server.py
     python -m argus run --config examples/eval/reverse_text/smoke.py
 
     # Direct: interactive, all output to terminal (useful for debugging)

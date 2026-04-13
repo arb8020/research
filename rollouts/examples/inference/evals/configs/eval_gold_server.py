@@ -14,10 +14,10 @@ Two configs here:
 
 Usage:
     # Against the gold server (naive HF baseline)
-    python -m argus run --config inference.eval_gold_server
+    python -m argus run --config examples/inference/evals/configs/eval_gold_server.py
 
     # Against a student server
-    python -m argus run --config inference.eval_gold_server --server /path/to/student_server.py
+    python -m argus run --config examples/inference/evals/configs/eval_gold_server.py --server /path/to/student_server.py
 
     # Monitor progress:
     tail -f results/eval/<run>/events.jsonl | jq .

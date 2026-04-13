@@ -1,7 +1,7 @@
 """Fast smoke witness for the patched qed-vllm realization.
 
 Usage:
-    python -m argus run --config inference.eval_qed_vllm_smoke
+    python -m argus run --config examples/inference/evals/configs/eval_qed_vllm_smoke.py
 
     # Monitor progress:
     tail -f results/eval/<run>/events.jsonl | jq .
