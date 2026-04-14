@@ -109,7 +109,6 @@ _docker_run = (
     f" --model-path {MODEL}"
     f" --host 0.0.0.0"
     f" --port {PORT}"
-    f" --dtype fp8"
     f" --tp 8"
     f" --trust-remote-code"
     f" --enable-dp-attention"
