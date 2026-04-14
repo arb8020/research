@@ -959,6 +959,34 @@ def _format_event(line: str) -> str:
             f"in={ev.get('tokens_in', '?')}  out={ev.get('tokens_out', '?')}  "
             f"ms={ev.get('duration_ms', '?')}"
         )
+    elif msg in ("eval_inference_service_log", "inference_service_final_log"):
+        # Just show the log line, strip SSH metadata
+        stream = ev.get("log_stream", "")
+        line = ev.get("line") or ev.get("log_blob", "")
+        prefix = f"[{stream}] " if stream else ""
+        parts.append(f"{prefix}{line}")
+    elif "event" in ev:
+        # argus run.jsonl lifecycle events — show event name + key fields only
+        skip = {
+            "event",
+            "timestamp",
+            "logger",
+            "level",
+            "taskName",
+            "provider",
+            "ssh_target",
+            "engine_log_path",
+            "engine_trace_path",
+            "engine_cuda_device_ids",
+            "service_name",
+            "output_dir",
+            "stdout_log",
+            "stderr_log",
+            "command",
+        }
+        key = ev["event"]
+        extra = "  ".join(f"{k}={v}" for k, v in ev.items() if k not in skip and v is not None)
+        parts.append(f"{key}  {extra}" if extra else key)
     else:
         # Generic: show message + any extra fields except boilerplate
         skip = {"message", "timestamp", "logger", "level", "taskName"}

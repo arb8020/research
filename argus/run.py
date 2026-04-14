@@ -1022,13 +1022,18 @@ def _launch_eval_monitor(
     *,
     run_dir: Path,
     tail: bool,
+    fmt: str = "pretty",
 ) -> int:
     import subprocess
 
     monitor_cmd = [sys.executable, "-m", "argus", "monitor", str(run_dir)]
     if tail:
         monitor_cmd.append("--tail")
-    return subprocess.run(monitor_cmd, check=False).returncode
+        monitor_cmd.extend(["--format", fmt])
+    try:
+        return subprocess.run(monitor_cmd, check=False).returncode
+    except KeyboardInterrupt:
+        return 0
 
 
 async def _deploy_and_submit(
@@ -2118,7 +2123,11 @@ Examples:
             if not args.tui and not args.tail:
                 return 0
 
-            return _launch_eval_monitor(run_dir=local_run_dir, tail=args.tail)
+            return _launch_eval_monitor(
+                run_dir=local_run_dir,
+                tail=args.tail,
+                fmt=getattr(args, "format", "pretty"),
+            )
 
         from rollouts.inference.benchmark.config import BenchmarkConfig
 
