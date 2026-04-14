@@ -347,9 +347,15 @@ async def run_agent_step(
         last_completion = next_actor.trajectory.completions[-1]
         if hasattr(last_completion, "usage") and last_completion.usage:
             usage = last_completion.usage
-            tokens_in = getattr(usage, "input_tokens", None)
-            # Include reasoning tokens in output count for tok/s calculation
-            output = getattr(usage, "output_tokens", 0) or 0
+            # input_tokens: Anthropic format; prompt_tokens: OpenAI-compat (SGLang/vLLM)
+            tokens_in = getattr(usage, "input_tokens", None) or getattr(
+                usage, "prompt_tokens", None
+            )
+            # Include reasoning tokens in output count for tok/s calculation.
+            # output_tokens: Anthropic format; completion_tokens: OpenAI-compat
+            output = (
+                getattr(usage, "output_tokens", 0) or getattr(usage, "completion_tokens", 0) or 0
+            )
             reasoning = getattr(usage, "reasoning_tokens", 0) or 0
             tokens_out = output + reasoning if (output or reasoning) else None
             # Extract cost if available
