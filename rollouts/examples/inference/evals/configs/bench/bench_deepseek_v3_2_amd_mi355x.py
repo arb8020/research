@@ -114,7 +114,7 @@ _docker_run = (
     f" --env SGLANG_NSA_USE_TILELANG_PREFILL=True"
     f" --name sglang_bench_{PORT}"
     f" {_SGLANG_IMAGE}"
-    f" bash -c 'pip install -q /root/tilelang && python -m sglang.launch_server"
+    f" bash -c 'USE_ROCM=true ROCM_HOME=/opt/rocm pip install -q /root/tilelang && python -m sglang.launch_server"
     f" --model-path {MODEL}"
     f" --host 0.0.0.0"
     f" --port {PORT}"
