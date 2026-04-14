@@ -44,6 +44,7 @@ if TYPE_CHECKING:
     from rollouts.training.types import RowAttempt, Scorer
 
 # Reuse HardwareConfig from training
+from rollouts.core.eval import DistributionPercentileSpec
 from rollouts.training.configs import (
     HardwareConfig,
     InferenceRole,
@@ -731,6 +732,7 @@ class EvalTaskSpec:
     output: EvalOutputConfig = field(default_factory=EvalOutputConfig)
     hardware: HardwareConfig | None = None
     server: InferenceServerConfig = field(default_factory=InferenceServerConfig)
+    summary_distribution_percentiles: DistributionPercentileSpec | None = None
 
     def __post_init__(self) -> None:
         if (self.tasks is None) == (self.tasks_path is None):

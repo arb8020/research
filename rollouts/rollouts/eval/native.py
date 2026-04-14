@@ -600,15 +600,16 @@ def _add_distribution_summary(
     *,
     name: str,
     values: list[float],
+    percentiles: tuple[int, ...] = (50, 95),
 ) -> None:
-    """Attach mean/p50/p95/max summaries for a numeric metric family."""
+    """Attach mean/pXX/max summaries for a numeric metric family."""
     if not values:
         return
 
     mean_value = sum(values) / len(values)
     summary[f"{name}_mean"] = mean_value
-    summary[f"{name}_p50"] = _percentile(values, 50.0)
-    summary[f"{name}_p95"] = _percentile(values, 95.0)
+    for percentile in percentiles:
+        summary[f"{name}_p{percentile}"] = _percentile(values, float(percentile))
     summary[f"{name}_max"] = max(values)
 
 
@@ -812,7 +813,10 @@ def _write_partial_report(
     _write_sample_results(samples_dir, results)
 
     # Save partial summary
-    summary_metrics = compute_summary_metrics(results)
+    summary_metrics = compute_summary_metrics(
+        results,
+        distribution_percentiles=config.summary_distribution_percentiles,
+    )
     partial_report = {
         "eval_name": config.eval_name,
         "total_samples": len(results),
@@ -1612,7 +1616,10 @@ async def evaluate(
             partial_exists = (config.output_dir / "report.json").exists()
             if results or not partial_exists:
                 summary_metrics = compute_summary_metrics(
-                    results, wall_time_seconds=eval_wall_seconds
+                    results,
+                    wall_time_seconds=eval_wall_seconds,
+                    gpu_count=config.hardware.gpu_count if config.hardware else None,
+                    distribution_percentiles=config.summary_distribution_percentiles,
                 )
                 endpoint_config = (
                     sanitize_api_keys(asdict(config.endpoint)) if config.endpoint else None
@@ -1641,7 +1648,12 @@ async def evaluate(
                 )
         elif not _interrupted:
             # output_dir not set — build report in memory for return value only
-            summary_metrics = compute_summary_metrics(results, wall_time_seconds=eval_wall_seconds)
+            summary_metrics = compute_summary_metrics(
+                results,
+                wall_time_seconds=eval_wall_seconds,
+                gpu_count=config.hardware.gpu_count if config.hardware else None,
+                distribution_percentiles=config.summary_distribution_percentiles,
+            )
             endpoint_config = (
                 sanitize_api_keys(asdict(config.endpoint)) if config.endpoint else None
             )
@@ -1700,6 +1712,8 @@ def compute_summary_metrics(
     results: list[RowAttempt],
     *,
     wall_time_seconds: float | None = None,
+    gpu_count: int | None = None,
+    distribution_percentiles: dict[str, tuple[int, ...]] | None = None,
 ) -> dict[str, float]:
     """Compute summary statistics from results using Score.
 
@@ -1713,6 +1727,7 @@ def compute_summary_metrics(
         return {}
 
     summary: dict[str, Any] = {}
+    distribution_percentiles = distribution_percentiles or {}
 
     # Get all unique metric names from Score objects
     all_metric_names: set[str] = set()
@@ -1761,6 +1776,7 @@ def compute_summary_metrics(
         summary,
         name="sample_duration_seconds",
         values=sample_durations,
+        percentiles=distribution_percentiles.get("sample_duration_seconds", (50, 95)),
     )
 
     llm_calls = [
@@ -1788,6 +1804,7 @@ def compute_summary_metrics(
                 for call in llm_calls
                 if call.get("duration_ms") is not None
             ],
+            percentiles=distribution_percentiles.get("llm_duration_ms", (50, 95)),
         )
         _add_distribution_summary(
             summary,
@@ -1795,6 +1812,35 @@ def compute_summary_metrics(
             values=[
                 float(call["ttft_ms"]) for call in llm_calls if call.get("ttft_ms") is not None
             ],
+            percentiles=distribution_percentiles.get("llm_ttft_ms", (50, 95)),
+        )
+
+        tpot_ms = [
+            max(
+                (float(call["duration_ms"]) - float(call["ttft_ms"]))
+                / max(int(call["tokens_out"]) - 1, 1),
+                0.0,
+            )
+            for call in llm_calls
+            if call.get("duration_ms") is not None
+            and call.get("ttft_ms") is not None
+            and call.get("tokens_out") not in (None, 0)
+        ]
+        _add_distribution_summary(
+            summary,
+            name="llm_tpot_ms",
+            values=tpot_ms,
+            percentiles=distribution_percentiles.get("llm_tpot_ms", (50, 95)),
+        )
+
+        # TODO(bench-itl): this is the same average post-first-token latency as TPOT.
+        # A truthful ITL distribution needs token-level stream timestamps, which the
+        # current per-call telemetry does not preserve.
+        _add_distribution_summary(
+            summary,
+            name="llm_itl_ms",
+            values=tpot_ms,
+            percentiles=distribution_percentiles.get("llm_itl_ms", (50, 95)),
         )
 
         # Output tokens/sec per call: how fast the server generated tokens.
@@ -1808,6 +1854,7 @@ def compute_summary_metrics(
             summary,
             name="llm_output_tokens_per_sec",
             values=output_tok_per_sec,
+            percentiles=distribution_percentiles.get("llm_output_tokens_per_sec", (50, 95)),
         )
 
     # Wall-time throughput: measures the server under actual concurrent load.
@@ -1819,6 +1866,10 @@ def compute_summary_metrics(
         total_tokens_out = summary.get("llm_tokens_out_total", 0.0)
         if total_tokens_out:
             summary["total_output_tokens_per_sec"] = total_tokens_out / wall_time_seconds
+            if gpu_count is not None and gpu_count > 0:
+                summary["output_tokens_per_min_per_gpu"] = (
+                    summary["total_output_tokens_per_sec"] * 60.0 / gpu_count
+                )
 
     tool_calls = [
         call
@@ -1836,6 +1887,7 @@ def compute_summary_metrics(
         values=[
             float(call["duration_ms"]) for call in tool_calls if call.get("duration_ms") is not None
         ],
+        percentiles=distribution_percentiles.get("tool_execution_duration_ms", (50, 95)),
     )
 
     # Separate provider errors from actual failures

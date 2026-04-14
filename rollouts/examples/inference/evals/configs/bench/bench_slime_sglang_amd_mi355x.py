@@ -1,25 +1,26 @@
-"""Throughput/latency benchmark for the qed-vllm realization.
+"""Throughput/latency benchmark for SGLang on AMD Instinct MI355X (8x GPU node).
 
-Drives the server with concurrent synthetic load and reports:
-  - requests_per_sec (wall-time)
-  - total_output_tokens_per_sec (wall-time)
-  - llm_ttft_ms_* (mean/p50/p95/max)
-  - llm_output_tokens_per_sec_* (mean/p50/p95/max)
-  - llm_duration_ms_* (mean/p50/p95/max)
+Uses AMD's official ROCm 7.0 + SGLang Docker image rather than bare pip install.
+The image has the correct ROCm/PyTorch/SGLang version matrix pre-solved.
 
-No correctness scorer — this is a perf characterization run, not an accuracy check.
+Hardware: root@66.42.120.238, 8x AMD Instinct MI355X (gfx950), ROCm 7.0
+SSH key:  ~/.ssh/id_ed25519
 
 Usage:
-    python -m argus run --config examples/inference/evals/configs/bench/bench_qed_vllm.py
+    # SSH eval endpoint not yet implemented — see docs/handoffs/ssh_eval_endpoint.md
+    # Once implemented:
+    python -m argus run --config examples/inference/evals/configs/bench/bench_slime_sglang_amd_mi355x.py
 
     # Monitor progress:
     tail -f results/eval/<run>/events.jsonl | jq .
 
     # Direct invocation (interactive debug mode):
-    python -m rollouts.eval.run --config bench.bench_qed_vllm
+    python -m rollouts.eval.run --config examples/inference/evals/configs/bench/bench_slime_sglang_amd_mi355x.py
 
-To benchmark with a real dataset instead of synthetic load:
-    Change WORKLOAD.kind to "sharegpt" and set WORKLOAD.dataset_path.
+Reference:
+    InferenceX by SemiAnalysis: https://github.com/SemiAnalysisAI/InferenceX
+    Docker image: rocm/sgl-dev:sglang-0.5.6.post1-rocm700-mi35x-mori-1224
+    ROCm SGLang docs: https://rocm.docs.amd.com/en/latest/how-to/rocm-for-ai/inference/benchmark-docker/sglang-mori-distributed.html
 """
 
 from examples.inference.bench_config_lib import (
@@ -37,14 +38,17 @@ from rollouts.eval.configs import EndpointCapabilities, OwnedEndpoint
 from rollouts.training.configs import DepsConfig, HardwareConfig
 from rollouts.training.scoring import FunctionScorer
 
-# No correctness check — bench runs care only about throughput/latency metrics.
 _no_op_scorer = FunctionScorer(lambda attempt, _ctx: Score(metrics=()))
 
 MODEL = "Qwen/Qwen3-0.6B"
-PORT = 30001
+PORT = 30000
+
+# AMD's official Docker image for MI355X: ROCm 7.0, SGLang 0.5.6, MoRI backend.
+# No pip version matrix to manage — the image is the reproducible environment.
+_SGLANG_IMAGE = "rocm/sgl-dev:sglang-0.5.6.post1-rocm700-mi35x-mori-1224"
 
 # ---------------------------------------------------------------------------
-# Workload — swap to make_sharegpt_tasks for real data
+# Workload
 # ---------------------------------------------------------------------------
 
 WORKLOAD = InferenceBenchWorkload(
@@ -65,27 +69,47 @@ tasks = build_bench_tasks(WORKLOAD)
 # ---------------------------------------------------------------------------
 
 hardware = HardwareConfig(
-    provider="modal",
-    gpu_type="A100",
-    gpu_count=1,
+    provider="ssh",
+    ssh="root@66.42.120.238:22",
+    ssh_key_path="~/.ssh/id_ed25519",
+    gpu_type="MI355X",
+    gpu_count=2,
     use_torchrun=False,
-    keep_alive=True,
     deps=DepsConfig(
-        bootstrap_commands=(
-            "~/.local/bin/uv pip install --python /opt/venvs/rollouts/bin/python "
-            "torch 'vllm>=0.13.0,<0.14.0'",
-        ),
+        bootstrap_commands=(f"docker pull {_SGLANG_IMAGE}",),
     ),
 )
 
 # ---------------------------------------------------------------------------
 # Endpoint
+# launch_cmd runs SGLang inside Docker with ROCm device access.
+# ROCR_VISIBLE_DEVICES=0,1 scopes to the first two GPUs.
+# --network host binds directly to port 30000; SSH tunnel handles local access.
 # ---------------------------------------------------------------------------
 
+_docker_run = (
+    f"docker run --rm --detach"
+    f" --device /dev/kfd --device /dev/dri"
+    f" --group-add video"
+    f" --ipc host --network host"
+    f" --shm-size 16G"
+    f" --env ROCR_VISIBLE_DEVICES=0,1"
+    f" --name sglang_bench_{PORT}"
+    f" {_SGLANG_IMAGE}"
+    f" python -m sglang.launch_server"
+    f" --model-path {MODEL}"
+    f" --host 0.0.0.0"
+    f" --port {PORT}"
+    f" --dtype bfloat16"
+    f" --tp 2"
+    f" --trust-remote-code"
+)
+
 endpoint = OwnedEndpoint(
-    spec="qed-vllm",
+    spec="custom-http",
+    launch_cmd=_docker_run,
+    cuda_device_ids=(0, 1),
     model=MODEL,
-    cuda_device_ids=(0,),
     port=PORT,
     capabilities=EndpointCapabilities(weight_sync=None),
     startup_timeout=300.0,
@@ -93,7 +117,7 @@ endpoint = OwnedEndpoint(
 )
 
 # ---------------------------------------------------------------------------
-# Eval task — no scorer, this is a perf run
+# Eval task
 # ---------------------------------------------------------------------------
 
 eval_task = EvalTaskSpec(
@@ -110,7 +134,7 @@ eval_task = EvalTaskSpec(
         verbose=False,
         show_progress=True,
     ),
-    output=EvalOutputConfig(experiment_name="bench_qed_vllm"),
+    output=EvalOutputConfig(experiment_name="bench_slime_sglang_amd_mi355x"),
     hardware=hardware,
     summary_distribution_percentiles=SUMMARY_DISTRIBUTION_PERCENTILES,
 )

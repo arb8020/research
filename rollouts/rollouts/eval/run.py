@@ -280,6 +280,12 @@ async def run_with_api(
         output_dir=output_dir,
         eval_name=output_config.experiment_name,
         show_progress=run_config.show_progress,
+        summary_distribution_percentiles=getattr(
+            config_module, "SUMMARY_DISTRIBUTION_PERCENTILES", None
+        )
+        or getattr(
+            getattr(config_module, "eval_task", None), "summary_distribution_percentiles", None
+        ),
     )
 
     # Run evaluation

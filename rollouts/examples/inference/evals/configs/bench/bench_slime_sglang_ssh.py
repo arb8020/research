@@ -29,7 +29,15 @@ Usage:
     }' results/eval/<run>/report.json
 """
 
-from examples.inference.bench_workload_lib import make_random_tasks, prepare_bench_messages
+from examples.inference.bench_config_lib import (
+    SUMMARY_DISTRIBUTION_PERCENTILES as DEFAULT_SUMMARY_DISTRIBUTION_PERCENTILES,
+)
+from examples.inference.bench_config_lib import (
+    InferenceBenchSLA,
+    InferenceBenchWorkload,
+    build_bench_tasks,
+)
+from examples.inference.bench_workload_lib import prepare_bench_messages
 from rollouts.core import Score
 from rollouts.eval import AgentRunSpec, EvalOutputConfig, EvalRunConfig, EvalTaskSpec
 from rollouts.eval.configs import EndpointCapabilities, OwnedEndpoint
@@ -38,27 +46,21 @@ from rollouts.training.scoring import FunctionScorer
 
 _no_op_scorer = FunctionScorer(lambda attempt, _ctx: Score(metrics=()))
 
-WATCH_METRICS = (
-    "requests_per_sec",
-    "total_output_tokens_per_sec",
-    "llm_duration_ms_p50",
-    "llm_duration_ms_p95",
-    "llm_output_tokens_per_sec_mean",
-)
-
 MODEL = "Qwen/Qwen3-0.6B"
 PORT = 30000
 
-INPUT_LEN = 512
-OUTPUT_LEN = 256
-NUM_PROMPTS = 200
-
-tasks = make_random_tasks(
-    num_prompts=NUM_PROMPTS,
-    input_len=INPUT_LEN,
-    output_len=OUTPUT_LEN,
+WORKLOAD = InferenceBenchWorkload(
+    kind="random",
+    num_prompts=200,
+    input_len=512,
+    output_len=256,
     seed=42,
+    max_concurrent=16,
 )
+SLA = InferenceBenchSLA()
+SUMMARY_DISTRIBUTION_PERCENTILES = DEFAULT_SUMMARY_DISTRIBUTION_PERCENTILES
+
+tasks = build_bench_tasks(WORKLOAD)
 
 hardware = HardwareConfig(
     provider="ssh",
@@ -85,7 +87,7 @@ endpoint = OwnedEndpoint(
     capabilities=EndpointCapabilities(weight_sync=None),
     mem_fraction=0.6,
     startup_timeout=300.0,
-    max_tokens=OUTPUT_LEN,
+    max_tokens=WORKLOAD.output_len,
     extra_params={"chat_template_kwargs": {"enable_thinking": False}},
 )
 
@@ -97,12 +99,13 @@ eval_task = EvalTaskSpec(
     ),
     scorer=_no_op_scorer,
     run=EvalRunConfig(
-        max_concurrent=16,
-        max_samples=NUM_PROMPTS,
+        max_concurrent=WORKLOAD.max_concurrent,
+        max_samples=WORKLOAD.num_prompts,
         max_turns=1,
         verbose=False,
         show_progress=True,
     ),
     output=EvalOutputConfig(experiment_name="bench_slime_sglang_ssh"),
     hardware=hardware,
+    summary_distribution_percentiles=SUMMARY_DISTRIBUTION_PERCENTILES,
 )

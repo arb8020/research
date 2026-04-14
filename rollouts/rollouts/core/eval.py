@@ -39,6 +39,7 @@ AttemptExecutor = Callable[
     [dict[str, Any], str, "Environment | None", "RunConfig"],
     RowAttempt | Awaitable[RowAttempt],
 ]
+DistributionPercentileSpec = dict[str, tuple[int, ...]]
 
 
 @dataclass(frozen=True)
@@ -73,6 +74,7 @@ class EvalConfig:
     resume_dir: Path | None = None
     report_batch_size: int = 1
     metadata: dict[str, Any] | None = None
+    summary_distribution_percentiles: DistributionPercentileSpec | None = None
 
     def __post_init__(self) -> None:
         if self.prepare_messages is None and self.attempt_executor is None:

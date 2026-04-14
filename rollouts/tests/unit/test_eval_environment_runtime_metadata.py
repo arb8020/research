@@ -458,3 +458,102 @@ def test_compute_summary_metrics_includes_llm_runtime_telemetry() -> None:
     assert summary["llm_ttft_ms_p50"] == 60.0
     assert summary["sample_duration_seconds_mean"] == 3.0
     assert summary["tool_execution_count_total"] == 1
+    assert summary["llm_tpot_ms_p50"] == 22.0
+    assert summary["llm_itl_ms_p50"] == 22.0
+
+
+def test_compute_summary_metrics_includes_output_tokens_per_min_per_gpu() -> None:
+    first = RowAttempt(
+        attempt_id="sample-1",
+        status=Status.COMPLETED,
+        metadata={
+            "status": "success",
+            "turns_used": 1,
+            "total_tokens": 10,
+            "llm_call_metrics": [
+                {
+                    "duration_ms": 100.0,
+                    "ttft_ms": 40.0,
+                    "tokens_in": 8,
+                    "tokens_out": 40,
+                    "status": "success",
+                }
+            ],
+            "tool_execution_metrics": [],
+        },
+    )
+    second = RowAttempt(
+        attempt_id="sample-2",
+        status=Status.COMPLETED,
+        metadata={
+            "status": "success",
+            "turns_used": 1,
+            "total_tokens": 12,
+            "llm_call_metrics": [
+                {
+                    "duration_ms": 200.0,
+                    "ttft_ms": 80.0,
+                    "tokens_in": 16,
+                    "tokens_out": 20,
+                    "status": "success",
+                }
+            ],
+            "tool_execution_metrics": [],
+        },
+    )
+
+    summary = compute_summary_metrics(
+        [first, second],
+        wall_time_seconds=30.0,
+        gpu_count=2,
+    )
+
+    assert summary["total_output_tokens_per_sec"] == 2.0
+    assert summary["output_tokens_per_min_per_gpu"] == 60.0
+
+
+def test_compute_summary_metrics_respects_distribution_percentiles() -> None:
+    result = RowAttempt(
+        attempt_id="sample-1",
+        status=Status.COMPLETED,
+        metadata={
+            "status": "success",
+            "turns_used": 1,
+            "total_tokens": 10,
+            "llm_call_metrics": [
+                {
+                    "duration_ms": 100.0,
+                    "ttft_ms": 10.0,
+                    "tokens_in": 8,
+                    "tokens_out": 10,
+                    "status": "success",
+                },
+                {
+                    "duration_ms": 200.0,
+                    "ttft_ms": 20.0,
+                    "tokens_in": 8,
+                    "tokens_out": 10,
+                    "status": "success",
+                },
+            ],
+            "tool_execution_metrics": [],
+        },
+    )
+
+    summary = compute_summary_metrics(
+        [result],
+        distribution_percentiles={
+            "llm_ttft_ms": (90, 99),
+            "llm_tpot_ms": (50, 99),
+            "llm_itl_ms": (90, 95, 99),
+        },
+    )
+
+    assert "llm_ttft_ms_p50" not in summary
+    assert summary["llm_ttft_ms_p90"] == 19.0
+    assert summary["llm_ttft_ms_p99"] == 19.9
+    assert summary["llm_tpot_ms_p50"] == 15.0
+    assert summary["llm_tpot_ms_p99"] == 19.9
+    assert summary["llm_itl_ms_p90"] == 19.0
+    assert summary["llm_itl_ms_p95"] == 19.5
+    assert summary["llm_itl_ms_p99"] == 19.9
