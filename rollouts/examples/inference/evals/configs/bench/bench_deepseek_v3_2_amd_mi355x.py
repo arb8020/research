@@ -120,6 +120,7 @@ _docker_run = (
     f" --port {PORT}"
     f" --tp 8"
     f" --trust-remote-code"
+    f" --chat-template /sgl-workspace/sglang/examples/chat_template/tool_chat_template_deepseekv32.jinja"
     f" --disable-cuda-graph"
     f" --mem-fraction-static 0.85"
     f" --page-size 64"
