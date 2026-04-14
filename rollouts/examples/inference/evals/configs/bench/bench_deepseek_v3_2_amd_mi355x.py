@@ -46,7 +46,9 @@ _no_op_scorer = FunctionScorer(lambda attempt, _ctx: Score(metrics=()))
 MODEL = "deepseek-ai/DeepSeek-V3.2"
 PORT = 30000
 
-_SGLANG_IMAGE = "rocm/sgl-dev:sglang-0.5.6.post1-rocm700-mi35x-mori-1224"
+# V3.2 requires tilelang for NSA (Native Sparse Attention) — not in the 0.5.6 image.
+# Use the dedicated lmsysorg image that ships tilelang + ROCm support for V3.2.
+_SGLANG_IMAGE = "lmsysorg/sglang:dsv32-rocm"
 
 # ---------------------------------------------------------------------------
 # Workload
@@ -80,7 +82,8 @@ hardware = HardwareConfig(
         bootstrap_commands=(
             # Ensure NVMe is mounted — idempotent, fails silently if already mounted
             "mount /dev/nvme0n1 /models 2>/dev/null || true",
-            # Pull the Docker image if not already cached
+            # Pull the Docker image if not already cached.
+            # lmsysorg/sglang:dsv32-rocm includes tilelang required by V3.2 NSA.
             f"docker pull {_SGLANG_IMAGE}",
         ),
     ),
@@ -103,6 +106,10 @@ _docker_run = (
     f" --volume /models:/models"
     f" --env ROCR_VISIBLE_DEVICES=0,1,2,3,4,5,6,7"
     f" --env HF_HOME=/models/hf_cache"
+    f" --env SGLANG_NSA_FUSE_TOPK=false"
+    f" --env SGLANG_NSA_KV_CACHE_STORE_FP8=false"
+    f" --env SGLANG_NSA_USE_REAL_INDEXER=true"
+    f" --env SGLANG_NSA_USE_TILELANG_PREFILL=True"
     f" --name sglang_bench_{PORT}"
     f" {_SGLANG_IMAGE}"
     f" python -m sglang.launch_server"
@@ -111,7 +118,11 @@ _docker_run = (
     f" --port {PORT}"
     f" --tp 8"
     f" --trust-remote-code"
-    f" --enable-dp-attention"
+    f" --disable-cuda-graph"
+    f" --mem-fraction-static 0.85"
+    f" --page-size 64"
+    f" --nsa-prefill tilelang"
+    f" --nsa-decode aiter"
 )
 
 endpoint = OwnedEndpoint(
