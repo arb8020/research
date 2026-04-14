@@ -1618,7 +1618,9 @@ async def evaluate(
                 summary_metrics = compute_summary_metrics(
                     results,
                     wall_time_seconds=eval_wall_seconds,
-                    gpu_count=config.hardware.gpu_count if config.hardware else None,
+                    gpu_count=config.hardware.gpu_count
+                    if getattr(config, "hardware", None)
+                    else None,
                     distribution_percentiles=config.summary_distribution_percentiles,
                 )
                 endpoint_config = (
@@ -1651,7 +1653,7 @@ async def evaluate(
             summary_metrics = compute_summary_metrics(
                 results,
                 wall_time_seconds=eval_wall_seconds,
-                gpu_count=config.hardware.gpu_count if config.hardware else None,
+                gpu_count=config.hardware.gpu_count if getattr(config, "hardware", None) else None,
                 distribution_percentiles=config.summary_distribution_percentiles,
             )
             endpoint_config = (
