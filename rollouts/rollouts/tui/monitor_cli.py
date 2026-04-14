@@ -920,9 +920,9 @@ def _format_event(line: str) -> str:
     except _json.JSONDecodeError:
         return line
 
-    ts = ev.get("timestamp", "")
-    if ts:
-        ts = ts[11:19]  # HH:MM:SS from ISO timestamp
+    # Handle both "timestamp" (eval events) and "ts" (argus lifecycle events)
+    raw_ts = ev.get("timestamp") or ev.get("ts", "")
+    ts = raw_ts[11:19] if len(raw_ts) >= 19 else raw_ts
 
     level = ev.get("level", "INFO").upper()
     msg = ev.get("message", "")
@@ -959,16 +959,12 @@ def _format_event(line: str) -> str:
             f"in={ev.get('tokens_in', '?')}  out={ev.get('tokens_out', '?')}  "
             f"ms={ev.get('duration_ms', '?')}"
         )
-    elif msg in ("eval_inference_service_log", "inference_service_final_log"):
-        stream = ev.get("log_stream", "")
-        line = (ev.get("line") or ev.get("log_blob") or "").rstrip()
-        prefix = f"[{stream}] " if stream else ""
-        parts.append(f"{prefix}{line}")
     elif "event" in ev:
         # argus run.jsonl lifecycle events — show event name + key fields only
         _INFRA_NOISE = {
             "event",
             "timestamp",
+            "ts",
             "logger",
             "level",
             "taskName",
@@ -1192,11 +1188,23 @@ def monitor_main(argv: list[str] | None = None) -> int:
         return 1
 
     if args.tail:
+        import json as _json
         import time
 
         fmt = getattr(args, "format", "pretty")
         print(f"Tailing: {output_dir}  (--format {fmt}, Ctrl-C to stop)", file=sys.stderr)
         tail_offsets: dict[str, int] = {}
+        # Buffer consecutive service log lines and flush as a single block
+        svc_log_buf: list[str] = []
+        svc_log_ts: str = ""
+
+        def _flush_svc_buf() -> None:
+            if svc_log_buf:
+                sys.stdout.write(f"{svc_log_ts}       [server]\n")
+                for svc_line in svc_log_buf:
+                    sys.stdout.write(f"    {svc_line}\n")
+                svc_log_buf.clear()
+
         try:
             while True:
                 for path in sorted(output_dir.glob("*.jsonl")):
@@ -1205,21 +1213,44 @@ def monitor_main(argv: list[str] | None = None) -> int:
                     if cur > prev:
                         with open(path) as f:
                             f.seek(prev)
-                            for line in f:
-                                line = line.rstrip()
-                                if not line:
+                            for raw in f:
+                                raw = raw.rstrip()
+                                if not raw:
                                     continue
                                 if fmt == "json":
-                                    sys.stdout.write(line + "\n")
+                                    sys.stdout.write(raw + "\n")
+                                    continue
+                                # Check if this is a service log line
+                                try:
+                                    ev = _json.loads(raw)
+                                    msg = ev.get("message", "")
+                                    is_svc = msg == "eval_inference_service_log"
+                                    # Skip final log — it's a duplicate of buffered lines
+                                    if msg in ("inference_service_final_log",):
+                                        _flush_svc_buf()
+                                        continue
+                                except Exception:
+                                    is_svc = False
+                                    ev = {}
+                                    msg = ""
+
+                                if is_svc:
+                                    raw_ts = ev.get("timestamp") or ev.get("ts", "")
+                                    svc_log_ts = raw_ts[11:19] if len(raw_ts) >= 19 else raw_ts
+                                    svc_line = (ev.get("line") or "").rstrip()
+                                    svc_log_buf.append(svc_line)
                                 else:
+                                    _flush_svc_buf()
                                     try:
-                                        sys.stdout.write(_format_event(line) + "\n")
+                                        sys.stdout.write(_format_event(raw) + "\n")
                                     except Exception:
-                                        sys.stdout.write(line + "\n")
+                                        sys.stdout.write(raw + "\n")
                             tail_offsets[path.name] = path.stat().st_size
                         sys.stdout.flush()
                 time.sleep(0.5)
         except KeyboardInterrupt:
+            _flush_svc_buf()
+            sys.stdout.flush()
             print("\nstopped.", file=sys.stderr)
         return 0
 
