@@ -88,7 +88,7 @@ hardware = HardwareConfig(
 # ---------------------------------------------------------------------------
 
 _docker_run = (
-    f"docker run --rm --detach"
+    f"docker run --rm"
     f" --device /dev/kfd --device /dev/dri"
     f" --group-add video"
     f" --ipc host --network host"
