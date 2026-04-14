@@ -903,6 +903,7 @@ async def _realize_ssh_endpoint(
     hardware_config: HardwareConfig,
     worker: InferenceWorkerConfig,
     run_name: str,
+    force_deploy_committed: bool = False,
     run_logger: Any | None,
 ) -> Any:
     from bifrost import AsyncBifrostClient
@@ -925,6 +926,7 @@ async def _realize_ssh_endpoint(
             WorkspaceMaterializationSpec(
                 requested_root="~/.bifrost/workspaces/rollouts-eval",
                 bootstrap_commands=(),
+                allow_dirty=force_deploy_committed,
             )
         )
         remote_output_dir = Path(workspace.root) / "results" / "eval" / run_name
@@ -1289,6 +1291,7 @@ async def realize_worker_backed_endpoint(
             hardware_config=hardware_config,
             worker=realized_worker,
             run_name=run_name,
+            force_deploy_committed=force_deploy_committed,
             run_logger=run_logger,
         ) as realized:
             yield realized
