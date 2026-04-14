@@ -1024,12 +1024,15 @@ def _launch_eval_monitor(
     tail: bool,
     fmt: str = "pretty",
 ) -> int:
+    if tail:
+        # Direct tail — no rollouts/TUI dependency
+        from .tail import tail_run
+
+        return tail_run(run_dir, fmt=fmt)
+
     import subprocess
 
     monitor_cmd = [sys.executable, "-m", "argus", "monitor", str(run_dir)]
-    if tail:
-        monitor_cmd.append("--tail")
-        monitor_cmd.extend(["--format", fmt])
     try:
         return subprocess.run(monitor_cmd, check=False).returncode
     except KeyboardInterrupt:
