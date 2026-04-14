@@ -87,6 +87,8 @@ def _build_rollouts_monitor_argv(args: argparse.Namespace) -> list[str]:
         forwarded.append("--probe")
     if args.tail:
         forwarded.append("--tail")
+    if hasattr(args, "format") and args.format:
+        forwarded.extend(["--format", args.format])
     if args.tail_lines is not None:
         forwarded.extend(["--tail-lines", str(args.tail_lines)])
     if args.debug:
@@ -247,6 +249,12 @@ def monitor_main(argv: list[str] | None = None) -> int:
         "--tail",
         action="store_true",
         help="Tail remote/local logs to stdout instead of launching the Rollouts TUI",
+    )
+    parser.add_argument(
+        "--format",
+        choices=["pretty", "json"],
+        default="pretty",
+        help="Output format when tailing: pretty (human-readable, default) or json (raw JSONL)",
     )
     parser.add_argument(
         "--tail-lines",

@@ -586,7 +586,7 @@ class BifrostClient:
             working_dir = self._last_workspace or "~"
         return self.exec(command=spec.build_command(), working_dir=working_dir, timeout=timeout)
 
-    def start_process(
+    def start_process(  # noqa: PLR0915
         self,
         spec: ProcessSpec,
         *,
@@ -698,7 +698,9 @@ class BifrostClient:
                                 made_progress = True
                                 text = chunk.decode(errors="replace")
                                 stdout_chunks.append(text)
-                                self.write_text(stdout_log_file, text, append=True)
+                                self.exec(
+                                    f"printf %s {shlex.quote(text)} >> {shlex.quote(stdout_log_file)}"
+                                )
                                 stdout_buffer += text
                                 lines, stdout_buffer = _emit_buffered_lines(
                                     stream_name="stdout", buffer=stdout_buffer
@@ -712,7 +714,9 @@ class BifrostClient:
                                 made_progress = True
                                 text = chunk.decode(errors="replace")
                                 stderr_chunks.append(text)
-                                self.write_text(stderr_log_file, text, append=True)
+                                self.exec(
+                                    f"printf %s {shlex.quote(text)} >> {shlex.quote(stderr_log_file)}"
+                                )
                                 stderr_buffer += text
                                 lines, stderr_buffer = _emit_buffered_lines(
                                     stream_name="stderr", buffer=stderr_buffer

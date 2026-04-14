@@ -911,6 +911,63 @@ def _run_attached(
     return 0
 
 
+def _format_event(line: str) -> str:
+    """Format a single JSONL event line for human-readable tail output."""
+    import json as _json
+
+    try:
+        ev = _json.loads(line)
+    except _json.JSONDecodeError:
+        return line
+
+    ts = ev.get("timestamp", "")
+    if ts:
+        ts = ts[11:19]  # HH:MM:SS from ISO timestamp
+
+    level = ev.get("level", "INFO").upper()
+    msg = ev.get("message", "")
+
+    # Level prefix with minimal decoration
+    level_tag = {"ERROR": "[ERR]", "WARNING": "[WRN]", "WARN": "[WRN]"}.get(level, "     ")
+
+    # Build context from known fields
+    parts: list[str] = []
+    if msg == "eval_start":
+        parts.append(f"eval started  name={ev.get('eval_name', '?')}  total={ev.get('total', '?')}")
+    elif msg == "eval_end":
+        parts.append(
+            f"eval done  status={ev.get('status', '?')}  reward={ev.get('mean_reward', '?')}"
+        )
+    elif msg == "sample_start":
+        parts.append(f"sample {ev.get('sample_id', '?')} start  name={ev.get('sample_name', '')}")
+    elif msg == "sample_end":
+        parts.append(
+            f"sample {ev.get('sample_id', '?')} end  status={ev.get('status', '?')}  reward={ev.get('reward', '?')}"
+        )
+    elif msg == "turn":
+        parts.append(
+            f"sample {ev.get('sample_id', '?')}  turn={ev.get('turn', '?')}  {ev.get('status', '')}"
+        )
+    elif msg == "assistant_message":
+        content = ev.get("content", "")
+        preview = content[:80].replace("\n", " ") + ("..." if len(content) > 80 else "")
+        parts.append(f"sample {ev.get('sample_id', '?')}  assistant: {preview}")
+    elif msg == "llm_call":
+        parts.append(
+            f"sample {ev.get('sample_id', '?')}  llm  "
+            f"model={ev.get('model', '?')}  "
+            f"in={ev.get('tokens_in', '?')}  out={ev.get('tokens_out', '?')}  "
+            f"ms={ev.get('duration_ms', '?')}"
+        )
+    else:
+        # Generic: show message + any extra fields except boilerplate
+        skip = {"message", "timestamp", "logger", "level", "taskName"}
+        extra = "  ".join(f"{k}={v}" for k, v in ev.items() if k not in skip and v is not None)
+        parts.append(f"{msg}  {extra}" if extra else msg)
+
+    return f"{ts} {level_tag} {'  '.join(parts)}"
+
+
 def monitor_main(argv: list[str] | None = None) -> int:
     """Monitoring implementation behind `python -m argus monitor`."""
     parser = argparse.ArgumentParser(
@@ -948,6 +1005,12 @@ def monitor_main(argv: list[str] | None = None) -> int:
         "--tail",
         action="store_true",
         help="With --attach: stream logs to stdout instead of launching TUI",
+    )
+    parser.add_argument(
+        "--format",
+        choices=["pretty", "json"],
+        default="pretty",
+        help="Output format when tailing: pretty (human-readable, default) or json (raw JSONL)",
     )
     parser.add_argument(
         "--tail-lines",
@@ -1088,6 +1151,38 @@ def monitor_main(argv: list[str] | None = None) -> int:
     if not output_dir.is_dir():
         print(f"Error: {output_dir} is not a directory", file=sys.stderr)
         return 1
+
+    if args.tail:
+        import time
+
+        fmt = getattr(args, "format", "pretty")
+        print(f"Tailing: {output_dir}  (--format {fmt}, Ctrl-C to stop)", file=sys.stderr)
+        tail_offsets: dict[str, int] = {}
+        try:
+            while True:
+                for path in sorted(output_dir.glob("*.jsonl")):
+                    prev = tail_offsets.get(path.name, 0)
+                    cur = path.stat().st_size
+                    if cur > prev:
+                        with open(path) as f:
+                            f.seek(prev)
+                            for line in f:
+                                line = line.rstrip()
+                                if not line:
+                                    continue
+                                if fmt == "json":
+                                    sys.stdout.write(line + "\n")
+                                else:
+                                    try:
+                                        sys.stdout.write(_format_event(line) + "\n")
+                                    except Exception:
+                                        sys.stdout.write(line + "\n")
+                            tail_offsets[path.name] = path.stat().st_size
+                        sys.stdout.flush()
+                time.sleep(0.5)
+        except KeyboardInterrupt:
+            pass
+        return 0
 
     app = make_app(str(output_dir), debug=args.debug, debug_frame_interval=args.debug_interval)
     app.run()
