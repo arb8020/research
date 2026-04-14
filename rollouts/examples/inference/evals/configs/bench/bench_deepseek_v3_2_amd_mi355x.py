@@ -97,6 +97,8 @@ hardware = HardwareConfig(
 # --enable-dp-attention improves MoE throughput on multi-GPU.
 # ---------------------------------------------------------------------------
 
+# tilelang is built at /root/tilelang in the image but not installed as a package.
+# Install it first, then launch sglang. Semicolon chains inside the container shell.
 _docker_run = (
     f"docker run --rm"
     f" --device /dev/kfd --device /dev/dri"
@@ -112,7 +114,7 @@ _docker_run = (
     f" --env SGLANG_NSA_USE_TILELANG_PREFILL=True"
     f" --name sglang_bench_{PORT}"
     f" {_SGLANG_IMAGE}"
-    f" python -m sglang.launch_server"
+    f" bash -c 'pip install -q /root/tilelang && python -m sglang.launch_server"
     f" --model-path {MODEL}"
     f" --host 0.0.0.0"
     f" --port {PORT}"
@@ -122,7 +124,7 @@ _docker_run = (
     f" --mem-fraction-static 0.85"
     f" --page-size 64"
     f" --nsa-prefill tilelang"
-    f" --nsa-decode aiter"
+    f" --nsa-decode aiter'"
 )
 
 endpoint = OwnedEndpoint(
