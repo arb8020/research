@@ -145,6 +145,12 @@ def _remote_service_spec(
     disable_socket_ifname: bool = False,
     owned_endpoint: OwnedEndpoint | None = None,
 ) -> tuple[str, str]:
+    # OwnedEndpoint with a raw launch_cmd bypasses _build_engine entirely.
+    # The caller is responsible for constructing the full command string.
+    if owned_endpoint is not None and owned_endpoint.launch_cmd is not None:
+        readiness_target = owned_endpoint.readiness_path or "/health"
+        return owned_endpoint.launch_cmd, readiness_target
+
     # OwnedEndpoint with launch_module bypasses _build_engine entirely -
     # the launch cmd is derived from the module path, which works remotely
     # because the repo is synced to the Modal sandbox by bifrost.
