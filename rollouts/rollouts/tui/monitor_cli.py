@@ -960,14 +960,13 @@ def _format_event(line: str) -> str:
             f"ms={ev.get('duration_ms', '?')}"
         )
     elif msg in ("eval_inference_service_log", "inference_service_final_log"):
-        # Just show the log line, strip SSH metadata
         stream = ev.get("log_stream", "")
-        line = ev.get("line") or ev.get("log_blob", "")
+        line = (ev.get("line") or ev.get("log_blob") or "").rstrip()
         prefix = f"[{stream}] " if stream else ""
         parts.append(f"{prefix}{line}")
     elif "event" in ev:
         # argus run.jsonl lifecycle events — show event name + key fields only
-        skip = {
+        _INFRA_NOISE = {
             "event",
             "timestamp",
             "logger",
@@ -983,10 +982,22 @@ def _format_event(line: str) -> str:
             "stdout_log",
             "stderr_log",
             "command",
+            "engine_name",
+            "engine_port",
+            "model_name",
+            "readiness_target",
+            "launcher_id",
         }
         key = ev["event"]
-        extra = "  ".join(f"{k}={v}" for k, v in ev.items() if k not in skip and v is not None)
-        parts.append(f"{key}  {extra}" if extra else key)
+        if key in ("inference_startup_failed", "inference_service_final_log"):
+            # Show the log blob cleanly, not as a single-line field
+            blob = (ev.get("log_tail") or ev.get("log_blob") or "").strip()
+            parts.append(f"{key}\n{blob}" if blob else key)
+        else:
+            extra = "  ".join(
+                f"{k}={v}" for k, v in ev.items() if k not in _INFRA_NOISE and v is not None
+            )
+            parts.append(f"{key}  {extra}" if extra else key)
     else:
         # Generic: show message + any extra fields except boilerplate
         skip = {"message", "timestamp", "logger", "level", "taskName"}
@@ -1209,7 +1220,7 @@ def monitor_main(argv: list[str] | None = None) -> int:
                         sys.stdout.flush()
                 time.sleep(0.5)
         except KeyboardInterrupt:
-            pass
+            print("\nstopped.", file=sys.stderr)
         return 0
 
     app = make_app(str(output_dir), debug=args.debug, debug_frame_interval=args.debug_interval)
