@@ -113,7 +113,7 @@ _docker_run = (
     f" --reasoning-parser kimi_k2"
     f" --tool-call-parser kimi_k2"
     f" --mem-fraction-static 0.85"
-    f" --max-model-len 8192"
+    f" --context-length 8192"
 )
 
 endpoint = OwnedEndpoint(
