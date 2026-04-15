@@ -112,8 +112,8 @@ _docker_run = (
     f" --port {PORT}"
     f" --tp 8"
     f" --trust-remote-code"
-    f" --reasoning-parser kimi_k2"
-    f" --tool-call-parser kimi_k2"
+    f" --reasoning-parser kimi"
+    f" --tool-call-parser kimi"
     f" --mem-fraction-static 0.85"
     f" --context-length 8192'"
 )

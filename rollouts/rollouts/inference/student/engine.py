@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import torch
+from einops import rearrange
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 logger = logging.getLogger(__name__)
@@ -73,7 +74,7 @@ def prefill(eng: Engine, token_ids_T: torch.Tensor) -> PrefillOutput:
 
     Replaced with explicit KV cache in step 6.
     """
-    input_ids_1T = token_ids_T.unsqueeze(0).to(eng.model.device)
+    input_ids_1T = rearrange(token_ids_T, "T -> 1 T").to(eng.model.device)
     with torch.no_grad():
         out = eng.model(input_ids=input_ids_1T, use_cache=True)
     logits_V = out.logits[0, -1]  # final position, all vocab
@@ -95,8 +96,8 @@ def decode_step(eng: Engine, hidden: PrefillOutput) -> tuple[int, PrefillOutput]
 
 
 def detokenize(eng: Engine, token_ids: list[int]) -> str:
-    """Decode token id list to string."""
-    raise NotImplementedError
+    """Decode token id list to string, stripping special tokens."""
+    return eng.tokenizer.decode(token_ids, skip_special_tokens=True)
 
 
 def generate(
