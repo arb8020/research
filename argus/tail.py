@@ -8,6 +8,11 @@ Usage:
     argus tail <run_dir> --format json
     argus tail <run_dir> --timestamps
     argus tail results/eval/run_20260414-231604
+
+Output shape:
+    [source] event  key=value ...
+        line
+        line
 """
 
 from __future__ import annotations
@@ -18,7 +23,6 @@ import sys
 import time
 from pathlib import Path
 
-# Fields that are infrastructure noise — never shown in pretty output
 _NOISE = {
     "event",
     "timestamp",
@@ -54,6 +58,10 @@ def _ts(ev: dict) -> str:
     return raw[11:19] if len(raw) >= 19 else raw
 
 
+def _fmt_line(source: str, event: str, ts: str) -> str:
+    return f"{ts}[{source}] {event}"
+
+
 def _format(raw: str, timestamps: bool = False) -> str | None:
     """Format one JSONL line. Returns None to suppress."""
     try:
@@ -70,50 +78,72 @@ def _format(raw: str, timestamps: bool = False) -> str | None:
         return None
     if event == "inference_service_final_log":
         return None
+    if event in ("run_start", "submit_done"):
+        return None
 
     # eval events.jsonl
     if msg == "eval_start":
-        return f"{ts}eval started  name={ev.get('eval_name', '?')}  total={ev.get('total', '?')}"
+        return _fmt_line(
+            "eval", f"started  name={ev.get('eval_name', '?')}  total={ev.get('total', '?')}", ts
+        )
     if msg == "eval_end":
-        return f"{ts}eval done  status={ev.get('status', '?')}  reward={ev.get('mean_reward', '?')}"
+        return _fmt_line(
+            "eval", f"done  status={ev.get('status', '?')}  reward={ev.get('mean_reward', '?')}", ts
+        )
     if msg == "sample_start":
-        return f"{ts}sample {ev.get('sample_id', '?')} start  name={ev.get('sample_name', '')}"
+        return _fmt_line(
+            "eval", f"sample {ev.get('sample_id', '?')} start  name={ev.get('sample_name', '')}", ts
+        )
     if msg == "sample_end":
-        return f"{ts}sample {ev.get('sample_id', '?')} end  status={ev.get('status', '?')}  reward={ev.get('reward', '?')}"
+        return _fmt_line(
+            "eval",
+            f"sample {ev.get('sample_id', '?')} end  status={ev.get('status', '?')}  reward={ev.get('reward', '?')}",
+            ts,
+        )
     if msg == "turn":
-        return f"{ts}sample {ev.get('sample_id', '?')}  turn={ev.get('turn', '?')}  {ev.get('status', '')}"
+        return _fmt_line("eval", f"sample {ev.get('sample_id', '?')}  {ev.get('status', '')}", ts)
     if msg == "assistant_message":
         content = ev.get("content", "")
         preview = content[:80].replace("\n", " ") + ("..." if len(content) > 80 else "")
-        return f"{ts}sample {ev.get('sample_id', '?')}  assistant: {preview}"
+        return _fmt_line("eval", f"sample {ev.get('sample_id', '?')}  assistant: {preview}", ts)
     if msg == "llm_call":
-        return (
-            f"{ts}sample {ev.get('sample_id', '?')}  llm  "
+        return _fmt_line(
+            "eval",
+            f"sample {ev.get('sample_id', '?')}  llm  "
             f"model={ev.get('model', '?')}  "
             f"in={ev.get('tokens_in', '?')}  out={ev.get('tokens_out', '?')}  "
-            f"ms={ev.get('duration_ms', '?')}"
+            f"ms={ev.get('duration_ms', '?')}",
+            ts,
         )
 
     # argus run.jsonl lifecycle events
     if event:
         if event == "inference_engine_launch":
-            return f"{ts}server starting  model={ev.get('model_name', '?')}  port={ev.get('engine_port', '?')}"
+            return _fmt_line(
+                "argus",
+                f"server starting  model={ev.get('model_name', '?')}  port={ev.get('engine_port', '?')}",
+                ts,
+            )
         if event == "inference_healthcheck_start":
-            return f"{ts}waiting for server  timeout={ev.get('startup_timeout', '?')}s"
+            return _fmt_line(
+                "argus", f"waiting for server  timeout={ev.get('startup_timeout', '?')}s", ts
+            )
         if event == "inference_health_state":
             state = ev.get("health_state", "?")
             detail = ev.get("health_detail", "")
-            return f"{ts}health  {state}" + (f"  {detail}" if detail else "")
+            return _fmt_line("argus", f"health  {state}" + (f"  {detail}" if detail else ""), ts)
         if event == "inference_startup_failed":
-            return f"{ts}server failed  reason={ev.get('failure_kind', '?')}  attempts={ev.get('health_attempt', '?')}"
-        if event in ("run_start", "submit_done"):
-            return None  # noise for interactive use
+            return _fmt_line(
+                "argus",
+                f"server failed  reason={ev.get('failure_kind', '?')}  attempts={ev.get('health_attempt', '?')}",
+                ts,
+            )
         extra = "  ".join(f"{k}={v}" for k, v in ev.items() if k not in _NOISE and v is not None)
-        return f"{ts}{event}  {extra}" if extra else f"{ts}{event}"
+        return _fmt_line("argus", f"{event}  {extra}" if extra else event, ts)
 
     # Generic
     extra = "  ".join(f"{k}={v}" for k, v in ev.items() if k not in _NOISE and v is not None)
-    return f"{ts}{msg}  {extra}" if extra else f"{ts}{msg}"
+    return _fmt_line("eval", f"{msg}  {extra}" if extra else msg, ts)
 
 
 def tail_run(run_dir: Path, fmt: str = "pretty", timestamps: bool = False) -> int:
@@ -124,6 +154,7 @@ def tail_run(run_dir: Path, fmt: str = "pretty", timestamps: bool = False) -> in
 
     def flush_svc() -> None:
         if svc_buf:
+            sys.stdout.write("[server]\n")
             for line in svc_buf:
                 sys.stdout.write(f"    {line}\n")
             svc_buf.clear()
@@ -157,8 +188,6 @@ def tail_run(run_dir: Path, fmt: str = "pretty", timestamps: bool = False) -> in
                             sys.stdout.write(formatted + "\n")
                     tail_offsets[path.name] = path.stat().st_size
                 sys.stdout.flush()
-            # Flush any buffered service logs at end of each poll cycle
-            # in case they arrived without a subsequent non-service-log event
             flush_svc()
             sys.stdout.flush()
             time.sleep(0.5)
