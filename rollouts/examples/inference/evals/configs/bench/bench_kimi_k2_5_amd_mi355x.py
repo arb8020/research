@@ -155,7 +155,7 @@ _docker_run = (
     f"USE_ROCM=true ROCM_HOME=/opt/rocm pip install -q /root/tilelang blobfile && "
     # Install sitecustomize.py (written by bootstrap to /models/sitecustomize.py)
     # into the container's site-packages so all TP worker subprocesses get it.
-    f"cp /models/sitecustomize.py $(python3 -c 'import site; print(site.getsitepackages()[0])')/sitecustomize.py 2>/dev/null || true && "
+    f'cp /models/sitecustomize.py $(python3 -c "import site; print(site.getsitepackages()[0])")/sitecustomize.py 2>/dev/null || true && '
     f"SNAP=$(ls /models/hf_cache/hub/models--moonshotai--Kimi-K2.5/snapshots/ | head -1) && "
     f"export PYTHONPATH=/models/hf_cache/hub/models--moonshotai--Kimi-K2.5/snapshots/$SNAP && "
     f"python -m sglang.launch_server"
