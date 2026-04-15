@@ -46,10 +46,9 @@ _no_op_scorer = FunctionScorer(lambda attempt, _ctx: Score(metrics=()))
 MODEL = "moonshotai/Kimi-K2.5"
 PORT = 30000
 
-# Per AMD ROCm blog for Kimi-K2-Instruct on MI355X:
-# https://rocm.blogs.amd.com/artificial-intelligence/kimi-k2/README.html
-# v0.4.9.post2 + Triton patch is the AMD-verified path.
-_SGLANG_IMAGE = "lmsysorg/sglang:v0.4.9.post2-rocm700-mi35x"
+# dsv32-rocm has the right SGLang + transformers versions for Kimi K2.5.
+# Requires PYTHONPATH workaround for the hyphenated package name bug.
+_SGLANG_IMAGE = "lmsysorg/sglang:dsv32-rocm"
 
 # ---------------------------------------------------------------------------
 # Workload
@@ -105,19 +104,29 @@ _docker_run = (
     f" --env ROCR_VISIBLE_DEVICES=0,1,2,3,4,5,6,7"
     f" --env HF_HOME=/models/hf_cache"
     f" --env HF_MODULES_CACHE=/models/hf_cache/modules"
+    # Kimi-K2.5 uses trust_remote_code with a hyphenated package name (Kimi-K2.5)
+    # which Python can't import as a dotted package. Set PYTHONPATH to the model
+    # snapshot dir so bare `from configuration_deepseek import ...` resolves.
+    # The snapshot hash is resolved dynamically in the bash -c wrapper below.
     f" --name sglang_bench_{PORT}"
     f" {_SGLANG_IMAGE}"
+    # Install tilelang (required by dsv32-rocm for NSA attention), then set
+    # PYTHONPATH to the model snapshot dir (workaround for Kimi-K2.5 hyphenated
+    # package name bug), then launch SGLang.
     f" bash -c '"
-    f"cd /sgl-workspace/sglang && "
-    f"wget -q https://raw.githubusercontent.com/Vivicai1005/triton_feature/main/feature.patch && "
-    f"git apply feature.patch 2>/dev/null || true && "
-    f"python3 -m sglang.launch_server"
-    f" --model moonshotai/Kimi-K2.5"
+    f"USE_ROCM=true ROCM_HOME=/opt/rocm pip install -q /root/tilelang && "
+    f"SNAP=$(ls /models/hf_cache/hub/models--moonshotai--Kimi-K2.5/snapshots/ | head -1) && "
+    f"export PYTHONPATH=/models/hf_cache/hub/models--moonshotai--Kimi-K2.5/snapshots/$SNAP && "
+    f"python -m sglang.launch_server"
+    f" --model-path {MODEL}"
     f" --host 0.0.0.0"
     f" --port {PORT}"
     f" --tp 8"
     f" --trust-remote-code"
+    f" --reasoning-parser kimi"
+    f" --tool-call-parser kimi_k2"
     f" --mem-fraction-static 0.85"
+    f" --context-length 8192"
     f"'"
 )
 
