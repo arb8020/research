@@ -46,10 +46,10 @@ _no_op_scorer = FunctionScorer(lambda attempt, _ctx: Score(metrics=()))
 MODEL = "moonshotai/Kimi-K2.5"
 PORT = 30000
 
-# dsv32-rocm is a newer build than v0.5.9-rocm700-mi35x and supports the
-# DeepSeek V2 attention family (which Kimi K2.5 uses). v0.5.9 has a
-# ForwardMetadata unpack bug in deepseek_v2.py that's fixed in this image.
-_SGLANG_IMAGE = "lmsysorg/sglang:dsv32-rocm"
+# Per AMD ROCm blog for Kimi-K2-Instruct on MI355X:
+# https://rocm.blogs.amd.com/artificial-intelligence/kimi-k2/README.html
+# v0.4.9.post2 + Triton patch is the AMD-verified path.
+_SGLANG_IMAGE = "lmsysorg/sglang:v0.4.9.post2-rocm700-mi35x"
 
 # ---------------------------------------------------------------------------
 # Workload
@@ -107,16 +107,18 @@ _docker_run = (
     f" --env HF_MODULES_CACHE=/models/hf_cache/modules"
     f" --name sglang_bench_{PORT}"
     f" {_SGLANG_IMAGE}"
-    f" bash -c 'USE_ROCM=true ROCM_HOME=/opt/rocm pip install -q /root/tilelang && python -m sglang.launch_server"
-    f" --model-path {MODEL}"
+    f" bash -c '"
+    f"cd /sgl-workspace/sglang && "
+    f"wget -q https://raw.githubusercontent.com/Vivicai1005/triton_feature/main/feature.patch && "
+    f"git apply feature.patch 2>/dev/null || true && "
+    f"python3 -m sglang.launch_server"
+    f" --model moonshotai/Kimi-K2.5"
     f" --host 0.0.0.0"
     f" --port {PORT}"
     f" --tp 8"
     f" --trust-remote-code"
-    f" --reasoning-parser kimi"
-    f" --tool-call-parser kimi_k2"
     f" --mem-fraction-static 0.85"
-    f" --context-length 8192'"
+    f"'"
 )
 
 endpoint = OwnedEndpoint(
