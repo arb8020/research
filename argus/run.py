@@ -996,7 +996,7 @@ def _spawn_eval_subprocess(
     command = [
         sys.executable,
         "-m",
-        "argus.eval_supervisor",
+        "rollouts.eval.supervisor",
         "--config",
         str(config_path),
         "--output-dir",

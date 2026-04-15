@@ -10,10 +10,11 @@ members = [
     "pytui",
     "rlmon",
     "dev/project-euler",
+    "dev/pokemon-rl",
 ]
 
 [project]
-name = "gpu-research-tools"
+name = "research"
 version = "0.1.0"
 description = "Research workspace for GPU provisioning and remote execution tools"
 requires-python = ">=3.12"

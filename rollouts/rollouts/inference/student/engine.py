@@ -34,6 +34,7 @@ class Engine:
 
 def load(model_name: str) -> Engine:
     """Load weights and tokenizer onto GPU. Fails loudly if anything is missing."""
+
     raise NotImplementedError
 
 
