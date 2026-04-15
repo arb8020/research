@@ -73,11 +73,16 @@ def _format(raw: str, timestamps: bool = False) -> str | None:
     msg = ev.get("message", "")
     event = ev.get("event", "")
 
-    # Suppress — handled by caller as buffered block
-    if msg in ("eval_inference_service_log", "inference_service_final_log"):
+    # Suppress individual service log lines — handled by caller as buffered block
+    if msg == "eval_inference_service_log":
         return None
-    if event == "inference_service_final_log":
-        return None
+    # inference_service_final_log contains the full log blob — use it as fallback
+    if msg == "inference_service_final_log" or event == "inference_service_final_log":
+        blob = (ev.get("log_tail") or ev.get("log_blob") or "").strip()
+        if not blob:
+            return None
+        lines = "\n".join(f"    {l}" for l in blob.splitlines())
+        return f"[server]\n{lines}"
     if event in ("run_start", "submit_done"):
         return None
 
@@ -151,6 +156,7 @@ def tail_run(run_dir: Path, fmt: str = "pretty", timestamps: bool = False) -> in
     print(f"Tailing: {run_dir}  (Ctrl-C to stop)", file=sys.stderr)
     tail_offsets: dict[str, int] = {}
     svc_buf: list[str] = []
+    svc_flushed: list[bool] = [False]  # tracks if we already printed the server block
 
     def flush_svc() -> None:
         if svc_buf:
@@ -158,6 +164,7 @@ def tail_run(run_dir: Path, fmt: str = "pretty", timestamps: bool = False) -> in
             for line in svc_buf:
                 sys.stdout.write(f"    {line}\n")
             svc_buf.clear()
+            svc_flushed[0] = True
 
     try:
         while True:
@@ -185,6 +192,10 @@ def tail_run(run_dir: Path, fmt: str = "pretty", timestamps: bool = False) -> in
                         flush_svc()
                         formatted = _format(raw, timestamps=timestamps)
                         if formatted is not None:
+                            # Skip final log blob if we already printed individual lines
+                            is_final = "inference_service_final_log" in raw
+                            if is_final and svc_flushed[0]:
+                                continue
                             sys.stdout.write(formatted + "\n")
                     tail_offsets[path.name] = path.stat().st_size
                 sys.stdout.flush()
