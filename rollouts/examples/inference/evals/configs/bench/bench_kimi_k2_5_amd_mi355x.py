@@ -116,6 +116,8 @@ _docker_run = (
     f" bash -c '"
     f"USE_ROCM=true ROCM_HOME=/opt/rocm pip install -q /root/tilelang && "
     f"SNAP=$(ls /models/hf_cache/hub/models--moonshotai--Kimi-K2.5/snapshots/ | head -1) && "
+    f"find /models/hf_cache -name configuration_kimi_k25.py -exec "
+    f"sed -i s/from\\.configuration_deepseek/from\\ configuration_deepseek/g {{}} \\; && "
     f"export PYTHONPATH=/models/hf_cache/hub/models--moonshotai--Kimi-K2.5/snapshots/$SNAP && "
     f"python -m sglang.launch_server"
     f" --model-path {MODEL}"
