@@ -10,7 +10,7 @@ Usage:
     argus tail results/eval/run_20260414-231604
 
 Output shape:
-    [source] event  key=value ...
+    [source] event
         line
         line
 """
@@ -102,29 +102,30 @@ def _fmt_service_final_log(ev: dict, ts: str) -> FormatResult:
 
 
 def _fmt_eval_start(ev: dict, ts: str) -> FormatResult:
-    return _fmt(
-        "eval", f"started  name={ev.get('eval_name', '?')}  total={ev.get('total', '?')}", ts
-    ), False
+    name = ev.get("eval_name", "?")
+    total = ev.get("total", "?")
+    return _fmt("eval", f"started  {name}  {total} samples", ts), False
 
 
 def _fmt_eval_end(ev: dict, ts: str) -> FormatResult:
-    return _fmt(
-        "eval", f"done  status={ev.get('status', '?')}  reward={ev.get('mean_reward', '?')}", ts
-    ), False
+    status = ev.get("status", "?")
+    reward = ev.get("mean_reward")
+    suffix = f"  reward {reward:.3f}" if isinstance(reward, (int, float)) else ""
+    return _fmt("eval", f"done  {status}{suffix}", ts), False
 
 
 def _fmt_sample_start(ev: dict, ts: str) -> FormatResult:
-    return _fmt(
-        "eval", f"sample {ev.get('sample_id', '?')} start  name={ev.get('sample_name', '')}", ts
-    ), False
+    sid = ev.get("sample_id", "?")
+    name = ev.get("sample_name", "")
+    return _fmt("eval", f"sample {sid}  start" + (f"  {name}" if name else ""), ts), False
 
 
 def _fmt_sample_end(ev: dict, ts: str) -> FormatResult:
-    return _fmt(
-        "eval",
-        f"sample {ev.get('sample_id', '?')} end  status={ev.get('status', '?')}  reward={ev.get('reward', '?')}",
-        ts,
-    ), False
+    sid = ev.get("sample_id", "?")
+    status = ev.get("status", "?")
+    reward = ev.get("reward")
+    suffix = f"  reward {reward:.3f}" if isinstance(reward, (int, float)) else ""
+    return _fmt("eval", f"sample {sid}  {status}{suffix}", ts), False
 
 
 def _fmt_turn(ev: dict, ts: str) -> FormatResult:
@@ -134,51 +135,32 @@ def _fmt_turn(ev: dict, ts: str) -> FormatResult:
 def _fmt_assistant(ev: dict, ts: str) -> FormatResult:
     content = ev.get("content", "")
     preview = content[:80].replace("\n", " ") + ("..." if len(content) > 80 else "")
-    return _fmt("eval", f"sample {ev.get('sample_id', '?')}  assistant: {preview}", ts), False
+    return _fmt("eval", f"sample {ev.get('sample_id', '?')}  {preview}", ts), False
 
 
 def _fmt_llm_call(ev: dict, ts: str) -> FormatResult:
-    return _fmt(
-        "eval",
-        f"sample {ev.get('sample_id', '?')}  llm  "
-        f"model={ev.get('model', '?')}  "
-        f"in={ev.get('tokens_in', '?')}  out={ev.get('tokens_out', '?')}  "
-        f"ms={ev.get('duration_ms', '?')}",
-        ts,
-    ), False
+    sid = ev.get("sample_id", "?")
+    model = ev.get("model", "?")
+    tok_in = ev.get("tokens_in", "?")
+    tok_out = ev.get("tokens_out", "?")
+    ms = ev.get("duration_ms", "?")
+    return _fmt("eval", f"sample {sid}  {model}  {tok_in}→{tok_out} tok  {ms}ms", ts), False
 
 
 def _fmt_engine_launch(ev: dict, ts: str) -> FormatResult:
-    return _fmt(
-        "argus",
-        f"server starting  model={ev.get('model_name', '?')}  port={ev.get('engine_port', '?')}",
-        ts,
-    ), False
-
-
-def _fmt_healthcheck_start(ev: dict, ts: str) -> FormatResult:
-    return _fmt(
-        "argus", f"waiting for server  timeout={ev.get('startup_timeout', '?')}s", ts
-    ), False
-
-
-def _fmt_health_state(ev: dict, ts: str) -> FormatResult:
-    state = ev.get("health_state", "?")
-    detail = ev.get("health_detail", "")
-    return _fmt("argus", f"health  {state}" + (f"  {detail}" if detail else ""), ts), False
+    model = ev.get("model_name", "?")
+    return _fmt("server", f"starting  {model}", ts), False
 
 
 def _fmt_startup_failed(ev: dict, ts: str) -> FormatResult:
-    return _fmt(
-        "argus",
-        f"server failed  reason={ev.get('failure_kind', '?')}  attempts={ev.get('health_attempt', '?')}",
-        ts,
-    ), False
+    kind = ev.get("failure_kind", "?")
+    attempts = ev.get("health_attempt", "?")
+    return _fmt("server", f"failed  {kind}  after {attempts} attempts", ts), False
 
 
 def _fmt_run_end(ev: dict, ts: str) -> FormatResult:
     status = ev.get("status", "?")
-    return _fmt("argus", f"run ended  status={status}  (Ctrl-C to exit)", ts), True
+    return _fmt("argus", f"run ended  {status}  (Ctrl-C to exit)", ts), True
 
 
 # message key -> formatter
@@ -200,8 +182,8 @@ _EVENT_FORMATTERS: dict[str, Callable[[dict, str], FormatResult]] = {
     "submit_done": _suppress,
     "inference_service_final_log": _fmt_service_final_log,
     "inference_engine_launch": _fmt_engine_launch,
-    "inference_healthcheck_start": _fmt_healthcheck_start,
-    "inference_health_state": _fmt_health_state,
+    "inference_healthcheck_start": _suppress,
+    "inference_health_state": _suppress,
     "inference_startup_failed": _fmt_startup_failed,
     "run_end": _fmt_run_end,
 }

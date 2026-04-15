@@ -53,7 +53,6 @@ if TYPE_CHECKING:
     from rollouts.core import Environment
 
 from ..config_contracts import validate_eval_config_module
-from .endpoint_realization import realize_worker_backed_endpoint
 
 logger = logging.getLogger(__name__)
 
@@ -203,14 +202,14 @@ def load_tasks_from_module(config_module: Any) -> list[dict[str, Any]]:
     return tasks
 
 
-async def run_with_api(
+async def _run_eval(
     config_module: Any,
     endpoint_config: Any,
     run_config: Any,
     output_config: Any,
     cancel_scope: Any | None = None,
 ) -> dict[str, Any]:
-    """Run eval against an API endpoint."""
+    """Run the eval loop against a realized endpoint."""
     from rollouts.agents import RunConfig as AgentRunConfig
     from rollouts.core import EvalConfig
     from rollouts.eval import evaluate
@@ -295,53 +294,6 @@ async def run_with_api(
         "total": report.total_samples,
         **report.summary_metrics,
     }
-
-
-async def run_with_sglang_local(
-    config_module: Any,
-    endpoint_config: Any,
-    run_config: Any,
-    output_config: Any,
-    cancel_scope: Any | None = None,
-) -> dict[str, Any]:
-    """Run eval against a local SGLang server (already running)."""
-    # Same as API but with SGLang endpoint
-    return await run_with_api(
-        config_module,
-        endpoint_config,
-        run_config,
-        output_config,
-        cancel_scope=cancel_scope,
-    )
-
-
-async def run_with_sglang_provision(
-    config_module: Any,
-    endpoint_config: Any,
-    run_config: Any,
-    output_config: Any,
-    hardware_config: Any,
-    server_config: Any,
-) -> dict[str, Any]:
-    """Realize a worker-backed endpoint locally, run eval, then tear it down."""
-    worker = None
-    worker_topology = getattr(config_module, "worker_topology", None)
-    if worker_topology is not None:
-        worker = worker_topology.get_worker_for_role("actor")
-
-    async with realize_worker_backed_endpoint(
-        endpoint_config=endpoint_config,
-        output_dir=output_config.output_dir,
-        hardware_config=hardware_config,
-        server_config=server_config,
-        worker=worker,
-    ) as realized:
-        return await run_with_api(
-            config_module,
-            realized.endpoint_config,
-            run_config,
-            output_config,
-        )
 
 
 def main() -> int:
@@ -507,49 +459,7 @@ Examples:
                         results["reward"] = attempt.reward
                     return results
 
-                if endpoint_config is not None and endpoint_config.provider in ("sglang", "vllm"):
-                    if not endpoint_config.requires_server:
-                        return await run_with_sglang_local(
-                            config_module,
-                            endpoint_config,
-                            run_config,
-                            output_config,
-                            cancel_scope=cancel_scope,
-                        )
-                    if hardware_config is not None:
-                        return await run_with_sglang_provision(
-                            config_module,
-                            endpoint_config,
-                            run_config,
-                            output_config,
-                            hardware_config,
-                            server_config,
-                        )
-
-                    from rollouts.eval.configs import ExternalEndpoint, OwnedEndpoint
-
-                    if isinstance(endpoint_config, OwnedEndpoint):
-                        endpoint_with_url = ExternalEndpoint(
-                            url=endpoint_config.base_url,
-                            model=endpoint_config.model,
-                            provider=endpoint_config.provider,
-                            temperature=endpoint_config.temperature,
-                            max_tokens=endpoint_config.max_tokens,
-                        )
-                    else:
-                        endpoint_with_url = replace(
-                            endpoint_config,
-                            base_url=endpoint_config.get_base_url(),
-                        )
-                    return await run_with_sglang_local(
-                        config_module,
-                        endpoint_with_url,
-                        run_config,
-                        output_config,
-                        cancel_scope=cancel_scope,
-                    )
-
-                return await run_with_api(
+                return await _run_eval(
                     config_module,
                     endpoint_config,
                     run_config,

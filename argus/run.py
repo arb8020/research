@@ -286,6 +286,13 @@ def _new_launcher_id() -> str:
     return f"launch_{timestamp}_{os.getpid()}_{uuid.uuid4().hex[:8]}"
 
 
+# TODO(step-2): Move _runpod_image_is_official_ssh_ready, _runpod_template_id_for_custom_image,
+# _runpod_custom_image_docker_args, _should_reconcile_ssh_cuda_toolkit, _ssh_runtime_python,
+# _ssh_runtime_feature_scope, and _build_ssh_bootstrap_plan into rollouts.remote_runtime
+# (or a new rollouts.ssh_bootstrap module). These functions compute what commands to run
+# on a remote node — they are bootstrap plan construction, not run supervision. The
+# _SshBootstrapPlan dataclass moves with them. Argus becomes a caller: it receives a
+# bootstrap plan from rollouts, then executes each step through bifrost.exec().
 def _runpod_image_is_official_ssh_ready(image_ref: str) -> bool:
     normalized = image_ref.strip().lower()
     return normalized.startswith("runpod/")
@@ -554,6 +561,11 @@ def _build_ssh_bootstrap_plan(
     )
 
 
+# TODO(step-2): Move _find_config_project_root, _external_config_project_roots,
+# _external_config_projects, _remote_materialized_path, and _normalize_remote_workspace_root
+# into rollouts.remote_runtime. These functions resolve which project a config belongs to
+# and how its paths map onto the remote workspace — that is workload compilation, not
+# run supervision. They have no business being in argus.
 def _find_config_project_root(config_path: Path) -> Path:
     search_roots = [config_path.parent, *config_path.parents]
     for candidate in search_roots:
@@ -708,6 +720,12 @@ def _read_remote_manifest(bifrost: BifrostClient) -> ImageManifest | None:
         raise RuntimeError(f"Remote image manifest is unreadable: {exc}") from exc
 
 
+# TODO(step-2): Move _uv_pip_install_command, _uv_pip_install_editable_command,
+# _apt_install_command, and _read_remote_manifest into rollouts.image_spec or
+# bifrost.bootstrap. These functions build shell commands for remote package
+# installation — they are part of the bootstrap plan, not argus control-plane
+# logic. The move is mechanical: no callers outside _build_ssh_bootstrap_plan
+# and _deploy_and_submit.
 def _uv_pip_install_command(
     packages: tuple[str, ...],
     *,
@@ -1793,9 +1811,13 @@ async def run_remote(
     provider_overrides: dict | None = None,
 ) -> None:
     """Run training script on remote GPU via bifrost."""
-    # TODO(argus-run): Move the SSH/bifrost remote training launcher into its
-    # own module. This path mixes provisioning, bootstrap, sync, tmux/logserver
-    # lifecycle, and attach behavior, which overwhelms the top-level CLI file.
+    # TODO(step-2): Move _deploy_and_submit and run_remote into
+    # rollouts.training.ssh_launcher (or rollouts.launchers.ssh). After step-2
+    # extractions (bootstrap plan, install commands, config project resolution),
+    # what remains is: acquire_node → materialize → exec bootstrap steps →
+    # submit job → stream logs. That is a bifrost orchestration concern that
+    # belongs in rollouts, not in argus. Argus becomes a thin caller:
+    # create ActiveRun, call rollouts.launchers.ssh.launch(...), record events.
     (
         bifrost,
         instance,
@@ -1984,9 +2006,12 @@ Examples:
         else getattr(config_module, "hardware", HardwareConfig(provider="local"))
     )
     workload_config = getattr(config_module, "config", None)
-    # TODO(boundary): this loader/merge path is reconstructing a launchable
-    # execution spec from module exports, CLI overrides, and service-scoped deps.
-    # Replace it with one explicit product type that Argus consumes directly.
+    # TODO(step-3): This loader/merge path is assembling a LaunchableExperiment
+    # inline from module exports, CLI overrides, and service-scoped deps. Once
+    # LaunchableExperiment is an explicit type, this block becomes a single call:
+    #   experiment = rollouts.compile(config_module, hardware, overrides)
+    # and argus stops needing to know about WorkerTopologyConfig, DepsConfig,
+    # service_runtime_layout, or any other workload compilation details.
 
     trainer_service_deps = None
     inference_service_deps = None
@@ -2086,12 +2111,22 @@ Examples:
         multi_node = getattr(config_module, "multi_node", None)
 
     try:
-        # TODO(argus-run): Replace this large inline dispatch block with staged
-        # launcher selection over a resolved workload product type:
-        #   1. resolve workload/config
-        #   2. choose local vs modal vs remote launcher
-        #   3. invoke the selected launcher
-        # The current file still interleaves those state machines.
+        # TODO(step-3): Replace this dispatch block with two stages separated by
+        # a LaunchableExperiment product type (see docs/design/ownership_and_launch_boundary.md):
+        #
+        #   stage 1 — compile (rollouts owns):
+        #     experiment = rollouts.compile(config_module, hardware, overrides)
+        #     → LaunchableExperiment(runtime, source_snapshot, bootstrap, command, artifacts, lifecycle)
+        #
+        #   stage 2 — supervise (argus owns):
+        #     active_run = ActiveRun.create(...)
+        #     launcher = select_launcher(experiment.runtime.provider)
+        #     launcher.launch(experiment, active_run)
+        #
+        # Each per-provider branch below does both stages inline and duplicates
+        # ActiveRun.create() + event setup. Once LaunchableExperiment exists,
+        # the duplication collapses and switching provider changes procurement
+        # only (step 3 of ownership_and_launch_boundary.md cleanup sequence).
         # Dispatch based on workload/provider
         if workload_kind == "evaluation":
             if args.node_id or multi_node is not None:
@@ -2168,9 +2203,12 @@ Examples:
             trio.run(_run_multi_node)
 
         elif runtime.provider == "modal":
-            # TODO(chiraag): Unify this Modal sandbox path with the broker/bifrost
-            # asset/session model so switching provider from "modal" to "runpod"
-            # changes procurement, not the entire execution/supervision stack.
+            # TODO(step-3): This modal path builds a ModalExecutionRequest inline —
+            # that is a LaunchableExperiment with a modal-specific shape. After step-3,
+            # rollouts.compile() produces a LaunchableExperiment and argus calls
+            # rollouts.launchers.modal.launch(experiment, active_run). Switching
+            # provider from "modal" to "runpod" will then change only procurement,
+            # not the entire event-recording + supervision stack.
             # Modal execution (fast cold start)
             import json
 
