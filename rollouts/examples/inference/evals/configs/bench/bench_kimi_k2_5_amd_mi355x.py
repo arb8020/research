@@ -85,56 +85,16 @@ hardware = HardwareConfig(
             # Write the import-fix script that patches Kimi K2.5 model files.
             # Kimi-K2.5 uses relative imports (from .X import Y) which Python
             # can't handle when the package name contains hyphens/dots.
-            # Patch transformers dynamic_module_utils to escape invalid Python
-            # identifiers in module names (hyphens, dots from Kimi-K2.5).
-            # This is the root fix — patching the model files is not enough
-            # because the relative import resolution also uses the dotted name.
-            r"""python3 << 'PYEOF'
-import re, transformers.dynamic_module_utils as dmu, inspect, types
-
-orig = dmu.get_class_in_module
-def patched_get_class_in_module(class_name, module_path, *, force_reload=False):
-    import os, sys, importlib, importlib.util, hashlib
-    from pathlib import Path
-    from transformers.dynamic_module_utils import HF_MODULES_CACHE, get_relative_import_files, _HF_REMOTE_CODE_LOCK
-    name = os.path.normpath(module_path)
-    if name.endswith('.py'):
-        name = name[:-3]
-    name = name.replace(os.path.sep, '.')
-    # Escape invalid Python identifier characters (hyphens, dots in package names)
-    name = re.sub(r'[^a-zA-Z0-9._]', '_', name)
-    # Also collapse multiple dots
-    name = re.sub(r'\.\.+', '.', name)
-    module_file = Path(HF_MODULES_CACHE) / module_path
-    with _HF_REMOTE_CODE_LOCK:
-        if force_reload:
-            sys.modules.pop(name, None)
-            importlib.invalidate_caches()
-        cached_module = sys.modules.get(name)
-        module_spec = importlib.util.spec_from_file_location(name, location=module_file, submodule_search_locations=[str(module_file.parent)])
-        module_files = [module_file] + sorted(map(Path, get_relative_import_files(module_file)))
-        module_hash = hashlib.sha256(b''.join(bytes(f) + f.read_bytes() for f in module_files)).hexdigest()
-        if cached_module is None:
-            module = importlib.util.module_from_spec(module_spec)
-            sys.modules[name] = module
-        else:
-            module = cached_module
-        if getattr(module, '__transformers_module_hash__', '') != module_hash:
-            module_spec.loader.exec_module(module)
-            module.__transformers_module_hash__ = module_hash
-        return getattr(module, class_name)
-
-dmu.get_class_in_module = patched_get_class_in_module
-
-# Write the patched sitecustomize so all subprocesses get it too
-import site
-sitecustomize = '''
-import re, sys
+            # Write sitecustomize.py to /models so the container can install it.
+            # This patches transformers dynamic_module_utils to escape invalid
+            # Python identifiers (hyphens/dots from Kimi-K2.5 package name).
+            r"""cat > /models/sitecustomize.py << 'SCEOF'
+import re, sys, os
 try:
-    import transformers.dynamic_module_utils as dmu, importlib, importlib.util, hashlib, os
+    import transformers.dynamic_module_utils as dmu
+    import importlib, importlib.util, hashlib
     from pathlib import Path
-    orig_gcim = dmu.get_class_in_module
-    def patched(class_name, module_path, *, force_reload=False):
+    def _patched_gcim(class_name, module_path, *, force_reload=False):
         from transformers.dynamic_module_utils import HF_MODULES_CACHE, get_relative_import_files, _HF_REMOTE_CODE_LOCK
         name = os.path.normpath(module_path)
         if name.endswith(".py"): name = name[:-3]
@@ -145,28 +105,21 @@ try:
         with _HF_REMOTE_CODE_LOCK:
             if force_reload:
                 sys.modules.pop(name, None); importlib.invalidate_caches()
-            cached_module = sys.modules.get(name)
-            module_spec = importlib.util.spec_from_file_location(name, location=module_file, submodule_search_locations=[str(module_file.parent)])
-            module_files = [module_file] + sorted(map(Path, get_relative_import_files(module_file)))
-            module_hash = hashlib.sha256(b"".join(bytes(f) + f.read_bytes() for f in module_files)).hexdigest()
-            if cached_module is None:
-                module = importlib.util.module_from_spec(module_spec); sys.modules[name] = module
+            cached = sys.modules.get(name)
+            spec = importlib.util.spec_from_file_location(name, location=module_file, submodule_search_locations=[str(module_file.parent)])
+            files = [module_file] + sorted(map(Path, get_relative_import_files(module_file)))
+            h = hashlib.sha256(b"".join(bytes(f) + f.read_bytes() for f in files)).hexdigest()
+            if cached is None:
+                m = importlib.util.module_from_spec(spec); sys.modules[name] = m
             else:
-                module = cached_module
-            if getattr(module, "__transformers_module_hash__", "") != module_hash:
-                module_spec.loader.exec_module(module); module.__transformers_module_hash__ = module_hash
-            return getattr(module, class_name)
-    dmu.get_class_in_module = patched
-except Exception: pass
-'''
-for p in site.getsitepackages():
-    sc = os.path.join(p, 'sitecustomize.py')
-    try:
-        with open(sc, 'w') as f: f.write(sitecustomize)
-        print(f'Wrote sitecustomize to {sc}')
-        break
-    except Exception: pass
-PYEOF""",
+                m = cached
+            if getattr(m, "__transformers_module_hash__", "") != h:
+                spec.loader.exec_module(m); m.__transformers_module_hash__ = h
+            return getattr(m, class_name)
+    dmu.get_class_in_module = _patched_gcim
+except Exception:
+    pass
+SCEOF""",
         ),
     ),
 )
@@ -200,10 +153,9 @@ _docker_run = (
     # package name bug), then launch SGLang.
     f" bash -c '"
     f"USE_ROCM=true ROCM_HOME=/opt/rocm pip install -q /root/tilelang blobfile && "
-    # Install sitecustomize.py which patches transformers dynamic_module_utils
-    # to escape invalid Python identifiers (hyphens, dots) in module names.
-    # This propagates to all TP worker subprocesses via site.py.
-    f"python3 /tmp/fix_imports.py 2>/dev/null || true && "
+    # Install sitecustomize.py (written by bootstrap to /models/sitecustomize.py)
+    # into the container's site-packages so all TP worker subprocesses get it.
+    f"cp /models/sitecustomize.py $(python3 -c 'import site; print(site.getsitepackages()[0])')/sitecustomize.py 2>/dev/null || true && "
     f"SNAP=$(ls /models/hf_cache/hub/models--moonshotai--Kimi-K2.5/snapshots/ | head -1) && "
     f"export PYTHONPATH=/models/hf_cache/hub/models--moonshotai--Kimi-K2.5/snapshots/$SNAP && "
     f"python -m sglang.launch_server"
