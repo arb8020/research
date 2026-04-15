@@ -119,7 +119,7 @@ def main(argv: list[str] | None = None) -> int:
         run_logger.event("run_end", status="ok", exit_code=exit_code)
         return exit_code
     except Exception as exc:
-        run_logger.event("run_end", status="failed", error=str(exc))
+        run_logger.event("run_end", status="failed")
         print(f"Argus eval supervisor failed: {exc}", file=sys.stderr)
         raise
 
