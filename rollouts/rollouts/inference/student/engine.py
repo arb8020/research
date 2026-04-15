@@ -32,6 +32,18 @@ class Engine:
     special_tokens: SpecialTokens
 
 
+@dataclass(frozen=True)
+class PrefillOutput:
+    """Output of a prefill pass. Carries KV cache and logits at the final prompt position.
+
+    past_kv is HuggingFace past_key_values for step 1; replaced with explicit layout in step 6.
+    logits_V are unnormalized logits over the full vocabulary — caller decides how to sample.
+    """
+
+    past_kv: Any
+    logits_V: torch.Tensor
+
+
 def load(model_name: str) -> Engine:
     """Load weights and tokenizer onto GPU. Fails loudly if anything is missing."""
     model = AutoModelForCausalLM.from_pretrained(
@@ -56,17 +68,30 @@ def tokenize(eng: Engine, messages: list[dict]) -> torch.Tensor:
     return token_ids_T
 
 
-def prefill(eng: Engine, token_ids: torch.Tensor) -> Any:
-    """Run full prompt through model, return hidden state.
+def prefill(eng: Engine, token_ids_T: torch.Tensor) -> PrefillOutput:
+    """Run full prompt through model, return KV cache and logits at final position.
 
-    hidden is HF past_key_values for step 1. Replaced with explicit KV cache in step 6.
+    Replaced with explicit KV cache in step 6.
     """
-    raise NotImplementedError
+    input_ids_1T = token_ids_T.unsqueeze(0).to(eng.model.device)
+    with torch.no_grad():
+        out = eng.model(input_ids=input_ids_1T, use_cache=True)
+    logits_V = out.logits[0, -1]  # final position, all vocab
+    return PrefillOutput(past_kv=out.past_key_values, logits_V=logits_V)
 
 
-def decode_step(eng: Engine, hidden: Any) -> tuple[int, Any]:
-    """One autoregressive step. Returns (next_token_id, new_hidden)."""
-    raise NotImplementedError
+def decode_step(eng: Engine, hidden: PrefillOutput) -> tuple[int, PrefillOutput]:
+    """One autoregressive step. Returns (token_id, new_hidden).
+
+    Argmaxes hidden.logits_V to get the token to feed in, runs one model step,
+    returns the token id and updated hidden.
+    """
+    token_id = int(hidden.logits_V.argmax().item())
+    input_ids_11 = torch.tensor([[token_id]], device=eng.model.device, dtype=torch.long)
+    with torch.no_grad():
+        out = eng.model(input_ids=input_ids_11, past_key_values=hidden.past_kv, use_cache=True)
+    new_logits_V = out.logits[0, -1]
+    return token_id, PrefillOutput(past_kv=out.past_key_values, logits_V=new_logits_V)
 
 
 def detokenize(eng: Engine, token_ids: list[int]) -> str:

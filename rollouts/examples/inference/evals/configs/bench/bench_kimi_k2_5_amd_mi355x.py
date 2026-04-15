@@ -46,8 +46,10 @@ _no_op_scorer = FunctionScorer(lambda attempt, _ctx: Score(metrics=()))
 MODEL = "moonshotai/Kimi-K2.5"
 PORT = 30000
 
-# SGLang MI355X-specific ROCm image. vLLM ROCm fails with head alignment error.
-_SGLANG_IMAGE = "lmsysorg/sglang:v0.5.9-rocm700-mi35x"
+# dsv32-rocm is a newer build than v0.5.9-rocm700-mi35x and supports the
+# DeepSeek V2 attention family (which Kimi K2.5 uses). v0.5.9 has a
+# ForwardMetadata unpack bug in deepseek_v2.py that's fixed in this image.
+_SGLANG_IMAGE = "lmsysorg/sglang:dsv32-rocm"
 
 # ---------------------------------------------------------------------------
 # Workload
@@ -104,7 +106,7 @@ _docker_run = (
     f" --env HF_HOME=/models/hf_cache"
     f" --name sglang_bench_{PORT}"
     f" {_SGLANG_IMAGE}"
-    f" python -m sglang.launch_server"
+    f" bash -c 'USE_ROCM=true ROCM_HOME=/opt/rocm pip install -q /root/tilelang && python -m sglang.launch_server"
     f" --model-path {MODEL}"
     f" --host 0.0.0.0"
     f" --port {PORT}"
@@ -113,7 +115,7 @@ _docker_run = (
     f" --reasoning-parser kimi_k2"
     f" --tool-call-parser kimi_k2"
     f" --mem-fraction-static 0.85"
-    f" --context-length 8192"
+    f" --context-length 8192'"
 )
 
 endpoint = OwnedEndpoint(
