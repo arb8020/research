@@ -2122,6 +2122,7 @@ Examples:
             print(f"Evaluation submitted: {run_name}")
             print(f"  PID:    {pid}")
             print(f"  Local:  results/eval/{run_name}/")
+            print()
 
             if not args.tui and not args.tail:
                 return 0
