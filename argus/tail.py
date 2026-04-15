@@ -157,6 +157,10 @@ def tail_run(run_dir: Path, fmt: str = "pretty", timestamps: bool = False) -> in
                             sys.stdout.write(formatted + "\n")
                     tail_offsets[path.name] = path.stat().st_size
                 sys.stdout.flush()
+            # Flush any buffered service logs at end of each poll cycle
+            # in case they arrived without a subsequent non-service-log event
+            flush_svc()
+            sys.stdout.flush()
             time.sleep(0.5)
     except KeyboardInterrupt:
         flush_svc()
