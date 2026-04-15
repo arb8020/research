@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 import time
 from pathlib import Path
@@ -52,14 +53,32 @@ _NOISE = {
     "log_blob",
 }
 
+# Strip these header lines from service log blobs
+_BLOB_NOISE = re.compile(r"^== (stdout|stderr) ==$", re.MULTILINE)
+
 
 def _ts(ev: dict) -> str:
     raw = ev.get("timestamp") or ev.get("ts", "")
     return raw[11:19] if len(raw) >= 19 else raw
 
 
-def _fmt_line(source: str, event: str, ts: str) -> str:
-    return f"{ts}[{source}] {event}"
+def _fmt(source: str, text: str, ts: str) -> str:
+    return f"{ts}[{source}] {text}"
+
+
+def _parse_blob(blob: str) -> str:
+    """Strip section headers and blank lines from a service log blob."""
+    lines = []
+    for line in blob.splitlines():
+        if _BLOB_NOISE.match(line.strip()):
+            continue
+        lines.append(f"    {line}")
+    # Strip leading/trailing blank indented lines
+    while lines and not lines[0].strip():
+        lines.pop(0)
+    while lines and not lines[-1].strip():
+        lines.pop()
+    return "\n".join(lines)
 
 
 def _format(raw: str, timestamps: bool = False) -> str | None:
@@ -73,46 +92,46 @@ def _format(raw: str, timestamps: bool = False) -> str | None:
     msg = ev.get("message", "")
     event = ev.get("event", "")
 
-    # Suppress individual service log lines — handled by caller as buffered block
+    # Suppress noise
     if msg == "eval_inference_service_log":
         return None
-    # inference_service_final_log contains the full log blob — use it as fallback
+    if event in ("run_start", "submit_done"):
+        return None
+
+    # Service log blob — strip headers, indent lines
     if msg == "inference_service_final_log" or event == "inference_service_final_log":
         blob = (ev.get("log_tail") or ev.get("log_blob") or "").strip()
         if not blob:
             return None
-        lines = "\n".join(f"    {l}" for l in blob.splitlines())
-        return f"[server]\n{lines}"
-    if event in ("run_start", "submit_done"):
-        return None
+        return f"[server]\n{_parse_blob(blob)}"
 
     # eval events.jsonl
     if msg == "eval_start":
-        return _fmt_line(
+        return _fmt(
             "eval", f"started  name={ev.get('eval_name', '?')}  total={ev.get('total', '?')}", ts
         )
     if msg == "eval_end":
-        return _fmt_line(
+        return _fmt(
             "eval", f"done  status={ev.get('status', '?')}  reward={ev.get('mean_reward', '?')}", ts
         )
     if msg == "sample_start":
-        return _fmt_line(
+        return _fmt(
             "eval", f"sample {ev.get('sample_id', '?')} start  name={ev.get('sample_name', '')}", ts
         )
     if msg == "sample_end":
-        return _fmt_line(
+        return _fmt(
             "eval",
             f"sample {ev.get('sample_id', '?')} end  status={ev.get('status', '?')}  reward={ev.get('reward', '?')}",
             ts,
         )
     if msg == "turn":
-        return _fmt_line("eval", f"sample {ev.get('sample_id', '?')}  {ev.get('status', '')}", ts)
+        return _fmt("eval", f"sample {ev.get('sample_id', '?')}  {ev.get('status', '')}", ts)
     if msg == "assistant_message":
         content = ev.get("content", "")
         preview = content[:80].replace("\n", " ") + ("..." if len(content) > 80 else "")
-        return _fmt_line("eval", f"sample {ev.get('sample_id', '?')}  assistant: {preview}", ts)
+        return _fmt("eval", f"sample {ev.get('sample_id', '?')}  assistant: {preview}", ts)
     if msg == "llm_call":
-        return _fmt_line(
+        return _fmt(
             "eval",
             f"sample {ev.get('sample_id', '?')}  llm  "
             f"model={ev.get('model', '?')}  "
@@ -124,47 +143,43 @@ def _format(raw: str, timestamps: bool = False) -> str | None:
     # argus run.jsonl lifecycle events
     if event:
         if event == "inference_engine_launch":
-            return _fmt_line(
+            return _fmt(
                 "argus",
                 f"server starting  model={ev.get('model_name', '?')}  port={ev.get('engine_port', '?')}",
                 ts,
             )
         if event == "inference_healthcheck_start":
-            return _fmt_line(
+            return _fmt(
                 "argus", f"waiting for server  timeout={ev.get('startup_timeout', '?')}s", ts
             )
         if event == "inference_health_state":
             state = ev.get("health_state", "?")
             detail = ev.get("health_detail", "")
-            return _fmt_line("argus", f"health  {state}" + (f"  {detail}" if detail else ""), ts)
+            return _fmt("argus", f"health  {state}" + (f"  {detail}" if detail else ""), ts)
         if event == "inference_startup_failed":
-            return _fmt_line(
+            return _fmt(
                 "argus",
                 f"server failed  reason={ev.get('failure_kind', '?')}  attempts={ev.get('health_attempt', '?')}",
                 ts,
             )
+        if event == "run_end":
+            status = ev.get("status", "?")
+            error = ev.get("error", "")
+            return _fmt(
+                "argus", f"run ended  status={status}" + (f"  error={error}" if error else ""), ts
+            )
         extra = "  ".join(f"{k}={v}" for k, v in ev.items() if k not in _NOISE and v is not None)
-        return _fmt_line("argus", f"{event}  {extra}" if extra else event, ts)
+        return _fmt("argus", f"{event}  {extra}" if extra else event, ts)
 
     # Generic
     extra = "  ".join(f"{k}={v}" for k, v in ev.items() if k not in _NOISE and v is not None)
-    return _fmt_line("eval", f"{msg}  {extra}" if extra else msg, ts)
+    return _fmt("eval", f"{msg}  {extra}" if extra else msg, ts)
 
 
 def tail_run(run_dir: Path, fmt: str = "pretty", timestamps: bool = False) -> int:
     """Stream events from run_dir to stdout. Blocks until Ctrl-C."""
     print(f"Tailing: {run_dir}  (Ctrl-C to stop)", file=sys.stderr)
     tail_offsets: dict[str, int] = {}
-    svc_buf: list[str] = []
-    svc_flushed: list[bool] = [False]  # tracks if we already printed the server block
-
-    def flush_svc() -> None:
-        if svc_buf:
-            sys.stdout.write("[server]\n")
-            for line in svc_buf:
-                sys.stdout.write(f"    {line}\n")
-            svc_buf.clear()
-            svc_flushed[0] = True
 
     try:
         while True:
@@ -181,30 +196,14 @@ def tail_run(run_dir: Path, fmt: str = "pretty", timestamps: bool = False) -> in
                             continue
                         if fmt == "json":
                             sys.stdout.write(raw + "\n")
-                            continue
-                        try:
-                            ev = json.loads(raw)
-                            if ev.get("message") == "eval_inference_service_log":
-                                svc_buf.append((ev.get("line") or "").rstrip())
-                                continue
-                        except json.JSONDecodeError:
-                            pass
-                        flush_svc()
-                        formatted = _format(raw, timestamps=timestamps)
-                        if formatted is not None:
-                            # Skip final log blob if we already printed individual lines
-                            is_final = "inference_service_final_log" in raw
-                            if is_final and svc_flushed[0]:
-                                continue
-                            sys.stdout.write(formatted + "\n")
+                        else:
+                            formatted = _format(raw, timestamps=timestamps)
+                            if formatted is not None:
+                                sys.stdout.write(formatted + "\n")
                     tail_offsets[path.name] = path.stat().st_size
                 sys.stdout.flush()
-            flush_svc()
-            sys.stdout.flush()
             time.sleep(0.5)
     except KeyboardInterrupt:
-        flush_svc()
-        sys.stdout.flush()
         print("\nstopped.", file=sys.stderr)
     return 0
 

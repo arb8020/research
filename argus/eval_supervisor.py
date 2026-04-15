@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import argparse
 import os
-from functools import partial
 import subprocess
 import sys
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -105,8 +105,9 @@ def main(argv: list[str] | None = None) -> int:
     output_dir = args.output_dir.resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    run_logger = _setup_run_logging(output_dir)
     try:
-        return trio.run(
+        exit_code = trio.run(
             partial(
                 _run_eval,
                 config_path=config_path,
@@ -115,7 +116,10 @@ def main(argv: list[str] | None = None) -> int:
                 force_deploy_committed=args.force_deploy_committed,
             )
         )
+        run_logger.event("run_end", status="ok", exit_code=exit_code)
+        return exit_code
     except Exception as exc:
+        run_logger.event("run_end", status="failed", error=str(exc))
         print(f"Argus eval supervisor failed: {exc}", file=sys.stderr)
         raise
 
