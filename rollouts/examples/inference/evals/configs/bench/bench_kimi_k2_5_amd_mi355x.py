@@ -1,6 +1,7 @@
 """Throughput/latency benchmark for Kimi K2.5 on AMD Instinct MI355X (8x GPU).
 
-Uses vLLM's official ROCm image — verified on 8x MI300X/MI355X per vLLM docs.
+Uses SGLang's MI355X ROCm image. vLLM ROCm fails with
+assert num_head_qo % 16 == 0 at tp=8 for Kimi K2.5's attention head count.
 Weights downloaded to /models/hf_cache on the NVMe drive (7TB, mounted at /models).
 
 Hardware: root@66.42.120.238
@@ -10,7 +11,6 @@ Hardware: root@66.42.120.238
 Model: moonshotai/Kimi-K2.5
   - MoE architecture, FP8 weights
   - Requires all 8 GPUs (--tensor-parallel-size 8)
-  - Verified on 8x MI300X/MI355X per vLLM recipe docs
 
 First run will download model weights — expect 30-60min before server starts.
 Subsequent runs reuse the cached weights from /models/hf_cache.
@@ -22,8 +22,8 @@ Usage:
     tail -f results/eval/<run>/run.jsonl | jq 'select(.event | test("inference_startup|health|eval_end"))'
 
 Reference:
-    vLLM ROCm recipe: https://docs.vllm.ai/projects/recipes/en/latest/moonshotai/Kimi-K2.5.html
-    Docker image: vllm/vllm-openai-rocm:latest
+    SGLang cookbook: https://cookbook.sglang.io/autoregressive/Moonshotai/Kimi-K2.5
+    Docker image: lmsysorg/sglang:v0.5.9-rocm700-mi35x
 """
 
 from examples.inference.bench_config_lib import (
@@ -46,8 +46,8 @@ _no_op_scorer = FunctionScorer(lambda attempt, _ctx: Score(metrics=()))
 MODEL = "moonshotai/Kimi-K2.5"
 PORT = 30000
 
-# vLLM's official ROCm image — verified on MI300X/MI355X.
-_VLLM_IMAGE = "vllm/vllm-openai-rocm:latest"
+# SGLang MI355X-specific ROCm image. vLLM ROCm fails with head alignment error.
+_SGLANG_IMAGE = "lmsysorg/sglang:v0.5.9-rocm700-mi35x"
 
 # ---------------------------------------------------------------------------
 # Workload
@@ -80,45 +80,39 @@ hardware = HardwareConfig(
     deps=DepsConfig(
         bootstrap_commands=(
             "mount /dev/nvme0n1 /models 2>/dev/null || true",
-            f"docker pull {_VLLM_IMAGE}",
+            f"docker pull {_SGLANG_IMAGE}",
         ),
     ),
 )
 
 # ---------------------------------------------------------------------------
 # Endpoint
-# vLLM ROCm flags per official recipe:
-#   VLLM_ROCM_USE_AITER=1              — AITER attention/tensor optimizations
-#   VLLM_ROCM_QUICK_REDUCE_QUANTIZATION=INT4 — faster all-reduce
-#   VLLM_ROCM_USE_AITER_RMSNORM=0      — disable AITER for RMSNorm (stability)
-#   --block-size=1                     — required for ROCm prefix caching
+# SGLang flags per cookbook:
+#   --reasoning-parser kimi_k2  — split thinking/content in output
+#   --tool-call-parser kimi_k2  — structured tool calls
+#   --dp 8 --enable-dp-attention — data-parallel attention for throughput
 # ---------------------------------------------------------------------------
 
 _docker_run = (
     f"docker run --rm"
     f" --device /dev/kfd --device /dev/dri"
     f" --group-add video"
-    f" --security-opt seccomp=unconfined"
+    f" --shm-size 128G"
     f" --ipc host --network host"
     f" --volume /models:/models"
     f" --env ROCR_VISIBLE_DEVICES=0,1,2,3,4,5,6,7"
     f" --env HF_HOME=/models/hf_cache"
-    f" --env VLLM_ROCM_USE_AITER=1"
-    f" --env VLLM_ROCM_QUICK_REDUCE_QUANTIZATION=INT4"
-    f" --env VLLM_ROCM_USE_AITER_RMSNORM=0"
-    f" --name vllm_bench_{PORT}"
-    f" {_VLLM_IMAGE}"
-    f" {MODEL}"
-    f" --tensor-parallel-size 8"
-    f" --mm-encoder-tp-mode data"
-    f" --block-size 1"
-    f" --tool-call-parser kimi_k2"
-    f" --reasoning-parser kimi_k2"
-    f" --enable-auto-tool-choice"
-    f" --enable-prefix-caching"
-    f" --trust-remote-code"
+    f" --name sglang_bench_{PORT}"
+    f" {_SGLANG_IMAGE}"
+    f" python -m sglang.launch_server"
+    f" --model-path {MODEL}"
     f" --host 0.0.0.0"
     f" --port {PORT}"
+    f" --tp 8"
+    f" --trust-remote-code"
+    f" --reasoning-parser kimi_k2"
+    f" --tool-call-parser kimi_k2"
+    f" --mem-fraction-static 0.85"
     f" --max-model-len 8192"
 )
 

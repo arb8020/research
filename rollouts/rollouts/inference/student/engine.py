@@ -34,8 +34,15 @@ class Engine:
 
 def load(model_name: str) -> Engine:
     """Load weights and tokenizer onto GPU. Fails loudly if anything is missing."""
-
-    raise NotImplementedError
+    model = AutoModelForCausalLM.from_pretrained(
+        model_name, torch_dtype=torch.bfloat16, device_map="cuda"
+    )
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    special_tokens = SpecialTokens(
+        eos_token_id=tokenizer.eos_token_id,
+        pad_token_id=tokenizer.pad_token_id,
+    )
+    return Engine(model=model, tokenizer=tokenizer, special_tokens=special_tokens)
 
 
 def tokenize(eng: Engine, messages: list[dict]) -> torch.Tensor:
@@ -44,7 +51,9 @@ def tokenize(eng: Engine, messages: list[dict]) -> torch.Tensor:
     # TODO(step 3+): split into format_messages(eng, messages, tools) -> str
     # and encode(eng, text) -> Tensor when tool call support is needed.
     """
-    raise NotImplementedError
+    text = eng.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+    token_ids_T = eng.tokenizer.encode(text, return_tensors="pt").squeeze(0)
+    return token_ids_T
 
 
 def prefill(eng: Engine, token_ids: torch.Tensor) -> Any:

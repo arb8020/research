@@ -2,6 +2,7 @@
 
 ## Working Set
 
+- **[codex_codestyle_interview.md](codex_codestyle_interview.md)** - **Start here if you want the most precise statement of this style.** An interview with a Codex model where the style was surfaced through concrete "pick between two options and explain your reasoning" exercises. More honest than any generic guide.
 - **[cheatsheet.md](cheatsheet.md)** - Comprehensive synthesis: all principles with examples, organized by topic
 - **[favorites.md](favorites.md)** - Short daily-use reference: error handling decision tree, classes vs functions
 - **[earned_compression.md](earned_compression.md)** - When abstraction is earned: semantic compression vs dishonest compression
