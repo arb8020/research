@@ -104,7 +104,7 @@ _docker_run = (
     f" --volume /models:/models"
     f" --env ROCR_VISIBLE_DEVICES=0,1,2,3,4,5,6,7"
     f" --env HF_HOME=/models/hf_cache"
-    f" --env TRANSFORMERS_CACHE=/models/hf_cache"
+    f" --env HF_MODULES_CACHE=/models/hf_cache/modules"
     f" --name sglang_bench_{PORT}"
     f" {_SGLANG_IMAGE}"
     f" bash -c 'USE_ROCM=true ROCM_HOME=/opt/rocm pip install -q /root/tilelang && python -m sglang.launch_server"
