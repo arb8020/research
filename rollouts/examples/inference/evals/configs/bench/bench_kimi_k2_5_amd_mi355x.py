@@ -82,6 +82,32 @@ hardware = HardwareConfig(
         bootstrap_commands=(
             "mount /dev/nvme0n1 /models 2>/dev/null || true",
             f"docker pull {_SGLANG_IMAGE}",
+            # Write the import-fix script that patches Kimi K2.5 model files.
+            # Kimi-K2.5 uses relative imports (from .X import Y) which Python
+            # can't handle when the package name contains hyphens/dots.
+            r"""python3 -c "
+import os, re
+def fix_file(path):
+    with open(path) as f:
+        content = f.read()
+    lines = content.split('\n')
+    fixed = []
+    for line in lines:
+        stripped = line.lstrip()
+        m = re.match(r'^(\s*)([a-zA-Z_]\w+ import .+)', line)
+        if m and not stripped.startswith(('import ', 'from ', '#')):
+            line = m.group(1) + 'from ' + m.group(2)
+        line = re.sub(r'^(\s*)from \.', r'\1from ', line)
+        fixed.append(line)
+    new_content = '\n'.join(fixed)
+    if new_content != content:
+        with open(path, 'w') as f:
+            f.write(new_content)
+for root, dirs, files in os.walk('/models/hf_cache'):
+    for fname in files:
+        if fname.endswith('.py') and 'Kimi' in root:
+            fix_file(os.path.join(root, fname))
+" > /tmp/fix_imports.py""",
         ),
     ),
 )
@@ -114,10 +140,12 @@ _docker_run = (
     # PYTHONPATH to the model snapshot dir (workaround for Kimi-K2.5 hyphenated
     # package name bug), then launch SGLang.
     f" bash -c '"
-    f"USE_ROCM=true ROCM_HOME=/opt/rocm pip install -q /root/tilelang && "
+    f"USE_ROCM=true ROCM_HOME=/opt/rocm pip install -q /root/tilelang blobfile && "
+    # Kimi-K2.5 model files use relative imports (from .X import Y) which break
+    # when Python can't import a package with hyphens/dots in the name.
+    # Fix: rewrite relative imports as absolute imports, then set PYTHONPATH.
     f"SNAP=$(ls /models/hf_cache/hub/models--moonshotai--Kimi-K2.5/snapshots/ | head -1) && "
-    f"find /models/hf_cache -name configuration_kimi_k25.py -exec "
-    f"sed -i s/from\\.configuration_deepseek/from\\ configuration_deepseek/g {{}} \\; && "
+    f"python3 /tmp/fix_imports.py 2>/dev/null || true && "
     f"export PYTHONPATH=/models/hf_cache/hub/models--moonshotai--Kimi-K2.5/snapshots/$SNAP && "
     f"python -m sglang.launch_server"
     f" --model-path {MODEL}"
