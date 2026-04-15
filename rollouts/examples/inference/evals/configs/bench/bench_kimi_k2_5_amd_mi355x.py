@@ -85,29 +85,88 @@ hardware = HardwareConfig(
             # Write the import-fix script that patches Kimi K2.5 model files.
             # Kimi-K2.5 uses relative imports (from .X import Y) which Python
             # can't handle when the package name contains hyphens/dots.
-            r"""python3 -c "
-import os, re
-def fix_file(path):
-    with open(path) as f:
-        content = f.read()
-    lines = content.split('\n')
-    fixed = []
-    for line in lines:
-        stripped = line.lstrip()
-        m = re.match(r'^(\s*)([a-zA-Z_]\w+ import .+)', line)
-        if m and not stripped.startswith(('import ', 'from ', '#')):
-            line = m.group(1) + 'from ' + m.group(2)
-        line = re.sub(r'^(\s*)from \.', r'\1from ', line)
-        fixed.append(line)
-    new_content = '\n'.join(fixed)
-    if new_content != content:
-        with open(path, 'w') as f:
-            f.write(new_content)
-for root, dirs, files in os.walk('/models/hf_cache'):
-    for fname in files:
-        if fname.endswith('.py') and 'Kimi' in root:
-            fix_file(os.path.join(root, fname))
-" > /tmp/fix_imports.py""",
+            # Patch transformers dynamic_module_utils to escape invalid Python
+            # identifiers in module names (hyphens, dots from Kimi-K2.5).
+            # This is the root fix — patching the model files is not enough
+            # because the relative import resolution also uses the dotted name.
+            r"""python3 << 'PYEOF'
+import re, transformers.dynamic_module_utils as dmu, inspect, types
+
+orig = dmu.get_class_in_module
+def patched_get_class_in_module(class_name, module_path, *, force_reload=False):
+    import os, sys, importlib, importlib.util, hashlib
+    from pathlib import Path
+    from transformers.dynamic_module_utils import HF_MODULES_CACHE, get_relative_import_files, _HF_REMOTE_CODE_LOCK
+    name = os.path.normpath(module_path)
+    if name.endswith('.py'):
+        name = name[:-3]
+    name = name.replace(os.path.sep, '.')
+    # Escape invalid Python identifier characters (hyphens, dots in package names)
+    name = re.sub(r'[^a-zA-Z0-9._]', '_', name)
+    # Also collapse multiple dots
+    name = re.sub(r'\.\.+', '.', name)
+    module_file = Path(HF_MODULES_CACHE) / module_path
+    with _HF_REMOTE_CODE_LOCK:
+        if force_reload:
+            sys.modules.pop(name, None)
+            importlib.invalidate_caches()
+        cached_module = sys.modules.get(name)
+        module_spec = importlib.util.spec_from_file_location(name, location=module_file, submodule_search_locations=[str(module_file.parent)])
+        module_files = [module_file] + sorted(map(Path, get_relative_import_files(module_file)))
+        module_hash = hashlib.sha256(b''.join(bytes(f) + f.read_bytes() for f in module_files)).hexdigest()
+        if cached_module is None:
+            module = importlib.util.module_from_spec(module_spec)
+            sys.modules[name] = module
+        else:
+            module = cached_module
+        if getattr(module, '__transformers_module_hash__', '') != module_hash:
+            module_spec.loader.exec_module(module)
+            module.__transformers_module_hash__ = module_hash
+        return getattr(module, class_name)
+
+dmu.get_class_in_module = patched_get_class_in_module
+
+# Write the patched sitecustomize so all subprocesses get it too
+import site
+sitecustomize = '''
+import re, sys
+try:
+    import transformers.dynamic_module_utils as dmu, importlib, importlib.util, hashlib, os
+    from pathlib import Path
+    orig_gcim = dmu.get_class_in_module
+    def patched(class_name, module_path, *, force_reload=False):
+        from transformers.dynamic_module_utils import HF_MODULES_CACHE, get_relative_import_files, _HF_REMOTE_CODE_LOCK
+        name = os.path.normpath(module_path)
+        if name.endswith(".py"): name = name[:-3]
+        name = name.replace(os.path.sep, ".")
+        name = re.sub(r"[^a-zA-Z0-9._]", "_", name)
+        name = re.sub(r"[.][.]+", ".", name)
+        module_file = Path(HF_MODULES_CACHE) / module_path
+        with _HF_REMOTE_CODE_LOCK:
+            if force_reload:
+                sys.modules.pop(name, None); importlib.invalidate_caches()
+            cached_module = sys.modules.get(name)
+            module_spec = importlib.util.spec_from_file_location(name, location=module_file, submodule_search_locations=[str(module_file.parent)])
+            module_files = [module_file] + sorted(map(Path, get_relative_import_files(module_file)))
+            module_hash = hashlib.sha256(b"".join(bytes(f) + f.read_bytes() for f in module_files)).hexdigest()
+            if cached_module is None:
+                module = importlib.util.module_from_spec(module_spec); sys.modules[name] = module
+            else:
+                module = cached_module
+            if getattr(module, "__transformers_module_hash__", "") != module_hash:
+                module_spec.loader.exec_module(module); module.__transformers_module_hash__ = module_hash
+            return getattr(module, class_name)
+    dmu.get_class_in_module = patched
+except Exception: pass
+'''
+for p in site.getsitepackages():
+    sc = os.path.join(p, 'sitecustomize.py')
+    try:
+        with open(sc, 'w') as f: f.write(sitecustomize)
+        print(f'Wrote sitecustomize to {sc}')
+        break
+    except Exception: pass
+PYEOF""",
         ),
     ),
 )
@@ -141,11 +200,11 @@ _docker_run = (
     # package name bug), then launch SGLang.
     f" bash -c '"
     f"USE_ROCM=true ROCM_HOME=/opt/rocm pip install -q /root/tilelang blobfile && "
-    # Kimi-K2.5 model files use relative imports (from .X import Y) which break
-    # when Python can't import a package with hyphens/dots in the name.
-    # Fix: rewrite relative imports as absolute imports, then set PYTHONPATH.
-    f"SNAP=$(ls /models/hf_cache/hub/models--moonshotai--Kimi-K2.5/snapshots/ | head -1) && "
+    # Install sitecustomize.py which patches transformers dynamic_module_utils
+    # to escape invalid Python identifiers (hyphens, dots) in module names.
+    # This propagates to all TP worker subprocesses via site.py.
     f"python3 /tmp/fix_imports.py 2>/dev/null || true && "
+    f"SNAP=$(ls /models/hf_cache/hub/models--moonshotai--Kimi-K2.5/snapshots/ | head -1) && "
     f"export PYTHONPATH=/models/hf_cache/hub/models--moonshotai--Kimi-K2.5/snapshots/$SNAP && "
     f"python -m sglang.launch_server"
     f" --model-path {MODEL}"
