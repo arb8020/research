@@ -51,7 +51,7 @@ class KVState:
 def load(model_name: str) -> Engine:
     """Load weights and tokenizer onto GPU. Fails loudly if anything is missing."""
     model = AutoModelForCausalLM.from_pretrained(
-        model_name, torch_dtype=torch.bfloat16, device_map="cuda"
+        model_name, dtype=torch.bfloat16, device_map="cuda"
     )
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     special_tokens = SpecialTokens(

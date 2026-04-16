@@ -255,7 +255,7 @@ def build_app(model_name: str, eng: Engine, observer: JsonlObserver | None = Non
     async def health() -> dict:
         return {"status": "ok"}
 
-    @app.post("/v1/chat/completions")
+    @app.post("/v1/chat/completions", response_model=None)
     async def chat_completions(request: dict) -> StreamingResponse | dict:
         messages = request.get("messages", [])
         max_tokens = request.get("max_tokens", 512)
