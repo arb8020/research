@@ -37,6 +37,54 @@ def _setup_run_logging(output_dir: Path) -> RunEventSinks:
     return build_jsonl_run_event_sinks(output_dir / "control.jsonl")
 
 
+def _last_nonempty_log_line(path: Path) -> str | None:
+    if not path.exists():
+        return None
+    last_nonempty: str | None = None
+    for line in path.read_text(errors="replace").splitlines():
+        stripped = line.strip()
+        if stripped:
+            last_nonempty = stripped
+    return last_nonempty
+
+
+def _emit_child_failure_summary(
+    *, run_logger: RunEventSinks, output_dir: Path, exit_code: int
+) -> None:
+    stderr_log = output_dir / "stderr.log"
+    stdout_log = output_dir / "stdout.log"
+    error_summary = _last_nonempty_log_line(stderr_log) or _last_nonempty_log_line(stdout_log)
+    emit_run_event(
+        run_logger,
+        "eval_child_failed",
+        exit_code=exit_code,
+        error_summary=error_summary,
+        stderr_log=str(stderr_log),
+        stdout_log=str(stdout_log),
+    )
+
+
+def _spawn_child(
+    *, command: list[str], output_dir: Path, child_env: dict[str, str]
+) -> subprocess.Popen[bytes]:
+    stdout_log = output_dir / "stdout.log"
+    stderr_log = output_dir / "stderr.log"
+    stdout_handle = stdout_log.open("a")
+    stderr_handle = stderr_log.open("a")
+    try:
+        return subprocess.Popen(
+            command,
+            cwd=str(REPO_ROOT.parent),
+            env=child_env,
+            stdin=subprocess.DEVNULL,
+            stdout=stdout_handle,
+            stderr=stderr_handle,
+        )
+    finally:
+        stdout_handle.close()
+        stderr_handle.close()
+
+
 async def _wait_for_process(proc: subprocess.Popen[bytes]) -> int:
     return await trio.to_thread.run_sync(proc.wait)
 
@@ -76,10 +124,10 @@ async def _run_eval(
             run_logger=run_logger,
         ) as realized:
             child_env["ROLLOUTS_ENDPOINT_BASE_URL"] = realized.endpoint_config.base_url or ""
-            proc = subprocess.Popen(command, cwd=str(REPO_ROOT.parent), env=child_env)
+            proc = _spawn_child(command=command, output_dir=output_dir, child_env=child_env)
             return await _wait_for_process(proc)
 
-    proc = subprocess.Popen(command, cwd=str(REPO_ROOT.parent), env=child_env)
+    proc = _spawn_child(command=command, output_dir=output_dir, child_env=child_env)
     return await _wait_for_process(proc)
 
 
@@ -109,10 +157,19 @@ def main(argv: list[str] | None = None) -> int:
                 force_deploy_committed=args.force_deploy_committed,
             )
         )
-        emit_run_event(run_logger, "run_end", status="ok", exit_code=exit_code)
+        if exit_code != 0:
+            _emit_child_failure_summary(
+                run_logger=run_logger, output_dir=output_dir, exit_code=exit_code
+            )
+        emit_run_event(
+            run_logger,
+            "run_end",
+            status="ok" if exit_code == 0 else "failed",
+            exit_code=exit_code,
+        )
         return exit_code
     except Exception as exc:
-        emit_run_event(run_logger, "run_end", status="failed")
+        emit_run_event(run_logger, "run_end", status="failed", error=str(exc))
         print(f"Argus eval supervisor failed: {exc}", file=sys.stderr)
         raise
 
