@@ -1,0 +1,17 @@
+[project]
+name = "pokemon-rl"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "gymnasium>=1.2.3",
+    "numpy>=2.3.5",
+    "poke-env",
+    "pufferlib",
+    "trio>=0.32.0",
+]
+
+[tool.uv.sources]
+poke-env = { git = "https://github.com/hsahovic/poke-env.git" }
+pufferlib = { git = "https://github.com/PufferAI/PufferLib.git" }

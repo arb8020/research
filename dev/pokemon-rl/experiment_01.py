@@ -1,0 +1,103 @@
+"""
+Pokemon RL experiment 01 — PPO self-play vs random opponent, gen9randombattle.
+
+Run locally:
+    python -m argus run --config dev/pokemon-rl/experiment_01.py --local
+
+Run on Modal:
+    python -m argus run --config dev/pokemon-rl/experiment_01.py --provider modal
+"""
+
+from __future__ import annotations
+
+import sys
+import os
+
+from dataclasses import dataclass
+from rollouts.training.configs import DepsConfig, HardwareConfig
+
+# ---------------------------------------------------------------------------
+# Hardware
+# ---------------------------------------------------------------------------
+
+hardware = HardwareConfig(
+    gpu_type="L4",
+    gpu_count=1,
+    provider="modal",
+    deps=DepsConfig(
+        python_version="3.12",
+        system_packages=(
+            "bash", "curl", "git", "build-essential", "libnuma1", "tmux",
+        ),
+        pip_packages=(
+            "torch>=2.4",
+            "numpy",
+            "gymnasium",
+            "poke-env @ git+https://github.com/hsahovic/poke-env.git",
+        ),
+        pip_index_url="https://download.pytorch.org/whl/cu124",
+        pip_extra_index_url="https://pypi.org/simple",
+        bootstrap_commands=(
+            # Install nvm + Node v20 (better-sqlite3 requires v20, not v24)
+            "curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash",
+            "bash -c 'source ~/.nvm/nvm.sh && nvm install 20 && nvm use 20'",
+            # Clone and install Pokemon Showdown
+            "git clone --depth 1 https://github.com/smogon/pokemon-showdown.git /opt/pokemon-showdown",
+            "bash -c 'source ~/.nvm/nvm.sh && nvm use 20 && npm install --prefix /opt/pokemon-showdown'",
+        ),
+    ),
+)
+
+# ---------------------------------------------------------------------------
+# Config
+# ---------------------------------------------------------------------------
+
+@dataclass
+class PokemonRLConfig:
+    format_id: str = "gen9randombattle"
+    n_envs: int = 64
+    horizon: int = 64
+    total_steps: int = 20_000_000
+    lr: float = 3e-4
+    hidden_size: int = 256
+    lstm_size: int = 256
+    checkpoint_dir: str = "checkpoints"
+
+
+config = PokemonRLConfig()
+
+# ---------------------------------------------------------------------------
+# Train entry point
+# ---------------------------------------------------------------------------
+
+def train(config: PokemonRLConfig | None = None, **kwargs):
+    import glob
+
+    # Wire up Node + Showdown paths for the remote environment
+    node_bins = glob.glob("/root/.nvm/versions/node/v20.*/bin/node")
+    if node_bins:
+        os.environ["NODE_BIN"] = sorted(node_bins)[-1]
+        os.environ["SHOWDOWN_PATH"] = "/opt/pokemon-showdown/pokemon-showdown"
+
+    # Add repo root to path so local imports work
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    pkg_root = os.path.join(repo_root, "dev", "pokemon-rl")
+    for p in (repo_root, pkg_root):
+        if p not in sys.path:
+            sys.path.insert(0, p)
+
+    from train import Config, train as ppo_train
+
+    cfg = config or PokemonRLConfig()
+    ppo_cfg = Config(
+        format_id=cfg.format_id,
+        n_envs=cfg.n_envs,
+        horizon=cfg.horizon,
+        total_steps=cfg.total_steps,
+        lr=cfg.lr,
+        hidden_size=cfg.hidden_size,
+        lstm_size=cfg.lstm_size,
+        checkpoint_dir=cfg.checkpoint_dir,
+    )
+    ppo_train(ppo_cfg)
+    return {"metrics_history": []}
