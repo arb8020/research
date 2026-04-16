@@ -59,6 +59,7 @@ endpoint = OwnedEndpoint(
     capabilities=EndpointCapabilities(weight_sync=None),
     launch_module="rollouts.inference.student",
     startup_timeout=120.0,
+    extra_launch_args=("--trace-path", "__output_dir__/engine_trace.jsonl"),
 )
 
 # ---------------------------------------------------------------------------

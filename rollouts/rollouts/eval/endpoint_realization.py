@@ -161,11 +161,22 @@ def _remote_service_spec(
         remote_pythonpath_root = remote_workspace_root / "rollouts"
         # Prepend workspace to PYTHONPATH so the synced rollouts source tree
         # takes precedence over any installed package version in the venv.
+        extra = ""
+        if owned_endpoint.extra_launch_args:
+            # Substitute __output_dir__ placeholder with the actual remote output dir.
+            resolved = [
+                str(output_dir)
+                if arg == "__output_dir__"
+                else arg.replace("__output_dir__", str(output_dir))
+                for arg in owned_endpoint.extra_launch_args
+            ]
+            extra = " " + " ".join(shlex.quote(a) for a in resolved)
         launch_cmd = (
             f"export PYTHONPATH={shlex.quote(str(remote_pythonpath_root))}:${{PYTHONPATH:-}}; "
             f"{remote_python} -m {owned_endpoint.launch_module} "
             f"--model {owned_endpoint.model} "
             f"--port {owned_endpoint.port}"
+            f"{extra}"
         )
         return launch_cmd, owned_endpoint.readiness_path
 

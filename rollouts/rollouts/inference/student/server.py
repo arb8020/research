@@ -330,6 +330,9 @@ def main() -> None:
     parser.add_argument("--model", required=True, help="Model name or path")
     parser.add_argument("--port", type=int, default=30001)
     parser.add_argument("--host", default="0.0.0.0")
+    parser.add_argument(
+        "--trace-path", default=None, help="Path to write per-request engine trace JSONL"
+    )
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO)

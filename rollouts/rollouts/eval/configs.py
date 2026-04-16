@@ -331,6 +331,9 @@ class OwnedEndpoint:
     #   Works locally and remotely (module path is repo-relative, survives bifrost sync).
     launch_cmd: str | None = None
     launch_module: str | None = None
+    # Extra CLI args appended to the launch_module command, e.g. ("--trace-path", "/tmp/trace.jsonl").
+    # Ignored when launch_cmd is set (caller owns the full command string in that case).
+    extra_launch_args: tuple[str, ...] = ()
     mem_fraction: float = 0.7
     startup_timeout: float = 300.0
     temperature: float = 0.0
@@ -388,7 +391,10 @@ class OwnedEndpoint:
         if self.launch_cmd is not None:
             return self.launch_cmd
         if self.launch_module is not None:
-            return f"python -m {self.launch_module} --model {self.model} --port {self.port}"
+            base = f"python -m {self.launch_module} --model {self.model} --port {self.port}"
+            if self.extra_launch_args:
+                base += " " + " ".join(self.extra_launch_args)
+            return base
         raise ValueError("OwnedEndpoint requires either launch_cmd or launch_module")
 
     def get_api_format(self) -> str:
