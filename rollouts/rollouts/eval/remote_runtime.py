@@ -41,6 +41,11 @@ class RemoteRuntimePreparation:
     npmrc: str | None = "min-release-age=8\nignore-scripts=true\n"
 
 
+def _emit_eval_event(event: str, **data: Any) -> None:
+    """Emit one canonical eval event into events.jsonl."""
+    _event_logger.info(event, extra={"event": event, **data})
+
+
 async def _workspace_exec(
     workspace: SandboxWorkspaceResource,
     command: str,
@@ -68,21 +73,12 @@ def _make_eval_on_event(
 
     async def on_event(event: Any) -> None:
         if isinstance(event, LLMCallStart):
-            _event_logger.info(
-                "turn",
-                extra={"sample_id": sample_id, "turn": turn[0], "status": "streaming..."},
-            )
+            _emit_eval_event("turn", sample_id=sample_id, turn=turn[0], status="streaming...")
             turn[0] += 1
         elif isinstance(event, ToolCallStart):
-            _event_logger.info(
-                "turn",
-                extra={"sample_id": sample_id, "turn": turn[0], "status": "calling tool..."},
-            )
+            _emit_eval_event("turn", sample_id=sample_id, turn=turn[0], status="calling tool...")
         elif isinstance(event, ToolCallEnd):
-            _event_logger.info(
-                "turn",
-                extra={"sample_id": sample_id, "turn": turn[0], "status": "tool done"},
-            )
+            _emit_eval_event("turn", sample_id=sample_id, turn=turn[0], status="tool done")
         if caller_on_event is not None:
             await caller_on_event(event)
 
@@ -184,14 +180,12 @@ def _emit_remote_runtime_stage(
     stage: str,
     status: str,
 ) -> None:
-    _event_logger.info(
+    _emit_eval_event(
         "remote_runtime_stage",
-        extra={
-            "runtime": runtime,
-            "sample_id": sample_id,
-            "stage": stage,
-            "status": status,
-        },
+        runtime=runtime,
+        sample_id=sample_id,
+        stage=stage,
+        status=status,
     )
 
 
@@ -965,13 +959,11 @@ async def _run_agent_in_workspace(
                     await _store.append_message(_harness_session_id, msg)
                 added += 1
                 if msg.role == "assistant":
-                    _event_logger.info(
+                    _emit_eval_event(
                         "turn",
-                        extra={
-                            "sample_id": sample_id,
-                            "turn": assistant_turn,
-                            "status": "streaming...",
-                        },
+                        sample_id=sample_id,
+                        turn=assistant_turn,
+                        status="streaming...",
                     )
                     assistant_turn += 1
         return added
@@ -1003,9 +995,11 @@ async def _run_agent_in_workspace(
             path = disc.stdout.strip()
             if path:
                 session_file = path
-                _event_logger.info(
+                _emit_eval_event(
                     "session_file_found",
-                    extra={"runtime": runtime, "sample_id": sample_id, "path": path},
+                    runtime=runtime,
+                    sample_id=sample_id,
+                    path=path,
                 )
 
         if session_file is not None:

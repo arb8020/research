@@ -60,6 +60,15 @@ logger = logging.getLogger(__name__)  # Human/operator-oriented module logs.
 _event_logger = logging.getLogger("rollouts.eval.events")
 
 
+def _emit_eval_event(event: str, **data: Any) -> None:
+    """Emit one canonical eval event into events.jsonl.
+
+    `event` is the stable discriminator. `message` remains the human text
+    emitted by the logging call, but consumers should key off `event`.
+    """
+    _event_logger.info(event, extra={"event": event, **data})
+
+
 async def _maybe_start_environment_runtime(environment_or_factory: Any) -> None:
     start = getattr(environment_or_factory, "start", None)
     if callable(start):
@@ -1038,68 +1047,56 @@ async def evaluate_sample(
             if event.type == "turn_start":
                 turn_num = event.data.get("turn", 0)
                 current_turn[sample_id] = turn_num
-                _event_logger.info(
+                _emit_eval_event(
                     "turn",
-                    extra={
-                        "sample_id": sample_id,
-                        "turn": turn_num,
-                        "status": "waiting",
-                    },
+                    sample_id=sample_id,
+                    turn=turn_num,
+                    status="waiting",
                 )
                 last_status[sample_id] = "waiting"
             elif event.type == "modal_progress":
-                _event_logger.info(
+                _emit_eval_event(
                     "modal_progress",
-                    extra={
-                        "sample_id": sample_id,
-                        "phase": event.data.get("phase", ""),
-                    },
+                    sample_id=sample_id,
+                    phase=event.data.get("phase", ""),
                 )
             elif event.type == "tool_calls_detected":
-                _event_logger.info(
+                _emit_eval_event(
                     "tool_calls_detected",
-                    extra={
-                        "sample_id": sample_id,
-                        "turn": event.data.get("turn", current_turn.get(sample_id, 0)),
-                        "count": event.data.get("count", 0),
-                        "tool_calls": event.data.get("tool_calls", []),
-                    },
+                    sample_id=sample_id,
+                    turn=event.data.get("turn", current_turn.get(sample_id, 0)),
+                    count=event.data.get("count", 0),
+                    tool_calls=event.data.get("tool_calls", []),
                 )
             elif event.type == "tool_call_dispatch":
-                _event_logger.info(
+                _emit_eval_event(
                     "tool_call_dispatch",
-                    extra={
-                        "sample_id": sample_id,
-                        "turn": event.data.get("turn", current_turn.get(sample_id, 0)),
-                        "tool_call_id": event.data.get("tool_call_id"),
-                        "tool_name": event.data.get("tool_name"),
-                        "action": event.data.get("action"),
-                        "error": event.data.get("error"),
-                    },
+                    sample_id=sample_id,
+                    turn=event.data.get("turn", current_turn.get(sample_id, 0)),
+                    tool_call_id=event.data.get("tool_call_id"),
+                    tool_name=event.data.get("tool_name"),
+                    action=event.data.get("action"),
+                    error=event.data.get("error"),
                 )
             elif event.type == "kernel_submission":
-                _event_logger.info(
+                _emit_eval_event(
                     "kernel_submission",
-                    extra={
-                        "sample_id": sample_id,
-                        "turn": event.data.get("turn", current_turn.get(sample_id, 0)),
-                        "source": event.data.get("source"),
-                        "submission_state": event.data.get("submission_state"),
-                        "code_length": event.data.get("code_length"),
-                        "path": event.data.get("path"),
-                        "tool_call_id": event.data.get("tool_call_id"),
-                    },
+                    sample_id=sample_id,
+                    turn=event.data.get("turn", current_turn.get(sample_id, 0)),
+                    source=event.data.get("source"),
+                    submission_state=event.data.get("submission_state"),
+                    code_length=event.data.get("code_length"),
+                    path=event.data.get("path"),
+                    tool_call_id=event.data.get("tool_call_id"),
                 )
             elif event.type == "raw_driver_line":
                 raw_line = event.data.get("raw_line")
                 driver = event.data.get("driver")
-                _event_logger.info(
+                _emit_eval_event(
                     "raw_driver_line",
-                    extra={
-                        "sample_id": sample_id,
-                        "driver": driver,
-                        "raw_line": raw_line,
-                    },
+                    sample_id=sample_id,
+                    driver=driver,
+                    raw_line=raw_line,
                 )
                 if config.verbose and isinstance(raw_line, str):
                     if config.max_concurrent == 1:
@@ -1117,19 +1114,17 @@ async def evaluate_sample(
 
         # Emit status changes (dedup to avoid flooding)
         if status is not None and status != last_status.get(sample_id):
-            _event_logger.info("turn", extra={"sample_id": sample_id, "status": status})
+            _emit_eval_event("turn", sample_id=sample_id, status=status)
             last_status[sample_id] = status
 
         # Wide events: detailed timing for performance analysis
         sample_turn = current_turn.get(sample_id, 0)
         if isinstance(event, FirstToken):
-            _event_logger.info(
+            _emit_eval_event(
                 "llm_first_token",
-                extra={
-                    "sample_id": sample_id,
-                    "turn": sample_turn,
-                    "ttft_ms": round(event.ttft_ms, 1),
-                },
+                sample_id=sample_id,
+                turn=sample_turn,
+                ttft_ms=round(event.ttft_ms, 1),
             )
         elif isinstance(event, LLMCallEnd):
             llm_call_metrics.append({
@@ -1143,20 +1138,18 @@ async def evaluate_sample(
                 "status": event.status,
                 "error": event.error,
             })
-            _event_logger.info(
+            _emit_eval_event(
                 "llm_call",
-                extra={
-                    "sample_id": sample_id,
-                    "turn": sample_turn,
-                    "duration_ms": round(event.duration_ms, 1),
-                    "ttft_ms": round(event.ttft_ms, 1) if event.ttft_ms is not None else None,
-                    "provider": event.provider,
-                    "model": event.model,
-                    "tokens_in": event.tokens_in,
-                    "tokens_out": event.tokens_out,
-                    "status": event.status,
-                    "error": event.error,
-                },
+                sample_id=sample_id,
+                turn=sample_turn,
+                duration_ms=round(event.duration_ms, 1),
+                ttft_ms=round(event.ttft_ms, 1) if event.ttft_ms is not None else None,
+                provider=event.provider,
+                model=event.model,
+                tokens_in=event.tokens_in,
+                tokens_out=event.tokens_out,
+                status=event.status,
+                error=event.error,
             )
         elif isinstance(event, ToolExecutionEnd):
             tool_execution_metrics.append({
@@ -1167,17 +1160,15 @@ async def evaluate_sample(
                 "is_error": event.is_error,
                 "result_summary": event.result_summary,
             })
-            _event_logger.info(
+            _emit_eval_event(
                 "tool_execution",
-                extra={
-                    "sample_id": sample_id,
-                    "turn": sample_turn,
-                    "tool_name": event.tool_name,
-                    "duration_ms": round(event.duration_ms, 1),
-                    "status": event.status,
-                    "is_error": event.is_error,
-                    "result_summary": event.result_summary,
-                },
+                sample_id=sample_id,
+                turn=sample_turn,
+                tool_name=event.tool_name,
+                duration_ms=round(event.duration_ms, 1),
+                status=event.status,
+                is_error=event.is_error,
+                result_summary=event.result_summary,
             )
         elif isinstance(event, TextEnd):
             # Truncate large assistant messages so events.jsonl stays readable.
@@ -1185,15 +1176,13 @@ async def evaluate_sample(
             truncated = len(content) > 2000
             if truncated:
                 content = content[:2000] + "..."
-            _event_logger.info(
+            _emit_eval_event(
                 "assistant_message",
-                extra={
-                    "sample_id": sample_id,
-                    "turn": sample_turn,
-                    "content": content,
-                    "content_length": len(event.content),
-                    "truncated": truncated,
-                },
+                sample_id=sample_id,
+                turn=sample_turn,
+                content=content,
+                content_length=len(event.content),
+                truncated=truncated,
             )
 
         # DEBUG-only deltas are intentionally not persisted.
@@ -1419,7 +1408,7 @@ async def evaluate_sample(
             )
         )
 
-        _event_logger.info("sample_end", extra={"sample_id": sample_id, "score": reward})
+        _emit_eval_event("sample_end", sample_id=sample_id, score=reward)
 
         return sample
     finally:
@@ -1493,12 +1482,10 @@ async def evaluate(
 
             if config.output_dir:
                 eval_logging = setup_eval_logging(config.output_dir)
-                _event_logger.info(
+                _emit_eval_event(
                     "eval_start",
-                    extra={
-                        "eval_name": config.eval_name,
-                        "total": len(samples_to_eval),
-                    },
+                    eval_name=config.eval_name,
+                    total=len(samples_to_eval),
                 )
 
             if config.show_progress:
@@ -1676,13 +1663,11 @@ async def evaluate(
             )
 
         if eval_logging:
-            _event_logger.info(
+            _emit_eval_event(
                 "eval_end",
-                extra={
-                    "eval_name": config.eval_name,
-                    "total": len(results),
-                    "interrupted": _interrupted,
-                },
+                eval_name=config.eval_name,
+                total=len(results),
+                interrupted=_interrupted,
             )
             eval_logging.teardown()
 

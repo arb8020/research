@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any, cast
 
 from argus import run as argus_run
 
@@ -49,7 +50,9 @@ def test_run_main_launches_eval_via_detached_subprocess(
         return 4242
 
     monkeypatch.setattr(argus_run, "_spawn_eval_subprocess", fake_spawn_eval_subprocess)
-    monkeypatch.setattr(argus_run, "_launch_eval_monitor", lambda *, run_dir, tail: 99)
+    monkeypatch.setattr(
+        argus_run, "_launch_eval_monitor", lambda *, run_dir, tail, fmt="pretty": 99
+    )
     monkeypatch.setattr(argus_run, "_write_launch_record", lambda payload: tmp_path / "launch.json")
     monkeypatch.setattr(argus_run, "_remove_launch_record", lambda path: None)
     monkeypatch.setattr(argus_run, "_active_launches", lambda: [])
@@ -88,9 +91,10 @@ def test_run_main_eval_tui_hands_off_to_monitor(monkeypatch: object, tmp_path: P
         captured["output_dir"] = output_dir
         return 4242
 
-    def fake_launch_eval_monitor(*, run_dir: Path, tail: bool) -> int:
+    def fake_launch_eval_monitor(*, run_dir: Path, tail: bool, fmt: str = "pretty") -> int:
         captured["monitor_run_dir"] = run_dir
         captured["monitor_tail"] = tail
+        captured["monitor_fmt"] = fmt
         return 17
 
     monkeypatch.setattr(argus_run, "_spawn_eval_subprocess", fake_spawn_eval_subprocess)
@@ -104,6 +108,7 @@ def test_run_main_eval_tui_hands_off_to_monitor(monkeypatch: object, tmp_path: P
     assert result == 17
     assert captured["monitor_run_dir"] == captured["output_dir"]
     assert captured["monitor_tail"] is False
+    assert captured["monitor_fmt"] == "pretty"
 
 
 def test_spawn_eval_subprocess_sets_rollouts_output_dir(
@@ -137,6 +142,12 @@ def test_spawn_eval_subprocess_sets_rollouts_output_dir(
     )
 
     assert pid == 4242
-    assert captured["command"][:3] == [os.fspath(argus_run.sys.executable), "-m", "argus.eval_supervisor"]
-    assert "--output-dir" in captured["command"]
-    assert captured["env"]["ROLLOUTS_OUTPUT_DIR"] == os.fspath(output_dir)
+    command = cast(list[Any], captured["command"])
+    env = cast(dict[str, str], captured["env"])
+    assert command[:3] == [
+        os.fspath(argus_run.sys.executable),
+        "-m",
+        "argus.eval_supervisor",
+    ]
+    assert "--output-dir" in command
+    assert env["ROLLOUTS_OUTPUT_DIR"] == os.fspath(output_dir)

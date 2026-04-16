@@ -85,6 +85,17 @@ def _extra(ev: dict) -> str:
     return "  ".join(f"{k}={v}" for k, v in ev.items() if k not in _NOISE and v is not None)
 
 
+def _event_key(ev: dict) -> str:
+    """Canonical event discriminator with backward compatibility."""
+    event = ev.get("event")
+    if isinstance(event, str) and event:
+        return event
+    message = ev.get("message")
+    if isinstance(message, str):
+        return message
+    return ""
+
+
 # ---------------------------------------------------------------------------
 # Per-event formatters: ev, ts -> FormatResult
 # ---------------------------------------------------------------------------
@@ -165,7 +176,6 @@ def _fmt_run_end(ev: dict, ts: str) -> FormatResult:
 
 # message key -> formatter
 _MSG_FORMATTERS: dict[str, Callable[[dict, str], FormatResult]] = {
-    "eval_inference_service_log": _suppress,
     "inference_service_final_log": _fmt_service_final_log,
     "eval_start": _fmt_eval_start,
     "eval_end": _fmt_eval_end,
@@ -180,6 +190,7 @@ _MSG_FORMATTERS: dict[str, Callable[[dict, str], FormatResult]] = {
 _EVENT_FORMATTERS: dict[str, Callable[[dict, str], FormatResult]] = {
     "run_start": _suppress,
     "submit_done": _suppress,
+    "eval_inference_service_log": _suppress,
     "inference_service_final_log": _fmt_service_final_log,
     "inference_engine_launch": _fmt_engine_launch,
     "inference_healthcheck_start": _suppress,
@@ -197,19 +208,23 @@ def _format(raw: str, timestamps: bool = False) -> FormatResult:
         return raw, False
 
     ts = (_ts(ev) + "  ") if timestamps else ""
-    msg = ev.get("message", "")
-    event = ev.get("event", "")
+    line = ev.get("line")
+    if isinstance(line, str):
+        return (line if not timestamps else f"{_ts(ev)}  {line}"), False
 
-    if msg in _MSG_FORMATTERS:
-        return _MSG_FORMATTERS[msg](ev, ts)
+    event = _event_key(ev)
+
     if event in _EVENT_FORMATTERS:
         return _EVENT_FORMATTERS[event](ev, ts)
+    if event in _MSG_FORMATTERS:
+        return _MSG_FORMATTERS[event](ev, ts)
 
     # Generic fallback
     extra = _extra(ev)
     if event:
         return _fmt("argus", f"{event}  {extra}" if extra else event, ts), False
-    return _fmt("eval", f"{msg}  {extra}" if extra else msg, ts), False
+    message = ev.get("message", "")
+    return _fmt("eval", f"{message}  {extra}" if extra else message, ts), False
 
 
 def tail_run(run_dir: Path, fmt: str = "pretty", timestamps: bool = False) -> int:

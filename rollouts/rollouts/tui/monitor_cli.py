@@ -924,8 +924,14 @@ def _format_event(line: str) -> str:
     raw_ts = ev.get("timestamp") or ev.get("ts", "")
     ts = raw_ts[11:19] if len(raw_ts) >= 19 else raw_ts
 
+    line_value = ev.get("line")
+    if isinstance(line_value, str):
+        rendered = line_value.rstrip()
+        return f"{ts} {rendered}" if ts else rendered
+
     level = ev.get("level", "INFO").upper()
-    msg = ev.get("message", "")
+    event = ev.get("event")
+    msg = event if isinstance(event, str) and event else ev.get("message", "")
 
     # Level prefix with minimal decoration
     level_tag = {"ERROR": "[ERR]", "WARNING": "[WRN]", "WARN": "[WRN]"}.get(level, "     ")
@@ -935,19 +941,36 @@ def _format_event(line: str) -> str:
     if msg == "eval_start":
         parts.append(f"eval started  name={ev.get('eval_name', '?')}  total={ev.get('total', '?')}")
     elif msg == "eval_end":
-        parts.append(
-            f"eval done  status={ev.get('status', '?')}  reward={ev.get('mean_reward', '?')}"
-        )
+        extras: list[str] = []
+        if (eval_name := ev.get("eval_name")) is not None:
+            extras.append(f"name={eval_name}")
+        if (total := ev.get("total")) is not None:
+            extras.append(f"total={total}")
+        if (interrupted := ev.get("interrupted")) is not None:
+            extras.append(f"interrupted={interrupted}")
+        if (status := ev.get("status")) is not None:
+            extras.append(f"status={status}")
+        if (reward := ev.get("mean_reward")) is not None:
+            extras.append(f"reward={reward}")
+        parts.append(f"eval done  {'  '.join(extras)}".rstrip())
     elif msg == "sample_start":
         parts.append(f"sample {ev.get('sample_id', '?')} start  name={ev.get('sample_name', '')}")
     elif msg == "sample_end":
-        parts.append(
-            f"sample {ev.get('sample_id', '?')} end  status={ev.get('status', '?')}  reward={ev.get('reward', '?')}"
-        )
+        extras: list[str] = []
+        if (status := ev.get("status")) is not None:
+            extras.append(f"status={status}")
+        if (reward := ev.get("reward")) is not None:
+            extras.append(f"reward={reward}")
+        if (score := ev.get("score")) is not None:
+            extras.append(f"score={score}")
+        parts.append(f"sample {ev.get('sample_id', '?')} end  {'  '.join(extras)}".rstrip())
     elif msg == "turn":
-        parts.append(
-            f"sample {ev.get('sample_id', '?')}  turn={ev.get('turn', '?')}  {ev.get('status', '')}"
-        )
+        turn = ev.get("turn")
+        status = ev.get("status", "")
+        if turn is None:
+            parts.append(f"sample {ev.get('sample_id', '?')}  {status}".rstrip())
+        else:
+            parts.append(f"sample {ev.get('sample_id', '?')}  turn={turn}  {status}".rstrip())
     elif msg == "assistant_message":
         content = ev.get("content", "")
         preview = content[:80].replace("\n", " ") + ("..." if len(content) > 80 else "")
@@ -1188,22 +1211,11 @@ def monitor_main(argv: list[str] | None = None) -> int:
         return 1
 
     if args.tail:
-        import json as _json
         import time
 
         fmt = getattr(args, "format", "pretty")
         print(f"Tailing: {output_dir}  (--format {fmt}, Ctrl-C to stop)", file=sys.stderr)
         tail_offsets: dict[str, int] = {}
-        # Buffer consecutive service log lines and flush as a single block
-        svc_log_buf: list[str] = []
-        svc_log_ts: str = ""
-
-        def _flush_svc_buf() -> None:
-            if svc_log_buf:
-                sys.stdout.write(f"{svc_log_ts}       [server]\n")
-                for svc_line in svc_log_buf:
-                    sys.stdout.write(f"    {svc_line}\n")
-                svc_log_buf.clear()
 
         try:
             while True:
@@ -1220,36 +1232,14 @@ def monitor_main(argv: list[str] | None = None) -> int:
                                 if fmt == "json":
                                     sys.stdout.write(raw + "\n")
                                     continue
-                                # Check if this is a service log line
                                 try:
-                                    ev = _json.loads(raw)
-                                    msg = ev.get("message", "")
-                                    is_svc = msg == "eval_inference_service_log"
-                                    # Skip final log — it's a duplicate of buffered lines
-                                    if msg in ("inference_service_final_log",):
-                                        _flush_svc_buf()
-                                        continue
+                                    sys.stdout.write(_format_event(raw) + "\n")
                                 except Exception:
-                                    is_svc = False
-                                    ev = {}
-                                    msg = ""
-
-                                if is_svc:
-                                    raw_ts = ev.get("timestamp") or ev.get("ts", "")
-                                    svc_log_ts = raw_ts[11:19] if len(raw_ts) >= 19 else raw_ts
-                                    svc_line = (ev.get("line") or "").rstrip()
-                                    svc_log_buf.append(svc_line)
-                                else:
-                                    _flush_svc_buf()
-                                    try:
-                                        sys.stdout.write(_format_event(raw) + "\n")
-                                    except Exception:
-                                        sys.stdout.write(raw + "\n")
+                                    sys.stdout.write(raw + "\n")
                             tail_offsets[path.name] = path.stat().st_size
                         sys.stdout.flush()
                 time.sleep(0.5)
         except KeyboardInterrupt:
-            _flush_svc_buf()
             sys.stdout.flush()
             print("\nstopped.", file=sys.stderr)
         return 0
