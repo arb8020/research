@@ -81,15 +81,18 @@ Step 2 — Observability
     Done when: you can run two back-to-back requests and obs.py diff shows a
     meaningful per-op breakdown with MFU numbers you can reason about.
 
-Step 3 — Internal model denotation (list-of-ops IR)
+Step 3 — Internal model denotation (list-of-ops IR) + own KV cache
     Model: Qwen/Qwen3.5-27B (same)
     Goal:  Express the model as an explicit list of named ops, each a pure
            tensor-in tensor-out callable. The forward pass is a loop over that
-           list. No magic, no implicit graph.
+           list. No magic, no implicit graph. Replace HuggingFace past_key_values
+           with an explicit KV cache layout (flat preallocated first) at the same
+           time — once you own the forward pass, you own the cache layout too.
     Invariant: activation at layer N must still match HF reference after the
                refactor. Correctness diff is part of the definition of done.
-    Done when: the model is a list, every op is named, and the observability
-    dashboard still produces the same numbers as step 2.
+    Done when: the model is a list, every op is named, KV cache layout is
+    explicit and documented, and the observability dashboard still produces
+    the same numbers as step 2.
 
 Step 4 — Second dense model
     Model: google/gemma-3-27b-it  (Gemma4 31B-IT)
@@ -175,6 +178,7 @@ import time
 import uuid
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass
+from pathlib import Path
 
 import uvicorn
 from fastapi import FastAPI, HTTPException
@@ -182,6 +186,7 @@ from fastapi.responses import StreamingResponse
 
 from rollouts.inference.student import engine
 from rollouts.inference.student.engine import Engine
+from rollouts.inference.student.observability import JsonlObserver
 
 logger = logging.getLogger(__name__)
 
@@ -228,9 +233,14 @@ def generate_reply(
     messages: list[dict],
     max_tokens: int,
     temperature: float,
+    observer: JsonlObserver | None = None,
 ) -> GenerationResult:
-    """Call engine.generate and wrap the result. Implement engine.py functions first."""
-    raise NotImplementedError("implement engine.py functions, then call engine.generate here")
+    """Call engine.generate and wrap the result."""
+    req_id = uuid.uuid4().hex
+    reply_text, finish_reason = engine.generate(
+        eng, messages, max_tokens, temperature, req_id=req_id, observer=observer
+    )
+    return GenerationResult(reply_text=reply_text, finish_reason=finish_reason)
 
 
 # ---------------------------------------------------------------------------
@@ -238,7 +248,7 @@ def generate_reply(
 # ---------------------------------------------------------------------------
 
 
-def build_app(model_name: str, eng: Engine) -> FastAPI:
+def build_app(model_name: str, eng: Engine, observer: JsonlObserver | None = None) -> FastAPI:
     app = FastAPI()
 
     @app.get("/health")
@@ -252,8 +262,11 @@ def build_app(model_name: str, eng: Engine) -> FastAPI:
         temperature = request.get("temperature", 0.0)
         stream = request.get("stream", False)
 
+        if max_tokens <= 0:
+            raise HTTPException(status_code=400, detail=f"max_tokens must be > 0, got {max_tokens}")
+
         try:
-            result = generate_reply(eng, messages, max_tokens, temperature)
+            result = generate_reply(eng, messages, max_tokens, temperature, observer=observer)
         except NotImplementedError as e:
             raise HTTPException(status_code=501, detail="generate_reply not implemented") from e
         except Exception as e:
@@ -340,5 +353,11 @@ def main() -> None:
     eng = engine.load(args.model)
     logger.info("Model loaded, starting server.")
 
-    app = build_app(model_name=args.model, eng=eng)
-    uvicorn.run(app, host=args.host, port=args.port)
+    observer = JsonlObserver(Path(args.trace_path)) if args.trace_path else None
+
+    app = build_app(model_name=args.model, eng=eng, observer=observer)
+    try:
+        uvicorn.run(app, host=args.host, port=args.port)
+    finally:
+        if observer:
+            observer.close()
