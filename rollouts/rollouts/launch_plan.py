@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
+
+from argus.event_log import stream_run_event_sinks
 
 
 @dataclass(frozen=True)
@@ -20,6 +24,15 @@ class LocalSubprocessLaunchPlan:
     journal_name: str
     command: tuple[str, ...]
     kind: str
+
+
+@dataclass(frozen=True)
+class LocalInProcessLaunchPlan:
+    """Rollouts-owned in-process entrypoint plan."""
+
+    kind: str
+    emit_startup_sentinel: bool
+    run: Callable[[], Any]
 
 
 def build_local_eval_launch_plan(
@@ -60,4 +73,28 @@ def build_local_eval_launch_plan(
         journal_name="control.jsonl",
         command=tuple(command),
         kind="evaluation",
+    )
+
+
+def build_local_training_launch_plan(
+    *,
+    config_module: Any,
+    max_samples: int | None,
+    stream_run_events: bool,
+) -> LocalInProcessLaunchPlan:
+    """Build the direct training entrypoint plan."""
+
+    kwargs: dict[str, Any] = {}
+    if stream_run_events:
+        kwargs["run_logger"] = stream_run_event_sinks()
+    if max_samples is not None:
+        kwargs["max_samples"] = max_samples
+
+    def _run() -> Any:
+        return config_module.train(config=config_module.config, **kwargs)
+
+    return LocalInProcessLaunchPlan(
+        kind="training",
+        emit_startup_sentinel=True,
+        run=_run,
     )

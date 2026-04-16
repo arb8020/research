@@ -259,7 +259,12 @@ from rollouts.install_probes import (
     python_runtime_contract_snapshot_command,
     python_runtime_contract_verify_command,
 )
-from rollouts.launch_plan import LocalSubprocessLaunchPlan, build_local_eval_launch_plan
+from rollouts.launch_plan import (
+    LocalInProcessLaunchPlan,
+    LocalSubprocessLaunchPlan,
+    build_local_eval_launch_plan,
+    build_local_training_launch_plan,
+)
 from rollouts.remote_runtime import (
     SourceSyncPolicy,
     enforce_source_sync_policy,
@@ -660,7 +665,6 @@ from argus.event_log import (
     RunEventSinks,
     build_jsonl_run_event_sinks,
     emit_run_event,
-    stream_run_event_sinks,
 )
 
 
@@ -1017,6 +1021,13 @@ def _spawn_local_subprocess(
         command=command,
     )
     return proc.pid
+
+
+def _run_local_entrypoint(plan: LocalInProcessLaunchPlan) -> Any:
+    """Execute one Rollouts-owned in-process plan."""
+    if plan.emit_startup_sentinel and os.getenv("ARGUS_EMIT_STARTUP_SENTINEL") == "1":
+        print("__ARGUS_WORKLOAD_ENTRYPOINT_STARTED__", flush=True)
+    return plan.run()
 
 
 def _launch_eval_monitor(
@@ -2395,16 +2406,12 @@ Examples:
                 print(json.dumps(result.to_dict(), indent=2))
             else:
                 # Training run
-                if os.getenv("ARGUS_EMIT_STARTUP_SENTINEL") == "1":
-                    print("__ARGUS_WORKLOAD_ENTRYPOINT_STARTED__", flush=True)
-
-                kwargs = {}
-                if os.getenv("ARGUS_RUN_EVENT_STREAM") == "1":
-                    kwargs["run_logger"] = stream_run_event_sinks()
-                if args.max_samples is not None:
-                    kwargs["max_samples"] = args.max_samples
-
-                results = config_module.train(config=config_module.config, **kwargs)
+                training_plan = build_local_training_launch_plan(
+                    config_module=config_module,
+                    max_samples=args.max_samples,
+                    stream_run_events=os.getenv("ARGUS_RUN_EVENT_STREAM") == "1",
+                )
+                results = _run_local_entrypoint(training_plan)
                 print(f"Training complete. {len(results.get('metrics_history', []))} steps")
 
         return 0

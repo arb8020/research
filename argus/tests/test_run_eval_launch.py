@@ -6,7 +6,7 @@ from types import SimpleNamespace
 from typing import Any, cast
 
 from argus import run as argus_run
-from rollouts.launch_plan import LocalSubprocessLaunchPlan
+from rollouts.launch_plan import LocalInProcessLaunchPlan, LocalSubprocessLaunchPlan
 
 
 def test_classify_config_module_detects_evaluation() -> None:
@@ -182,3 +182,23 @@ def test_spawn_local_subprocess_sets_rollouts_output_dir(
         "rollouts.eval.supervisor",
     ]
     assert env["ROLLOUTS_OUTPUT_DIR"] == os.fspath(output_dir)
+
+
+def test_run_local_entrypoint_executes_rollouts_owned_training_plan(monkeypatch: object) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_run() -> dict[str, object]:
+        captured["ran"] = True
+        return {"metrics_history": [1, 2, 3]}
+
+    monkeypatch.setenv("ARGUS_EMIT_STARTUP_SENTINEL", "1")
+    result = argus_run._run_local_entrypoint(
+        LocalInProcessLaunchPlan(
+            kind="training",
+            emit_startup_sentinel=True,
+            run=fake_run,
+        )
+    )
+
+    assert captured["ran"] is True
+    assert result == {"metrics_history": [1, 2, 3]}
