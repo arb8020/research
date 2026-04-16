@@ -240,7 +240,6 @@ if _workspace_root.exists():
         if entry not in sys.path:
             sys.path.insert(0, entry)
 
-from rollouts.config_contracts import validate_eval_config_module, validate_train_config_module
 from rollouts.image_publisher import build_or_resolve_image
 from rollouts.image_spec import (
     USER_IMAGE_MANIFEST_PATH,
@@ -262,8 +261,8 @@ from rollouts.install_probes import (
 from rollouts.launch_plan import (
     LocalInProcessLaunchPlan,
     LocalSubprocessLaunchPlan,
-    build_local_eval_launch_plan,
-    build_local_training_launch_plan,
+    build_local_workload_plan,
+    resolve_workload_kind,
 )
 from rollouts.remote_runtime import (
     SourceSyncPolicy,
@@ -801,34 +800,6 @@ def load_config_module(config_path: Path) -> Any:
     return module
 
 
-def _classify_config_module(config_module: Any, config_path: Path) -> str:
-    """Classify a config module by the runner contract it satisfies."""
-    # TODO(argus-run): Move config loading + contract classification into a
-    # dedicated workload-resolution module. `run.py` should parse CLI args and
-    # dispatch on an already-resolved workload kind, not own config contract
-    # semantics directly.
-    train_error: ValueError | None = None
-    eval_error: ValueError | None = None
-
-    try:
-        validate_train_config_module(config_module, config_path)
-        return "training"
-    except ValueError as exc:
-        train_error = exc
-
-    try:
-        validate_eval_config_module(config_module, config_path)
-        return "evaluation"
-    except ValueError as exc:
-        eval_error = exc
-
-    raise ValueError(
-        f"Config {config_path} is neither a valid training config nor a valid eval config.\n"
-        f"Training contract error: {train_error}\n"
-        f"Eval contract error: {eval_error}"
-    )
-
-
 def _modal_workload_tags(config: Any) -> dict[str, str]:
     """Opaque workload tags supplied by rollouts config semantics."""
     tags: dict[str, str] = {}
@@ -1028,6 +999,15 @@ def _run_local_entrypoint(plan: LocalInProcessLaunchPlan) -> Any:
     if plan.emit_startup_sentinel and os.getenv("ARGUS_EMIT_STARTUP_SENTINEL") == "1":
         print("__ARGUS_WORKLOAD_ENTRYPOINT_STARTED__", flush=True)
     return plan.run()
+
+
+def _report_local_entrypoint_result(plan: LocalInProcessLaunchPlan, result: Any) -> None:
+    """Render one Rollouts-owned local result summary when available."""
+    if plan.render_result is None:
+        return
+    rendered = plan.render_result(result)
+    if rendered:
+        print(rendered)
 
 
 def _launch_eval_monitor(
@@ -2007,7 +1987,7 @@ Examples:
     # Load config module
     config_module = load_config_module(config_path)
     try:
-        workload_kind = _classify_config_module(config_module, config_path)
+        workload_kind = resolve_workload_kind(config_module, config_path)
     except ValueError as exc:
         print(str(exc), file=sys.stderr)
         return 1
@@ -2149,16 +2129,22 @@ Examples:
                     "multi-node execution."
                 )
 
-            eval_plan = build_local_eval_launch_plan(
-                config_path=config_path,
-                repo_root=REPO_ROOT,
-                max_samples=args.max_samples,
-                force_deploy_committed=args.force_deploy_committed,
-                python_executable=sys.executable,
-            )
-            local_run_dir = eval_plan.run_dir
-            run_name = eval_plan.run_name
-            log = _setup_run_logging(local_run_dir, journal_name=eval_plan.journal_name)
+        local_workload_plan = build_local_workload_plan(
+            config_module=config_module,
+            config_path=config_path,
+            repo_root=REPO_ROOT,
+            max_samples=args.max_samples,
+            force_deploy_committed=args.force_deploy_committed,
+            python_executable=sys.executable,
+            stream_run_events=os.getenv("ARGUS_RUN_EVENT_STREAM") == "1",
+            provider=runtime.provider,
+            gpu_type=runtime.gpu_type,
+            gpu_count=runtime.gpu_count,
+        )
+        if isinstance(local_workload_plan, LocalSubprocessLaunchPlan):
+            local_run_dir = local_workload_plan.run_dir
+            run_name = local_workload_plan.run_name
+            log = _setup_run_logging(local_run_dir, journal_name=local_workload_plan.journal_name)
             _emit_run(
                 log,
                 "run_start",
@@ -2168,7 +2154,7 @@ Examples:
                 config=str(config_path),
                 output_dir=str(local_run_dir),
             )
-            pid = _spawn_local_subprocess(plan=eval_plan, log=log)
+            pid = _spawn_local_subprocess(plan=local_workload_plan, log=log)
             print(f"Evaluation submitted: {run_name}")
             print(f"  PID:    {pid}")
             print(f"  Local:  results/eval/{run_name}/")
@@ -2182,10 +2168,12 @@ Examples:
                 tail=args.tail,
                 fmt=getattr(args, "format", "pretty"),
             )
+        if isinstance(local_workload_plan, LocalInProcessLaunchPlan):
+            result = _run_local_entrypoint(local_workload_plan)
+            _report_local_entrypoint_result(local_workload_plan, result)
+            return 0
 
-        from rollouts.inference.benchmark.config import BenchmarkConfig
-
-        if not isinstance(config_module.config, BenchmarkConfig):
+        if workload_kind == "training":
             train_fn = getattr(config_module, "train", None)
             if not callable(train_fn):
                 print(
@@ -2229,11 +2217,9 @@ Examples:
 
             import trio
 
-            # Check if this is a benchmark config
-            from rollouts.inference.benchmark.config import BenchmarkConfig
             from rollouts.jobs import register_job
 
-            if isinstance(config_module.config, BenchmarkConfig):
+            if workload_kind == "benchmark":
                 # Benchmark run
                 from rollouts.inference.benchmark.runner import run_benchmark
 
@@ -2388,31 +2374,10 @@ Examples:
             )
 
         else:
-            # Local execution
-            if isinstance(config_module.config, BenchmarkConfig):
-                # Run benchmark locally (we're already on the GPU machine)
-                import json
-
-                import trio
-
-                from rollouts.inference.benchmark.runner import run_benchmark_local
-
-                result = trio.run(
-                    run_benchmark_local,
-                    config_module.config,
-                    hardware.gpu_type,
-                    hardware.gpu_count,
-                )
-                print(json.dumps(result.to_dict(), indent=2))
-            else:
-                # Training run
-                training_plan = build_local_training_launch_plan(
-                    config_module=config_module,
-                    max_samples=args.max_samples,
-                    stream_run_events=os.getenv("ARGUS_RUN_EVENT_STREAM") == "1",
-                )
-                results = _run_local_entrypoint(training_plan)
-                print(f"Training complete. {len(results.get('metrics_history', []))} steps")
+            raise ValueError(
+                f"No Argus launcher available for workload_kind={workload_kind!r} "
+                f"on provider={runtime.provider!r}"
+            )
 
         return 0
     finally:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -33,6 +34,7 @@ class LocalInProcessLaunchPlan:
     kind: str
     emit_startup_sentinel: bool
     run: Callable[[], Any]
+    render_result: Callable[[Any], str | None] | None = None
 
 
 def build_local_eval_launch_plan(
@@ -97,4 +99,104 @@ def build_local_training_launch_plan(
         kind="training",
         emit_startup_sentinel=True,
         run=_run,
+        render_result=lambda result: (
+            f"Training complete. {len(result.get('metrics_history', []))} steps"
+        ),
+    )
+
+
+def build_local_benchmark_launch_plan(
+    *,
+    config_module: Any,
+    gpu_type: str,
+    gpu_count: int,
+) -> LocalInProcessLaunchPlan:
+    """Build the direct benchmark entrypoint plan."""
+
+    def _run() -> Any:
+        import trio
+
+        from rollouts.inference.benchmark.runner import run_benchmark_local
+
+        return trio.run(
+            run_benchmark_local,
+            config_module.config,
+            gpu_type,
+            gpu_count,
+        )
+
+    return LocalInProcessLaunchPlan(
+        kind="benchmark",
+        emit_startup_sentinel=True,
+        run=_run,
+        render_result=lambda result: json.dumps(result.to_dict(), indent=2),
+    )
+
+
+def resolve_workload_kind(config_module: Any, config_path: Path) -> str:
+    """Resolve the Rollouts workload kind for one config module."""
+    from rollouts.config_contracts import validate_eval_config_module, validate_train_config_module
+    from rollouts.inference.benchmark.config import BenchmarkConfig
+
+    train_error: ValueError | None = None
+    eval_error: ValueError | None = None
+
+    try:
+        validate_train_config_module(config_module, config_path)
+    except ValueError as exc:
+        train_error = exc
+    else:
+        if isinstance(config_module.config, BenchmarkConfig):
+            return "benchmark"
+        return "training"
+
+    try:
+        validate_eval_config_module(config_module, config_path)
+        return "evaluation"
+    except ValueError as exc:
+        eval_error = exc
+
+    raise ValueError(
+        f"Config {config_path} is neither a valid training config nor a valid eval config.\n"
+        f"Training contract error: {train_error}\n"
+        f"Eval contract error: {eval_error}"
+    )
+
+
+def build_local_workload_plan(
+    *,
+    config_module: Any,
+    config_path: Path,
+    repo_root: Path,
+    max_samples: int | None,
+    force_deploy_committed: bool,
+    python_executable: str | None,
+    stream_run_events: bool,
+    provider: str,
+    gpu_type: str,
+    gpu_count: int,
+) -> LocalSubprocessLaunchPlan | LocalInProcessLaunchPlan | None:
+    """Build one Rollouts-owned local workload plan when the launch shape is local."""
+
+    workload_kind = resolve_workload_kind(config_module, config_path)
+    if workload_kind == "evaluation":
+        return build_local_eval_launch_plan(
+            config_path=config_path,
+            repo_root=repo_root,
+            max_samples=max_samples,
+            force_deploy_committed=force_deploy_committed,
+            python_executable=python_executable,
+        )
+    if provider != "local":
+        return None
+    if workload_kind == "benchmark":
+        return build_local_benchmark_launch_plan(
+            config_module=config_module,
+            gpu_type=gpu_type,
+            gpu_count=gpu_count,
+        )
+    return build_local_training_launch_plan(
+        config_module=config_module,
+        max_samples=max_samples,
+        stream_run_events=stream_run_events,
     )

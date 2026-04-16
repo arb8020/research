@@ -6,19 +6,54 @@ from types import SimpleNamespace
 from typing import Any, cast
 
 from argus import run as argus_run
-from rollouts.launch_plan import LocalInProcessLaunchPlan, LocalSubprocessLaunchPlan
+from rollouts.launch_plan import (
+    LocalInProcessLaunchPlan,
+    LocalSubprocessLaunchPlan,
+    build_local_workload_plan,
+    resolve_workload_kind,
+)
 
 
-def test_classify_config_module_detects_evaluation() -> None:
+def test_resolve_workload_kind_detects_evaluation() -> None:
     module = SimpleNamespace(
         tasks=[{"id": "sample-1"}],
         prepare_messages=lambda row: [],
         scorer=object(),
     )
 
-    kind = argus_run._classify_config_module(module, Path("configs/eval.py"))
+    kind = resolve_workload_kind(module, Path("configs/eval.py"))
 
     assert kind == "evaluation"
+
+
+def test_build_local_workload_plan_returns_eval_subprocess_plan(tmp_path: Path) -> None:
+    config_path = tmp_path / "eval_config.py"
+    config_path.write_text(
+        "\n".join([
+            "from rollouts.eval import AgentRunSpec, EndpointConfig",
+            "tasks = [{'id': 'sample-1'}]",
+            "run_spec = AgentRunSpec(endpoint=EndpointConfig(), prepare_messages=lambda row: [])",
+            "scorer = object()",
+        ])
+    )
+    module = argus_run.load_config_module(config_path)
+
+    plan = build_local_workload_plan(
+        config_module=module,
+        config_path=config_path,
+        repo_root=tmp_path,
+        max_samples=5,
+        force_deploy_committed=True,
+        python_executable="python3",
+        stream_run_events=False,
+        provider="ssh",
+        gpu_type="B200",
+        gpu_count=1,
+    )
+
+    assert isinstance(plan, LocalSubprocessLaunchPlan)
+    assert plan.journal_name == "control.jsonl"
+    assert plan.kind == "evaluation"
 
 
 def test_run_main_launches_eval_via_detached_subprocess(
@@ -36,14 +71,12 @@ def test_run_main_launches_eval_via_detached_subprocess(
 
     captured: dict[str, object] = {}
 
-    def fake_build_local_eval_launch_plan(
-        *,
-        config_path: Path,
-        repo_root: Path,
-        max_samples: int | None,
-        force_deploy_committed: bool,
-        python_executable: str | None = None,
-    ) -> LocalSubprocessLaunchPlan:
+    def fake_build_local_workload_plan(**kwargs: object) -> LocalSubprocessLaunchPlan:
+        config_path = cast(Path, kwargs["config_path"])
+        repo_root = cast(Path, kwargs["repo_root"])
+        max_samples = cast(int | None, kwargs["max_samples"])
+        force_deploy_committed = cast(bool, kwargs["force_deploy_committed"])
+        python_executable = cast(str | None, kwargs["python_executable"])
         output_dir = repo_root / "results" / "eval" / "run_test"
         captured["config_path"] = config_path
         captured["output_dir"] = output_dir
@@ -61,9 +94,7 @@ def test_run_main_launches_eval_via_detached_subprocess(
         captured["spawn_plan"] = plan
         return 4242
 
-    monkeypatch.setattr(
-        argus_run, "build_local_eval_launch_plan", fake_build_local_eval_launch_plan
-    )
+    monkeypatch.setattr(argus_run, "build_local_workload_plan", fake_build_local_workload_plan)
     monkeypatch.setattr(argus_run, "_spawn_local_subprocess", fake_spawn_local_subprocess)
     monkeypatch.setattr(
         argus_run, "_launch_eval_monitor", lambda *, run_dir, tail, fmt="pretty": 99
@@ -95,15 +126,11 @@ def test_run_main_eval_tui_hands_off_to_monitor(monkeypatch: object, tmp_path: P
 
     captured: dict[str, object] = {}
 
-    def fake_build_local_eval_launch_plan(
-        *,
-        config_path: Path,
-        repo_root: Path,
-        max_samples: int | None,
-        force_deploy_committed: bool,
-        python_executable: str | None = None,
-    ) -> LocalSubprocessLaunchPlan:
-        del config_path, max_samples, force_deploy_committed, python_executable
+    def fake_build_local_workload_plan(**kwargs: object) -> LocalSubprocessLaunchPlan:
+        del kwargs["config_path"], kwargs["max_samples"], kwargs["force_deploy_committed"]
+        del kwargs["python_executable"], kwargs["config_module"], kwargs["stream_run_events"]
+        del kwargs["provider"], kwargs["gpu_type"], kwargs["gpu_count"]
+        repo_root = cast(Path, kwargs["repo_root"])
         output_dir = repo_root / "results" / "eval" / "run_test"
         captured["output_dir"] = output_dir
         return LocalSubprocessLaunchPlan(
@@ -124,9 +151,7 @@ def test_run_main_eval_tui_hands_off_to_monitor(monkeypatch: object, tmp_path: P
         captured["monitor_fmt"] = fmt
         return 17
 
-    monkeypatch.setattr(
-        argus_run, "build_local_eval_launch_plan", fake_build_local_eval_launch_plan
-    )
+    monkeypatch.setattr(argus_run, "build_local_workload_plan", fake_build_local_workload_plan)
     monkeypatch.setattr(argus_run, "_spawn_local_subprocess", fake_spawn_local_subprocess)
     monkeypatch.setattr(argus_run, "_launch_eval_monitor", fake_launch_eval_monitor)
     monkeypatch.setattr(argus_run, "_write_launch_record", lambda payload: tmp_path / "launch.json")
@@ -197,6 +222,7 @@ def test_run_local_entrypoint_executes_rollouts_owned_training_plan(monkeypatch:
             kind="training",
             emit_startup_sentinel=True,
             run=fake_run,
+            render_result=None,
         )
     )
 
