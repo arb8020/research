@@ -655,7 +655,7 @@ def _remove_launch_record(path: Path | None) -> None:
         pass
 
 
-from rollouts.event_log import (
+from argus.event_log import (
     RunEventSinks,
     build_jsonl_run_event_sinks,
     emit_run_event,
@@ -900,6 +900,7 @@ def _argus_modal_tags(*, launcher_id: str, run_name: str, config_path: Path) -> 
 def _setup_run_logging(
     run_dir: Path,
     *,
+    journal_name: str = "run.jsonl",
     on_event: Callable[[str, dict[str, Any]], None] | None = None,
 ) -> RunEventSinks:
     """Create run directory and return the canonical run event sinks.
@@ -909,7 +910,7 @@ def _setup_run_logging(
     changing workload call sites.
     """
     run_dir.mkdir(parents=True, exist_ok=True)
-    return build_jsonl_run_event_sinks(run_dir / "run.jsonl", on_event=on_event)
+    return build_jsonl_run_event_sinks(run_dir / journal_name, on_event=on_event)
 
 
 def _emit_run(log: RunEventSinks, event: str, **data: Any) -> None:
@@ -2153,7 +2154,7 @@ Examples:
             timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
             run_name = f"run_{timestamp}"
             local_run_dir = REPO_ROOT / "results" / "eval" / run_name
-            log = _setup_run_logging(local_run_dir)
+            log = _setup_run_logging(local_run_dir, journal_name="control.jsonl")
             _emit_run(
                 log,
                 "run_start",

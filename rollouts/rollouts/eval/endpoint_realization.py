@@ -16,6 +16,7 @@ _logger = logging.getLogger(__name__)
 
 import trio
 
+from argus.event_log import JsonlEventSink, emit_run_event
 from rollouts.eval.configs import (
     EndpointCapabilities,
     EndpointConfig,
@@ -24,7 +25,6 @@ from rollouts.eval.configs import (
     InferenceServerConfig,
     OwnedEndpoint,
 )
-from rollouts.event_log import emit_logger_event, emit_run_event
 from rollouts.remote_runtime import (
     SourceSyncPolicy,
     materialization_plan_from_runtime,
@@ -329,12 +329,13 @@ async def _tail_remote_trace(
 def _emit_log_lines(
     *,
     run_logger: Any | None,
+    engine_log_sink: JsonlEventSink | None,
     log_blob: str,
     seen_lines: dict[str, set[str]],
     emitted_startup_phases: set[str],
     startup_context: dict[str, Any],
 ) -> None:
-    if run_logger is None:
+    if run_logger is None and engine_log_sink is None:
         return
     parsed = _parse_service_logs(log_blob)
     for stream_name, lines in parsed.items():
@@ -344,15 +345,17 @@ def _emit_log_lines(
             if line_key in stream_seen:
                 continue
             stream_seen.add(line_key)
-            emit_run_event(
-                run_logger,
-                "eval_inference_service_log",
-                log_stream=stream_name,
-                line=line,
-                **startup_context,
-            )
+            if engine_log_sink is not None:
+                engine_log_sink(
+                    "engine_line",
+                    source="rollouts.inference",
+                    service="engine",
+                    stream=stream_name,
+                    line=line,
+                    **startup_context,
+                )
             phase = _classify_sglang_startup_phase(line)
-            if phase is None:
+            if phase is None or run_logger is None:
                 continue
             phase_name, _phase_fields = phase
             if phase_name in emitted_startup_phases:
@@ -476,6 +479,7 @@ async def _wait_for_modal_service_ready(
     worker: InferenceWorkerConfig,
     startup_timeout: float,
     run_logger: Any | None,
+    engine_log_sink: JsonlEventSink | None,
     startup_context: dict[str, Any],
     remote_output_dir: Path,
 ) -> bool:
@@ -521,6 +525,7 @@ async def _wait_for_modal_service_ready(
         log_blob = await _service_logs_best_effort(service, tail=120)
         _emit_log_lines(
             run_logger=run_logger,
+            engine_log_sink=engine_log_sink,
             log_blob=log_blob,
             seen_lines=seen_lines,
             emitted_startup_phases=emitted_startup_phases,
@@ -821,6 +826,7 @@ async def _wait_for_ssh_service_ready(
     worker: InferenceWorkerConfig,
     startup_timeout: float,
     run_logger: Any | None,
+    engine_log_sink: JsonlEventSink | None,
     startup_context: dict[str, Any],
     remote_output_dir: Path,
 ) -> None:
@@ -872,6 +878,7 @@ async def _wait_for_ssh_service_ready(
         log_blob = await _service_logs_best_effort(service, tail=120)
         _emit_log_lines(
             run_logger=run_logger,
+            engine_log_sink=engine_log_sink,
             log_blob=log_blob,
             seen_lines=seen_lines,
             emitted_startup_phases=emitted_startup_phases,
@@ -953,6 +960,7 @@ async def _realize_ssh_endpoint(
     service = None
     startup_context: dict[str, Any] | None = None
     remote_output_dir: Path | None = None
+    engine_log_sink = JsonlEventSink(output_dir / "engine.jsonl")
 
     async with AsyncBifrostClient(
         hardware_config.ssh,
@@ -1030,6 +1038,7 @@ async def _realize_ssh_endpoint(
                 worker=worker,
                 startup_timeout=worker.inference.startup_timeout,
                 run_logger=run_logger,
+                engine_log_sink=engine_log_sink,
                 startup_context=startup_context,
                 remote_output_dir=remote_output_dir,
             )
@@ -1053,22 +1062,6 @@ async def _realize_ssh_endpoint(
                     },
                 )
         finally:
-            final_log = (
-                await _service_logs_best_effort(service, tail=200) if service is not None else ""
-            )
-            if run_logger is not None and startup_context is not None:
-                emit_run_event(
-                    run_logger,
-                    "inference_service_final_log",
-                    log_blob=final_log,
-                    **startup_context,
-                )
-            elif final_log:
-                emit_logger_event(
-                    _logger,
-                    "inference_service_final_log",
-                    message=f"inference service final log\n{final_log}",
-                )
             if service is not None:
                 await service.stop()
 
@@ -1100,6 +1093,7 @@ async def _realize_modal_endpoint(
     from bifrost.types import ProcessSpec, ReadinessProbe, ServiceSpec, WorkspaceMaterializationSpec
 
     runtime = runtime_contract_from_hardware(hardware_config)
+    engine_log_sink = JsonlEventSink(output_dir / "engine.jsonl")
     request = ModalExecutionRequest(
         config_path="eval-worker-endpoint",
         runtime=runtime,
@@ -1214,6 +1208,7 @@ async def _realize_modal_endpoint(
                         worker=worker,
                         startup_timeout=worker.inference.startup_timeout,
                         run_logger=run_logger,
+                        engine_log_sink=engine_log_sink,
                         startup_context=startup_context,
                         remote_output_dir=remote_output_dir,
                     )
@@ -1245,24 +1240,6 @@ async def _realize_modal_endpoint(
                 # Capture final service logs before sandbox teardown.
                 # This is the only window to read stdout/stderr from the
                 # inference server process (e.g. gold_server.py diagnostics).
-                final_log = (
-                    await _service_logs_best_effort(service, tail=200)
-                    if service is not None
-                    else ""
-                )
-                if run_logger is not None and startup_context is not None:
-                    emit_run_event(
-                        run_logger,
-                        "inference_service_final_log",
-                        log_blob=final_log,
-                        **startup_context,
-                    )
-                elif final_log:
-                    emit_logger_event(
-                        _logger,
-                        "inference_service_final_log",
-                        message=f"inference service final log\n{final_log}",
-                    )
                 await terminate_modal_sandbox(sandbox_handle)
                 if not sandbox_handle.keep_alive:
                     await _wait_for_modal_sandbox_baseline(

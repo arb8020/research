@@ -10,10 +10,10 @@ from typing import Any
 
 import trio
 
+from argus.event_log import RunEventSinks, build_jsonl_run_event_sinks, emit_run_event
 from rollouts.eval.configs import EndpointConfig, resolve_eval_task_spec
 from rollouts.eval.endpoint_realization import realize_worker_backed_endpoint
 from rollouts.eval.run import REPO_ROOT, load_config_module
-from rollouts.event_log import RunEventSinks, build_jsonl_run_event_sinks, emit_run_event
 
 
 def _resolve_eval_worker(config_module: Any) -> Any | None:
@@ -34,7 +34,7 @@ def _child_command(*, config_path: Path) -> list[str]:
 
 
 def _setup_run_logging(output_dir: Path) -> RunEventSinks:
-    return build_jsonl_run_event_sinks(output_dir / "run.jsonl")
+    return build_jsonl_run_event_sinks(output_dir / "control.jsonl")
 
 
 async def _wait_for_process(proc: subprocess.Popen[bytes]) -> int:

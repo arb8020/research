@@ -24,6 +24,8 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
+from argus.event_log import list_jsonl_journal_paths
+
 # (formatted_text | None, done)
 # None = suppress line. done = run has ended, stop polling.
 FormatResult = tuple[str | None, bool]
@@ -99,131 +101,13 @@ def _event_key(ev: dict) -> str:
     return ""
 
 
-# ---------------------------------------------------------------------------
-# Per-event formatters: ev, ts -> FormatResult
-# ---------------------------------------------------------------------------
-
-
-def _suppress(ev: dict, ts: str) -> FormatResult:
-    return None, False
-
-
-def _fmt_service_final_log(ev: dict, ts: str) -> FormatResult:
-    blob = (ev.get("log_tail") or ev.get("log_blob") or "").strip()
-    if not blob:
-        return None, False
-    return f"[server]\n{_parse_blob(blob)}", False
-
-
-def _fmt_eval_start(ev: dict, ts: str) -> FormatResult:
-    name = ev.get("eval_name", "?")
-    total = ev.get("total", "?")
-    return _fmt("eval", f"started  {name}  {total} samples", ts), False
-
-
-def _fmt_eval_end(ev: dict, ts: str) -> FormatResult:
-    status = ev.get("status")
-    total = ev.get("total")
-    interrupted = ev.get("interrupted")
-    reward = ev.get("mean_reward")
-
-    parts: list[str] = ["done"]
-    if isinstance(status, str) and status:
-        parts.append(status)
-    elif isinstance(total, int):
-        parts.append(f"{total} samples")
-        if interrupted:
-            parts.append("(interrupted)")
-    elif interrupted:
-        parts.append("interrupted")
-
-    if isinstance(reward, (int, float)):
-        parts.append(f"reward {reward:.3f}")
-
-    return _fmt("eval", "  ".join(parts), ts), False
-
-
-def _fmt_sample_start(ev: dict, ts: str) -> FormatResult:
-    sid = ev.get("sample_id", "?")
-    name = ev.get("sample_name", "")
-    return _fmt("eval", f"sample {sid}  start" + (f"  {name}" if name else ""), ts), False
-
-
-def _fmt_sample_end(ev: dict, ts: str) -> FormatResult:
-    sid = ev.get("sample_id", "?")
-    status = ev.get("status")
-    score = ev.get("score")
-    reward = ev.get("reward")
-
-    if isinstance(status, str) and status:
-        state = status
-    elif isinstance(score, (int, float)):
-        state = f"score={score:.3f}"
-    elif isinstance(reward, (int, float)):
-        state = f"reward={reward:.3f}"
-    else:
-        state = "done"
-
-    return _fmt("eval", f"sample {sid}  {state}", ts), False
-
-
-def _fmt_turn(ev: dict, ts: str) -> FormatResult:
-    return _fmt("eval", f"sample {ev.get('sample_id', '?')}  {ev.get('status', '')}", ts), False
-
-
-def _fmt_assistant(ev: dict, ts: str) -> FormatResult:
-    content = ev.get("content", "")
-    preview = content[:80].replace("\n", " ") + ("..." if len(content) > 80 else "")
-    return _fmt("eval", f"sample {ev.get('sample_id', '?')}  {preview}", ts), False
-
-
-def _fmt_llm_call(ev: dict, ts: str) -> FormatResult:
-    sid = ev.get("sample_id", "?")
-    model = ev.get("model", "?")
-    tok_in = ev.get("tokens_in", "?")
-    tok_out = ev.get("tokens_out", "?")
-    ms = ev.get("duration_ms", "?")
-    return _fmt("eval", f"sample {sid}  {model}  {tok_in}→{tok_out} tok  {ms}ms", ts), False
-
-
-def _fmt_engine_launch(ev: dict, ts: str) -> FormatResult:
-    model = ev.get("model_name", "?")
-    return _fmt("server", f"starting  {model}", ts), False
-
-
-def _fmt_startup_failed(ev: dict, ts: str) -> FormatResult:
-    kind = ev.get("failure_kind", "?")
-    attempts = ev.get("health_attempt", "?")
-    return _fmt("server", f"failed  {kind}  after {attempts} attempts", ts), False
-
-
 def _fmt_run_end(ev: dict, ts: str) -> FormatResult:
     status = ev.get("status", "?")
     return _fmt("argus", f"run ended  {status}  (Ctrl-C to exit)", ts), True
 
 
-# message key -> formatter
-_MSG_FORMATTERS: dict[str, Callable[[dict, str], FormatResult]] = {
-    "inference_service_final_log": _fmt_service_final_log,
-    "eval_start": _fmt_eval_start,
-    "eval_end": _fmt_eval_end,
-    "sample_start": _fmt_sample_start,
-    "sample_end": _fmt_sample_end,
-    "turn": _fmt_turn,
-    "assistant_message": _fmt_assistant,
-    "llm_call": _fmt_llm_call,
-}
-
 # event key -> formatter
 _EVENT_FORMATTERS: dict[str, Callable[[dict, str], FormatResult]] = {
-    "run_start": _suppress,
-    "submit_done": _suppress,
-    "eval_inference_service_log": _suppress,
-    "inference_service_final_log": _fmt_service_final_log,
-    "inference_engine_launch": _fmt_engine_launch,
-    "inference_healthcheck_start": _suppress,
-    "inference_health_state": _suppress,
-    "inference_startup_failed": _fmt_startup_failed,
     "run_end": _fmt_run_end,
 }
 
@@ -240,12 +124,15 @@ def _format(raw: str, timestamps: bool = False) -> FormatResult:
     if isinstance(line, str):
         return (line if not timestamps else f"{_ts(ev)}  {line}"), False
 
+    blob = ev.get("log_tail") or ev.get("log_blob")
+    if isinstance(blob, str) and blob.strip():
+        parsed = _parse_blob(blob)
+        return (parsed if not timestamps else f"{_ts(ev)}  {parsed}"), False
+
     event = _event_key(ev)
 
     if event in _EVENT_FORMATTERS:
         return _EVENT_FORMATTERS[event](ev, ts)
-    if event in _MSG_FORMATTERS:
-        return _MSG_FORMATTERS[event](ev, ts)
 
     # Generic fallback
     extra = _extra(ev)
@@ -263,7 +150,7 @@ def tail_run(run_dir: Path, fmt: str = "pretty", timestamps: bool = False) -> in
     try:
         while True:
             done = False
-            for path in sorted(run_dir.glob("*.jsonl")):
+            for path in list_jsonl_journal_paths(run_dir):
                 prev = tail_offsets.get(path.name, 0)
                 cur = path.stat().st_size
                 if cur <= prev:
