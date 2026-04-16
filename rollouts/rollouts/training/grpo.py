@@ -33,13 +33,19 @@ from typing import TYPE_CHECKING, Any
 
 import trio
 
+from argus.event_log import (
+    JsonlEventSink,
+    RunEventSinks,
+    build_jsonl_run_event_sinks,
+    emit_run_event,
+)
+
 if TYPE_CHECKING:
     from ..core import Environment
     from ..training.types import Scorer
 
 # ──────────────────────── Sub-Configs (re-exported from shared) ───────────────
 
-from ..event_log import RunEventSinks, emit_run_event
 from ..resource_watchdog import ResourceWatchdog, ResourceWatchdogConfig
 from ..training.configs import (  # noqa: E402
     CheckpointConfig,
@@ -1351,7 +1357,14 @@ async def _grpo_train_async(
 
     config.save(output_dir / "config.json")
     metrics_logger = JSONLLogger(output_dir)
-    runtime_run_logger = run_logger or RunEventSinks(text_logger=logger)
+    if run_logger is None:
+        control_sinks = build_jsonl_run_event_sinks(output_dir / "control.jsonl")
+        runtime_run_logger = RunEventSinks(
+            emit_event=control_sinks.emit_event,
+            text_logger=logger,
+        )
+    else:
+        runtime_run_logger = run_logger
     base_run_context = {
         "run_name": run_name,
         "output_dir": str(output_dir),
@@ -1464,6 +1477,7 @@ async def _grpo_train_async(
     )
     inference_engines = list(inference_runtime.engines)
     num_engines = len(inference_engines)
+    engine_log_sink = JsonlEventSink(output_dir / "engine.jsonl")
     run_context = _build_grpo_run_context(
         config=config,
         run_name=run_name,
@@ -1560,7 +1574,7 @@ async def _grpo_train_async(
             engine_gpu_memory_utilization=getattr(engine, "gpu_memory_utilization", None),
         )
         engine.launch()
-        engine.start_log_tailer()
+        engine.start_log_tailer(line_sink=engine_log_sink)
 
     # Primary engine for backward compat (endpoint creation uses first engine's base_url).
     # TODO(inference-routing): launching multiple inference engines is not the same
@@ -1597,7 +1611,7 @@ async def _grpo_train_async(
             teacher_model=config.trainer.teacher_model,
         )
         teacher_engine.launch()
-        teacher_engine.start_log_tailer()
+        teacher_engine.start_log_tailer(line_sink=engine_log_sink)
 
     backend_cleanup: Callable[[], None] | None = None
 

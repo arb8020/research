@@ -11,7 +11,7 @@ import httpx
 import torch
 import trio
 
-from rollouts.event_log import emit_run_event
+from argus.event_log import emit_run_event
 from rollouts.inference.weight_sync import WeightSyncSender
 from rollouts.training.weight_sync import VLLMEngine
 from rollouts.training.weight_sync_protocol import VLLM_CUSTOM_NCCL_BROADCAST

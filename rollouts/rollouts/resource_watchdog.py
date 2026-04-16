@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .event_log import RunEventSinks, emit_run_event
+from argus.event_log import RunEventSinks, emit_run_event
 
 
 @dataclass(frozen=True)

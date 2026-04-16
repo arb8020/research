@@ -31,6 +31,7 @@ from typing import Any, Protocol
 import httpx
 import trio
 
+from argus.event_log import JsonlEventSink
 from rollouts.eval.configs import (
     EndpointCapabilities,
     OwnedEndpoint,
@@ -536,7 +537,7 @@ class InferenceBackend(Protocol):
         """
         ...
 
-    def start_log_tailer(self) -> threading.Thread:
+    def start_log_tailer(self, *, line_sink: JsonlEventSink | None = None) -> threading.Thread:
         """Start a daemon thread that tails logs and emits JSONL to stdout.
 
         Returns:
@@ -1046,7 +1047,7 @@ class SGLangEngine:
 
         return self.as_owned_endpoint().launch()
 
-    def start_log_tailer(self) -> threading.Thread:
+    def start_log_tailer(self, *, line_sink: JsonlEventSink | None = None) -> threading.Thread:
         """Start daemon thread that tails SGLang logs via Python logging.
 
         Uses a dedicated 'sglang' logger so logs go through the same
@@ -1068,6 +1069,17 @@ class SGLangEngine:
                         if line:
                             line = line.strip()
                             if line:
+                                if line_sink is not None:
+                                    line_sink(
+                                        "raw_line",
+                                        source="rollouts.inference",
+                                        service=self.name,
+                                        stream="combined",
+                                        line=line,
+                                        session_name=self._session_name,
+                                        log_path=str(self._log_file),
+                                        port=self.port,
+                                    )
                                 phase = _classify_sglang_startup_phase(line)
                                 if phase is not None:
                                     phase_name, _phase_fields = phase
@@ -1362,7 +1374,7 @@ class VLLMEngine:
 
         return self._session_name
 
-    def start_log_tailer(self) -> threading.Thread:
+    def start_log_tailer(self, *, line_sink: JsonlEventSink | None = None) -> threading.Thread:
         """Start daemon thread that tails vLLM logs via Python logging.
 
         Uses a dedicated 'vllm' logger so logs go through the same
@@ -1384,6 +1396,17 @@ class VLLMEngine:
                         if line:
                             line = line.strip()
                             if line:
+                                if line_sink is not None:
+                                    line_sink(
+                                        "raw_line",
+                                        source="rollouts.inference",
+                                        service=self.name,
+                                        stream="combined",
+                                        line=line,
+                                        session_name=self._session_name,
+                                        log_path=str(self._log_file),
+                                        port=self.port,
+                                    )
                                 vllm_logger.info(line)
                         else:
                             time.sleep(0.1)
@@ -1752,7 +1775,7 @@ class EngineV2Engine:
 
         return self._session_name
 
-    def start_log_tailer(self) -> threading.Thread:
+    def start_log_tailer(self, *, line_sink: JsonlEventSink | None = None) -> threading.Thread:
         """Start daemon thread that tails engine_v2 logs via Python logging."""
         engine_logger = logging.getLogger("engine_v2")
 
@@ -1770,6 +1793,17 @@ class EngineV2Engine:
                         if line:
                             line = line.strip()
                             if line:
+                                if line_sink is not None:
+                                    line_sink(
+                                        "raw_line",
+                                        source="rollouts.inference",
+                                        service=self.name,
+                                        stream="combined",
+                                        line=line,
+                                        session_name=self._session_name,
+                                        log_path=str(self._log_file),
+                                        port=self.port,
+                                    )
                                 engine_logger.info(line)
                         else:
                             time.sleep(0.1)

@@ -35,7 +35,14 @@ from argus.tail import tail_run
 LAUNCHES_DIR = Path.home() / ".argus" / "launches"
 _DEFAULT_WAIT_FAILURE_EVENTS = frozenset({"run_failed"})
 _MONITOR_LOG: Path | None = None
-_MODAL_ATTACH_FILES = ("training.jsonl", "metrics.jsonl")
+_MODAL_ATTACH_FILES = (
+    "control.jsonl",
+    "training.jsonl",
+    "metrics.jsonl",
+    "rollouts.jsonl",
+    "engine.jsonl",
+    "environment.jsonl",
+)
 
 
 def _process_alive(pid: int) -> bool:
@@ -937,7 +944,9 @@ def _wait_for_run_event(
     fail_on_events: set[str],
 ) -> int:
     """Poll a local run journal until a target event or terminal failure occurs."""
-    run_jsonl = run_dir / "run.jsonl"
+    run_jsonl = run_dir / "control.jsonl"
+    if not run_jsonl.exists():
+        run_jsonl = run_dir / "run.jsonl"
     start = time.monotonic()
     offset = 0
 

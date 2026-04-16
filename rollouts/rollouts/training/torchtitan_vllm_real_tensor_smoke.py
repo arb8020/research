@@ -12,7 +12,7 @@ from typing import Any
 import httpx
 import trio
 
-from rollouts.event_log import emit_run_event
+from argus.event_log import emit_run_event
 from rollouts.inference.weight_sync import WeightSyncSender
 from rollouts.training.grpo import _run_training_preflight
 from rollouts.training.weight_sync import VLLMEngine

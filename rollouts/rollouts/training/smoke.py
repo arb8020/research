@@ -12,7 +12,7 @@ from typing import Any
 
 import trio
 
-from ..event_log import emit_run_event
+from argus.event_log import emit_run_event
 
 
 def _pick(obj: Any, *names: str, default: Any = None) -> Any:
