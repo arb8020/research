@@ -87,6 +87,9 @@ def _extra(ev: dict) -> str:
 
 def _event_key(ev: dict) -> str:
     """Canonical event discriminator with backward compatibility."""
+    # TODO(event_log_refactor): delete the `message` fallback once producers
+    # emit the canonical event envelope everywhere. See
+    # docs/design/event_log_refactor.md.
     event = ev.get("event")
     if isinstance(event, str) and event:
         return event
@@ -119,10 +122,25 @@ def _fmt_eval_start(ev: dict, ts: str) -> FormatResult:
 
 
 def _fmt_eval_end(ev: dict, ts: str) -> FormatResult:
-    status = ev.get("status", "?")
+    status = ev.get("status")
+    total = ev.get("total")
+    interrupted = ev.get("interrupted")
     reward = ev.get("mean_reward")
-    suffix = f"  reward {reward:.3f}" if isinstance(reward, (int, float)) else ""
-    return _fmt("eval", f"done  {status}{suffix}", ts), False
+
+    parts: list[str] = ["done"]
+    if isinstance(status, str) and status:
+        parts.append(status)
+    elif isinstance(total, int):
+        parts.append(f"{total} samples")
+        if interrupted:
+            parts.append("(interrupted)")
+    elif interrupted:
+        parts.append("interrupted")
+
+    if isinstance(reward, (int, float)):
+        parts.append(f"reward {reward:.3f}")
+
+    return _fmt("eval", "  ".join(parts), ts), False
 
 
 def _fmt_sample_start(ev: dict, ts: str) -> FormatResult:
@@ -133,10 +151,20 @@ def _fmt_sample_start(ev: dict, ts: str) -> FormatResult:
 
 def _fmt_sample_end(ev: dict, ts: str) -> FormatResult:
     sid = ev.get("sample_id", "?")
-    status = ev.get("status", "?")
+    status = ev.get("status")
+    score = ev.get("score")
     reward = ev.get("reward")
-    suffix = f"  reward {reward:.3f}" if isinstance(reward, (int, float)) else ""
-    return _fmt("eval", f"sample {sid}  {status}{suffix}", ts), False
+
+    if isinstance(status, str) and status:
+        state = status
+    elif isinstance(score, (int, float)):
+        state = f"score={score:.3f}"
+    elif isinstance(reward, (int, float)):
+        state = f"reward={reward:.3f}"
+    else:
+        state = "done"
+
+    return _fmt("eval", f"sample {sid}  {state}", ts), False
 
 
 def _fmt_turn(ev: dict, ts: str) -> FormatResult:

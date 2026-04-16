@@ -33,14 +33,14 @@ Always specify `--provider runpod` to avoid primeintellect (pods get stuck in pe
 ## Monitoring jobs
 
 ```bash
-# Attach to a running job (launches TUI)
-rollouts monitor --attach <run_id>
+# Attach to a running job and stream synced logs
+python -m argus monitor --attach <run_id> --tail
 
 # Stream logs to stdout
-rollouts monitor --attach <run_id> --tail
+python -m argus monitor --attach <run_id> --tail
 
 # List all known jobs
-rollouts monitor --runs
+python -m argus monitor --runs
 ```
 
 Results sync locally to `results/rl/<run_id>/` while attached. A background sync daemon
@@ -109,6 +109,6 @@ Eval artifacts in `results/eval/<run>/`:
 
 - `rollouts/run.py` — remote job launcher (bootstrap, deploy, submit)
 - `rollouts/training/grpo.py` — GRPO trainer
-- `rollouts/tui/monitor_cli.py` — `rollouts monitor` CLI
+- `argus/monitor.py` — `argus monitor` CLI
 - `examples/rl/*/base_config.py` — per-task config + `train()` entry point
 - `~/.rollouts/jobs.json` — active job registry (used by `monitor --attach`)

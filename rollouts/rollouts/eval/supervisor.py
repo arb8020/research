@@ -13,7 +13,7 @@ import trio
 from rollouts.eval.configs import EndpointConfig, resolve_eval_task_spec
 from rollouts.eval.endpoint_realization import realize_worker_backed_endpoint
 from rollouts.eval.run import REPO_ROOT, load_config_module
-from rollouts.run_logger import JsonlEventSink, RunLogger
+from rollouts.event_log import RunEventSinks, build_jsonl_run_event_sinks, emit_run_event
 
 
 def _resolve_eval_worker(config_module: Any) -> Any | None:
@@ -33,15 +33,8 @@ def _child_command(*, config_path: Path) -> list[str]:
     ]
 
 
-def _setup_run_logging(output_dir: Path) -> RunLogger:
-    run_log = output_dir / "run.jsonl"
-    sink = JsonlEventSink(run_log)
-
-    def _emit_event(event: str, **data: Any) -> None:
-        sink(event, **data)
-
-    _emit_event.log_file = run_log
-    return RunLogger(emit_event=_emit_event)
+def _setup_run_logging(output_dir: Path) -> RunEventSinks:
+    return build_jsonl_run_event_sinks(output_dir / "run.jsonl")
 
 
 async def _wait_for_process(proc: subprocess.Popen[bytes]) -> int:
@@ -116,10 +109,10 @@ def main(argv: list[str] | None = None) -> int:
                 force_deploy_committed=args.force_deploy_committed,
             )
         )
-        run_logger.event("run_end", status="ok", exit_code=exit_code)
+        emit_run_event(run_logger, "run_end", status="ok", exit_code=exit_code)
         return exit_code
     except Exception as exc:
-        run_logger.event("run_end", status="failed")
+        emit_run_event(run_logger, "run_end", status="failed")
         print(f"Argus eval supervisor failed: {exc}", file=sys.stderr)
         raise
 

@@ -655,11 +655,12 @@ def _remove_launch_record(path: Path | None) -> None:
         pass
 
 
-from rollouts.run_logger import JsonlEventSink, RunLogger, stream_run_logger
-
-
-class _RunLogger(RunLogger):
-    pass
+from rollouts.event_log import (
+    RunEventSinks,
+    build_jsonl_run_event_sinks,
+    emit_run_event,
+    stream_run_event_sinks,
+)
 
 
 @dataclass(frozen=True)
@@ -900,26 +901,19 @@ def _setup_run_logging(
     run_dir: Path,
     *,
     on_event: Callable[[str, dict[str, Any]], None] | None = None,
-) -> _RunLogger:
-    """Create run directory and return the canonical structured run logger.
+) -> RunEventSinks:
+    """Create run directory and return the canonical run event sinks.
 
     Workload code should use this one object for structured run events. Argus
     owns the durable JSONL sink; other projections can be attached later without
     changing workload call sites.
     """
     run_dir.mkdir(parents=True, exist_ok=True)
-    log_file = run_dir / "run.jsonl"
-    jsonl_sink = JsonlEventSink(log_file)
+    return build_jsonl_run_event_sinks(run_dir / "run.jsonl", on_event=on_event)
 
-    def _emit_event(event: str, **data: Any) -> None:
-        jsonl_sink(event, **data)
-        if on_event is not None:
-            on_event(event, data)
 
-    # Provider-owned projections sometimes need to append directly to the
-    # canonical parent journal without re-entering this callback path.
-    _emit_event.log_file = log_file
-    return RunLogger(emit_event=_emit_event)
+def _emit_run(log: RunEventSinks, event: str, **data: Any) -> None:
+    emit_run_event(log, event, **data)
 
 
 def _job_status_from_run_status(status: RunStatus) -> str:
@@ -981,7 +975,7 @@ def _spawn_eval_subprocess(
     config_path: Path,
     output_dir: Path,
     max_samples: int | None,
-    log: _RunLogger,
+    log: RunEventSinks,
     force_deploy_committed: bool = False,
 ) -> int:
     """Launch the local Argus eval supervisor as a detached subprocess."""
@@ -1024,7 +1018,8 @@ def _spawn_eval_subprocess(
         stdout_handle.close()
         stderr_handle.close()
 
-    log(
+    _emit_run(
+        log,
         "submit_done",
         kind="evaluation",
         pid=proc.pid,
@@ -1116,7 +1111,8 @@ async def _deploy_and_submit(
         name=run_name,
     )
     log = _setup_run_logging(local_run_dir)
-    log(
+    _emit_run(
+        log,
         "run_start",
         config=script_path,
         gpu_count=gpu_count,
@@ -1228,7 +1224,7 @@ async def _deploy_and_submit(
             provision_msg = f"Provisioning {gpu_count}x {gpu_type} on {provider}{profile_hint}..."
         else:
             provision_msg = f"Provisioning {gpu_count}x {gpu_type}{profile_hint}..."
-        log("provision_start", msg=provision_msg, **_active_run_log_fields(active_run))
+        _emit_run(log, "provision_start", msg=provision_msg, **_active_run_log_fields(active_run))
         try:
             with spinner(provision_msg) as spin:
                 if node_id:
@@ -1242,7 +1238,8 @@ async def _deploy_and_submit(
                             image_ref=resolved_registry_image_ref,
                         )
                         _sync_registered_run(active_run)
-                    log(
+                    _emit_run(
+                        log,
                         "provision_done",
                         node_id=node_id,
                         reused=True,
@@ -1278,7 +1275,8 @@ async def _deploy_and_submit(
                             image_ref=resolved_registry_image_ref,
                         )
                         _sync_registered_run(active_run)
-                    log(
+                    _emit_run(
+                        log,
                         "provision_done",
                         node_id=node_str,
                         provider=instance.provider if instance else None,
@@ -1288,7 +1286,8 @@ async def _deploy_and_submit(
             logger.debug("AccountError details", exc_info=True)
             active_run.mark_failed(error=e.user_message())
             _sync_registered_run(active_run)
-            log(
+            _emit_run(
+                log,
                 "run_failed",
                 error=e.user_message(),
                 **_active_run_log_fields(active_run),
@@ -1326,7 +1325,8 @@ async def _deploy_and_submit(
                 print(f"\nError: Provisioning failed: {e}", file=sys.stderr)
             active_run.mark_failed(error=user_message)
             _sync_registered_run(active_run)
-            log(
+            _emit_run(
+                log,
                 "run_failed",
                 error=user_message,
                 **_active_run_log_fields(active_run),
@@ -1345,7 +1345,8 @@ async def _deploy_and_submit(
         should_reconcile_cuda = _should_reconcile_ssh_cuda_toolkit(custom_image)
         if cuda_req is not None and should_reconcile_cuda:
             sm_version, min_major, min_minor, arch_name = cuda_req
-            log(
+            _emit_run(
+                log,
                 "cuda_check_start",
                 gpu_type=gpu_type,
                 arch=arch_name,
@@ -1372,7 +1373,8 @@ async def _deploy_and_submit(
                                 f"(needs {min_major}.{min_minor}+). Will upgrade during bootstrap."
                             )
                             needs_cuda_upgrade = True
-                            log(
+                            _emit_run(
+                                log,
                                 "cuda_check_done",
                                 nvcc_version=f"{nvcc_major}.{nvcc_minor}",
                                 compatible=False,
@@ -1380,7 +1382,8 @@ async def _deploy_and_submit(
                                 **_active_run_log_fields(active_run),
                             )
                         else:
-                            log(
+                            _emit_run(
+                                log,
                                 "cuda_check_done",
                                 nvcc_version=f"{nvcc_major}.{nvcc_minor}",
                                 compatible=True,
@@ -1392,14 +1395,16 @@ async def _deploy_and_submit(
                             "nvcc not found on remote. Will install CUDA toolkit during bootstrap."
                         )
                         needs_cuda_upgrade = True
-                        log(
+                        _emit_run(
+                            log,
                             "cuda_check_done",
                             nvcc_version="not_found",
                             will_upgrade=True,
                             **_active_run_log_fields(active_run),
                         )
                 except Exception as e:
-                    log(
+                    _emit_run(
+                        log,
                         "cuda_check_done",
                         error=str(e),
                         **_active_run_log_fields(active_run),
@@ -1410,7 +1415,8 @@ async def _deploy_and_submit(
                     needs_cuda_upgrade = True
         elif cuda_req is not None:
             _, min_major, min_minor, arch_name = cuda_req
-            log(
+            _emit_run(
+                log,
                 "cuda_check_skipped",
                 gpu_type=gpu_type,
                 arch=arch_name,
@@ -1424,7 +1430,7 @@ async def _deploy_and_submit(
 
         active_run.update_stage("deploying")
         _sync_registered_run(active_run)
-        log("deploy_start", **_active_run_log_fields(active_run))
+        _emit_run(log, "deploy_start", **_active_run_log_fields(active_run))
         with spinner("Deploying code..."):
             from bifrost import WorkspaceMaterializationSpec
 
@@ -1445,7 +1451,7 @@ async def _deploy_and_submit(
                 workspace=workspace,
             )
             _sync_registered_run(active_run)
-        log("deploy_done", workspace=workspace, **_active_run_log_fields(active_run))
+        _emit_run(log, "deploy_done", workspace=workspace, **_active_run_log_fields(active_run))
         remote_script_path = _remote_materialized_path(
             local_path=local_script_path,
             workspace_root=workspace,
@@ -1454,7 +1460,8 @@ async def _deploy_and_submit(
 
         remote_manifest = _read_remote_manifest(bifrost)
         if remote_manifest is not None:
-            log(
+            _emit_run(
+                log,
                 "image_manifest_loaded",
                 features=list(remote_manifest.features),
                 installed_groups=list(remote_manifest.installed_groups),
@@ -1494,16 +1501,19 @@ async def _deploy_and_submit(
         active_run.update_stage("bootstrapping")
         _sync_registered_run(active_run)
         for label, cmd in bootstrap_plan.steps:
-            log("bootstrap_step_start", label=label, **_active_run_log_fields(active_run))
+            _emit_run(
+                log, "bootstrap_step_start", label=label, **_active_run_log_fields(active_run)
+            )
             with spinner(f"{label}..."):
                 bifrost.exec(cmd, working_dir=workspace)
-            log("bootstrap_step_done", label=label, **_active_run_log_fields(active_run))
+            _emit_run(log, "bootstrap_step_done", label=label, **_active_run_log_fields(active_run))
 
         # HuggingFace login for faster authenticated downloads
         # Token is written to ~/.cache/huggingface/token (standard HF location)
         # Using printf to avoid token appearing in shell history or ps output
         if hf_token := os.getenv("HF_TOKEN"):
-            log(
+            _emit_run(
+                log,
                 "bootstrap_step_start",
                 label="HuggingFace login",
                 **_active_run_log_fields(active_run),
@@ -1515,7 +1525,8 @@ async def _deploy_and_submit(
                     env={"HF_TOKEN": hf_token},
                     working_dir=workspace,
                 )
-            log(
+            _emit_run(
+                log,
                 "bootstrap_step_done",
                 label="HuggingFace login",
                 **_active_run_log_fields(active_run),
@@ -1564,7 +1575,8 @@ async def _deploy_and_submit(
             python_version=manifest_base.python_version or "3.12",
             cuda_version=manifest_base.cuda_version or requested_cuda_version,
         )
-        log(
+        _emit_run(
+            log,
             "image_manifest_write",
             features=list(manifest_to_write.features),
             installed_groups=list(manifest_to_write.installed_groups),
@@ -1605,7 +1617,8 @@ async def _deploy_and_submit(
             log_file=logs_log_file,
             workspace=workspace,
         )
-        log(
+        _emit_run(
+            log,
             "logs_server_started",
             port=logs_port,
             session=logs_service.handle_id,
@@ -1658,7 +1671,7 @@ async def _deploy_and_submit(
                 "--local",
             )
 
-        log("submit_start", **_active_run_log_fields(active_run))
+        _emit_run(log, "submit_start", **_active_run_log_fields(active_run))
         with spinner(f"Starting {run_name}...") as spin:
             job = bifrost.submit(
                 ProcessSpec(
@@ -1675,7 +1688,9 @@ async def _deploy_and_submit(
                 spin.update(f"Training started ({job.tmux_session})")
         active_run.mark_running(stage="remote_submitted")
         _sync_registered_run(active_run)
-        log("submit_done", tmux_session=job.tmux_session, **_active_run_log_fields(active_run))
+        _emit_run(
+            log, "submit_done", tmux_session=job.tmux_session, **_active_run_log_fields(active_run)
+        )
 
         return (
             bifrost,
@@ -1690,7 +1705,7 @@ async def _deploy_and_submit(
     except Exception as exc:
         active_run.mark_failed(error=str(exc))
         _sync_registered_run(active_run)
-        log("run_failed", error=str(exc), **_active_run_log_fields(active_run))
+        _emit_run(log, "run_failed", error=str(exc), **_active_run_log_fields(active_run))
         raise
 
 
@@ -2139,7 +2154,8 @@ Examples:
             run_name = f"run_{timestamp}"
             local_run_dir = REPO_ROOT / "results" / "eval" / run_name
             log = _setup_run_logging(local_run_dir)
-            log(
+            _emit_run(
+                log,
                 "run_start",
                 launcher_id=launcher_id,
                 kind="evaluation",
@@ -2259,7 +2275,8 @@ Examples:
                     _sync_registered_run(active_run)
 
                 log = _setup_run_logging(local_run_dir, on_event=_project_modal_event)
-                log(
+                _emit_run(
+                    log,
                     "run_start",
                     launcher_id=launcher_id,
                     provider="modal",
@@ -2307,7 +2324,7 @@ Examples:
                         repo_root=extra_root,
                         stream=sys.stderr,
                     )
-                log("modal_submit_dispatch")
+                _emit_run(log, "modal_submit_dispatch")
                 results = trio.run(run_modal_request, modal_request)
                 if not results.get("success"):
                     active_run.mark_failed(
@@ -2315,7 +2332,8 @@ Examples:
                         error=str(results.get("stderr") or ""),
                     )
                     _sync_registered_run(active_run)
-                    log(
+                    _emit_run(
+                        log,
                         "run_failed",
                         exit_code=results.get("exit_code"),
                         stderr=results.get("stderr"),
@@ -2327,7 +2345,8 @@ Examples:
                     return 1
                 active_run.mark_succeeded(exit_code=results.get("exit_code"))
                 _sync_registered_run(active_run)
-                log(
+                _emit_run(
+                    log,
                     "run_completed",
                     exit_code=results.get("exit_code"),
                     argus_run_id=active_run.run_id,
@@ -2393,7 +2412,7 @@ Examples:
 
                 kwargs = {}
                 if os.getenv("ARGUS_RUN_EVENT_STREAM") == "1":
-                    kwargs["run_logger"] = stream_run_logger()
+                    kwargs["run_logger"] = stream_run_event_sinks()
                 if args.max_samples is not None:
                     kwargs["max_samples"] = args.max_samples
 

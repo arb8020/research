@@ -27,8 +27,8 @@ from rollouts.eval.endpoint_realization import (
     realize_worker_backed_endpoint,
 )
 from rollouts.eval.run import run_with_sglang_provision
+from rollouts.event_log import RunEventSinks
 from rollouts.image_spec import ImageSpec
-from rollouts.run_logger import RunLogger
 from rollouts.training.configs import (
     DepsConfig,
     HardwareConfig,
@@ -187,7 +187,7 @@ def test_ssh_workspace_bootstrap_commands_build_workspace_local_uv_and_venv() ->
 
 def test_emit_log_lines_emits_startup_phase_once() -> None:
     events: list[tuple[str, dict[str, object]]] = []
-    run_logger = RunLogger(emit_event=lambda event, **data: events.append((event, data)))
+    run_logger = RunEventSinks(emit_event=lambda event, **data: events.append((event, data)))
 
     _emit_log_lines(
         run_logger=run_logger,
@@ -230,7 +230,7 @@ async def test_wait_for_modal_sandbox_baseline_emits_cleanup_converged(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     events: list[tuple[str, dict[str, object]]] = []
-    run_logger = RunLogger(emit_event=lambda event, **data: events.append((event, data)))
+    run_logger = RunEventSinks(emit_event=lambda event, **data: events.append((event, data)))
     sandbox_sets = iter(({"sb-old", "sb-new"}, {"sb-old"}))
 
     async def fake_list_modal_sandbox_ids() -> set[str]:
@@ -256,7 +256,7 @@ async def test_wait_for_modal_sandbox_baseline_emits_incomplete_cleanup(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     events: list[tuple[str, dict[str, object]]] = []
-    run_logger = RunLogger(emit_event=lambda event, **data: events.append((event, data)))
+    run_logger = RunEventSinks(emit_event=lambda event, **data: events.append((event, data)))
 
     async def fake_list_modal_sandbox_ids() -> set[str]:
         return {"sb-old", "sb-stuck"}
@@ -294,7 +294,7 @@ async def test_wait_for_modal_sandbox_baseline_force_terminates_residuals(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     events: list[tuple[str, dict[str, object]]] = []
-    run_logger = RunLogger(emit_event=lambda event, **data: events.append((event, data)))
+    run_logger = RunEventSinks(emit_event=lambda event, **data: events.append((event, data)))
     sandbox_sets = iter(({"sb-old", "sb-stuck"}, {"sb-old"}))
     terminated: list[str] = []
 

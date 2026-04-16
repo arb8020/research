@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import os
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
+from typing import cast
 
 import pytest
 
@@ -20,7 +22,9 @@ def test_eval_supervisor_passes_realized_base_url_to_eval_runner(
     captured: dict[str, object] = {}
 
     @asynccontextmanager
-    async def fake_realize_worker_backed_endpoint(**kwargs: object):
+    async def fake_realize_worker_backed_endpoint(
+        **kwargs: object,
+    ) -> AsyncIterator[SimpleNamespace]:
         captured["realize_kwargs"] = kwargs
         yield SimpleNamespace(
             endpoint_config=EndpointConfig(
@@ -71,17 +75,23 @@ def test_eval_supervisor_passes_realized_base_url_to_eval_runner(
     )
     monkeypatch.setattr(eval_supervisor.subprocess, "Popen", fake_popen)
 
-    result = eval_supervisor.main(
-        [
-            "--config",
-            str(config_path),
-            "--output-dir",
-            str(output_dir),
-        ]
-    )
+    result = eval_supervisor.main([
+        "--config",
+        str(config_path),
+        "--output-dir",
+        str(output_dir),
+    ])
+
+    command = cast(list[str], captured["command"])
+    env = cast(dict[str, str], captured["env"])
+    realize_kwargs = cast(dict[str, object], captured["realize_kwargs"])
 
     assert result == 0
-    assert captured["command"][:3] == [os.fspath(eval_supervisor.sys.executable), "-m", "rollouts.eval.run"]
-    assert captured["env"]["ROLLOUTS_OUTPUT_DIR"] == os.fspath(output_dir.resolve())
-    assert captured["env"]["ROLLOUTS_ENDPOINT_BASE_URL"] == "https://example.test/v1"
-    assert captured["realize_kwargs"]["run_logger"] is not None
+    assert command[:3] == [
+        os.fspath(eval_supervisor.sys.executable),
+        "-m",
+        "rollouts.eval.run",
+    ]
+    assert env["ROLLOUTS_OUTPUT_DIR"] == os.fspath(output_dir.resolve())
+    assert env["ROLLOUTS_ENDPOINT_BASE_URL"] == "https://example.test/v1"
+    assert realize_kwargs["run_logger"] is not None

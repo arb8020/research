@@ -28,6 +28,7 @@ from ..drivers.runner import (
 from ..environments.local_workspace_resource import LocalWorkspaceResource
 from ..environments.resources import ExecSpec, SandboxWorkspaceResource
 from ..eval.types import ExternalAttemptArtifact
+from ..event_log import emit_logger_event
 
 _event_logger = logging.getLogger("rollouts.eval.events")
 
@@ -43,7 +44,7 @@ class RemoteRuntimePreparation:
 
 def _emit_eval_event(event: str, **data: Any) -> None:
     """Emit one canonical eval event into events.jsonl."""
-    _event_logger.info(event, extra={"event": event, **data})
+    emit_logger_event(_event_logger, event, **data)
 
 
 async def _workspace_exec(

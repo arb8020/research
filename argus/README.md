@@ -70,17 +70,16 @@ This is intentional as a first compression step:
 
 ## Current monitoring model
 
-The intended split is:
-
 - `argus monitor`
   - resolve run identity
   - attach/sync remote artifacts when needed
   - expose launcher/control-plane-only status such as active launchers
-  - hand off run viewing to a viewer
-- `rollouts monitor`
-  - render the workload-aware TUI over local artifacts
+  - tail local journals
+  - poll local journals for specific events
+  - list, cancel, and attach to remote jobs
 
-So the local run directory is the seam between the control plane and the UI.
+The local run directory is still the seam between the control plane and the
+workload, but `argus monitor` now owns the monitor shell directly.
 
 ## Running evaluations
 

@@ -24,6 +24,7 @@ from rollouts.eval.configs import (
     InferenceServerConfig,
     OwnedEndpoint,
 )
+from rollouts.event_log import emit_logger_event, emit_run_event
 from rollouts.remote_runtime import (
     SourceSyncPolicy,
     materialization_plan_from_runtime,
@@ -343,7 +344,8 @@ def _emit_log_lines(
             if line_key in stream_seen:
                 continue
             stream_seen.add(line_key)
-            run_logger.event(
+            emit_run_event(
+                run_logger,
                 "eval_inference_service_log",
                 log_stream=stream_name,
                 line=line,
@@ -356,7 +358,8 @@ def _emit_log_lines(
             if phase_name in emitted_startup_phases:
                 continue
             emitted_startup_phases.add(phase_name)
-            run_logger.event(
+            emit_run_event(
+                run_logger,
                 "inference_startup_phase",
                 phase=phase_name,
                 phase_source=f"service_{stream_name}",
@@ -410,7 +413,8 @@ async def _wait_for_modal_sandbox_baseline(
         residual_ids = sorted(current_ids - baseline_ids)
         if not residual_ids:
             if run_logger is not None:
-                run_logger.event(
+                emit_run_event(
+                    run_logger,
                     "modal_sandbox_cleanup_converged",
                     provider="modal",
                     run_name=run_name,
@@ -418,7 +422,8 @@ async def _wait_for_modal_sandbox_baseline(
             return
         if trio.current_time() >= deadline:
             if run_logger is not None:
-                run_logger.event(
+                emit_run_event(
+                    run_logger,
                     "modal_sandbox_cleanup_force_terminate_start",
                     provider="modal",
                     run_name=run_name,
@@ -431,13 +436,15 @@ async def _wait_for_modal_sandbox_baseline(
                 residual_ids = sorted(current_ids - baseline_ids)
                 if not residual_ids:
                     if run_logger is not None:
-                        run_logger.event(
+                        emit_run_event(
+                            run_logger,
                             "modal_sandbox_cleanup_force_terminate_finished",
                             provider="modal",
                             run_name=run_name,
                             terminated_sandbox_ids=terminated_ids,
                         )
-                        run_logger.event(
+                        emit_run_event(
+                            run_logger,
                             "modal_sandbox_cleanup_converged",
                             provider="modal",
                             run_name=run_name,
@@ -448,7 +455,8 @@ async def _wait_for_modal_sandbox_baseline(
                     break
                 await trio.sleep(MODAL_SANDBOX_CLEANUP_POLL_INTERVAL_S)
             if run_logger is not None:
-                run_logger.event(
+                emit_run_event(
+                    run_logger,
                     "modal_sandbox_cleanup_incomplete",
                     provider="modal",
                     run_name=run_name,
@@ -478,7 +486,8 @@ async def _wait_for_modal_service_ready(
     seen_lines: dict[str, set[str]] = {"stdout": set(), "stderr": set()}
 
     if run_logger is not None:
-        run_logger.event(
+        emit_run_event(
+            run_logger,
             "inference_healthcheck_start",
             startup_timeout=startup_timeout,
             **startup_context,
@@ -497,7 +506,8 @@ async def _wait_for_modal_service_ready(
             return
         last_health_state = state
         if run_logger is not None:
-            run_logger.event(
+            emit_run_event(
+                run_logger,
                 "inference_health_state",
                 health_state=state,
                 health_attempt=attempt,
@@ -535,7 +545,8 @@ async def _wait_for_modal_service_ready(
                     trace_path=remote_output_dir / f"sglang_{worker.inference.port}_trace.jsonl",
                 )
                 if run_logger is not None:
-                    run_logger.event(
+                    emit_run_event(
+                        run_logger,
                         "inference_startup_failed",
                         failure_kind="sandbox_unavailable",
                         health_attempt=attempt,
@@ -557,7 +568,8 @@ async def _wait_for_modal_service_ready(
                     trace_path=remote_output_dir / f"sglang_{worker.inference.port}_trace.jsonl",
                 )
                 if run_logger is not None:
-                    run_logger.event(
+                    emit_run_event(
+                        run_logger,
                         "inference_startup_failed",
                         failure_kind="sandbox_exited",
                         health_attempt=attempt,
@@ -577,7 +589,7 @@ async def _wait_for_modal_service_ready(
             if healthy:
                 await _emit_health_state("healthy", attempt=attempt)
                 if run_logger is not None:
-                    run_logger.event("inference_ready", **startup_context)
+                    emit_run_event(run_logger, "inference_ready", **startup_context)
                 return True
 
             try:
@@ -599,7 +611,8 @@ async def _wait_for_modal_service_ready(
                         / f"sglang_{worker.inference.port}_trace.jsonl",
                     )
                     if run_logger is not None:
-                        run_logger.event(
+                        emit_run_event(
+                            run_logger,
                             "inference_startup_failed",
                             failure_kind="service_exited_before_ready",
                             health_attempt=attempt,
@@ -625,7 +638,8 @@ async def _wait_for_modal_service_ready(
                 trace_path=remote_output_dir / f"sglang_{worker.inference.port}_trace.jsonl",
                 max_lines=20,
             )
-            run_logger.event(
+            emit_run_event(
+                run_logger,
                 "inference_health_stall",
                 health_attempt=attempt,
                 last_health_state=last_health_state,
@@ -643,7 +657,8 @@ async def _wait_for_modal_service_ready(
         trace_path=remote_output_dir / f"sglang_{worker.inference.port}_trace.jsonl",
     )
     if run_logger is not None:
-        run_logger.event(
+        emit_run_event(
+            run_logger,
             "inference_startup_failed",
             failure_kind="timeout",
             health_attempt=attempt,
@@ -817,7 +832,8 @@ async def _wait_for_ssh_service_ready(
     attempt = 0
 
     if run_logger is not None:
-        run_logger.event(
+        emit_run_event(
+            run_logger,
             "inference_healthcheck_start",
             startup_timeout=startup_timeout,
             **startup_context,
@@ -836,7 +852,8 @@ async def _wait_for_ssh_service_ready(
             return
         last_health_state = state
         if run_logger is not None:
-            run_logger.event(
+            emit_run_event(
+                run_logger,
                 "inference_health_state",
                 health_state=state,
                 health_attempt=attempt,
@@ -877,7 +894,8 @@ async def _wait_for_ssh_service_ready(
                 trace_path=remote_output_dir / f"sglang_{worker.inference.port}_trace.jsonl",
                 max_lines=20,
             )
-            run_logger.event(
+            emit_run_event(
+                run_logger,
                 "inference_health_stall",
                 health_attempt=attempt,
                 last_health_state=last_health_state,
@@ -895,7 +913,8 @@ async def _wait_for_ssh_service_ready(
         trace_path=remote_output_dir / f"sglang_{worker.inference.port}_trace.jsonl",
     )
     if run_logger is not None:
-        run_logger.event(
+        emit_run_event(
+            run_logger,
             "inference_startup_failed",
             failure_kind="timeout" if last_health_state != "exited" else "exited",
             health_attempt=attempt,
@@ -997,7 +1016,8 @@ async def _realize_ssh_endpoint(
             ),
         }
         if run_logger is not None:
-            run_logger.event(
+            emit_run_event(
+                run_logger,
                 "inference_engine_launch",
                 engine_launch_cmd=launch_cmd,
                 readiness_target=readiness_target,
@@ -1037,16 +1057,17 @@ async def _realize_ssh_endpoint(
                 await _service_logs_best_effort(service, tail=200) if service is not None else ""
             )
             if run_logger is not None and startup_context is not None:
-                run_logger.event(
+                emit_run_event(
+                    run_logger,
                     "inference_service_final_log",
                     log_blob=final_log,
                     **startup_context,
                 )
             elif final_log:
-                _logger.info(
-                    "inference service final log\n%s",
-                    final_log,
-                    extra={"event": "inference_service_final_log"},
+                emit_logger_event(
+                    _logger,
+                    "inference_service_final_log",
+                    message=f"inference service final log\n{final_log}",
                 )
             if service is not None:
                 await service.stop()
@@ -1105,7 +1126,8 @@ async def _realize_modal_endpoint(
 
     def emit_modal_event(event: str, **data: Any) -> None:
         if run_logger is not None:
-            run_logger.event(
+            emit_run_event(
+                run_logger,
                 event,
                 provider="modal",
                 run_name=run_name,
@@ -1172,7 +1194,8 @@ async def _realize_modal_endpoint(
                     remote_output_dir=remote_output_dir,
                 )
                 if run_logger is not None:
-                    run_logger.event(
+                    emit_run_event(
+                        run_logger,
                         "inference_engine_launch",
                         engine_launch_cmd=launch_cmd,
                         readiness_target=readiness_target,
@@ -1228,16 +1251,17 @@ async def _realize_modal_endpoint(
                     else ""
                 )
                 if run_logger is not None and startup_context is not None:
-                    run_logger.event(
+                    emit_run_event(
+                        run_logger,
                         "inference_service_final_log",
                         log_blob=final_log,
                         **startup_context,
                     )
                 elif final_log:
-                    _logger.info(
-                        "inference service final log\n%s",
-                        final_log,
-                        extra={"event": "inference_service_final_log"},
+                    emit_logger_event(
+                        _logger,
+                        "inference_service_final_log",
+                        message=f"inference service final log\n{final_log}",
                     )
                 await terminate_modal_sandbox(sandbox_handle)
                 if not sandbox_handle.keep_alive:

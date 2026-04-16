@@ -3,7 +3,7 @@ from __future__ import annotations
 import io
 from pathlib import Path
 
-from rollouts.monitor import cli as monitor_cli
+from argus import monitor
 
 
 def test_resolve_job_connection_modal_skips_broker_lookup(monkeypatch: object) -> None:
@@ -17,13 +17,13 @@ def test_resolve_job_connection_modal_skips_broker_lookup(monkeypatch: object) -
         log_path = "results/rl/run_123"
 
     monkeypatch.setattr(
-        monitor_cli,
+        monitor,
         "_get_instance",
         lambda provider, node_id: (_ for _ in ()).throw(AssertionError("should not be called")),
     )
     monkeypatch.setattr("rollouts.jobs.get_job", lambda job_id: _Job())
 
-    resolved = monitor_cli._resolve_job_connection("run_123")
+    resolved = monitor._resolve_job_connection("run_123")
 
     assert resolved == {
         "run_id": "run_123",
@@ -49,7 +49,7 @@ def test_resolve_modal_output_dir_prefers_log_path_candidate() -> None:
 
     sandbox = _Sandbox()
 
-    resolved = monitor_cli._resolve_modal_output_dir(
+    resolved = monitor._resolve_modal_output_dir(
         sandbox,
         run_id="run_123",
         log_path="results/rl/run_123",
@@ -75,7 +75,7 @@ def test_sync_modal_files_once_appends_new_lines(tmp_path: Path) -> None:
     sandbox = _Sandbox()
     offsets = {"training.jsonl": 1, "metrics.jsonl": 0}
 
-    files, new_lines = monitor_cli._sync_modal_files_once(
+    files, new_lines = monitor._sync_modal_files_once(
         sandbox=sandbox,
         remote_output_dir="/remote/run",
         local_sync_dir=tmp_path,

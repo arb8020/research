@@ -12,6 +12,7 @@ from typing import Any
 import httpx
 import trio
 
+from rollouts.event_log import emit_run_event
 from rollouts.inference.weight_sync import WeightSyncSender
 from rollouts.training.grpo import _run_training_preflight
 from rollouts.training.weight_sync import VLLMEngine
@@ -32,7 +33,7 @@ async def run_torchtitan_vllm_real_tensor_smoke(
 ) -> None:
     def emit(event: str, **data: Any) -> None:
         if run_logger is not None:
-            run_logger.event(event, **data)
+            emit_run_event(run_logger, event, **data)
 
     output_root = Path(getattr(getattr(config, "output", None), "output_dir", "results"))
     experiment_name = getattr(

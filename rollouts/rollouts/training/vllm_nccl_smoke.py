@@ -11,6 +11,7 @@ import httpx
 import torch
 import trio
 
+from rollouts.event_log import emit_run_event
 from rollouts.inference.weight_sync import WeightSyncSender
 from rollouts.training.weight_sync import VLLMEngine
 from rollouts.training.weight_sync_protocol import VLLM_CUSTOM_NCCL_BROADCAST
@@ -71,7 +72,7 @@ async def run_vllm_nccl_smoke(
 
     def emit(event: str, **data: Any) -> None:
         if run_logger is not None:
-            run_logger.event(event, **data)
+            emit_run_event(run_logger, event, **data)
 
     output_root = Path(getattr(getattr(config, "output", None), "output_dir", "results"))
     experiment_name = getattr(getattr(config, "output", None), "experiment_name", "vllm_nccl")

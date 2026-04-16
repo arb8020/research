@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .run_logger import RunLogger
+from .event_log import RunEventSinks, emit_run_event
 
 
 @dataclass(frozen=True)
@@ -132,7 +132,7 @@ class ResourceWatchdog:
         self,
         *,
         config: ResourceWatchdogConfig,
-        run_logger: RunLogger,
+        run_logger: RunEventSinks,
         run_context: dict[str, Any],
     ) -> None:
         self.config = config
@@ -154,7 +154,8 @@ class ResourceWatchdog:
             return
         self._thread = threading.Thread(target=self._run, name="resource-watchdog", daemon=True)
         self._thread.start()
-        self.run_logger.event(
+        emit_run_event(
+            self.run_logger,
             "resource_watchdog_started",
             **self.run_context,
             sample_interval_s=self.config.sample_interval_s,
@@ -168,7 +169,8 @@ class ResourceWatchdog:
             return
         self._stop.set()
         self._thread.join(timeout=2.0)
-        self.run_logger.event(
+        emit_run_event(
+            self.run_logger,
             "resource_watchdog_stopped",
             **self.run_context,
             phase=self.phase,
@@ -190,7 +192,8 @@ class ResourceWatchdog:
         # regimes. Compress unchanged phases or rate-limit phase emission so
         # the journal stays queryable and the important control-flow edges
         # remain visually dominant.
-        self.run_logger.event(
+        emit_run_event(
+            self.run_logger,
             "resource_watchdog_phase",
             **self.run_context,
             phase=phase,
@@ -252,7 +255,7 @@ class ResourceWatchdog:
         }
 
     def _emit_sample(self, event: str, sample: dict[str, Any]) -> None:
-        self.run_logger.event(event, **self.run_context, **sample)
+        emit_run_event(self.run_logger, event, **self.run_context, **sample)
 
     def _emit_thresholds(self, sample: dict[str, Any]) -> None:
         host_used_frac = sample.get("host_mem_used_frac")

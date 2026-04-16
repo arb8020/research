@@ -12,6 +12,8 @@ from typing import Any
 
 import trio
 
+from ..event_log import emit_run_event
+
 
 def _pick(obj: Any, *names: str, default: Any = None) -> Any:
     for name in names:
@@ -179,7 +181,7 @@ async def _training_and_inference_startup_smoke_async(
 
     def emit(event: str, **data: Any) -> None:
         if run_logger is not None:
-            run_logger.event(event, **data)
+            emit_run_event(run_logger, event, **data)
 
     def _compute_app_snapshot() -> str | None:
         try:
@@ -378,7 +380,7 @@ async def _megatron_checkpoint_resume_smoke_async(
     def emit(event: str, **data: Any) -> None:
         logger.info("%s %s", event, data)
         if run_logger is not None:
-            run_logger.event(event, **data)
+            emit_run_event(run_logger, event, **data)
 
     output = getattr(config, "output", None)
     output_root = Path(getattr(output, "output_dir", "results"))

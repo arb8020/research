@@ -41,6 +41,7 @@ from ..dtypes import (
     ThinkingDelta,
     ToolExecutionEnd,
 )
+from ..event_log import emit_logger_event
 from ..export_html import run_to_html, sample_to_html
 from ..progress import MultiProgress
 from ..training.scoring import attach_score, score_result
@@ -66,7 +67,7 @@ def _emit_eval_event(event: str, **data: Any) -> None:
     `event` is the stable discriminator. `message` remains the human text
     emitted by the logging call, but consumers should key off `event`.
     """
-    _event_logger.info(event, extra={"event": event, **data})
+    emit_logger_event(_event_logger, event, **data)
 
 
 async def _maybe_start_environment_runtime(environment_or_factory: Any) -> None:
@@ -1233,9 +1234,7 @@ async def evaluate_sample(
         )
 
         # Emit sample_start for progress display.
-        _event_logger.info(
-            "sample_start", extra={"sample_id": sample_id, "sample_name": sample_name}
-        )
+        _emit_eval_event("sample_start", sample_id=sample_id, sample_name=sample_name)
 
     # Tiger Style: Catch operational errors (rate limits, network issues) at boundary
     # These are expected errors that should be reported, not crash the eval
