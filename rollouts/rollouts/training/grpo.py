@@ -921,24 +921,131 @@ def _attach_runtime_observability(
         batch.metadata["environment_stats"] = environment_factory.stats()
 
 
+def _emit_environment_event(
+    environment_log_sink: JsonlEventSink | None,
+    event: str,
+    run_context: dict[str, Any],
+    **data: Any,
+) -> None:
+    if environment_log_sink is None:
+        return
+    environment_log_sink(
+        event,
+        source="rollouts.environment",
+        **run_context,
+        **data,
+    )
+
+
 async def _maybe_start_environment_factory(
-    environment_factory: Any, logger: logging.Logger
+    environment_factory: Any,
+    logger: logging.Logger,
+    *,
+    environment_log_sink: JsonlEventSink | None = None,
+    run_context: dict[str, Any] | None = None,
 ) -> None:
     if environment_factory is None:
         return
     start = getattr(environment_factory, "start", None)
-    if callable(start):
-        logger.info("Starting rollout environment resources...")
-        await start()
+    describe_runtime = getattr(environment_factory, "describe_runtime", None)
+    stats_fn = getattr(environment_factory, "stats", None)
+    environment_run_context = run_context or {}
+
+    logger.info("Starting rollout environment resources...")
+    _emit_environment_event(
+        environment_log_sink,
+        "environment_start",
+        environment_run_context,
+    )
+    try:
+        if callable(start):
+            await start()
+        if callable(describe_runtime):
+            runtime = await describe_runtime()
+            if isinstance(runtime, dict):
+                _emit_environment_event(
+                    environment_log_sink,
+                    "environment_runtime",
+                    environment_run_context,
+                    runtime=runtime,
+                )
+        if callable(stats_fn):
+            stats = stats_fn()
+            if isinstance(stats, dict):
+                _emit_environment_event(
+                    environment_log_sink,
+                    "environment_started",
+                    environment_run_context,
+                    stats=stats,
+                )
+            else:
+                _emit_environment_event(
+                    environment_log_sink,
+                    "environment_started",
+                    environment_run_context,
+                )
+        else:
+            _emit_environment_event(
+                environment_log_sink,
+                "environment_started",
+                environment_run_context,
+            )
+    except Exception as exc:
+        _emit_environment_event(
+            environment_log_sink,
+            "environment_start_failed",
+            environment_run_context,
+            error_type=type(exc).__name__,
+            error=str(exc),
+        )
+        raise
 
 
-async def _maybe_stop_environment_factory(environment_factory: Any, logger: logging.Logger) -> None:
+async def _maybe_stop_environment_factory(
+    environment_factory: Any,
+    logger: logging.Logger,
+    *,
+    environment_log_sink: JsonlEventSink | None = None,
+    run_context: dict[str, Any] | None = None,
+) -> None:
     if environment_factory is None:
         return
     stop = getattr(environment_factory, "stop", None)
-    if callable(stop):
-        logger.info("Stopping rollout environment resources...")
-        await stop()
+    stats_fn = getattr(environment_factory, "stats", None)
+    environment_run_context = run_context or {}
+    logger.info("Stopping rollout environment resources...")
+    _emit_environment_event(
+        environment_log_sink,
+        "environment_stop",
+        environment_run_context,
+    )
+    try:
+        if callable(stop):
+            await stop()
+        if callable(stats_fn):
+            stats = stats_fn()
+            if isinstance(stats, dict):
+                _emit_environment_event(
+                    environment_log_sink,
+                    "environment_stopped",
+                    environment_run_context,
+                    stats=stats,
+                )
+                return
+        _emit_environment_event(
+            environment_log_sink,
+            "environment_stopped",
+            environment_run_context,
+        )
+    except Exception as exc:
+        _emit_environment_event(
+            environment_log_sink,
+            "environment_stop_failed",
+            environment_run_context,
+            error_type=type(exc).__name__,
+            error=str(exc),
+        )
+        raise
 
 
 async def _pause_pipeline_admissions(pipelined_manager: Any, logger: logging.Logger) -> None:
@@ -967,6 +1074,7 @@ async def _process_training_step(
     run_context: dict[str, Any],
     *,
     node_id: str | None = None,
+    environment_log_sink: JsonlEventSink | None = None,
 ) -> dict[str, Any] | None:
     """Process a single training step.
 
@@ -1102,6 +1210,13 @@ async def _process_training_step(
     if isinstance(environment_stats, dict):
         environment_observability = flatten_numeric_stats(environment_stats, prefix="environment_")
         step_metrics.update(environment_observability)
+        _emit_environment_event(
+            environment_log_sink,
+            "environment_stats",
+            run_context,
+            step=step + 1,
+            stats=environment_stats,
+        )
 
     logger.debug("metrics", extra={"event": "step_metrics", "step": step + 1, **step_metrics})
 
@@ -1478,6 +1593,7 @@ async def _grpo_train_async(
     inference_engines = list(inference_runtime.engines)
     num_engines = len(inference_engines)
     engine_log_sink = JsonlEventSink(output_dir / "engine.jsonl")
+    environment_log_sink = JsonlEventSink(output_dir / "environment.jsonl")
     run_context = _build_grpo_run_context(
         config=config,
         run_name=run_name,
@@ -1661,7 +1777,12 @@ async def _grpo_train_async(
         if teacher_engine is not None:
             logger.info("Teacher engine ready")
 
-        await _maybe_start_environment_factory(environment_factory, logger)
+        await _maybe_start_environment_factory(
+            environment_factory,
+            logger,
+            environment_log_sink=environment_log_sink,
+            run_context=run_context,
+        )
 
         if preflight_backend is not None:
             backend = preflight_backend
@@ -2409,6 +2530,7 @@ async def _grpo_train_async(
                     output_dir,
                     logger,
                     run_context,
+                    environment_log_sink=environment_log_sink,
                 )
                 _update_pipeline_state(
                     train_version=getattr(
@@ -2506,6 +2628,7 @@ async def _grpo_train_async(
                     output_dir,
                     logger,
                     run_context,
+                    environment_log_sink=environment_log_sink,
                 )
                 _update_pipeline_state(
                     train_version=getattr(
@@ -2577,6 +2700,7 @@ async def _grpo_train_async(
                     output_dir,
                     logger,
                     run_context,
+                    environment_log_sink=environment_log_sink,
                 )
                 if step_metrics is None:
                     _update_pipeline_state(
@@ -2664,7 +2788,12 @@ async def _grpo_train_async(
     finally:
         resource_watchdog.stop()
         try:
-            await _maybe_stop_environment_factory(environment_factory, logger)
+            await _maybe_stop_environment_factory(
+                environment_factory,
+                logger,
+                environment_log_sink=environment_log_sink,
+                run_context=run_context,
+            )
         except Exception as e:
             logger.warning(f"Environment resource cleanup failed: {e}")
 
