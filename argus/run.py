@@ -259,6 +259,7 @@ from rollouts.install_probes import (
     python_runtime_contract_snapshot_command,
     python_runtime_contract_verify_command,
 )
+from rollouts.launch_plan import LocalSubprocessLaunchPlan, build_local_eval_launch_plan
 from rollouts.remote_runtime import (
     SourceSyncPolicy,
     enforce_source_sync_policy,
@@ -971,36 +972,22 @@ def _apply_modal_run_event(active_run: ActiveRun, event: str, data: dict[str, An
         return
 
 
-def _spawn_eval_subprocess(
+def _spawn_local_subprocess(
     *,
-    config_path: Path,
-    output_dir: Path,
-    max_samples: int | None,
+    plan: LocalSubprocessLaunchPlan,
     log: RunEventSinks,
-    force_deploy_committed: bool = False,
 ) -> int:
-    """Launch the local Argus eval supervisor as a detached subprocess."""
+    """Launch one local workload subprocess from a Rollouts-owned plan."""
     # TODO(argus-run): Extract local launch paths (eval + local training) into
     # a separate launcher module. This is a distinct state machine from remote
     # provisioning/bootstrap and should not stay interleaved in `run.py`.
     import subprocess
 
+    output_dir = plan.run_dir
     output_dir.mkdir(parents=True, exist_ok=True)
     stdout_log = output_dir / "stdout.log"
     stderr_log = output_dir / "stderr.log"
-    command = [
-        sys.executable,
-        "-m",
-        "rollouts.eval.supervisor",
-        "--config",
-        str(config_path),
-        "--output-dir",
-        str(output_dir),
-    ]
-    if max_samples is not None:
-        command.extend(["--max-samples", str(max_samples)])
-    if force_deploy_committed:
-        command.append("--force-deploy-committed")
+    command = list(plan.command)
 
     stdout_handle = stdout_log.open("a")
     stderr_handle = stderr_log.open("a")
@@ -1022,7 +1009,7 @@ def _spawn_eval_subprocess(
     _emit_run(
         log,
         "submit_done",
-        kind="evaluation",
+        kind=plan.kind,
         pid=proc.pid,
         output_dir=str(output_dir),
         stdout_log=str(stdout_log),
@@ -2151,10 +2138,16 @@ Examples:
                     "multi-node execution."
                 )
 
-            timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-            run_name = f"run_{timestamp}"
-            local_run_dir = REPO_ROOT / "results" / "eval" / run_name
-            log = _setup_run_logging(local_run_dir, journal_name="control.jsonl")
+            eval_plan = build_local_eval_launch_plan(
+                config_path=config_path,
+                repo_root=REPO_ROOT,
+                max_samples=args.max_samples,
+                force_deploy_committed=args.force_deploy_committed,
+                python_executable=sys.executable,
+            )
+            local_run_dir = eval_plan.run_dir
+            run_name = eval_plan.run_name
+            log = _setup_run_logging(local_run_dir, journal_name=eval_plan.journal_name)
             _emit_run(
                 log,
                 "run_start",
@@ -2164,13 +2157,7 @@ Examples:
                 config=str(config_path),
                 output_dir=str(local_run_dir),
             )
-            pid = _spawn_eval_subprocess(
-                config_path=config_path,
-                output_dir=local_run_dir,
-                max_samples=args.max_samples,
-                log=log,
-                force_deploy_committed=args.force_deploy_committed,
-            )
+            pid = _spawn_local_subprocess(plan=eval_plan, log=log)
             print(f"Evaluation submitted: {run_name}")
             print(f"  PID:    {pid}")
             print(f"  Local:  results/eval/{run_name}/")
