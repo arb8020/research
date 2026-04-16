@@ -108,14 +108,14 @@ def _build_rollouts_monitor_argv(args: argparse.Namespace) -> list[str]:
 
 def _delegate_to_rollouts_monitor(args: argparse.Namespace) -> int:
     """Hand off monitoring/rendering to the Rollouts monitor implementation."""
-    from rollouts.tui.monitor_cli import monitor_main as rollouts_monitor_main
+    from rollouts.monitor.cli import monitor_main as rollouts_monitor_main
 
     return rollouts_monitor_main(_build_rollouts_monitor_argv(args))
 
 
 def _find_latest_run_dir(base_dir: str) -> Path | None:
     """Resolve the most recent run directory under a candidate base dir."""
-    from rollouts.tui.monitor_cli import find_latest_run
+    from rollouts.monitor.cli import find_latest_run
 
     resolved = find_latest_run(base_dir)
     if resolved is None:

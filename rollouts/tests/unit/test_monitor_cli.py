@@ -3,7 +3,7 @@ from __future__ import annotations
 import io
 from pathlib import Path
 
-from rollouts.tui import monitor_cli
+from rollouts.monitor import cli as monitor_cli
 
 
 def test_resolve_job_connection_modal_skips_broker_lookup(monkeypatch: object) -> None:
