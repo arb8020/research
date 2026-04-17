@@ -41,6 +41,36 @@ Native loop and external-agent adapters both emit the same effect entries. One l
 - Wide event stream (`StreamChunk`, `ToolExecutionStart`, `ToolResultReceived`) — already separate from the session, correctly.
 - Environment serialize/deserialize with warm/cold paths — unchanged. The per-tool serialize-deserialize-serialize-deserialize dance is cheap on warm path; only pricey on cold, where isolation-per-tool may actually be wanted.
 
+## External-agent environments
+
+Each external-agent runtime (claude-code, codex, ...) gets its own Environment
+type: `ClaudeCodeEnvironment`, `CodexEnvironment`, etc. These carry:
+
+- `workspace` — the `SandboxWorkspaceResource` the agent operates in.
+- `allowed_builtin_tools` — which of the harness's built-in tools the agent
+  may use (translates to `--allowed-tools` or equivalent CLI flag). `None`
+  means all defaults; `[]` means MCP-only.
+- `mcp_tools` — additional tools we inject via MCP so the external harness
+  can call tools it wouldn't normally have (terminal_bench.tmux, calculator,
+  custom eval-specific tools).
+- `translate_harness_event(raw) → SessionEntry | None` — the translation
+  boundary from the harness's native session format to our session shape.
+  Today this logic is buried inside `_run_agent_in_workspace` polling via
+  `_ClaudeEventParser` / `_CodexEventParser`; belongs on the environment.
+- `apply_effect(effect)` — fold-contract replay of a recorded effect.
+
+Stubs are in place at `rollouts/environments/external_agent_environments.py`.
+Consumers are not wired yet. The feature-rename from "external adapter
+function" to "ClaudeCodeEnvironment with methods" is the unification move
+for native/external session parity.
+
+Note on `--allowed-tools`: both claude-code and codex support flags that
+restrict the built-in tool set. This is how users/we can choose to e.g.
+remove non-MCP tools (force the agent through injected MCP tools only).
+Environment types carry this as a first-class field so test/eval code can
+assert "what tools were available in this run" without reverse-engineering
+from the trajectory.
+
 ## What moves
 
 Rough direction, not final design:

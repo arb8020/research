@@ -2,6 +2,19 @@
 
 Handles launching CLIs inside SandboxWorkspaceResource containers,
 including bootstrap, polling, ACP preparation, and trajectory parsing.
+
+REFACTOR IN PROGRESS (session ownership): today each external CLI adapter
+(claude-code, codex, ...) lives here as a bespoke function that bundles
+workspace handling, tool-set restriction, event parsing, and trajectory
+construction. Planned shape: each external runtime gets its own
+Environment type (ClaudeCodeEnvironment, CodexEnvironment) carrying
+allowed_builtin_tools, mcp_tools, and the translate_harness_event
+boundary. Then this file's role shrinks to "launch a harness in a
+workspace, poll, and call env.translate_harness_event per line."
+
+Stubs: rollouts/rollouts/environments/external_agent_environments.py
+Design: rollouts/rollouts/agents/runtime_refactor.md
+        /docs/design/session_ownership.md
 """
 
 from __future__ import annotations
