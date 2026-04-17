@@ -79,6 +79,12 @@ class EvalSpec:
     # Whether make_environment takes sample data (for per-sample isolation)
     per_sample_environment: bool = False
 
+    # Whether the environment exposes tools. If False, the agent loop won't
+    # treat "no tool call this turn" as a termination signal — useful for
+    # dialogue-style envs (DialogueEnvironment, etc.) where each assistant
+    # message is naturally followed by an injected user message.
+    has_tools: bool = True
+
 
 # ──────────────────────── Task Loading ────────────────────────────────────────
 
@@ -200,10 +206,12 @@ def run_eval_from_spec(  # noqa: PLR0913
         f"Set one of: {api_key_env_vars.get(_provider, ['<unknown provider>'])}"
     )
 
-    eval_endpoint = Endpoint(
+    # TODO: migrate callers to the new Endpoint(model="provider/model", base_url=..., api_format=...)
+    # format and drop from_legacy. Keeping the (provider, model) config surface for now so
+    # existing config files keep working; from_legacy does the derivation upstream.
+    eval_endpoint = Endpoint.from_legacy(
         provider=_provider,
         model=_model,
-        api_base="",
         api_key=api_key,
         temperature=_temperature,
         max_tokens=_max_tokens,
@@ -228,13 +236,16 @@ def run_eval_from_spec(  # noqa: PLR0913
     async def stop_on_no_tool(state: AgentState, run_config: AgentRunConfig) -> AgentState:
         return replace(state, stop=StopReason.TASK_COMPLETED)
 
+    async def noop_no_tool(state: AgentState, run_config: AgentRunConfig) -> AgentState:
+        return state
+
     async def on_chunk(_: Any) -> None:
         pass
 
     agent_run_config = AgentRunConfig(
         on_chunk=on_chunk,
         handle_stop=handle_stop_max_turns(_max_turns),
-        handle_no_tool=stop_on_no_tool,
+        handle_no_tool=stop_on_no_tool if spec.has_tools else noop_no_tool,
     )
 
     # ── Output directory ──
