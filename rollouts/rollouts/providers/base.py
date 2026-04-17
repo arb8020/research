@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 from dataclasses import replace
 from enum import Enum
+from typing import Any
 
 from ..dtypes import Cost, Message, Usage
 from ..models import ModelCost
@@ -426,6 +427,7 @@ async def persist_span(
     finish_reason: str | None,
     error: str | None = None,
     ttft_ms: float | None = None,
+    session_store: Any | None = None,
 ) -> None:
     """Persist a request span to the session store.
 
@@ -444,6 +446,11 @@ async def persist_span(
         finish_reason: How the request ended (e.g., "stop", "tool_calls")
         error: Error message if request failed
         ttft_ms: Time to first token in ms (network + queue + model warmup)
+        session_store: Where to write the span. If None, falls back to a
+            default-path FileSessionStore (closes G7 from the session
+            refactor: span writes to the same store the agent loop uses
+            when a store is threaded through; otherwise retains legacy
+            behavior of writing to ~/.rollouts/sessions/).
     """
     if not session_id:
         return
@@ -473,7 +480,7 @@ async def persist_span(
             error=error,
         )
 
-        store = FileSessionStore()
+        store = session_store if session_store is not None else FileSessionStore()
         await store.append_span(session_id, span)
     except Exception as e:
         # Don't crash on span persistence failure - it's observability, not critical path

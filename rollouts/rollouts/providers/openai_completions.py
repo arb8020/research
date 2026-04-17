@@ -1106,6 +1106,7 @@ async def rollout_openai(
     from .base import persist_span
 
     session_id = kwargs.get("session_id")
+    session_store = kwargs.get("session_store")
     await persist_span(
         session_id=session_id,
         started_at=request_started_at,
@@ -1117,6 +1118,7 @@ async def rollout_openai(
         request_id=completion.id,
         finish_reason=completion.choices[0].finish_reason if completion.choices else None,
         ttft_ms=ttft_ms,
+        session_store=session_store,
     )
 
     assert completion.choices is not None

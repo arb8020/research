@@ -204,6 +204,7 @@ async def rollout(
     inline_thinking: str | None = None,
     cancel_scope: trio.CancelScope | None = None,
     session_id: str | None = None,
+    session_store: "SessionStore | None" = None,
 ) -> Actor:
     """Route to appropriate provider function using unified API type abstraction.
 
@@ -246,6 +247,7 @@ async def rollout(
         inline_thinking=inline_thinking,
         cancel_scope=cancel_scope,
         session_id=session_id,
+        session_store=session_store,
     )
     return new_actor
 
@@ -337,6 +339,7 @@ async def run_agent_step(
             rcfg.inline_thinking,
             cancel_scope=rcfg.cancel_scope,
             session_id=state.session_id,  # For span persistence
+            session_store=rcfg.session_store,  # G7: route spans into the same store
         )
 
     # Time the LLM call

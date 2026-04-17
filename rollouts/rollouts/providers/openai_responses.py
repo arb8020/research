@@ -836,6 +836,7 @@ async def rollout_openai_responses(
     from .base import persist_span
 
     session_id = kwargs.get("session_id")
+    session_store = kwargs.get("session_store")
     await persist_span(
         session_id=session_id,
         started_at=request_started_at,
@@ -847,6 +848,7 @@ async def rollout_openai_responses(
         request_id=completion.id,
         finish_reason="stop",
         ttft_ms=ttft_ms,
+        session_store=session_store,
     )
 
     new_trajectory = replace(
