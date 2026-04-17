@@ -1241,7 +1241,9 @@ async def trajectory_from_remote_codex(
         model,
         "--dangerously-bypass-approvals-and-sandbox",
     ]
-    env = CodexEnvironment(workspace=workspace, sandbox_mode=sandbox)
+    # sandbox_mode=None: base_command already handles sandbox via
+    # --dangerously-bypass-approvals-and-sandbox; don't double-emit --sandbox.
+    env = CodexEnvironment(workspace=workspace)
     artifact = await run_external_agent(
         env,
         prompt,

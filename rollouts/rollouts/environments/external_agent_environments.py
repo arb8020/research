@@ -215,8 +215,10 @@ class CodexEnvironment:
     allowed_builtin_tools: list[str] | None = None
     mcp_tools: list[Any] = field(default_factory=list)
 
-    # codex's own --sandbox flag. Passed through verbatim.
-    sandbox_mode: str = "read-only"
+    # codex's own --sandbox flag. Passed through verbatim when set.
+    # None means "don't emit --sandbox" — use when the base command already
+    # handles sandbox policy (e.g. --dangerously-bypass-approvals-and-sandbox).
+    sandbox_mode: str | None = None
 
     # Where to write the generated codex config.toml. Unlike claude-code,
     # codex does not take a --mcp-config flag: the caller must write this
@@ -235,9 +237,7 @@ class CodexEnvironment:
         """Translate sandbox/allowed/MCP settings into codex CLI flags.
 
         Emits:
-          - `--sandbox <mode>` always.
-          - `-c approval_policy="never"` + `-c sandbox_mode="..."` overrides
-            that match how `remote_runtime.py` already launches codex_acp.
+          - `--sandbox <mode>` when sandbox_mode is set (not None).
           - Nothing for mcp_tools (see class docstring); raises if mcp_tools
             is set without codex_config_path so the caller doesn't silently
             lose tool injection.
@@ -253,7 +253,9 @@ class CodexEnvironment:
                 "caller must provide a writable path for codex's config.toml "
                 "and set CODEX_HOME in the launch env."
             )
-        flags: list[str] = ["--sandbox", self.sandbox_mode]
+        flags: list[str] = []
+        if self.sandbox_mode is not None:
+            flags.extend(["--sandbox", self.sandbox_mode])
         return flags
 
     def codex_mcp_config_toml(self) -> str:
