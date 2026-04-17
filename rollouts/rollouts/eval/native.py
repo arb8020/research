@@ -584,6 +584,25 @@ def _build_base_run_config(
             tool_limiter=tool_limiter,
         )
 
+    # Default a session_store rooted at the run's output_dir so per-sample
+    # session logs (messages.jsonl with first-class tree structure) land
+    # alongside events.jsonl and samples/. Respect an existing store if the
+    # caller provided one.
+    #
+    # Before this: eval runs never passed a session_store into RunConfig, so
+    # all the session-refactor work (Message.id/parent_id, leaf cursor,
+    # is_error on messages) existed in the code but wasn't exercised on
+    # eval artifacts. This closes the gap.
+    if base_run_config.session_store is None and config.output_dir is not None:
+        from ..store import FileSessionStore
+
+        sessions_dir = Path(config.output_dir) / "sessions"
+        sessions_dir.mkdir(parents=True, exist_ok=True)
+        base_run_config = replace(
+            base_run_config,
+            session_store=FileSessionStore(base_dir=sessions_dir),
+        )
+
     return base_run_config
 
 
