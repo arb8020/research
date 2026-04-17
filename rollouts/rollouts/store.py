@@ -33,6 +33,7 @@ SessionStore protocol and FileSessionStore implementation.
 from __future__ import annotations
 
 import json
+import logging
 import os
 from dataclasses import dataclass, replace
 from datetime import datetime
@@ -40,6 +41,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
 import trio
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from .dtypes import RequestSpan
@@ -128,8 +131,13 @@ class SessionStore(Protocol):
         ...
 
     # Streaming append
-    async def append_message(self, session_id: str, message: Message) -> None:
-        """Append message to trajectory (streaming, append-only)."""
+    async def append_message(self, session_id: str, message: Message) -> Message:
+        """Append message to trajectory (streaming, append-only).
+
+        Returns the message as stored, with `id` and `parent_id` resolved
+        (sub-step 1b of the session refactor). Callers that thread a leaf
+        cursor should use the returned message's id as the next parent.
+        """
         ...
 
     # Queries
@@ -267,6 +275,11 @@ class FileSessionStore:
         """Save a complete trajectory snapshot.
 
         Used for saving transformed sessions (compact, summarize).
+
+        Session refactor (1b): assign tree ids to messages that don't have
+        them, linking in a linear chain. Also records the final leaf_id in
+        session.json so subsequent appends (via append_message) thread from
+        the correct point.
         """
         self._ensure_base_dir()
         session_id = trajectory.session.session_id or generate_session_id()
@@ -279,13 +292,29 @@ class FileSessionStore:
         session_dir = self._session_dir(session_id)
         session_dir.mkdir(exist_ok=True)
 
-        # Write session.json
-        await self._write_json(session_dir / "session.json", trajectory.to_session_record())
+        # Assign tree ids for any messages missing them, linking linearly.
+        # Messages that already carry ids are kept as-is (caller-provided
+        # tree structure wins).
+        assigned_messages: list[Message] = []
+        prev_id: str | None = None
+        for msg in trajectory.messages:
+            if msg.id is None:
+                msg_id = generate_message_id()
+                parent = msg.parent_id if msg.parent_id is not None else prev_id
+                msg = replace(msg, id=msg_id, parent_id=parent)
+            assigned_messages.append(msg)
+            prev_id = msg.id
+
+        # Write session.json with leaf_id pointing at the last assigned id.
+        session_record = trajectory.to_session_record()
+        if prev_id is not None:
+            session_record["leaf_id"] = prev_id
+        await self._write_json(session_dir / "session.json", session_record)
 
         # Write messages.jsonl
         messages_file = session_dir / "messages.jsonl"
         async with await trio.open_file(messages_file, "w") as f:
-            for msg in trajectory.messages:
+            for msg in assigned_messages:
                 await f.write(msg.to_json() + "\n")
 
         await self._sync_atif_artifact(session_id)
@@ -429,7 +458,7 @@ class FileSessionStore:
 
         return None, None
 
-    async def append_message(self, session_id: str, message: Message) -> None:
+    async def append_message(self, session_id: str, message: Message) -> Message:
         """Append message to trajectory (streaming, append-only).
 
         Session refactor (sub-step 1a): if `message.id` is unset we assign a
@@ -442,6 +471,9 @@ class FileSessionStore:
         structure (branching). Sub-step 1b threads explicit cursors through
         the native loop and external adapters; 1a keeps everything
         backwards-compatible by defaulting to linear-history behavior.
+
+        Returns the message as stored (with id and parent_id resolved) so
+        callers tracking a leaf cursor can read the assigned id directly.
 
         See rollouts/rollouts/agents/runtime_refactor.md.
         """
@@ -468,8 +500,29 @@ class FileSessionStore:
 
         # Assign id if unset.
         assigned_id = message.id or generate_message_id()
-        # Assign parent_id if unset. First-message-in-session has no parent.
-        assigned_parent = message.parent_id if message.parent_id is not None else current_leaf
+
+        # Parent_id contract (sub-step 1b):
+        # - If caller provided parent_id, use it. This is the explicit-cursor
+        #   path — native loop and migrated adapters pass their tracked leaf.
+        # - If caller did not provide parent_id, fall back to session.json's
+        #   leaf_id and emit a warning. This keeps existing callers working
+        #   while surfacing the sites that still need cursor threading.
+        #   Exception: the very first message in a session legitimately has
+        #   no parent (current_leaf is None), so don't warn there.
+        if message.parent_id is not None:
+            assigned_parent = message.parent_id
+        else:
+            assigned_parent = current_leaf
+            if current_leaf is not None:
+                logger.warning(
+                    "session_store.append_message called without explicit "
+                    "parent_id for session=%s; auto-inferred parent=%s from "
+                    "session.json leaf_id. Caller should thread AgentState."
+                    "leaf_id (or equivalent cursor) through. See "
+                    "rollouts/rollouts/agents/runtime_refactor.md.",
+                    session_id,
+                    current_leaf,
+                )
 
         if message.id != assigned_id or message.parent_id != assigned_parent:
             message = replace(message, id=assigned_id, parent_id=assigned_parent)
@@ -489,6 +542,7 @@ class FileSessionStore:
             await self._write_json(session_file, session_data)
 
         await self._sync_atif_artifact(session_id)
+        return message
 
     async def append_span(self, session_id: str, span: RequestSpan) -> None:
         """Append request span to spans.jsonl (streaming, append-only).

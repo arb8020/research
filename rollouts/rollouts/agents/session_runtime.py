@@ -92,7 +92,12 @@ async def ensure_persisted_session(
     state: AgentState,
     session_store: SessionStore | None,
 ) -> AgentState:
-    """Ensure the current state has a persisted session and synced message history."""
+    """Ensure the current state has a persisted session and synced message history.
+
+    Session refactor (1b): after ensuring persistence, state.leaf_id is set
+    to the session's current tail so subsequent appends from the loop carry
+    explicit parent_id.
+    """
     if session_store is None:
         return state
 
@@ -101,7 +106,11 @@ async def ensure_persisted_session(
         session, err = await session_store.save_trajectory(session_trajectory)
         if err is not None or session is None:
             raise RuntimeError(err or "Failed to create session")
-        return replace(state, session_id=session.session_id)
+        # After save_trajectory, the last message's id is the leaf.
+        leaf_id: str | None = None
+        if session.messages:
+            leaf_id = session.messages[-1].id
+        return replace(state, session_id=session.session_id, leaf_id=leaf_id)
 
     session, err = await session_store.get(state.session_id)
     if err is not None or session is None:
@@ -109,8 +118,13 @@ async def ensure_persisted_session(
 
     persisted_count = len(session.messages)
     current_messages = state.actor.trajectory.messages
+    leaf_id = session.messages[-1].id if session.messages else None
+
     if len(current_messages) > persisted_count:
         for msg in current_messages[persisted_count:]:
-            await session_store.append_message(state.session_id, msg)
+            # Thread leaf_id through: each append extends the prior one.
+            msg_with_parent = msg if msg.parent_id is not None else replace(msg, parent_id=leaf_id)
+            stored = await session_store.append_message(state.session_id, msg_with_parent)
+            leaf_id = stored.id
 
-    return state
+    return replace(state, leaf_id=leaf_id)

@@ -236,6 +236,53 @@ def extract_tool_calls(messages: list[dict[str, Any]]) -> list[ToolCallRecord]:
     return records
 
 
+def check_tree_invariants(messages: list[dict[str, Any]]) -> list[str]:
+    """Session refactor (sub-step 1b): every message should have an `id`,
+    every non-root should have a `parent_id` pointing at a previously-seen
+    id, and there should be exactly one root.
+
+    Tolerant of pre-refactor messages (id=None, parent_id=None) — those
+    only fail hard if we see mixed migrated and non-migrated messages
+    on disk, which would indicate a write-path bug.
+    """
+    violations: list[str] = []
+    ids_seen: set[str] = set()
+    roots = 0
+    unstructured = 0
+
+    for i, msg in enumerate(messages):
+        mid = msg.get("id")
+        pid = msg.get("parent_id")
+        role = msg.get("role")
+        if mid is None and pid is None:
+            unstructured += 1
+            continue
+        if mid is None:
+            violations.append(
+                f"msg {i} ({role}): has parent_id={pid!r} but id is None"
+            )
+            continue
+        if mid in ids_seen:
+            violations.append(f"msg {i} ({role}): duplicate id={mid}")
+        if pid is None:
+            roots += 1
+        elif pid not in ids_seen:
+            violations.append(
+                f"msg {i} ({role}, id={mid}): parent_id={pid} not yet seen"
+            )
+        ids_seen.add(mid)
+
+    if unstructured > 0 and ids_seen:
+        violations.append(
+            f"{unstructured} unstructured (pre-refactor) messages mixed with "
+            f"{len(ids_seen)} tree-structured ones — write-path bug?"
+        )
+    if ids_seen and roots != 1:
+        violations.append(f"expected exactly 1 root, found {roots}")
+
+    return violations
+
+
 def check_structural_invariants(
     messages: list[dict[str, Any]], records: list[ToolCallRecord]
 ) -> list[str]:
@@ -465,6 +512,11 @@ async def verify(
     print("▸ structural invariants (ToolCall↔ToolResult pairing)")
     v = check_structural_invariants(messages, records)
     all_violations.append(("structural", v))
+    print(f"  violations: {len(v)}")
+
+    print("▸ session tree invariants (ids, parent links, single root)")
+    v = check_tree_invariants(messages)
+    all_violations.append(("tree", v))
     print(f"  violations: {len(v)}")
 
     print("▸ final workspace state (poems/ yes, poems/haikus/ no)")

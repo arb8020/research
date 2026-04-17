@@ -421,7 +421,14 @@ async def run_agent_step(
     # where SessionEntry includes AssistantTurn / ToolCall / ToolResult as
     # first-class kinds. See runtime_refactor.md.
     if rcfg.session_store and state.session_id and last_message:
-        await rcfg.session_store.append_message(state.session_id, last_message)
+        # Session refactor (sub-step 1b): thread explicit leaf cursor.
+        msg_to_persist = (
+            last_message
+            if last_message.parent_id is not None
+            else replace(last_message, parent_id=current_state.leaf_id)
+        )
+        stored = await rcfg.session_store.append_message(state.session_id, msg_to_persist)
+        current_state = replace(current_state, leaf_id=stored.id)
 
     # Let environment respond to assistant message (e.g., execute code, provide feedback)
     # This happens AFTER updating state but BEFORE tool processing
@@ -560,8 +567,17 @@ async def process_pending_tools(
             )
 
             if rcfg.session_store and state.session_id:
+                # Session refactor (sub-step 1b): thread leaf cursor.
                 for msg in messages_to_add:
-                    await rcfg.session_store.append_message(state.session_id, msg)
+                    msg_to_persist = (
+                        msg
+                        if msg.parent_id is not None
+                        else replace(msg, parent_id=current_state.leaf_id)
+                    )
+                    stored = await rcfg.session_store.append_message(
+                        state.session_id, msg_to_persist
+                    )
+                    current_state = replace(current_state, leaf_id=stored.id)
 
         return replace(
             current_state,
@@ -834,8 +850,15 @@ async def process_pending_tools(
 
         # Persist each message after tool execution
         if rcfg.session_store and state.session_id:
+            # Session refactor (sub-step 1b): thread leaf cursor.
             for msg in messages_to_add:
-                await rcfg.session_store.append_message(state.session_id, msg)
+                msg_to_persist = (
+                    msg
+                    if msg.parent_id is not None
+                    else replace(msg, parent_id=current_state.leaf_id)
+                )
+                stored = await rcfg.session_store.append_message(state.session_id, msg_to_persist)
+                current_state = replace(current_state, leaf_id=stored.id)
 
         # Handle tool errors
         current_state = rcfg.handle_tool_error(tool_result, current_state)

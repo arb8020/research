@@ -44,6 +44,14 @@ class AgentState:
     confirm_tools: bool = False
     driver_session_id: str | None = None
 
+    # Session refactor (sub-step 1b): leaf cursor for the session tree.
+    # None before the first message in this session is appended. After each
+    # `session_store.append_message(..., message)` call with explicit
+    # parent_id set to the previous leaf_id, the loop updates this to the
+    # newly-appended message's id so subsequent appends extend the thread.
+    # See rollouts/rollouts/agents/runtime_refactor.md.
+    leaf_id: str | None = None
+
 
 async def default_stdin_handler(prompt: str) -> str:
     return await trio.to_thread.run_sync(input, prompt)
