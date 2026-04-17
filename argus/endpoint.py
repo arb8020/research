@@ -175,12 +175,15 @@ def _run_detached_main(argv: list[str]) -> int:
     sys.stdout = open(stdout_path, "a", buffering=1)
     sys.stderr = open(stderr_path, "a", buffering=1)
 
+    import traceback
+
     import trio
 
     try:
         trio.run(_run_detached, args.name, args.config, args.force_deploy_committed)
     except Exception as exc:
         print(f"detached endpoint crashed: {exc!r}", flush=True)
+        traceback.print_exc()
         # Annotate the handle so the user can see the failure.
         handle = _read_handle(args.name) or {}
         handle["status"] = "crashed"
