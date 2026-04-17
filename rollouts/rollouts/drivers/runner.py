@@ -150,13 +150,25 @@ class _EventAccumulator:
                         parse_error=tc.parse_error,
                     ),
                 ))
-            case ToolResultReceived(tool_call_id=tid, content=content, is_error=is_error):
+            case ToolResultReceived(
+                tool_call_id=tid,
+                content=content,
+                is_error=is_error,
+                error=error,
+                details=details,
+            ):
                 self._finalize_assistant_message()
+                # Session refactor move 2 parity: promote is_error / error /
+                # details from the event onto the tool-role Message so the
+                # external path produces records shape-equivalent to native.
                 self._messages.append(
                     Message(
                         role="tool",
                         content=content if isinstance(content, str) else str(content),
                         tool_call_id=tid,
+                        is_error=is_error,
+                        error=error,
+                        details=details,
                     )
                 )
 

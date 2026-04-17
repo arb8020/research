@@ -128,13 +128,20 @@ def message_to_claude_format(
 
     elif msg.role == "tool":
         # Tool result message
-        return {
+        # Session refactor move 2 parity: emit is_error / error from the Message
+        # rather than hardcoding False. Default to False when unset (treating
+        # unknown as success) so the export shape doesn't break consumers that
+        # require a bool.
+        result_payload: dict[str, Any] = {
             **base,
             "type": "tool_result",
             "tool_use_id": msg.tool_call_id or "",
             "content": msg.content if isinstance(msg.content, str) else str(msg.content),
-            "is_error": False,
-        }, msg_uuid
+            "is_error": bool(msg.is_error) if msg.is_error is not None else False,
+        }
+        if msg.error is not None:
+            result_payload["error"] = msg.error
+        return result_payload, msg_uuid
 
     else:
         # Unknown role - treat as user
@@ -277,11 +284,15 @@ def _claude_user_content_to_rollouts(content: Any, timestamp: str | None) -> lis
             tool_content = block.get("content", "")
             if isinstance(tool_content, list):
                 tool_content = json.dumps(tool_content)
+            # Session refactor move 2 parity: read is_error / error off the
+            # claude-code tool_result block, same as the streaming parser.
             messages.append(
                 Message(
                     role="tool",
                     content=tool_content if isinstance(tool_content, str) else str(tool_content),
                     tool_call_id=block.get("tool_use_id"),
+                    is_error=block.get("is_error", False),
+                    error=block.get("error"),
                     timestamp=timestamp,
                 )
             )

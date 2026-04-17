@@ -552,11 +552,15 @@ class _ClaudeEventParser:
             tool_call_id = block.get("tool_use_id", "")
             content = block.get("content", "")
             is_error = block.get("is_error", False)
+            # Session refactor move 2 parity: pass error through too so the
+            # accumulator can promote it to Message.error on the tool-role record.
+            error = block.get("error")
             events.append(
                 ToolResultReceived(
                     tool_call_id=tool_call_id,
                     content=content if isinstance(content, str) else str(content),
                     is_error=is_error,
+                    error=error,
                 )
             )
 
