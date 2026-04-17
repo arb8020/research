@@ -346,9 +346,16 @@ async def run_claude(
 
                             # Dual-write: persist assistant message to rollouts session
                             if session_store and current_state.session_id:
-                                await session_store.append_message(
-                                    current_state.session_id, assistant_msg
+                                # Session refactor (sub-step 1b): thread leaf cursor.
+                                msg_to_persist = (
+                                    assistant_msg
+                                    if assistant_msg.parent_id is not None
+                                    else replace(assistant_msg, parent_id=current_state.leaf_id)
                                 )
+                                stored = await session_store.append_message(
+                                    current_state.session_id, msg_to_persist
+                                )
+                                current_state = replace(current_state, leaf_id=stored.id)
 
                         # Autonomous mode: no user input, just keep reading until done
                         # The -p flag means Claude runs to completion without stdin
@@ -381,9 +388,16 @@ async def run_claude(
 
                                 # Dual-write: persist user message to rollouts session
                                 if session_store and current_state.session_id:
-                                    await session_store.append_message(
-                                        current_state.session_id, last_msg
+                                    # Session refactor (sub-step 1b): thread leaf cursor.
+                                    msg_to_persist = (
+                                        last_msg
+                                        if last_msg.parent_id is not None
+                                        else replace(last_msg, parent_id=current_state.leaf_id)
                                     )
+                                    stored = await session_store.append_message(
+                                        current_state.session_id, msg_to_persist
+                                    )
+                                    current_state = replace(current_state, leaf_id=stored.id)
 
                         states.append(current_state)
             finally:

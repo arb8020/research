@@ -168,7 +168,16 @@ async def run_cursor(
 
             # Dual-write: persist assistant message
             if session_store and current_state.session_id:
-                await session_store.append_message(current_state.session_id, assistant_msg)
+                # Session refactor (sub-step 1b): thread leaf cursor.
+                msg_to_persist = (
+                    assistant_msg
+                    if assistant_msg.parent_id is not None
+                    else replace(assistant_msg, parent_id=current_state.leaf_id)
+                )
+                stored = await session_store.append_message(
+                    current_state.session_id, msg_to_persist
+                )
+                current_state = replace(current_state, leaf_id=stored.id)
 
             states.append(current_state)
 
@@ -190,7 +199,16 @@ async def run_cursor(
                     current_state = new_state
                     # Dual-write: persist user message
                     if session_store and current_state.session_id:
-                        await session_store.append_message(current_state.session_id, last_user_msg)
+                        # Session refactor (sub-step 1b): thread leaf cursor.
+                        msg_to_persist = (
+                            last_user_msg
+                            if last_user_msg.parent_id is not None
+                            else replace(last_user_msg, parent_id=current_state.leaf_id)
+                        )
+                        stored = await session_store.append_message(
+                            current_state.session_id, msg_to_persist
+                        )
+                        current_state = replace(current_state, leaf_id=stored.id)
 
     except trio.Cancelled:
         current_state = replace(current_state, stop=StopReason.ABORTED)

@@ -25,7 +25,7 @@ import os
 import re
 import shlex
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Literal
 
 import trio
@@ -930,8 +930,17 @@ async def _run_agent_in_workspace(
     _store = getattr(run_config, "session_store", None)
     _harness_session_id = getattr(run_config, "session_id", None)
 
+    # Session refactor (sub-step 1b): thread leaf cursor. Initialize from
+    # the current tail of the persisted session so we extend from the last
+    # message (seed messages may already exist).
+    _leaf_id: str | None = None
+    if _store is not None and _harness_session_id is not None:
+        _existing_traj, _ = await _store.get(_harness_session_id)
+        if _existing_traj is not None and _existing_traj.messages:
+            _leaf_id = _existing_traj.messages[-1].id
+
     async def _append_session_entries(chunk: bytes) -> int:
-        nonlocal session_id, assistant_turn
+        nonlocal session_id, assistant_turn, _leaf_id
         if not chunk:
             return 0
         text = chunk.decode("utf-8", errors="replace")
@@ -970,7 +979,12 @@ async def _run_agent_in_workspace(
             for msg in new_msgs:
                 messages.append(msg)
                 if _store is not None and _harness_session_id is not None:
-                    await _store.append_message(_harness_session_id, msg)
+                    # Session refactor (sub-step 1b): thread leaf cursor.
+                    msg_to_persist = (
+                        msg if msg.parent_id is not None else replace(msg, parent_id=_leaf_id)
+                    )
+                    stored = await _store.append_message(_harness_session_id, msg_to_persist)
+                    _leaf_id = stored.id
                 added += 1
                 if msg.role == "assistant":
                     _emit_eval_event(
