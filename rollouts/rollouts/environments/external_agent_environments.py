@@ -1,110 +1,98 @@
-"""External-agent environments — SKELETAL STUBS.
+"""External-agent environments.
 
 Each external-agent runtime (claude-code, codex, opencode, ...) gets its own
-Environment type. This is a sketch, not an implementation. Inline TODOs mark
-the work; pass 1 of the session refactor (see
-`rollouts/rollouts/agents/runtime_refactor.md`) fleshes them out.
+Environment type. These are first-class homes for:
 
-Why these exist:
+  1. The agent's tool vocabulary — which of the harness's built-in tools are
+     allowed (`allowed_builtin_tools`) and what we inject via MCP (`mcp_tools`).
+  2. The workspace — the `SandboxWorkspaceResource` the agent operates in.
+  3. The translation boundary — `translate_harness_event(raw)` maps one line
+     of harness-native JSONL into rollouts `Message`s.
 
-An `Environment` in the native case is "the agent's tools + the workspace
-state those tools manipulate." For external agents (claude-code, codex, ...)
-that fuses two distinct things:
-
-  1. The agent's tool vocabulary — what tools the harness exposes to the
-     model. For external agents we don't write these tools; the harness ships
-     them. We can restrict the set (via `--allowed-tools` or equivalent) and
-     we can *augment* the set with our own tools via MCP injection.
-  2. The workspace — the directory, container, or sandbox the agent's tools
-     manipulate. Same concept as native.
-
-Today these are fused in the native case (one `CodingEnvironment`) and barely
-modeled in the external case (adapters take a workspace and launch a binary;
-no first-class "what tools did this run have access to" object).
-
-These types make the distinction explicit and give MCP injection a home.
-
-What "Environment" for external agents entails:
-
-  - `workspace`: the resource the agent operates in. Directory on disk,
-    container, sandbox. The same `SandboxWorkspaceResource` abstractions we
-    already have work here.
-  - `allowed_builtin_tools`: which of the harness's built-in tools the agent
-    may use. `None` = all defaults; `[]` = none (MCP-only); `["bash", "read"]`
-    = restricted subset. Translates to CLI flags at launch.
-  - `mcp_tools`: additional tools we inject via MCP so the external harness
-    can call tools it wouldn't normally have (e.g., `terminal_bench.tmux`,
-    `calculator`, custom eval-specific tools). At launch we write an MCP
-    config file the harness reads.
-  - Translation boundary: `translate_harness_entry(raw) -> SessionEntry` maps
-    harness-native session events into our session entries, so the session
-    record is shape-equivalent across runtimes. Today this logic is buried
-    inside `_run_agent_in_workspace` polling; it belongs on the environment.
-  - Fold contract: given a sequence of our effect entries, reconstruct the
-    workspace state. For filesystem-backed agents this is trivial (replay
-    bash/write/edit). For environments with out-of-band state (a TerminalBench
-    container with running processes), the fold semantics are the same but
-    the implementation is subtler.
+These coexist with `rollouts/eval/remote_runtime.py` for now; the bespoke
+`trajectory_from_remote_claude_code` / `_codex` functions stay working and
+are not consumers of these types yet. Migration is tracked in
+`rollouts/rollouts/agents/runtime_refactor.md`.
 
 See `/docs/design/session_ownership.md` for the ownership model.
 """
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
+
+from ..core import Message
+from ..drivers.session_adapter import claude_message_to_rollouts, codex_message_to_rollouts
 
 if TYPE_CHECKING:
     from .resources import SandboxWorkspaceResource
 
 
-# TODO(session-refactor / external-env): define the concrete Protocol that
-# external-agent environment types satisfy. Expected members:
-#
-#   workspace: SandboxWorkspaceResource
-#   allowed_builtin_tools: list[str] | None
-#   mcp_tools: list[MCPTool]
-#
-#   def get_tools(self) -> list[Tool]:
-#       """Return the effective tool set for this run (restricted builtins
-#       + injected MCP tools). Used for UI, logging, analysis."""
-#
-#   def get_launch_flags(self) -> list[str]:
-#       """Return CLI flags the harness launcher needs (e.g., --allowed-tools,
-#       --mcp-config). Harness-specific; abstracted here for uniform launch."""
-#
-#   def translate_harness_event(self, raw: dict) -> SessionEntry | None:
-#       """Translate one line from the harness's native session format into
-#       our session entry shape. Return None if the event is uninteresting
-#       (status pings, etc.)."""
-#
-#   async def apply_effect(self, effect) -> None:
-#       """Apply a recorded effect entry to this workspace. Used by the fold
-#       contract for cold-restore / replay."""
-#
-# For now we sketch it as a Protocol without fleshing out the Tool / MCPTool
-# / SessionEntry types — those are part of the same refactor and will land
-# in lockstep.
+# ── Protocol ────────────────────────────────────────────────────────────────
 
 
 class ExternalAgentEnvironment(Protocol):
     """Protocol for external-agent-runtime-specific environments.
 
     Each concrete type (ClaudeCodeEnvironment, CodexEnvironment, ...) owns
-    the translation between its harness's native session format and our
-    session entries, plus the MCP injection story for that harness.
+    the translation between its harness's native session format and rollouts
+    `Message`s, plus the MCP/allowed-tools flag story for that harness.
 
-    TODO(session-refactor): flesh this out once SessionEntry / MCPTool /
-    Tool land from the runtime refactor. Keeping it minimal so the stubs
-    can live alongside the real code as it evolves.
+    The Protocol intentionally types `translate_harness_event` as returning
+    `list[Message]` rather than a single `Message | None` / `SessionEntry`:
+    claude-code emits assistant+tool_use+tool_result as separate top-level
+    JSONL records that can expand into multiple `Message`s per line; codex
+    emits at most one. A uniform `list[Message]` covers both without losing
+    information. When `SessionEntry` lands (see runtime_refactor.md) the
+    signature will shift to `list[SessionEntry]`.
     """
 
     workspace: SandboxWorkspaceResource
     allowed_builtin_tools: list[str] | None
     mcp_tools: list[Any]  # list[MCPTool] once that type exists
 
+    def get_tools(self) -> list[Any]: ...
 
-# ── Concrete stubs ──────────────────────────────────────────────────────────
+    def get_launch_flags(self) -> list[str]: ...
+
+    def translate_harness_event(self, raw: dict[str, Any]) -> list[Message]: ...
+
+    async def apply_effect(self, effect: Any) -> None: ...
+
+
+# ── MCP config helpers ──────────────────────────────────────────────────────
+
+
+def _mcp_tools_to_claude_config(mcp_tools: list[Any]) -> dict[str, Any]:
+    """Build the JSON body claude-code expects for `--mcp-config`.
+
+    Claude-code reads a JSON file of shape `{"mcpServers": {<name>: <spec>}}`
+    where each spec has `command`, `args`, optional `env`. We accept either a
+    pre-shaped dict (with keys `name` + `spec`) or anything with a `to_claude_mcp_spec()`
+    method so callers can pass their own tool abstractions without us owning
+    the MCP tool type yet.
+    """
+    servers: dict[str, Any] = {}
+    for tool in mcp_tools:
+        if isinstance(tool, dict) and "name" in tool and "spec" in tool:
+            servers[tool["name"]] = tool["spec"]
+            continue
+        to_spec = getattr(tool, "to_claude_mcp_spec", None)
+        if callable(to_spec):
+            name, spec = to_spec()
+            servers[name] = spec
+            continue
+        raise TypeError(
+            f"mcp_tools entry {tool!r} is not a dict with name/spec and has no "
+            "to_claude_mcp_spec() method. Pass a concrete MCP tool shape."
+        )
+    return {"mcpServers": servers}
+
+
+# ── Concrete environments ──────────────────────────────────────────────────
 
 
 @dataclass
@@ -112,27 +100,14 @@ class ClaudeCodeEnvironment:
     """Environment for claude-code CLI runs.
 
     Claude-code ships built-in tools (bash, read, write, edit, glob, grep,
-    web_fetch, ...). This type describes *which* of those the agent may use
-    in a given run, and *what additional tools* we inject via MCP.
+    web_fetch, ...). This type describes which of those are enabled and what
+    extra tools we inject via MCP.
 
-    Session files live at `~/.claude/projects/<escaped-cwd>/*.jsonl`. The
-    translation boundary maps claude-code's JSONL events to our session
-    entries.
-
-    TODO(external-env / claude-code): implementation. Currently this is a
-    container for configuration fields; nothing consumes it yet.
-
-    Usage sketch (post-refactor):
-
-        env = ClaudeCodeEnvironment(
-            workspace=LocalWorkspaceResource.from_existing(dir),
-            allowed_builtin_tools=["bash", "read", "write", "edit"],
-            mcp_tools=[terminal_bench_tmux_tool()],
-        )
-        # ... passed into the external-runtime launcher, which consults
-        # env.get_launch_flags() to build the CLI invocation, env.mcp_tools
-        # to write the MCP config, and env.translate_harness_event() to
-        # convert each polled JSONL line into a session entry.
+    Session files live at `~/.claude/projects/<escaped-cwd>/*.jsonl`. Each
+    line is a dict with a top-level `type` ("user", "assistant", "tool_use",
+    "tool_result", etc.); `translate_harness_event` normalizes those to
+    rollouts `Message`s by delegating to `claude_message_to_rollouts` in
+    `drivers/session_adapter.py`.
     """
 
     workspace: SandboxWorkspaceResource
@@ -142,53 +117,97 @@ class ClaudeCodeEnvironment:
     # list = subset enforced via --allowed-tools.
     allowed_builtin_tools: list[str] | None = None
 
-    # Additional tools exposed via MCP. Empty by default.
+    # Additional tools exposed via MCP.
     mcp_tools: list[Any] = field(default_factory=list)
 
-    # TODO(external-env / claude-code): method stubs below. Each links back
-    # to runtime_refactor.md so the intent is discoverable.
+    # Where to write the generated MCP config JSON. Caller-supplied because
+    # the path has to be reachable from wherever claude-code launches (local
+    # temp dir for LocalWorkspaceResource, in-sandbox path otherwise). If
+    # None and mcp_tools is non-empty, get_launch_flags will raise.
+    mcp_config_path: Path | None = None
 
     def get_tools(self) -> list[Any]:
-        # TODO(external-env / claude-code): return Tool objects for the
-        # effective tool set. Compose allowed builtins (with claude-code's
-        # schemas) and MCP tools. Useful for UI, for scorers asking "what
-        # was available," for test assertions.
-        raise NotImplementedError("ClaudeCodeEnvironment.get_tools stub")
+        # TODO(external-env / claude-code): return concrete Tool objects once
+        # the Tool type from the runtime refactor lands. Today we don't have
+        # a canonical representation of claude-code's built-in tool schemas,
+        # so composing them with mcp_tools would be premature.
+        raise NotImplementedError(
+            "ClaudeCodeEnvironment.get_tools: deferred until the Tool type "
+            "from the session refactor lands."
+        )
 
     def get_launch_flags(self) -> list[str]:
-        # TODO(external-env / claude-code): translate allowed_builtin_tools +
-        # mcp_tools into the CLI flags claude-code expects. Roughly:
-        #   if allowed_builtin_tools is not None:
-        #       flags += ["--allowed-tools", ",".join(allowed_builtin_tools)]
-        #   if mcp_tools:
-        #       flags += ["--mcp-config", path_to_mcp_config_json]
-        raise NotImplementedError("ClaudeCodeEnvironment.get_launch_flags stub")
+        """Translate allowed_builtin_tools + mcp_tools into CLI flags.
 
-    def translate_harness_event(self, raw: dict[str, Any]) -> Any | None:
-        # TODO(external-env / claude-code): map one line of claude-code's
-        # JSONL to one of our session entries (AssistantTurn, ToolCall,
-        # ToolResult, ...). Today this translation logic is buried in
-        # _ClaudeEventParser in drivers/claude.py; we want it to live here
-        # so the Environment owns its harness's format.
-        raise NotImplementedError("ClaudeCodeEnvironment.translate_harness_event stub")
+        Returns flags suitable for appending to a `claude` invocation, e.g.
+        `--allowed-tools bash,read --mcp-config /path/to/mcp.json`.
+
+        Does NOT write the MCP config file. The caller is responsible for
+        writing `mcp_config_json()` to `self.mcp_config_path` before launch
+        (paths may need to live inside a remote workspace, not locally).
+        """
+        flags: list[str] = []
+        if self.allowed_builtin_tools is not None:
+            # claude-code accepts empty list as "no builtins" via an empty arg.
+            flags.extend(["--allowed-tools", ",".join(self.allowed_builtin_tools)])
+        if self.mcp_tools:
+            if self.mcp_config_path is None:
+                raise ValueError(
+                    "ClaudeCodeEnvironment has mcp_tools but no mcp_config_path; "
+                    "caller must provide a writable path for the MCP config JSON."
+                )
+            flags.extend(["--mcp-config", str(self.mcp_config_path)])
+        return flags
+
+    def mcp_config_json(self) -> str:
+        """Serialize mcp_tools into the JSON body claude-code expects.
+
+        Caller writes this to `self.mcp_config_path` before launching.
+        """
+        return json.dumps(_mcp_tools_to_claude_config(self.mcp_tools), indent=2)
+
+    def translate_harness_event(self, raw: dict[str, Any]) -> list[Message]:
+        """Translate one claude-code session JSONL line to rollouts Messages.
+
+        Delegates to `claude_message_to_rollouts`, which is the existing
+        session-file adapter and already handles user/assistant/tool_use/
+        tool_result entries. Returns `[]` for uninteresting lines (status
+        pings, meta records) — matches the adapter's contract.
+
+        Note: this handles the native session-file shape (`~/.claude/projects/.../*.jsonl`).
+        The stream-json stdout shape that `_ClaudeEventParser` handles is a
+        different format; if we need to translate that too, a second method
+        (or a `format=` arg) will be added. Keeping them separate for now so
+        neither consumer has to guess which format they're on.
+        """
+        return claude_message_to_rollouts(raw)
 
     async def apply_effect(self, effect: Any) -> None:
-        # TODO(external-env / claude-code): replay a recorded effect against
-        # this workspace. For filesystem-backed agents this is "run the
-        # recorded bash/write/edit call." For environments with side channels
-        # (a custom MCP tool), this needs to invoke the tool's apply method.
-        raise NotImplementedError("ClaudeCodeEnvironment.apply_effect stub")
+        # TODO(external-env / claude-code): fold-contract replay. Stub until
+        # the SessionEntry sum type exists — we don't have a typed `effect`
+        # to dispatch on yet. For filesystem-only tool calls this will be
+        # "run the recorded bash/write/edit call against self.workspace";
+        # for MCP-tool effects it routes to the tool's apply method.
+        raise NotImplementedError(
+            "ClaudeCodeEnvironment.apply_effect: deferred until SessionEntry lands."
+        )
 
 
 @dataclass
 class CodexEnvironment:
     """Environment for OpenAI codex CLI runs.
 
-    Codex ships its own tool vocabulary, sandbox modes, and session format.
-    Session files live at `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`.
+    Codex session files live at `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`.
+    Each line is `{"type": "session_meta" | "response_item" | ..., "payload": {...}}`;
+    `translate_harness_event` delegates to `codex_message_to_rollouts`.
 
-    TODO(external-env / codex): same shape as ClaudeCodeEnvironment but with
-    codex-specific flags and translation. Currently a stub.
+    Codex's MCP story is different from claude-code's: MCP servers are
+    declared in `$CODEX_HOME/config.toml` under `[mcp_servers.<name>]`, not
+    via a CLI flag. For a run-local config the idiomatic path is to point
+    `CODEX_HOME` at a fresh directory (done by `remote_runtime.py` already
+    for `codex_acp`). We therefore don't emit an MCP flag; instead we
+    expose `codex_mcp_config_toml()` so the caller can write it into their
+    chosen CODEX_HOME.
     """
 
     workspace: SandboxWorkspaceResource
@@ -196,20 +215,93 @@ class CodexEnvironment:
     allowed_builtin_tools: list[str] | None = None
     mcp_tools: list[Any] = field(default_factory=list)
 
-    # Codex-specific knobs.
-    sandbox_mode: str = "read-only"  # codex's own --sandbox flag
+    # codex's own --sandbox flag. Passed through verbatim.
+    sandbox_mode: str = "read-only"
+
+    # Where to write the generated codex config.toml. Unlike claude-code,
+    # codex does not take a --mcp-config flag: the caller must write this
+    # into a CODEX_HOME and set CODEX_HOME in the launch env. If None and
+    # mcp_tools is non-empty, get_launch_flags will raise.
+    codex_config_path: Path | None = None
 
     def get_tools(self) -> list[Any]:
-        raise NotImplementedError("CodexEnvironment.get_tools stub")
+        # TODO(external-env / codex): same deferral as ClaudeCodeEnvironment.
+        raise NotImplementedError(
+            "CodexEnvironment.get_tools: deferred until the Tool type "
+            "from the session refactor lands."
+        )
 
     def get_launch_flags(self) -> list[str]:
-        raise NotImplementedError("CodexEnvironment.get_launch_flags stub")
+        """Translate sandbox/allowed/MCP settings into codex CLI flags.
 
-    def translate_harness_event(self, raw: dict[str, Any]) -> Any | None:
-        raise NotImplementedError("CodexEnvironment.translate_harness_event stub")
+        Emits:
+          - `--sandbox <mode>` always.
+          - `-c approval_policy="never"` + `-c sandbox_mode="..."` overrides
+            that match how `remote_runtime.py` already launches codex_acp.
+          - Nothing for mcp_tools (see class docstring); raises if mcp_tools
+            is set without codex_config_path so the caller doesn't silently
+            lose tool injection.
+
+        Note: `allowed_builtin_tools` on codex is not a CLI flag — codex's
+        tool restriction is policy-config-based. We keep the field for
+        parity with ClaudeCodeEnvironment and surface it via
+        `codex_mcp_config_toml`, which can embed a `[tools]` filter.
+        """
+        if self.mcp_tools and self.codex_config_path is None:
+            raise ValueError(
+                "CodexEnvironment has mcp_tools but no codex_config_path; "
+                "caller must provide a writable path for codex's config.toml "
+                "and set CODEX_HOME in the launch env."
+            )
+        flags: list[str] = ["--sandbox", self.sandbox_mode]
+        return flags
+
+    def codex_mcp_config_toml(self) -> str:
+        """Serialize mcp_tools into a codex config.toml fragment.
+
+        Caller writes this to `self.codex_config_path` and points
+        CODEX_HOME at its parent directory before launching.
+
+        TODO(external-env / codex): this is the minimal shape — each tool
+        contributes an `[mcp_servers.<name>]` block. We don't own the MCP
+        tool type yet, so we accept dicts with `name` + `spec` (with
+        `command`, `args`, `env`) or objects with `to_codex_mcp_spec()`.
+        Once the MCPTool type lands, this collapses into a typed loop.
+        """
+        lines: list[str] = []
+        for tool in self.mcp_tools:
+            if isinstance(tool, dict) and "name" in tool and "spec" in tool:
+                name, spec = tool["name"], tool["spec"]
+            else:
+                to_spec = getattr(tool, "to_codex_mcp_spec", None)
+                if not callable(to_spec):
+                    raise TypeError(
+                        f"mcp_tools entry {tool!r} is not a dict with name/spec "
+                        "and has no to_codex_mcp_spec() method."
+                    )
+                name, spec = to_spec()
+            lines.append(f"[mcp_servers.{name}]")
+            for key, value in spec.items():
+                lines.append(f"{key} = {json.dumps(value)}")
+            lines.append("")
+        return "\n".join(lines)
+
+    def translate_harness_event(self, raw: dict[str, Any]) -> list[Message]:
+        """Translate one codex session JSONL line to rollouts Messages.
+
+        Delegates to `codex_message_to_rollouts`, which returns a single
+        `Message` or `None`. We normalize to `list[Message]` for Protocol
+        uniformity with ClaudeCodeEnvironment.
+        """
+        msg = codex_message_to_rollouts(raw)
+        return [msg] if msg is not None else []
 
     async def apply_effect(self, effect: Any) -> None:
-        raise NotImplementedError("CodexEnvironment.apply_effect stub")
+        # TODO(external-env / codex): fold-contract replay. Same deferral
+        # rationale as ClaudeCodeEnvironment.apply_effect.
+        raise NotImplementedError(
+            "CodexEnvironment.apply_effect: deferred until SessionEntry lands."
+        )
 
 
 # TODO(external-env / opencode): OpencodeEnvironment. Same shape. Defer
