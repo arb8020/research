@@ -128,9 +128,13 @@ endpoint = OwnedEndpoint(
     capabilities=EndpointCapabilities(weight_sync=None),
     startup_timeout=7200.0,
     max_tokens=1024,  # override the 256-tok bench default — RP replies need room
-    # logprobs: True would break V3.2 on long prompts (→ immediate EOS).
-    # Fixed in rollout_openai — it's now off by default, opt in via
-    # extra_params={"logprobs": True} for GRPO training. Nothing to set here.
+    # V3.2 with the tool_chat_template + thinking=false (default) sometimes
+    # echoes the user's last message verbatim instead of producing a new turn.
+    # Forcing thinking=true swaps "<｜Assistant｜></think>" (closing think with
+    # no opening) for "<｜Assistant｜><think>", which puts the model in the
+    # reasoning regime it was actually trained for. The reasoning-parser
+    # will then split think content from final reply.
+    extra_params={"chat_template_kwargs": {"thinking": True}},
 )
 
 # ---------------------------------------------------------------------------
