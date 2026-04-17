@@ -353,11 +353,18 @@ def replay_effects_into_fresh_workspace(
             target.write_text(content if isinstance(content, str) else json.dumps(content))
         elif r.tool_name == "edit":
             path = r.arguments.get("path")
-            old = r.arguments.get("old_string", r.arguments.get("old", ""))
-            new = r.arguments.get("new_string", r.arguments.get("new", ""))
+            # Rollouts edit tool uses old_text/new_text. (Other harnesses use
+            # old_string/new_string — tolerate both.)
+            old = r.arguments.get("old_text") or r.arguments.get("old_string") or ""
+            new = r.arguments.get("new_text") or r.arguments.get("new_string") or ""
             replace_all = r.arguments.get("replace_all", False)
             if not isinstance(path, str):
                 violations.append(f"edit call {r.call_id} missing path: {r.arguments!r}")
+                continue
+            if not old:
+                violations.append(
+                    f"edit call {r.call_id} has empty old_text: {r.arguments!r}"
+                )
                 continue
             target = _resolve_replay_path(fresh_dir, path)
             if not target.exists():
@@ -366,14 +373,16 @@ def replay_effects_into_fresh_workspace(
                 )
                 continue
             text = target.read_text()
+            if old not in text:
+                violations.append(
+                    f"edit call {r.call_id} old_text not found in {target}: {old[:40]!r}"
+                )
+                continue
             if replace_all:
-                new_text = text.replace(old, new)
+                text = text.replace(old, new)
             else:
-                # Edit tool requires the occurrence to be unique; if not, the
-                # agent's real call would have failed, but we're replaying a
-                # successful call so one occurrence is assumed.
-                new_text = text.replace(old, new, 1)
-            target.write_text(new_text)
+                text = text.replace(old, new, 1)
+            target.write_text(text)
         else:
             # Read-only tools (glob, grep, read) don't change state.
             pass
