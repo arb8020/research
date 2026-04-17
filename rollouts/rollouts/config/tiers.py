@@ -34,6 +34,10 @@ class EndpointConfig:
 
     provider: str = "anthropic"
     model: str = "claude-sonnet-4-20250514"
+    # Override provider's default base URL. Use for self-hosted endpoints
+    # (SGLang, vLLM, etc.) that speak an OpenAI/Anthropic-compatible API.
+    # Empty = use provider default.
+    base_url: str = ""
     temperature: float = 0.0
     max_tokens: int = 4096
     # OpenAI reasoning models (o1/o3) require max_completion_tokens

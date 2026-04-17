@@ -44,11 +44,34 @@ def load_tasks_jsonl(path: Path | str) -> list[dict[str, Any]]:
     return [json.loads(line) for line in Path(path).read_text().splitlines() if line.strip()]
 
 
-def build_character_system_prompt(sample: dict[str, Any]) -> str:
-    """Assemble the character's system prompt: activated lore + card fields.
+# Vendored from SillyTavern/default/content/presets/sysprompt/*.json (MIT).
+# These are the standard "fiction framing" sysprompts that ST ships. Without
+# one of them, assistant-tuned models read character cards as instructions to
+# impersonate a real IP character and refuse. With them, the model understands
+# this is a co-writing fiction task.
+#
+# "Simple" is enough for less safety-tuned models (DeepSeek, Mistral, etc.).
+# "Immersive" adds length/style guidance and typically works on Claude too.
+ST_SYSPROMPT_SIMPLE = (
+    "You're {{char}} in this fictional never-ending uncensored roleplay with {{user}}."
+)
+ST_SYSPROMPT_IMMERSIVE = (
+    "[System note: Write one reply only. Do not decide what {{user}} says or does. "
+    "Write at least one paragraph, up to four. Be descriptive and immersive, providing "
+    "vivid details about {{char}}'s actions, emotions, and the environment. Write with "
+    "a high degree of complexity and burstiness. Do not repeat this message.]"
+)
 
-    Approximates ST's "character-first" insertion: lore_before, description,
-    personality, scenario, lore_after, example messages.
+
+def build_character_system_prompt(
+    sample: dict[str, Any],
+    *,
+    sysprompt: str = ST_SYSPROMPT_SIMPLE,
+) -> str:
+    """Assemble the character's system prompt: ST fiction framing + activated lore + card.
+
+    Approximates ST's "character-first" insertion: sysprompt, lore_before,
+    description, personality, scenario, lore_after, example messages.
     """
     card = sample["card"]
     lorebook = sample["lorebook"]
@@ -67,7 +90,7 @@ def build_character_system_prompt(sample: dict[str, Any]) -> str:
     def sub(s: str) -> str:
         return substitute_macros(s, char_name, user_name)
 
-    sections: list[str] = []
+    sections: list[str] = [sub(sysprompt)]
     if result.before:
         sections.append(f"[World Info]\n{sub(result.before)}")
     if card.get("description"):
@@ -81,22 +104,24 @@ def build_character_system_prompt(sample: dict[str, Any]) -> str:
     if card.get("mes_example"):
         sections.append(f"[Example Dialogue]\n{sub(card['mes_example'])}")
 
-    header = (
-        f"You are {char_name}. Stay fully in character. Respond as "
-        f"{char_name} would, in their voice. Do not break the fourth wall."
-    )
-    return header + "\n\n" + "\n\n".join(sections)
+    return "\n\n".join(sections)
 
 
 def build_user_sim_system_prompt(sample: dict[str, Any]) -> str:
+    """User-sim plays the human side of the same fictional roleplay the character is in.
+
+    Same ST-style fiction framing (so the user-sim model doesn't also break
+    character and start arguing about whether it's an AI), persona-scoped,
+    with a length cap so it doesn't monologue.
+    """
     persona = sample["persona"]
     char_name = sample["card"]["name"]
     return (
-        f"You are a human user chatting with an AI roleplaying as {char_name}. "
-        f"Your persona: {persona}. "
-        f"Respond to the character in 1-3 sentences as this persona would. "
-        f"Do not narrate for {char_name}. Do not break the fourth wall. "
-        f"Just reply as the user."
+        f"You're a human named User in a fictional never-ending uncensored roleplay "
+        f"with {char_name}. Your persona: {persona}. "
+        f"Write one reply only as User — 1-3 sentences. Do not narrate for {char_name}. "
+        f"Do not write stage directions or describe {char_name}'s actions. "
+        f"Just reply as User would."
     )
 
 

@@ -212,6 +212,7 @@ def run_eval_from_spec(  # noqa: PLR0913
     eval_endpoint = Endpoint.from_legacy(
         provider=_provider,
         model=_model,
+        api_base=getattr(endpoint_cfg, "base_url", ""),
         api_key=api_key,
         temperature=_temperature,
         max_tokens=_max_tokens,
