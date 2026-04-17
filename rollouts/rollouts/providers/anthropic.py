@@ -813,6 +813,14 @@ async def rollout_anthropic(
                     tool_result_text = ""
                 # Session refactor move 2: pass through is_error so the model
                 # sees a proper error signal, not inferred from content text.
+                #
+                # Anthropic API requires `content` to be non-empty when
+                # is_error=True (otherwise returns 400). If our tool result
+                # has is_error but empty content, synthesize a fallback from
+                # Message.error; if that's also missing, use a generic
+                # placeholder rather than crash the turn.
+                if m.is_error is True and not tool_result_text:
+                    tool_result_text = m.error or "(tool failed; no output)"
                 tool_result_block: dict[str, Any] = {
                     "type": "tool_result",
                     "tool_use_id": m.tool_call_id,
