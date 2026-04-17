@@ -68,7 +68,11 @@ def _remove_handle(name: str) -> None:
         p.unlink()
 
 
-def _process_alive(pid: int) -> bool:
+def _process_alive(pid: int | None) -> bool:
+    # Guard against None / invalid pids. os.kill(-1, 0) would signal the whole
+    # process group, which is catastrophically wrong.
+    if pid is None or pid <= 0:
+        return False
     try:
         os.kill(pid, 0)
         return True
@@ -114,40 +118,40 @@ async def _run_detached(name: str, config_path: Path, force_deploy_committed: bo
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # Use trio's signal handling so the async context manager gets cancelled
-    # cleanly rather than the process getting SIGKILL'd mid-teardown.
+    # cleanly rather than the process being SIGKILL'd mid-teardown. Signal
+    # handler cancels the nursery scope; trio unwinds through the async-with
+    # stack, which runs realize_worker_backed_endpoint's teardown (stop
+    # service → docker rm, close paramiko tunnel).
     async with trio.open_nursery() as nursery:
 
-        async def wait_for_signal(cancel_scope: trio.CancelScope) -> None:
+        async def wait_for_signal() -> None:
             with trio.open_signal_receiver(signal.SIGTERM, signal.SIGINT) as sigs:
                 async for _ in sigs:
-                    cancel_scope.cancel()
+                    nursery.cancel_scope.cancel()
                     return
 
-        cancel_scope = trio.CancelScope()
-
         async def run_endpoint() -> None:
-            with cancel_scope:
-                async with realize_worker_backed_endpoint(
-                    endpoint_config=endpoint_config,
-                    output_dir=output_dir,
-                    hardware_config=hardware_config,
-                    server_config=server_config,
-                    run_name=name,
-                    force_deploy_committed=force_deploy_committed,
-                    run_logger=None,
-                ) as realized:
-                    url = realized.endpoint_config.base_url
-                    # Publish URL to handle file so parent process can return.
-                    handle = _read_handle(name) or {}
-                    handle["url"] = url
-                    handle["status"] = "ready"
-                    handle["ready_at"] = datetime.now(timezone.utc).isoformat()
-                    _write_handle(name, handle)
+            async with realize_worker_backed_endpoint(
+                endpoint_config=endpoint_config,
+                output_dir=output_dir,
+                hardware_config=hardware_config,
+                server_config=server_config,
+                run_name=name,
+                force_deploy_committed=force_deploy_committed,
+                run_logger=None,
+            ) as realized:
+                url = realized.endpoint_config.base_url
+                # Publish URL to handle file so parent process can return.
+                handle = _read_handle(name) or {}
+                handle["url"] = url
+                handle["status"] = "ready"
+                handle["ready_at"] = datetime.now(timezone.utc).isoformat()
+                _write_handle(name, handle)
 
-                    # Block until cancellation (SIGTERM).
-                    await trio.sleep_forever()
+                # Block until nursery is cancelled (SIGTERM).
+                await trio.sleep_forever()
 
-        nursery.start_soon(wait_for_signal, cancel_scope)
+        nursery.start_soon(wait_for_signal)
         nursery.start_soon(run_endpoint)
 
     # Clean up handle file on normal exit. (It may already be gone if `down`
