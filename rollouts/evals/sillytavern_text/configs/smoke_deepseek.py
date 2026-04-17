@@ -100,11 +100,18 @@ _docker_run = (
     f" --tp 8"
     f" --trust-remote-code"
     # Need DeepSeek's chat template — the tokenizer ships without a default
-    # chat_template. The "tool_" jinja file is the only one in the image and
-    # works fine for plain-text use too. But drop --tool-call-parser
-    # deepseekv31 — that was post-processing output as tool calls and
-    # truncating our RP replies to 1 token.
+    # chat_template. The "tool_" jinja file is the only DeepSeek one in the
+    # image and works fine for plain-text use too.
     f" --chat-template /sgl-workspace/sglang/examples/chat_template/tool_chat_template_deepseekv32.jinja"
+    # V3.2 is a reasoning model; without a reasoning parser SGLang puts the
+    # entire "<think>...</think>reply" blob into content. With deepseek-v3
+    # parser, the think portion is split into reasoning_content and the
+    # actual reply lands in content — which is what rollout_openai expects.
+    # (See bench_glm_5_1 and bench_kimi_k2_5 for the same pattern.)
+    f" --reasoning-parser deepseek-v3"
+    # Log request/response bodies so we can debug future wire-level issues
+    # without relaunching the endpoint manually.
+    f" --log-requests --log-requests-level 2"
     f" --disable-cuda-graph"
     f" --mem-fraction-static 0.85"
     f" --page-size 64"
@@ -121,21 +128,12 @@ endpoint = OwnedEndpoint(
     capabilities=EndpointCapabilities(weight_sync=None),
     startup_timeout=7200.0,
     max_tokens=1024,  # override the 256-tok bench default — RP replies need room
-    # Overrides for sglang request body (params.update(extra_params) in
-    # providers/sglang.py:133).
-    #
-    # echo=False: the sglang provider hardcodes echo=True (line 121), which
-    # is for log-prob / training workflows. For chat, it makes SGLang return
-    # "prompt_text + N generated tokens" as the completion — and our
-    # provider then writes the prompt as the assistant message. Disable.
-    #
     # chat_template_kwargs.thinking=True: DeepSeek V3.2's jinja template
-    # defaults thinking=false, which emits a broken closing-think tag.
-    # (May or may not matter once echo=False is in place; both are cheap.)
-    extra_params={
-        "echo": False,
-        "chat_template_kwargs": {"thinking": True},
-    },
+    # defaults thinking=false, which emits "<｜Assistant｜></think>" (closing
+    # think tag with no opening) as the generation prompt. thinking=true
+    # emits "<｜Assistant｜><think>" which V3.2 handles correctly.
+    # Flows through to SGLang via extra_body in the OpenAI SDK call.
+    extra_params={"chat_template_kwargs": {"thinking": True}},
 )
 
 # ---------------------------------------------------------------------------
