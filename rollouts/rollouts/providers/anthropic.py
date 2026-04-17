@@ -811,15 +811,18 @@ async def rollout_anthropic(
                     tool_result_text = "\n".join(b.text for b in text_blocks) if text_blocks else ""
                 else:
                     tool_result_text = ""
+                # Session refactor move 2: pass through is_error so the model
+                # sees a proper error signal, not inferred from content text.
+                tool_result_block: dict[str, Any] = {
+                    "type": "tool_result",
+                    "tool_use_id": m.tool_call_id,
+                    "content": tool_result_text,
+                }
+                if m.is_error is True:
+                    tool_result_block["is_error"] = True
                 messages.append({
                     "role": "user",
-                    "content": [
-                        {
-                            "type": "tool_result",
-                            "tool_use_id": m.tool_call_id,
-                            "content": tool_result_text,
-                        }
-                    ],
+                    "content": [tool_result_block],
                 })
             else:
                 messages.append(_message_to_anthropic(m, inline_thinking))

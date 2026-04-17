@@ -709,6 +709,27 @@ class Message(JsonSerializable):
     id: str | None = None
     parent_id: str | None = None
 
+    # Tool result status fields (session refactor move 2).
+    #
+    # When a tool-role message carries a tool result, these fields promote
+    # structured fields from ToolResult to first-class positions on the
+    # session record. Previously is_error/error were flattened into the
+    # details dict (when they survived at all); scorers had to fish them
+    # out. Now scorers and renderers read them directly.
+    #
+    # Semantics:
+    # - role != "tool": both fields must be None.
+    # - role == "tool", successful call: is_error=False, error=None.
+    # - role == "tool", failed call: is_error=True, error=<message>.
+    # - role == "tool", indeterminate (e.g. legacy data): is_error=None.
+    #
+    # The renderer path (building messages for the Anthropic API) uses
+    # is_error to populate the tool_result block's is_error field, so the
+    # model sees a proper error signal instead of our inferring from the
+    # content text.
+    is_error: bool | None = None
+    error: str | None = None
+
     def get_tool_calls(self) -> list[ToolCall]:
         """Extract tool calls from ContentBlocks.
 

@@ -553,6 +553,9 @@ async def process_pending_tools(
                     role="tool",
                     content=tool_result.content,
                     tool_call_id=tool_call.id,
+                    # Session refactor move 2: promote is_error / error.
+                    is_error=tool_result.is_error,
+                    error=tool_result.error,
                     details=tool_result.details,
                 )
             )
@@ -815,17 +818,15 @@ async def process_pending_tools(
 
         # Add tool result message
         # Always include content - it has structured stdout/stderr even on error
-        # TODO(session-refactor G2): `ToolResult` has structured fields
-        # (`is_error`, `error`, `details`) that get flattened into a tool-role
-        # Message here. `is_error` and `error` don't survive as first-class on
-        # the session side — scorers and external adapters have to reconstruct.
-        # After refactor: append `ToolResult` directly to the session as its
-        # own entry kind; render to `Message` only when building LLM context.
-        # See runtime_refactor.md.
+        # Session refactor move 2: is_error / error are now first-class fields on
+        # Message, not just on ToolResult. Scorers and renderers read them directly
+        # instead of fishing into details. See runtime_refactor.md (G2 closed).
         result_message = Message(
             role="tool",
             content=tool_result.content,
             tool_call_id=tool_call.id,
+            is_error=tool_result.is_error,
+            error=tool_result.error,
             details=tool_result.details,  # Include UI-only structured data
         )
 
