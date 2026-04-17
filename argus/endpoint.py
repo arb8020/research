@@ -137,49 +137,50 @@ async def _run_detached(
         force_deploy_committed=force_deploy_committed,
     )
 
-    # Use trio's signal handling so the async context manager gets cancelled
-    # cleanly rather than the process being SIGKILL'd mid-teardown. Signal
-    # handler cancels the nursery scope; trio unwinds through the async-with
-    # stack, which runs realize_worker_backed_endpoint's teardown (stop
-    # service → docker rm, close paramiko tunnel).
-    async with trio.open_nursery() as nursery:
+    # Signal handling: plain OS-level handler sets a trio.Event; main task
+    # waits on it and then exits the realize_worker_backed_endpoint context
+    # (which runs docker rm + tunnel close in its finally block).
+    #
+    # Earlier attempt used trio.open_signal_receiver inside a sibling task
+    # that called nursery.cancel_scope.cancel() — that triggered a trio
+    # internals bug (asyncgens.finalize_remaining assertion) because the
+    # context manager was an async generator and got cancelled in a state
+    # trio's shutdown path doesn't expect. Plain signal.signal + Event is
+    # the pattern modal_workload.py uses, no trio sibling-task dance.
+    stop_event = trio.Event()
+    trio_token = trio.lowlevel.current_trio_token()
 
-        async def wait_for_signal() -> None:
-            with trio.open_signal_receiver(signal.SIGTERM, signal.SIGINT) as sigs:
-                async for sig in sigs:
-                    emit_run_event(events, "endpoint_signal_received", signal=int(sig))
-                    nursery.cancel_scope.cancel()
-                    return
+    def _handle_signal(signum: int, _frame: Any) -> None:
+        try:
+            trio_token.run_sync_soon(stop_event.set)
+        except trio.RunFinishedError:
+            pass
 
-        async def run_endpoint() -> None:
-            emit_run_event(events, "endpoint_realize_start")
-            async with realize_worker_backed_endpoint(
-                endpoint_config=endpoint_config,
-                output_dir=output_dir,
-                hardware_config=hardware_config,
-                server_config=server_config,
-                run_name=name,
-                force_deploy_committed=force_deploy_committed,
-                run_logger=events,
-            ) as realized:
-                url = realized.endpoint_config.base_url
-                emit_run_event(events, "endpoint_ready", url=url, metadata=realized.metadata)
-                # Publish URL to handle file so parent process can return.
-                handle = _read_handle(name) or {}
-                handle["url"] = url
-                handle["status"] = "ready"
-                handle["ready_at"] = datetime.now(timezone.utc).isoformat()
-                _write_handle(name, handle)
+    signal.signal(signal.SIGTERM, _handle_signal)
+    signal.signal(signal.SIGINT, _handle_signal)
 
-                # Block until nursery is cancelled (SIGTERM).
-                await trio.sleep_forever()
+    emit_run_event(events, "endpoint_realize_start")
+    async with realize_worker_backed_endpoint(
+        endpoint_config=endpoint_config,
+        output_dir=output_dir,
+        hardware_config=hardware_config,
+        server_config=server_config,
+        run_name=name,
+        force_deploy_committed=force_deploy_committed,
+        run_logger=events,
+    ) as realized:
+        url = realized.endpoint_config.base_url
+        emit_run_event(events, "endpoint_ready", url=url, metadata=realized.metadata)
+        handle = _read_handle(name) or {}
+        handle["url"] = url
+        handle["status"] = "ready"
+        handle["ready_at"] = datetime.now(timezone.utc).isoformat()
+        _write_handle(name, handle)
 
-            emit_run_event(events, "endpoint_teardown_done")
+        await stop_event.wait()
+        emit_run_event(events, "endpoint_signal_received")
 
-        nursery.start_soon(wait_for_signal)
-        nursery.start_soon(run_endpoint)
-
-    emit_run_event(events, "endpoint_child_exiting")
+    emit_run_event(events, "endpoint_teardown_done")
     # Clean up handle file on normal exit. (It may already be gone if `down`
     # removed it after we exited the context.)
     _remove_handle(name)
