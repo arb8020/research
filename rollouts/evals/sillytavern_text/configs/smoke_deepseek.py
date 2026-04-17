@@ -98,11 +98,12 @@ _docker_run = (
     f" --port {PORT}"
     f" --tp 8"
     f" --trust-remote-code"
-    # NOTE: bench_deepseek_v3_2_amd_mi355x.py uses the tool-calling chat template
-    # (tool_chat_template_deepseekv32.jinja) + --tool-call-parser deepseekv31.
-    # For plain-text RP (no tools) those were truncating output to 1 token —
-    # the tool-call parser was consuming model output as failed tool-call
-    # attempts. Letting SGLang use the tokenizer's default chat template instead.
+    # Need DeepSeek's chat template — the tokenizer ships without a default
+    # chat_template. The "tool_" jinja file is the only one in the image and
+    # works fine for plain-text use too. But drop --tool-call-parser
+    # deepseekv31 — that was post-processing output as tool calls and
+    # truncating our RP replies to 1 token.
+    f" --chat-template /sgl-workspace/sglang/examples/chat_template/tool_chat_template_deepseekv32.jinja"
     f" --disable-cuda-graph"
     f" --mem-fraction-static 0.85"
     f" --page-size 64"
