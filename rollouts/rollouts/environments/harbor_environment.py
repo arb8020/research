@@ -6,6 +6,19 @@ behind our CodingEnvironment abstraction. Our rollouts runtime drives the
 tool surface; Harbor owns container provisioning and, if invoked, the
 verifier.
 
+Architectural choice (native path): this is the "forward tool calls INTO
+the sandbox" shape. The LLM (brain) sits in our process; its tool calls
+route through HarborCommandRunner → harbor_env.exec(command) → the
+container executes. The agent is not inside the sandbox — the container
+is a pure effect interpreter.
+
+The complementary shape, "agent runs INSIDE the sandbox and we read out
+its session log," is how external runtimes (claude-code CLI, codex CLI,
+ACP) work against non-Harbor workspaces today. See the bottom-of-file
+TODO and external_agent_environments.py for the Harbor-workspace-as-
+SandboxWorkspaceResource adapter that would let external agents run
+inside Harbor containers. Not implemented yet.
+
 We consume Harbor as a library (no CLI shelling). Harbor's `BaseEnvironment`
 gives us `start`, `exec`, `upload_file`/`download_file`, `stop`. We adapt
 those into our `CodingWorkspaceResource` and `CommandRunner` protocols so
@@ -449,3 +462,44 @@ async def make_harbor_environment(
         session_id=session_id,
         **kwargs,
     )
+
+
+# TODO(harbor-as-sandbox-workspace-resource): stub for the "agent runs
+# INSIDE a Harbor container" shape.
+#
+# Today, native rollouts agents drive Harbor containers from outside by
+# routing tool calls through HarborCommandRunner.exec. External runtimes
+# (claude-code, codex, ACP variants in remote_runtime.py) instead *launch
+# the agent inside a sandbox* and poll its session log. The two paths
+# have complementary roles and together span the native/external parity
+# story — but right now external runtimes can't target Harbor containers
+# because there's no adapter presenting a Harbor DockerEnvironment as a
+# SandboxWorkspaceResource (what trajectory_from_remote_* functions
+# accept).
+#
+# What the adapter needs to do:
+#   - Expose harbor_env.exec, .upload_file, .download_file behind
+#     SandboxWorkspaceResource's interface (similar to what
+#     HarborCommandRunner and HarborWorkspaceResource do, but adapted to
+#     the SandboxWorkspaceResource protocol instead of CodingEnvironment's).
+#   - Bootstrap the external CLI inside the container (install node,
+#     install the CLI, set API keys in env). Today's non-Harbor remote
+#     launchers in remote_runtime.py do this for Modal/Bifrost workspaces;
+#     Harbor's DockerEnvironment would need its own install path.
+#   - Return the adapter from HarborEnvironment.as_sandbox_workspace()
+#     so callers write:
+#       env = await HarborEnvironment.create(...)
+#       artifact = await trajectory_from_remote_claude_code(
+#           prompt, sample_id, sample_data,
+#           workspace=env.as_sandbox_workspace(),
+#           cwd=env.spec.working_dir,
+#           ...,
+#       )
+#
+# Scope: ~1 day. Blocked on nothing structurally — just infra wiring.
+# Land when we want external/native parity on Harbor tasks.
+#
+# See also: rollouts/rollouts/eval/remote_runtime.py's run_external_agent
+# entry point; it already takes ClaudeCodeEnvironment / CodexEnvironment,
+# so the adapter surface needed here is the workspace field on those
+# types, not a whole new code path.

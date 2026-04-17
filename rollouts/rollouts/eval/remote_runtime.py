@@ -1119,6 +1119,15 @@ async def _run_agent_in_workspace(
     return ExternalAttemptArtifact(trajectory=trajectory, metadata=metadata)
 
 
+# TODO(harbor-as-sandbox-workspace-resource): run_external_agent takes a
+# ClaudeCodeEnvironment / CodexEnvironment whose .workspace is a
+# SandboxWorkspaceResource. Harbor containers are NOT currently
+# SandboxWorkspaceResource — they're wrapped as a HarborWorkspaceResource
+# behind CodingEnvironment, which is a different protocol. To run external
+# agents inside Harbor containers we need an adapter exposing
+# harbor_env.{exec,upload_file,download_file} as SandboxWorkspaceResource.
+# Sketch lives in rollouts/environments/harbor_environment.py at the end
+# of the file. Not blocking native TB2 runs.
 async def run_external_agent(
     env: ClaudeCodeEnvironment | CodexEnvironment,
     prompt: str,
