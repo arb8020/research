@@ -44,13 +44,46 @@ def load_module(path: Path, module_name: str | None = None) -> Any:
 
 
 def load_eval_module(eval_name: str) -> Any:
-    """Load an eval's eval.py module."""
-    eval_path = EVALS_ROOT / eval_name / "eval.py"
+    """Load an eval's eval.py module.
+
+    Registers the eval directory as a proper package in sys.modules FIRST so
+    that `from .foo import bar` style relative imports inside eval.py work.
+    Previously only eval.py got loaded (under module name `<eval_name>.eval`),
+    which meant multi-file evals had to work around the missing package with
+    manual importlib dances.
+    """
+    eval_dir = EVALS_ROOT / eval_name
+    eval_path = eval_dir / "eval.py"
     if not eval_path.exists():
         raise FileNotFoundError(f"Eval not found: {eval_name} (looked for {eval_path})")
 
-    canonical_name = f"{eval_name.replace('/', '.')}.eval"
-    return load_module(eval_path, module_name=canonical_name)
+    package_name = eval_name.replace("/", ".")
+
+    # Register the eval dir as a namespace package so relative imports
+    # resolve. Use an __init__.py if present; otherwise synthesize a
+    # minimal package spec.
+    init_path = eval_dir / "__init__.py"
+    if init_path.exists():
+        package_spec = importlib.util.spec_from_file_location(
+            package_name,
+            init_path,
+            submodule_search_locations=[str(eval_dir)],
+        )
+    else:
+        # No __init__.py — treat as a namespace package rooted at eval_dir.
+        package_spec = importlib.util.spec_from_file_location(
+            package_name,
+            loader=None,
+            submodule_search_locations=[str(eval_dir)],
+        )
+    if package_spec is None:
+        raise ImportError(f"Could not build package spec for {package_name}")
+    package_module = importlib.util.module_from_spec(package_spec)
+    sys.modules[package_name] = package_module
+    if package_spec.loader is not None:
+        package_spec.loader.exec_module(package_module)
+
+    return load_module(eval_path, module_name=f"{package_name}.eval")
 
 
 def run_simple_eval(spec: Any, config_module: Any, args: argparse.Namespace) -> dict[str, Any]:

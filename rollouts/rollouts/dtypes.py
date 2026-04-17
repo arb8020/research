@@ -1,3 +1,23 @@
+"""Data types and re-exports.
+
+NOTE (cleanup-as-we-go): this module is partly an honest dataclass module
+(Message, Trajectory, Endpoint, the stream event union, ...) and partly a
+back-compat re-export surface for things that actually live elsewhere:
+
+  - `Metric` and `Score` really live in `rollouts/core/eval.py`
+  - `SessionSummary` / `EnvironmentConfig` live in `rollouts/core/session.py`
+  - `Actor` / `AgentState` / `RunConfig` live in `rollouts/agents/`
+
+They're re-exported here so `from rollouts.dtypes import Metric, Score`
+works. For new code, prefer importing from the canonical module
+(`rollouts.core`, `rollouts.agents`) so the ownership is obvious. Don't
+proliferate the re-export usage further.
+
+TODO(canonical-imports): audit callers of `from rollouts.dtypes import ...`
+for things that should come from their real home modules, and migrate the
+callers. Then this file shrinks to its actual responsibilities.
+"""
+
 from __future__ import annotations
 
 import json
