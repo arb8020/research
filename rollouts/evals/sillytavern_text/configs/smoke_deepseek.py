@@ -128,14 +128,9 @@ endpoint = OwnedEndpoint(
     capabilities=EndpointCapabilities(weight_sync=None),
     startup_timeout=7200.0,
     max_tokens=1024,  # override the 256-tok bench default — RP replies need room
-    # Disable logprobs. rollout_openai hardcodes logprobs=True for GRPO
-    # training support (openai_completions.py:823). For DeepSeek V3.2 on
-    # SGLang with long prompts, that combination causes the model to emit
-    # EOS as the first token (content=null, completion_tokens=1). Confirmed
-    # by direct probe: same request with logprobs=False returns a 33-token
-    # in-character reply; with logprobs=True returns EOS only.
-    # Delivered via the OpenAI SDK's extra_body, which overrides top-level.
-    extra_params={"logprobs": False},
+    # logprobs: True would break V3.2 on long prompts (→ immediate EOS).
+    # Fixed in rollout_openai — it's now off by default, opt in via
+    # extra_params={"logprobs": True} for GRPO training. Nothing to set here.
 )
 
 # ---------------------------------------------------------------------------

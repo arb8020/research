@@ -820,8 +820,19 @@ async def rollout_openai(
         "messages": messages,
         "temperature": actor.endpoint.temperature,
         "stream": True,
-        "logprobs": True,  # Request logprobs for GRPO importance sampling
     }
+    # logprobs=True is a GRPO training convenience that breaks eval against some
+    # backends (observed: SGLang + DeepSeek V3.2 long prompts → immediate EOS).
+    # Off by default; opt in via extra_params["logprobs"]=True when you need
+    # importance sampling. extra_params gets folded in below via extra_body,
+    # but the OpenAI SDK treats top-level `logprobs` as a typed field that
+    # overrides extra_body, so set it at the typed level.
+    if (
+        hasattr(actor.endpoint, "extra_params")
+        and actor.endpoint.extra_params
+        and actor.endpoint.extra_params.get("logprobs") is True
+    ):
+        params["logprobs"] = True
 
     if actor.endpoint.max_completion_tokens is not None:
         params["max_completion_tokens"] = actor.endpoint.max_completion_tokens
@@ -830,7 +841,11 @@ async def rollout_openai(
 
     if actor.tools:
         params["tools"] = [_tool_to_openai(t) for t in actor.tools]
-        params["tool_choice"] = "auto"
+        params["tool_choice"] = (
+            actor.endpoint.tool_choice if actor.endpoint.tool_choice is not None else "auto"
+        )
+        if actor.endpoint.parallel_tool_calls is not None:
+            params["parallel_tool_calls"] = actor.endpoint.parallel_tool_calls
 
     # Handle thinking/reasoning based on model's thinking_format
     # Different providers use different param formats to enable thinking
@@ -875,6 +890,8 @@ async def rollout_openai(
         tools=_tool_names,
         temperature=actor.endpoint.temperature,
         max_tokens=params.get("max_tokens") or params.get("max_completion_tokens"),
+        tool_choice=params.get("tool_choice"),
+        parallel_tool_calls=params.get("parallel_tool_calls"),
     )
 
     # Tiger Style: Minimal validation to catch common bugs before API call
