@@ -128,13 +128,12 @@ endpoint = OwnedEndpoint(
     capabilities=EndpointCapabilities(weight_sync=None),
     startup_timeout=7200.0,
     max_tokens=1024,  # override the 256-tok bench default — RP replies need room
-    # V3.2 with the tool_chat_template + thinking=false (default) sometimes
+    # Leave extra_params unset. Tried thinking=true — makes V3.2 emit an
+    # empty <think></think> and stop (worse than the default). Tried
+    # thinking=false (template default) — about 30-50% of the time the model
     # echoes the user's last message verbatim instead of producing a new turn.
-    # Forcing thinking=true swaps "<｜Assistant｜></think>" (closing think with
-    # no opening) for "<｜Assistant｜><think>", which puts the model in the
-    # reasoning regime it was actually trained for. The reasoning-parser
-    # will then split think content from final reply.
-    extra_params={"chat_template_kwargs": {"thinking": True}},
+    # Neither option is reliable; the flakiness appears to be server-side
+    # (different KV cache / NSA prefill init state per container launch).
 )
 
 # ---------------------------------------------------------------------------
