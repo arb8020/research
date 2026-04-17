@@ -24,6 +24,7 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
+from typing import Any
 
 from rollouts.eval import AgentRunSpec, EvalOutputConfig, EvalRunConfig, EvalTaskSpec
 from rollouts.eval.configs import EndpointCapabilities, OwnedEndpoint
@@ -120,6 +121,12 @@ endpoint = OwnedEndpoint(
     capabilities=EndpointCapabilities(weight_sync=None),
     startup_timeout=7200.0,
     max_tokens=1024,  # override the 256-tok bench default — RP replies need room
+    # DeepSeek V3.2's chat template defaults thinking=false, which emits
+    # "<｜Assistant｜></think>" as the generation prompt (closing-think with
+    # no opening). The model echoes the user turn in this state. Passing
+    # thinking=true emits "<｜Assistant｜><think>" which V3.2 handles
+    # correctly (reasons first, then produces the final reply).
+    extra_params={"chat_template_kwargs": {"thinking": True}},
 )
 
 # ---------------------------------------------------------------------------
@@ -131,12 +138,21 @@ def _load_tasks() -> list[dict]:
     return [json.loads(line) for line in TASKS_PATH.read_text().splitlines() if line.strip()]
 
 
+# DialogueEnvironment has no tools, so "no tool call this turn" isn't a
+# termination signal. Override eval/run.py's default stop_on_no_tool with a
+# noop so max_turns drives termination. (Same issue we hit on the
+# EvalSpec path via has_tools=False; AgentRunSpec has its own override.)
+async def _noop_no_tool(state: Any, _run_config: Any) -> Any:
+    return state
+
+
 eval_task = EvalTaskSpec(
     tasks=_load_tasks()[:1],  # smoke: 1 scenario
     run_spec=AgentRunSpec(
         endpoint=endpoint,
         prepare_messages=prepare_messages,
         environment_factory=make_environment,
+        handle_no_tool=_noop_no_tool,
     ),
     scorer=FunctionScorer(score_sample),
     run=EvalRunConfig(
