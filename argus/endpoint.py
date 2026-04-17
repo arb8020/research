@@ -98,16 +98,28 @@ def _load_eval_task(config_path: Path) -> Any:
 # ──────────────────────── Child (detached worker) ────────────────────────────
 
 
-async def _run_detached(name: str, config_path: Path, force_deploy_committed: bool) -> None:
+async def _run_detached(
+    name: str,
+    config_path: Path,
+    force_deploy_committed: bool,
+    events: Any,
+) -> None:
     """Body of the detached process.
 
     Enters the realize_worker_backed_endpoint context, writes the tunneled URL
     into the handle file, then blocks until SIGTERM. On SIGTERM the context
     exits cleanly (docker rm, tunnel close).
+
+    All lifecycle transitions are emitted to the JSONL journal via `events`.
+    realize_worker_backed_endpoint also receives `events` as run_logger so its
+    own per-step events (image pull, container launch, readiness poll, tunnel
+    open) land in the same journal — one place to look when debugging.
     """
     import trio
 
     from rollouts.eval.endpoint_realization import realize_worker_backed_endpoint
+
+    from .event_log import emit_run_event
 
     eval_task = _load_eval_task(config_path)
     endpoint_config = eval_task.run_spec.endpoint
@@ -116,6 +128,14 @@ async def _run_detached(name: str, config_path: Path, force_deploy_committed: bo
 
     output_dir = Path.cwd() / "results" / "endpoint" / name
     output_dir.mkdir(parents=True, exist_ok=True)
+
+    emit_run_event(
+        events,
+        "endpoint_child_started",
+        name=name,
+        config_path=str(config_path),
+        force_deploy_committed=force_deploy_committed,
+    )
 
     # Use trio's signal handling so the async context manager gets cancelled
     # cleanly rather than the process being SIGKILL'd mid-teardown. Signal
@@ -126,11 +146,13 @@ async def _run_detached(name: str, config_path: Path, force_deploy_committed: bo
 
         async def wait_for_signal() -> None:
             with trio.open_signal_receiver(signal.SIGTERM, signal.SIGINT) as sigs:
-                async for _ in sigs:
+                async for sig in sigs:
+                    emit_run_event(events, "endpoint_signal_received", signal=int(sig))
                     nursery.cancel_scope.cancel()
                     return
 
         async def run_endpoint() -> None:
+            emit_run_event(events, "endpoint_realize_start")
             async with realize_worker_backed_endpoint(
                 endpoint_config=endpoint_config,
                 output_dir=output_dir,
@@ -138,9 +160,10 @@ async def _run_detached(name: str, config_path: Path, force_deploy_committed: bo
                 server_config=server_config,
                 run_name=name,
                 force_deploy_committed=force_deploy_committed,
-                run_logger=None,
+                run_logger=events,
             ) as realized:
                 url = realized.endpoint_config.base_url
+                emit_run_event(events, "endpoint_ready", url=url, metadata=realized.metadata)
                 # Publish URL to handle file so parent process can return.
                 handle = _read_handle(name) or {}
                 handle["url"] = url
@@ -151,40 +174,65 @@ async def _run_detached(name: str, config_path: Path, force_deploy_committed: bo
                 # Block until nursery is cancelled (SIGTERM).
                 await trio.sleep_forever()
 
+            emit_run_event(events, "endpoint_teardown_done")
+
         nursery.start_soon(wait_for_signal)
         nursery.start_soon(run_endpoint)
 
+    emit_run_event(events, "endpoint_child_exiting")
     # Clean up handle file on normal exit. (It may already be gone if `down`
     # removed it after we exited the context.)
     _remove_handle(name)
 
 
 def _run_detached_main(argv: list[str]) -> int:
-    """Entry for the detached child. Not user-facing."""
+    """Entry for the detached child. Not user-facing.
+
+    All lifecycle is captured in a JSONL event journal at
+    ~/.argus/endpoints/logs/<name>.jsonl — human-readable via `jq`, diffable,
+    queryable by status/time. stdout/stderr from third-party libraries is
+    redirected to .out/.err as a fallback for anything that bypasses our
+    event stream (e.g. uncaught library prints, tracebacks from
+    pre-trio-run code).
+    """
+    import traceback
+
+    import trio
+
+    from .event_log import build_jsonl_run_event_sinks, emit_run_event
+
     parser = argparse.ArgumentParser(prog="argus endpoint __child__")
     parser.add_argument("--name", required=True)
     parser.add_argument("--config", required=True, type=Path)
     parser.add_argument("--force-deploy-committed", action="store_true")
     args = parser.parse_args(argv)
 
-    # Redirect stdout/stderr to log files for later inspection.
     logs_dir = Path.home() / ".argus" / "endpoints" / "logs"
     logs_dir.mkdir(parents=True, exist_ok=True)
-    stdout_path = logs_dir / f"{args.name}.out"
-    stderr_path = logs_dir / f"{args.name}.err"
-    sys.stdout = open(stdout_path, "a", buffering=1)
-    sys.stderr = open(stderr_path, "a", buffering=1)
 
-    import traceback
+    # Fallback capture for stdout/stderr from library code that bypasses the
+    # event log. Our own messages go through emit_run_event below.
+    sys.stdout = open(logs_dir / f"{args.name}.out", "a", buffering=1)
+    sys.stderr = open(logs_dir / f"{args.name}.err", "a", buffering=1)
 
-    import trio
+    events = build_jsonl_run_event_sinks(logs_dir / f"{args.name}.jsonl")
 
     try:
-        trio.run(_run_detached, args.name, args.config, args.force_deploy_committed)
+        trio.run(
+            _run_detached,
+            args.name,
+            args.config,
+            args.force_deploy_committed,
+            events,
+        )
     except Exception as exc:
-        print(f"detached endpoint crashed: {exc!r}", flush=True)
-        traceback.print_exc()
-        # Annotate the handle so the user can see the failure.
+        emit_run_event(
+            events,
+            "endpoint_child_crashed",
+            error=repr(exc),
+            traceback=traceback.format_exc(),
+        )
+        # Annotate the handle so the user can see the failure status.
         handle = _read_handle(args.name) or {}
         handle["status"] = "crashed"
         handle["error"] = repr(exc)
@@ -249,9 +297,11 @@ def _cmd_up(args: argparse.Namespace) -> int:
     handle["pid"] = proc.pid
     _write_handle(name, handle)
 
+    logs_dir = Path.home() / ".argus" / "endpoints" / "logs"
     print(f"Endpoint '{name}' launching (pid {proc.pid})")
     print(f"  config: {config_path}")
-    print(f"  logs:   {Path.home() / '.argus' / 'endpoints' / 'logs' / f'{name}.err'}")
+    print(f"  events: {logs_dir / f'{name}.jsonl'}")
+    print(f"  stderr: {logs_dir / f'{name}.err'}")
     print(f"  waiting for URL (up to {STARTUP_WAIT_S}s)...")
 
     # Poll the handle until URL appears or child dies.
@@ -318,6 +368,26 @@ def _cmd_down(args: argparse.Namespace) -> int:
     return 1
 
 
+def _cmd_logs(args: argparse.Namespace) -> int:
+    logs_dir = Path.home() / ".argus" / "endpoints" / "logs"
+    jsonl_path = logs_dir / f"{args.name}.jsonl"
+    if not jsonl_path.exists():
+        print(f"No event log for '{args.name}' at {jsonl_path}", file=sys.stderr)
+        return 1
+    with jsonl_path.open() as f:
+        for line in f:
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                print(line, end="")
+                continue
+            ts = entry.pop("ts", "")
+            event = entry.pop("event", "?")
+            rest = json.dumps(entry, default=str)
+            print(f"{ts}  {event}  {rest}")
+    return 0
+
+
 def _cmd_list(args: argparse.Namespace) -> int:
     handles = sorted(_handles_dir().glob("*.json"))
     if not handles:
@@ -357,6 +427,10 @@ def endpoint_main(argv: list[str]) -> int:
 
     ls = sub.add_parser("list", help="List active endpoints")
     ls.set_defaults(func=_cmd_list)
+
+    logs = sub.add_parser("logs", help="Show the JSONL event log for an endpoint")
+    logs.add_argument("name")
+    logs.set_defaults(func=_cmd_logs)
 
     args = parser.parse_args(argv)
     return args.func(args)
