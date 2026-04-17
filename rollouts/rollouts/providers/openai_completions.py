@@ -480,6 +480,13 @@ async def aggregate_stream(
 
             accumulated_content += delta.content
             await on_chunk(TextDelta(content_index=content_index, delta=delta.content))
+        else:
+            # DEBUG: track chunks that came in but had no .content — possibly the bug
+            delta_dump = delta.model_dump() if hasattr(delta, "model_dump") else vars(delta)
+            logger.debug(
+                "[DEBUG aggregate_stream] chunk with no delta.content, delta=%s",
+                delta_dump,
+            )
 
         # Handle tool calls
         if delta.tool_calls:
@@ -590,6 +597,16 @@ async def aggregate_stream(
 
     # Emit done event
     await on_chunk(StreamDone(finish_reason=finish_reason or "stop"))
+
+    # DEBUG: trace what accumulated_content looks like
+    logger.info(
+        "[DEBUG aggregate_stream] accumulated_content_len=%d accumulated_thinking_len=%d n_tool_calls=%d finish_reason=%s accumulated_content_preview=%r",
+        len(accumulated_content),
+        len(accumulated_thinking),
+        len(tool_calls),
+        finish_reason,
+        accumulated_content[:200] if accumulated_content else "<empty>",
+    )
 
     # Build final message with ContentBlocks
     content_blocks: list = []
