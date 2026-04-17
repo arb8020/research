@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import sys
 
+from .endpoint import endpoint_main
 from .monitor import monitor_main
 from .run import run_main
 from .tail import tail_main
@@ -27,6 +28,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if argv and argv[0] == "tail":
         return tail_main(argv[1:])
+
+    if argv and argv[0] == "endpoint":
+        return endpoint_main(argv[1:])
 
     parser = argparse.ArgumentParser(prog="argus", description="Argus control plane")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -64,6 +68,20 @@ def main(argv: list[str] | None = None) -> int:
         help="Arguments for the Argus tail entrypoint.",
     )
 
+    endpoint_parser = subparsers.add_parser(
+        "endpoint",
+        help="Manage long-lived owned endpoints (up/down/list)",
+        description=(
+            "Launch and tear down owned endpoints independently of eval runs, for "
+            "interactive probing or re-running evals against a warm server."
+        ),
+    )
+    endpoint_parser.add_argument(
+        "args",
+        nargs=argparse.REMAINDER,
+        help="Arguments for the Argus endpoint entrypoint.",
+    )
+
     args = parser.parse_args(argv)
 
     if args.command == "run":
@@ -74,6 +92,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "tail":
         return tail_main(args.args)
+
+    if args.command == "endpoint":
+        return endpoint_main(args.args)
 
     print(f"Unknown command: {args.command}", file=sys.stderr)
     return 1
