@@ -6,18 +6,41 @@ session store as they arrive, not just after the run completes.
 Requires: claude CLI installed and ANTHROPIC_API_KEY set.
 """
 
-import json
 import os
 from pathlib import Path
 
 import pytest
 
 from rollouts.agents import RunConfig, stdout_handler
+from rollouts.core.session import EnvironmentConfig
+from rollouts.dtypes import Endpoint
 from rollouts.environments.local_workspace_resource import LocalWorkspaceResource
 from rollouts.eval.external_attempts import trajectory_from_claude_code
-from rollouts.store import FileSessionStore, generate_session_id
+from rollouts.store import FileSessionStore
 
 pytestmark = pytest.mark.live
+
+
+# TODO(test-fixture-honesty): these tests used to write a hand-crafted
+# session.json with just {"session_id", "tags"}. That shape predated the
+# store's real persistence format (now requires endpoint + environment +
+# leaf_id + branch_point + ...). Instead of chasing the schema, we now use
+# store.create(endpoint, environment) — the same entry point real callers
+# use. A bigger cleanup would be: audit other tests under tests/ for
+# hand-crafted session fixtures and replace them with store.create too.
+def _make_fixture_endpoint() -> Endpoint:
+    """Minimal endpoint for fixture sessions that don't drive real LLM calls."""
+    return Endpoint(
+        model="anthropic/claude-haiku-4-5",
+        base_url="https://api.anthropic.com/v1",
+        api_format="anthropic-messages",
+    )
+
+
+def _make_fixture_environment() -> EnvironmentConfig:
+    """Minimal environment config — tests use a local workspace, not a sandboxed
+    environment, so 'local' type with no extra config is honest."""
+    return EnvironmentConfig(type="local")
 
 
 @pytest.mark.trio
@@ -35,11 +58,14 @@ async def test_trajectory_from_claude_code_writes_messages_to_session_store(
     store_dir = tmp_path / "sessions"
     store = FileSessionStore(base_dir=store_dir)
 
-    # Caller creates the session before launching the agent.
-    session_id = generate_session_id()
-    session_dir = store_dir / session_id
-    session_dir.mkdir(parents=True)
-    (session_dir / "session.json").write_text(json.dumps({"session_id": session_id, "tags": {}}))
+    # Caller creates the session before launching the agent, via the same
+    # entry point real callers use (avoids drift from a hand-crafted fixture).
+    initial_trajectory = await store.create(
+        endpoint=_make_fixture_endpoint(),
+        environment=_make_fixture_environment(),
+    )
+    session_id = initial_trajectory.session.session_id
+    assert session_id is not None
 
     workspace_dir = tmp_path / "workspace"
     workspace_dir.mkdir()
@@ -93,10 +119,12 @@ async def test_trajectory_from_claude_code_stores_cli_session_id(
     store_dir = tmp_path / "sessions"
     store = FileSessionStore(base_dir=store_dir)
 
-    session_id = generate_session_id()
-    session_dir = store_dir / session_id
-    session_dir.mkdir(parents=True)
-    (session_dir / "session.json").write_text(json.dumps({"session_id": session_id, "tags": {}}))
+    initial_trajectory = await store.create(
+        endpoint=_make_fixture_endpoint(),
+        environment=_make_fixture_environment(),
+    )
+    session_id = initial_trajectory.session.session_id
+    assert session_id is not None
 
     workspace_dir = tmp_path / "workspace"
     workspace_dir.mkdir()
