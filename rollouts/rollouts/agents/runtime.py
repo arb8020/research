@@ -1,4 +1,9 @@
 # Core agent execution framework
+#
+# REFACTOR IN PROGRESS: first-classing effects in the session log.
+# See runtime_refactor.md (alongside this file) for framing and the list of
+# gross points (G1–G6) referenced by inline TODOs below.
+# See /docs/design/session_ownership.md for the full ownership model.
 
 import logging
 import time
@@ -376,6 +381,10 @@ async def run_agent_step(
     )
 
     # Extract tool calls from last message (if it's an assistant message)
+    # TODO(session-refactor G1): reparsing `ToolCallContent` blocks out of the
+    # assistant message every turn is the tell that effects aren't first-class.
+    # After refactor: assistant emits `ToolCall` entries directly into the session;
+    # this extraction step goes away. See runtime_refactor.md.
     last_message = next_actor.trajectory.messages[-1] if next_actor.trajectory.messages else None
     tool_calls = []
     if last_message and last_message.role == "assistant":
@@ -399,15 +408,29 @@ async def run_agent_step(
         )
 
     # Update state with new actor AND pending tools
+    # TODO(session-refactor G4): `pending_tool_calls` + `next_tool_idx` in
+    # AgentState duplicate information derivable from the session (the latest
+    # `ToolCall` entries without matching `ToolResult` entries ARE the pending
+    # set). After refactor: AgentState gets thinner; resume derives pending
+    # from session. See runtime_refactor.md.
     current_state = replace(state, actor=next_actor, pending_tool_calls=tool_calls, next_tool_idx=0)
 
     # Persist assistant message immediately after rollout
+    # TODO(session-refactor G3): `append_message` is the only sink into the
+    # session. After refactor: `session_store.append_entry(entry: SessionEntry)`
+    # where SessionEntry includes AssistantTurn / ToolCall / ToolResult as
+    # first-class kinds. See runtime_refactor.md.
     if rcfg.session_store and state.session_id and last_message:
         await rcfg.session_store.append_message(state.session_id, last_message)
 
     # Let environment respond to assistant message (e.g., execute code, provide feedback)
     # This happens AFTER updating state but BEFORE tool processing
     # Only call if we actually have an assistant message
+    # TODO(session-refactor G5): this is an out-of-band channel for
+    # environment-initiated reactions that mutates AgentState directly. After
+    # refactor: the environment appends effect entries to the session in
+    # response to an AssistantTurn, same shape as any other effect — not a
+    # special callback that edits state. See runtime_refactor.md.
     on_assistant_message = getattr(state.environment, "on_assistant_message", None)
     if (
         state.environment
@@ -776,6 +799,13 @@ async def process_pending_tools(
 
         # Add tool result message
         # Always include content - it has structured stdout/stderr even on error
+        # TODO(session-refactor G2): `ToolResult` has structured fields
+        # (`is_error`, `error`, `details`) that get flattened into a tool-role
+        # Message here. `is_error` and `error` don't survive as first-class on
+        # the session side — scorers and external adapters have to reconstruct.
+        # After refactor: append `ToolResult` directly to the session as its
+        # own entry kind; render to `Message` only when building LLM context.
+        # See runtime_refactor.md.
         result_message = Message(
             role="tool",
             content=tool_result.content,

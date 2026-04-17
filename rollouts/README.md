@@ -589,6 +589,6 @@ rollouts --preset fast_coder
 
 ## See Also
 
-- `docs/SESSION_DESIGN.md` - Session persistence and handoff design
+- `/docs/design/session_ownership.md` - Session / Environment / Trajectory ownership model (current direction; prior session-related docs archived under `docs/archive/session/` and `rollouts/docs/archive/session/`)
 - `rollouts/agent_presets/README.md` - Creating custom presets
 - `rollouts/agent_presets/sonnet_4_subagent_03_02.py` - Sub-agent spawning preset with system prompt guidance
