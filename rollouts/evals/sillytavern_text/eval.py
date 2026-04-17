@@ -159,7 +159,7 @@ async def make_environment(sample: dict[str, Any]) -> DialogueEnvironment:
     )
 
 
-def score_sample(sample: Any) -> Score:
+def score_sample(sample: Any, _context: Any = None) -> Score:
     """v0 scoring: trace-length sanity + no-op quality signal.
 
     Real scoring (LLM-as-judge on in-character fidelity, lore consistency,

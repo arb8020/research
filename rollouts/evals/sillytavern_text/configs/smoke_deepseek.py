@@ -128,12 +128,12 @@ endpoint = OwnedEndpoint(
     capabilities=EndpointCapabilities(weight_sync=None),
     startup_timeout=7200.0,
     max_tokens=1024,  # override the 256-tok bench default — RP replies need room
-    # chat_template_kwargs.thinking=True: DeepSeek V3.2's jinja template
-    # defaults thinking=false, which emits "<｜Assistant｜></think>" (closing
-    # think tag with no opening) as the generation prompt. thinking=true
-    # emits "<｜Assistant｜><think>" which V3.2 handles correctly.
-    # Flows through to SGLang via extra_body in the OpenAI SDK call.
-    extra_params={"chat_template_kwargs": {"thinking": True}},
+    # Leave extra_params unset. Earlier we tried thinking=true — it emits
+    # "<｜Assistant｜><think>" which under the deepseek-v3 reasoning parser
+    # produces an immediately-closed think with no reply. The template's
+    # default (thinking=false → "<｜Assistant｜></think>") is the non-reasoning
+    # generation-prompt signal and is what the reasoning parser expects.
+    # extra_params=None,
 )
 
 # ---------------------------------------------------------------------------
