@@ -956,10 +956,13 @@ async def _run_agent_with_error_handling(
         logger.warning(
             f"Sample {sample_id} provider_error: {error_message} (attempts: {e.attempts})"
         )
+        # Recover partial states if run_agent attached them before re-raising.
+        partial_states = getattr(e, "partial_states", None) or [initial_state]
+        base_traj = partial_states[-1].actor.trajectory
         final_trajectory = replace(
-            initial_state.actor.trajectory,
+            base_traj,
             metadata={
-                **initial_state.actor.trajectory.metadata,
+                **base_traj.metadata,
                 "error": error_message,
                 "error_type": "provider_error",
                 "provider": e.provider,
@@ -967,7 +970,7 @@ async def _run_agent_with_error_handling(
             },
         )
         return _AgentRunResult(
-            states=[initial_state],
+            states=partial_states,
             final_trajectory=final_trajectory,
             error_message=error_message,
             is_provider_error=True,
@@ -976,16 +979,22 @@ async def _run_agent_with_error_handling(
     except Exception as e:
         error_message = f"{type(e).__name__}: {str(e)}"
         logger.warning(f"Sample {sample_id} failed: {error_message}")
+        # Recover partial states if run_agent attached them before re-raising.
+        # Without this, debugging mid-run failures is painful — the sample JSON
+        # shows only system + initial user, hiding everything the agent produced
+        # before the crash.
+        partial_states = getattr(e, "partial_states", None) or [initial_state]
+        base_traj = partial_states[-1].actor.trajectory
         final_trajectory = replace(
-            initial_state.actor.trajectory,
+            base_traj,
             metadata={
-                **initial_state.actor.trajectory.metadata,
+                **base_traj.metadata,
                 "error": error_message,
                 "error_type": "failed",
             },
         )
         return _AgentRunResult(
-            states=[initial_state],
+            states=partial_states,
             final_trajectory=final_trajectory,
             error_message=error_message,
             is_provider_error=False,
@@ -1776,6 +1785,9 @@ def compute_summary_metrics(
         1 for call in llm_calls if call.get("status") != "success"
     )
     if llm_calls:
+        # TODO: Roll cache_read_tokens/cache_write_tokens into the summary report.
+        # Providers already emit these per call, but eval-level reports currently
+        # drop them, which makes prompt-cache economics hard to reason about.
         summary["llm_tokens_in_total"] = sum(
             int(call["tokens_in"]) for call in llm_calls if call.get("tokens_in") is not None
         )

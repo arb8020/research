@@ -1064,6 +1064,14 @@ async def run_agent(
         # Return states instead of re-raising - caller can check stop reason
         return states
 
+    except Exception as e:
+        # Attach in-progress states to the exception so caller can recover the
+        # partial trajectory. Without this, downstream error handlers see only
+        # the initial state and the real conversation up to the failure point
+        # gets lost — makes debugging mid-run failures painful.
+        e.partial_states = states  # type: ignore[attr-defined]
+        raise
+
     # Save final state
     await handle_checkpoint_event(current_state, "final", run_config, current_state.session_id)
 
