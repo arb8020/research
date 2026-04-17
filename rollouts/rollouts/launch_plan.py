@@ -78,6 +78,38 @@ def build_local_eval_launch_plan(
     )
 
 
+def build_local_serving_launch_plan(
+    *,
+    config_path: Path,
+    repo_root: Path,
+    force_deploy_committed: bool,
+    python_executable: str | None = None,
+) -> LocalSubprocessLaunchPlan:
+    """Build the local serving subprocess plan."""
+
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    run_name = f"run_{timestamp}"
+    run_dir = repo_root / "results" / "serving" / run_name
+    command = [
+        python_executable or sys.executable,
+        "-m",
+        "rollouts.serving.supervisor",
+        "--config",
+        str(config_path),
+        "--output-dir",
+        str(run_dir),
+    ]
+    if force_deploy_committed:
+        command.append("--force-deploy-committed")
+    return LocalSubprocessLaunchPlan(
+        run_name=run_name,
+        run_dir=run_dir,
+        journal_name="control.jsonl",
+        command=tuple(command),
+        kind="serving",
+    )
+
+
 def build_local_training_launch_plan(
     *,
     config_module: Any,
@@ -135,20 +167,37 @@ def build_local_benchmark_launch_plan(
 
 def resolve_workload_kind(config_module: Any, config_path: Path) -> str:
     """Resolve the Rollouts workload kind for one config module."""
-    from rollouts.config_contracts import validate_eval_config_module, validate_train_config_module
-    from rollouts.inference.benchmark.config import BenchmarkConfig
+    from rollouts.config_contracts import (
+        validate_eval_config_module,
+        validate_serving_config_module,
+        validate_train_config_module,
+    )
 
     train_error: ValueError | None = None
     eval_error: ValueError | None = None
+    serving_error: ValueError | None = None
 
     try:
         validate_train_config_module(config_module, config_path)
     except ValueError as exc:
         train_error = exc
     else:
+        # Lazy import: rollouts.inference.benchmark.config → rollouts.inference
+        # (package __init__) → rollouts.inference.core does `import torch` at
+        # module load. Dispatching a serving or eval config shouldn't require
+        # torch in the local venv, so this stays scoped to the training branch
+        # where BenchmarkConfig is actually needed.
+        from rollouts.inference.benchmark.config import BenchmarkConfig  # noqa: PLC0415
+
         if isinstance(config_module.config, BenchmarkConfig):
             return "benchmark"
         return "training"
+
+    try:
+        validate_serving_config_module(config_module, config_path)
+        return "serving"
+    except ValueError as exc:
+        serving_error = exc
 
     try:
         validate_eval_config_module(config_module, config_path)
@@ -157,9 +206,10 @@ def resolve_workload_kind(config_module: Any, config_path: Path) -> str:
         eval_error = exc
 
     raise ValueError(
-        f"Config {config_path} is neither a valid training config nor a valid eval config.\n"
+        f"Config {config_path} is neither a valid training config, eval config, nor serving config.\n"
         f"Training contract error: {train_error}\n"
-        f"Eval contract error: {eval_error}"
+        f"Eval contract error: {eval_error}\n"
+        f"Serving contract error: {serving_error}"
     )
 
 
@@ -184,6 +234,13 @@ def build_local_workload_plan(
             config_path=config_path,
             repo_root=repo_root,
             max_samples=max_samples,
+            force_deploy_committed=force_deploy_committed,
+            python_executable=python_executable,
+        )
+    if workload_kind == "serving":
+        return build_local_serving_launch_plan(
+            config_path=config_path,
+            repo_root=repo_root,
             force_deploy_committed=force_deploy_committed,
             python_executable=python_executable,
         )
