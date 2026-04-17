@@ -39,6 +39,17 @@ tinygrad-webgpu = [
     "dawn-python>=0.3.0",
 ]
 
+# Harbor (Terminal-Bench 2.0 / SWE-Bench / etc.) integration is opt-in
+# via an out-of-workspace install, NOT an extra here. Harbor pulls
+# supabase>=2.28 which requires websockets<16; that collides with
+# poke-env's websockets==16 in dev/pokemon-rl. Rather than force the
+# whole workspace to one side of that conflict, harbor_environment.py
+# lazy-imports harbor and raises a helpful ImportError if it's not
+# installed. Users who want Harbor runs install it into their venv
+# themselves:
+#   uv pip install 'harbor @ git+https://github.com/laude-institute/harbor.git@e0fcdc2'
+# See rollouts/rollouts/environments/harbor_environment.py.
+
 # Training (RL, torch, etc.)
 training = [
     "torch>=2.0.0",
