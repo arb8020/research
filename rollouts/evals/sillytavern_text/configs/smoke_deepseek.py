@@ -128,12 +128,14 @@ endpoint = OwnedEndpoint(
     capabilities=EndpointCapabilities(weight_sync=None),
     startup_timeout=7200.0,
     max_tokens=1024,  # override the 256-tok bench default — RP replies need room
-    # Leave extra_params unset. Earlier we tried thinking=true — it emits
-    # "<｜Assistant｜><think>" which under the deepseek-v3 reasoning parser
-    # produces an immediately-closed think with no reply. The template's
-    # default (thinking=false → "<｜Assistant｜></think>") is the non-reasoning
-    # generation-prompt signal and is what the reasoning parser expects.
-    # extra_params=None,
+    # Disable logprobs. rollout_openai hardcodes logprobs=True for GRPO
+    # training support (openai_completions.py:823). For DeepSeek V3.2 on
+    # SGLang with long prompts, that combination causes the model to emit
+    # EOS as the first token (content=null, completion_tokens=1). Confirmed
+    # by direct probe: same request with logprobs=False returns a 33-token
+    # in-character reply; with logprobs=True returns EOS only.
+    # Delivered via the OpenAI SDK's extra_body, which overrides top-level.
+    extra_params={"logprobs": False},
 )
 
 # ---------------------------------------------------------------------------
