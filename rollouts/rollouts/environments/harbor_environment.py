@@ -31,14 +31,42 @@ See also:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import tempfile
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypeVar
+
+import trio
 
 from .coding import CodingEnvironment
 from .resources import CommandExecutionResult
+
+_T = TypeVar("_T")
+
+
+async def _aio_in_thread(coro_factory: Callable[[], Awaitable[_T]]) -> _T:
+    """Run a Harbor asyncio coroutine from inside trio.
+
+    Harbor uses asyncio internally (e.g. `asyncio.create_subprocess_exec` in
+    DockerEnvironment). Our runtime uses trio. These don't share event
+    loops. To bridge, we spawn a thread via `trio.to_thread.run_sync`, open
+    a fresh asyncio loop inside it via `asyncio.run`, and drive the Harbor
+    coroutine to completion there. Trio cancellation still applies at the
+    thread boundary.
+
+    Each call is its own short-lived asyncio loop. Sufficient for our
+    Harbor usage (tens of calls per sample). If this becomes a hotpath or
+    we need shared asyncio state across calls, switch to trio_asyncio.
+    """
+
+    def _run() -> _T:
+        return asyncio.run(coro_factory())
+
+    return await trio.to_thread.run_sync(_run, abandon_on_cancel=True)
+
 
 if TYPE_CHECKING:
     # Harbor is an optional out-of-band install; don't import at module load.
@@ -108,7 +136,18 @@ class HarborWorkspaceResource:
         with tempfile.NamedTemporaryFile(delete=False) as tmp:
             local = Path(tmp.name)
         try:
-            await self.harbor_env.download_file(path, local)
+            try:
+                await _aio_in_thread(lambda: self.harbor_env.download_file(path, local))
+            except RuntimeError as exc:
+                # Harbor raises a generic RuntimeError when `docker compose cp`
+                # fails, including for legitimate "file does not exist" cases.
+                # Translate to FileNotFoundError so the coding environment's
+                # existence-check pattern (try read_file; except
+                # FileNotFoundError: treat as create) works as intended.
+                msg = str(exc).lower()
+                if "could not find the file" in msg or "no such file" in msg:
+                    raise FileNotFoundError(path) from exc
+                raise
             return local.read_bytes()
         finally:
             local.unlink(missing_ok=True)
@@ -119,7 +158,7 @@ class HarborWorkspaceResource:
             local = Path(tmp.name)
             local.write_bytes(content)
         try:
-            await self.harbor_env.upload_file(local, path)
+            await _aio_in_thread(lambda: self.harbor_env.upload_file(local, path))
         finally:
             local.unlink(missing_ok=True)
 
@@ -146,10 +185,12 @@ class HarborCommandRunner:
         # exec doesn't thread them; we accept and ignore. If cancellation matters
         # later, trio's cancel scope around the await should still work.
         del session_id, cancel_scope
-        result = await self.harbor_env.exec(
-            command=command,
-            cwd=cwd,
-            timeout_sec=int(timeout) if timeout else None,
+        result = await _aio_in_thread(
+            lambda: self.harbor_env.exec(
+                command=command,
+                cwd=cwd,
+                timeout_sec=int(timeout) if timeout else None,
+            )
         )
         return CommandExecutionResult(
             returncode=result.return_code,
@@ -334,7 +375,7 @@ class HarborEnvironment(CodingEnvironment):
             session_id,
             force_build,
         )
-        await harbor_env.start(force_build=force_build)
+        await _aio_in_thread(lambda: harbor_env.start(force_build=force_build))
         logger.info("HarborEnvironment.create: started")
 
         workspace = HarborWorkspaceResource(harbor_env=harbor_env, working_dir=working_dir)
@@ -351,7 +392,7 @@ class HarborEnvironment(CodingEnvironment):
         """Stop the Harbor container. `delete=True` also removes it."""
         logger.info("HarborEnvironment.close: stopping (delete=%s)", delete)
         try:
-            await self.harbor_env.stop(delete=delete)
+            await _aio_in_thread(lambda: self.harbor_env.stop(delete=delete))
         except Exception as exc:
             # Don't crash eval teardown because Harbor had trouble stopping.
             logger.warning("HarborEnvironment.close: harbor_env.stop raised: %s", exc)
