@@ -38,6 +38,7 @@ from ..drivers.runner import (
     _FlushAssistantMessage,
     _make_raw_driver_line_handler,
 )
+from ..environments.external_agent_environments import ClaudeCodeEnvironment, CodexEnvironment
 from ..environments.local_workspace_resource import LocalWorkspaceResource
 from ..environments.resources import ExecSpec, SandboxWorkspaceResource
 from ..eval.types import ExternalAttemptArtifact
@@ -1118,6 +1119,60 @@ async def _run_agent_in_workspace(
     return ExternalAttemptArtifact(trajectory=trajectory, metadata=metadata)
 
 
+async def run_external_agent(
+    env: ClaudeCodeEnvironment | CodexEnvironment,
+    prompt: str,
+    run_config: Any | None,
+    *,
+    sample_id: str,
+    cwd: str,
+    base_command: list[str],
+    timeout_seconds: float = 600.0,
+) -> ExternalAttemptArtifact:
+    """Launch an external-agent CLI inside env.workspace, poll its output,
+    translate each event via env.translate_harness_event, append Messages
+    to the session store, and return the artifact.
+
+    base_command is the CLI invocation up to (but not including) env-specific
+    tool flags — e.g. ["claude", "--print", "--verbose", "--model", "sonnet"].
+    env.get_launch_flags() appends allowed-tools / mcp-config flags on top.
+
+    If env.mcp_tools is non-empty, writes the config file to the env's
+    configured path (mcp_config_path / codex_config_path) via workspace.write_file
+    before launch, so the CLI can find it at the expected location.
+    """
+    if isinstance(env, ClaudeCodeEnvironment):
+        runtime: Literal["claude_code", "codex"] = "claude_code"
+        if env.mcp_tools:
+            assert env.mcp_config_path is not None  # get_launch_flags raises too; belt+suspenders
+            await env.workspace.write_file(
+                str(env.mcp_config_path),
+                env.mcp_config_json().encode("utf-8"),
+            )
+    elif isinstance(env, CodexEnvironment):
+        runtime = "codex"
+        if env.mcp_tools:
+            assert env.codex_config_path is not None
+            await env.workspace.write_file(
+                str(env.codex_config_path),
+                env.codex_mcp_config_toml().encode("utf-8"),
+            )
+    else:
+        raise TypeError(f"run_external_agent: unrecognised env type {type(env)!r}")
+
+    command = base_command + env.get_launch_flags()
+    return await _run_agent_in_workspace(
+        runtime=runtime,
+        prompt=prompt,
+        sample_id=sample_id,
+        workspace=env.workspace,
+        cwd=cwd,
+        run_config=run_config,
+        command=command,
+        timeout_seconds=timeout_seconds,
+    )
+
+
 async def trajectory_from_remote_claude_code(
     prompt: str,
     sample_id: str,
@@ -1133,7 +1188,7 @@ async def trajectory_from_remote_claude_code(
     timeout_seconds: float = 600.0,
 ) -> ExternalAttemptArtifact:
     del sample_data
-    command = [
+    base_command = [
         "claude",
         "--print",
         "--verbose",
@@ -1144,19 +1199,20 @@ async def trajectory_from_remote_claude_code(
         model,
     ]
     if include_partial:
-        command.append("--include-partial-messages")
+        base_command.append("--include-partial-messages")
     if system_prompt:
-        command.extend(["--system-prompt", system_prompt])
+        base_command.extend(["--system-prompt", system_prompt])
     if allowed_tools:
-        command.extend(["--allowedTools", ",".join(allowed_tools)])
-    artifact = await _run_agent_in_workspace(
-        runtime="claude_code",
-        prompt=prompt,
+        # --allowedTools: legacy flag spelling kept for back-compat.
+        base_command.extend(["--allowedTools", ",".join(allowed_tools)])
+    env = ClaudeCodeEnvironment(workspace=workspace)
+    artifact = await run_external_agent(
+        env,
+        prompt,
+        run_config,
         sample_id=sample_id,
-        workspace=workspace,
         cwd=cwd,
-        run_config=run_config,
-        command=command,
+        base_command=base_command,
         timeout_seconds=timeout_seconds,
     )
     artifact.metadata["model"] = model
@@ -1176,7 +1232,7 @@ async def trajectory_from_remote_codex(
     timeout_seconds: float = 600.0,
 ) -> ExternalAttemptArtifact:
     del sample_data
-    command = [
+    base_command = [
         "codex",
         "exec",
         "--json",
@@ -1185,14 +1241,14 @@ async def trajectory_from_remote_codex(
         model,
         "--dangerously-bypass-approvals-and-sandbox",
     ]
-    artifact = await _run_agent_in_workspace(
-        runtime="codex",
-        prompt=prompt,
+    env = CodexEnvironment(workspace=workspace, sandbox_mode=sandbox)
+    artifact = await run_external_agent(
+        env,
+        prompt,
+        run_config,
         sample_id=sample_id,
-        workspace=workspace,
         cwd=cwd,
-        run_config=run_config,
-        command=command,
+        base_command=base_command,
         timeout_seconds=timeout_seconds,
     )
     artifact.metadata["model"] = model
