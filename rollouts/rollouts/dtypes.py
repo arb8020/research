@@ -689,6 +689,26 @@ class Message(JsonSerializable):
     # Session storage timestamp (optional, only set when persisting)
     timestamp: str | None = None
 
+    # Session tree structure (session refactor — see runtime_refactor.md).
+    #
+    # Every persisted message has a unique `id` within its session and a
+    # `parent_id` pointing at the message it extends (None for the first
+    # message in a session).
+    #
+    # For sub-step 1a (additive): these are assigned automatically by the
+    # session store on append if not provided. Existing callers don't pass
+    # them; linear history is preserved because parent_id gets set to the
+    # session's current leaf. Existing on-disk sessions (pre-refactor) load
+    # with these fields None — a migration-on-read step in the store
+    # synthesizes them so the linear-history property holds.
+    #
+    # For sub-step 1b (cutover): native loop / external adapters will pass
+    # parent_id explicitly, threading a leaf cursor through the run. That
+    # makes branching a first-class operation — append with an explicit
+    # parent_id pointing at a non-leaf message to fork.
+    id: str | None = None
+    parent_id: str | None = None
+
     def get_tool_calls(self) -> list[ToolCall]:
         """Extract tool calls from ContentBlocks.
 

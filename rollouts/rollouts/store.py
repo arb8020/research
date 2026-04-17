@@ -68,6 +68,16 @@ def generate_session_id() -> str:
     return f"{timestamp}_{random_suffix}"
 
 
+def generate_message_id() -> str:
+    """Generate a unique message ID within a session.
+
+    Short hex (8 chars). Collisions within a session are astronomically
+    unlikely at our message counts (~10^4 messages max would give < 10^-10
+    collision probability in a 2^32 space).
+    """
+    return os.urandom(4).hex()
+
+
 class SessionStore(Protocol):
     """Storage backend for persisted trajectories and live session handles.
 
@@ -342,6 +352,40 @@ class FileSessionStore:
                     if line:
                         messages.append(Message.from_json(line))
 
+        # Session refactor (sub-step 1a) — migration-on-read.
+        #
+        # Pre-refactor sessions have no `id` / `parent_id` fields on their
+        # messages. Synthesize them so loaded messages satisfy the tree
+        # invariants (unique id per message, parent_id points at the prior
+        # message for a linear history). Messages that already have `id`
+        # are left alone.
+        #
+        # This only affects the in-memory view. On-disk JSONL stays as it
+        # was written. Future appends to the session will read leaf_id
+        # from session.json (may be absent for pre-refactor sessions,
+        # which is fine — the first append starts a fresh linear thread).
+        #
+        # TODO(session-refactor sub-step 1b): seed messages constructed in
+        # Python (initial system/user messages built before run_agent) are
+        # not appended to the store until after the first LLM turn. This
+        # means on disk the seed messages have id=None/parent_id=None and
+        # the first truly-appended message has parent_id=None too, so the
+        # on-disk tree has multiple roots. Migration-on-read patches seeds
+        # into a coherent chain but the first stored message still appears
+        # as a separate root on disk. Fix: either append seed messages to
+        # the store in `ensure_persisted_session`, or carry a leaf cursor
+        # in AgentState that's initialized from the seed and threaded into
+        # the first append's `parent_id`. Lands with the explicit-cursor
+        # work in sub-step 1b.
+        prev_id: str | None = None
+        for i, msg in enumerate(messages):
+            if msg.id is not None:
+                prev_id = msg.id
+                continue
+            synthesized_id = generate_message_id()
+            messages[i] = replace(msg, id=synthesized_id, parent_id=prev_id)
+            prev_id = synthesized_id
+
         return Trajectory.from_session_record(session_data, messages), None
 
     async def get_trajectory(self, session_id: str) -> tuple[Trajectory | None, str | None]:
@@ -386,17 +430,63 @@ class FileSessionStore:
         return None, None
 
     async def append_message(self, session_id: str, message: Message) -> None:
-        """Append message to trajectory (streaming, append-only)."""
+        """Append message to trajectory (streaming, append-only).
+
+        Session refactor (sub-step 1a): if `message.id` is unset we assign a
+        fresh short hex id. If `message.parent_id` is unset we set it to the
+        session's current leaf (read from session.json's `leaf_id` field).
+        After the append, session.json's `leaf_id` is updated to the new
+        message's id so the next append continues the linear thread.
+
+        Callers can override either field to explicitly construct tree
+        structure (branching). Sub-step 1b threads explicit cursors through
+        the native loop and external adapters; 1a keeps everything
+        backwards-compatible by defaulting to linear-history behavior.
+
+        See rollouts/rollouts/agents/runtime_refactor.md.
+        """
         session_dir = self._session_dir(session_id)
         messages_file = session_dir / "messages.jsonl"
+        session_file = session_dir / "session.json"
 
         # Add timestamp if not present
         if message.timestamp is None:
             message = replace(message, timestamp=datetime.now().isoformat())
 
-        # Append-only (streaming safe)
+        # Read current leaf from session.json to set parent_id if caller
+        # didn't provide one. Tolerant of missing file / missing field —
+        # older sessions pre-refactor have no leaf_id; first append starts
+        # a new linear thread.
+        current_leaf: str | None = None
+        session_data: dict | None = None
+        if session_file.exists():
+            try:
+                session_data = await self._read_json(session_file)
+                current_leaf = session_data.get("leaf_id")
+            except Exception:
+                session_data = None
+
+        # Assign id if unset.
+        assigned_id = message.id or generate_message_id()
+        # Assign parent_id if unset. First-message-in-session has no parent.
+        assigned_parent = message.parent_id if message.parent_id is not None else current_leaf
+
+        if message.id != assigned_id or message.parent_id != assigned_parent:
+            message = replace(message, id=assigned_id, parent_id=assigned_parent)
+
+        # Append the message (append-only, streaming safe).
         async with await trio.open_file(messages_file, "a") as f:
             await f.write(message.to_json() + "\n")
+
+        # Update the session's leaf cursor to point at this message. This
+        # is a small mutable pointer on an otherwise append-only record —
+        # callers branching off an earlier message will override parent_id
+        # and subsequent appends under the same session_id will extend from
+        # this new leaf (which may not be what a branch author wants; that
+        # case is handled by passing leaf explicitly in sub-step 1b).
+        if session_data is not None:
+            session_data["leaf_id"] = assigned_id
+            await self._write_json(session_file, session_data)
 
         await self._sync_atif_artifact(session_id)
 
