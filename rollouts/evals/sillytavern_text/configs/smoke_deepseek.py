@@ -121,12 +121,21 @@ endpoint = OwnedEndpoint(
     capabilities=EndpointCapabilities(weight_sync=None),
     startup_timeout=7200.0,
     max_tokens=1024,  # override the 256-tok bench default — RP replies need room
-    # DeepSeek V3.2's chat template defaults thinking=false, which emits
-    # "<｜Assistant｜></think>" as the generation prompt (closing-think with
-    # no opening). The model echoes the user turn in this state. Passing
-    # thinking=true emits "<｜Assistant｜><think>" which V3.2 handles
-    # correctly (reasons first, then produces the final reply).
-    extra_params={"chat_template_kwargs": {"thinking": True}},
+    # Overrides for sglang request body (params.update(extra_params) in
+    # providers/sglang.py:133).
+    #
+    # echo=False: the sglang provider hardcodes echo=True (line 121), which
+    # is for log-prob / training workflows. For chat, it makes SGLang return
+    # "prompt_text + N generated tokens" as the completion — and our
+    # provider then writes the prompt as the assistant message. Disable.
+    #
+    # chat_template_kwargs.thinking=True: DeepSeek V3.2's jinja template
+    # defaults thinking=false, which emits a broken closing-think tag.
+    # (May or may not matter once echo=False is in place; both are cheap.)
+    extra_params={
+        "echo": False,
+        "chat_template_kwargs": {"thinking": True},
+    },
 )
 
 # ---------------------------------------------------------------------------
