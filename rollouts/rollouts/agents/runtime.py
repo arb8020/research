@@ -266,6 +266,38 @@ async def run_agent_step(
         state: Current agent state
         rcfg: Run configuration (contains cancel_scope for cancellation)
     """
+    # TODO(session-refactor move 3, deferred): mid-tool kill distinguishability.
+    #
+    # Today, if the process is killed between the assistant message being
+    # appended (with its tool_use blocks) and the tool-role result being
+    # appended, the session log shows "tool call with no matching result."
+    # That's the same shape whether the tool never started, started and was
+    # killed mid-execution, or finished but the result write was lost.
+    # Detection of "in-flight at kill time" is therefore derivable but not
+    # precise — we can find orphaned tool calls, but not tell what they
+    # actually did.
+    #
+    # Pass 3's kill harness exercises this today and is green: sequential
+    # execution with filesystem tools means orphan detection + re-dispatch
+    # is safe enough (the filesystem is inspectable; idempotent tools don't
+    # care about double-dispatch). Pi-mono made the same tradeoff.
+    #
+    # The precise version is OpenCode's approach: emit a status="running"
+    # tool-role message before env.exec_tool, then append a status="completed"
+    # one after. Orphan "running" entries then explicitly mean "was dispatched
+    # when we died." At render time, unresolved "running" messages transform
+    # into completed-with-"[interrupted]"-content so the LLM sees proper
+    # tool_use→tool_result pairing (Anthropic's API rejects orphan tool_use).
+    #
+    # Not worth the complexity yet. Revisit when:
+    #   - Concurrent tool dispatch lands (multi-tool-in-one-turn that isn't
+    #     strictly sequential). Then orphan detection becomes ambiguous about
+    #     WHICH tool was in flight.
+    #   - A non-idempotent tool (network side-effect, card charge, etc.)
+    #     makes double-dispatch genuinely unsafe.
+    #
+    # See rollouts/rollouts/agents/runtime_refactor.md ("move 3") for the
+    # full sketch when we pick this up.
     assert state is not None
     assert rcfg is not None
 

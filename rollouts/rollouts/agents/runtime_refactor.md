@@ -71,6 +71,55 @@ Environment types carry this as a first-class field so test/eval code can
 assert "what tools were available in this run" without reverse-engineering
 from the trajectory.
 
+## Status of the moves
+
+### Move 1 (tree structure on Message): DONE
+
+- 1a: id / parent_id fields on Message, auto-assigned by store. Migration-on-read.
+- 1b: Explicit leaf cursor on AgentState, threaded through native loop and
+  all remaining append_message callers. Fallback auto-infer warns.
+
+### Move 2 (is_error / error first-class): DONE
+
+Fields added to Message. Native loop promotes from ToolResult. Anthropic
+renderer passes is_error to the tool_result API block. Closes G2.
+
+### Move 3 (tool status: running / completed): DEFERRED
+
+Design sketch kept here and as a TODO in runtime.py. Not blocking today.
+
+Today (pi-mono's approach): tool calls live as content blocks on
+assistant messages. A matching tool-role message means the tool
+completed (success or error, per is_error). An assistant tool call
+*without* a matching tool-role message means "in flight at kill time"
+— indistinguishable from "started but never dispatched." Pass 3's kill
+harness demonstrates this works for the sequential + filesystem-tool
+case we care about today.
+
+The precise version (OpenCode's approach):
+
+- Message.status: Literal["running", "completed"] | None.
+- Native loop appends a tool-role Message(status="running") BEFORE
+  env.exec_tool, then a Message(status="completed") AFTER with the
+  actual content. Session store gets both; same tool_call_id.
+- render_for_llm(messages) transforms unresolved running entries into
+  completed-with-"[Tool execution was interrupted]" content before
+  sending to the API. Preserves tool_use ↔ tool_result pairing that
+  Anthropic requires. Matches OpenCode's transform-not-drop behavior
+  (message-v2.ts:720-788).
+- ~5-10 LLM-facing call sites need to route through render_for_llm.
+
+Triggers to revisit:
+
+- Concurrent tool dispatch lands (multi-tool-in-one-turn that isn't
+  strictly sequential). Orphan detection becomes ambiguous about
+  WHICH tool was in flight.
+- A non-idempotent tool (network side-effect, card charge, ...)
+  makes double-dispatch unsafe.
+
+Until then, the orphan-detection heuristic is sufficient and the code
+doesn't carry machinery we aren't using.
+
 ## What moves
 
 Rough direction, not final design:
