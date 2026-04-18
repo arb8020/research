@@ -89,8 +89,10 @@ def compute_gae(
 
 
 def masked_logits(logits: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
-    """Set logits of invalid actions to -inf."""
-    return logits.masked_fill(mask == 0, float("-inf"))
+    """Set logits of invalid actions to -inf. Fall back to unmasked if all invalid."""
+    any_valid = mask.any(dim=-1, keepdim=True)
+    safe_mask = torch.where(any_valid, mask, torch.ones_like(mask))
+    return logits.masked_fill(safe_mask == 0, float("-inf"))
 
 
 def train(cfg: Config):
