@@ -65,7 +65,7 @@ class Config:
         "mps" if torch.backends.mps.is_available() else "cpu"
     )
     checkpoint_dir: str = "checkpoints"
-    log_interval: int = 10    # log every N rollouts
+    log_interval: int = 1    # log every N rollouts
 
 
 def compute_gae(

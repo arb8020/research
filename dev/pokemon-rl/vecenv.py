@@ -2,8 +2,12 @@
 Threaded vectorized environment.
 
 Runs N PokemonEnv instances concurrently in a ThreadPoolExecutor.
-Each env lives in its own thread — step() blocks on Node I/O, so threads
-spend most of their time waiting, not holding the GIL.
+Each env's step() blocks on Node I/O (readline), so threads spend most
+of their time waiting — the GIL releases during blocking I/O, allowing
+true concurrency for the Node-bound portion of each step.
+
+The Python parse_message work (~0.9ms/step) does hold the GIL briefly,
+but at 10-100x less than the Node I/O wait it's not the bottleneck.
 
 Interface mirrors standard vecenv:
     obs, masks = vec.reset()
@@ -17,7 +21,6 @@ from __future__ import annotations
 
 import numpy as np
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Optional
 
 from env import PokemonEnv
 from obs import obs_dim
@@ -44,7 +47,7 @@ class ThreadedVecEnv:
         self._done_buf  = np.zeros(n_envs, dtype=bool)
 
     def reset(self) -> tuple[np.ndarray, np.ndarray]:
-        """Reset all envs. Returns (obs [N, obs_dim], masks [N, 26])."""
+        """Reset all envs concurrently. Returns (obs [N, obs_dim], masks [N, 26])."""
         def _reset(i):
             obs, info = self._envs[i].reset()
             return i, obs, info["action_mask"]
@@ -60,7 +63,7 @@ class ThreadedVecEnv:
     def step(self, actions: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         """
         Step all envs with their respective actions.
-        Envs that are done are automatically reset.
+        Envs that finish are automatically reset.
         Returns (obs, rewards, dones, masks) each shape (N, ...).
         """
         def _step(i, action):
