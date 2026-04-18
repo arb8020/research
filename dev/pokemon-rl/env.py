@@ -173,6 +173,11 @@ class PokemonEnv(gym.Env):
             p2_team=self.p2_team,
         )
         self._sim = sim
+        if sim.done:
+            raise RuntimeError(
+                f"Battle finished immediately after start (format={self.format_id}). "
+                f"winner={sim.winner}"
+            )
 
         obs = embed_battle(self._b1)
         info = {"action_mask": self._action_mask()}
