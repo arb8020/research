@@ -35,8 +35,12 @@ def _worker(
     format_id: str,
     action_q: mp.Queue,
     result_q: mp.Queue,
+    env_vars: dict,
 ):
     """Worker process: owns one env, loops on action_q, writes to result_q."""
+    import os
+    os.environ.update(env_vars)
+
     # Imports happen once per worker — heavy but amortized
     from env import PokemonEnv
     from obs import obs_dim
@@ -65,6 +69,7 @@ class ProcessVecEnv:
         self,
         n_envs: int,
         format_id: str = "gen9randombattle",
+        env_vars: dict | None = None,
     ):
         self.n_envs = n_envs
         from obs import obs_dim as _obs_dim
@@ -79,11 +84,16 @@ class ProcessVecEnv:
         self._result_q: mp.Queue = ctx.Queue()
         self._action_qs: list[mp.Queue] = [ctx.Queue() for _ in range(n_envs)]
 
+        import os
+        _env_vars = {k: os.environ[k] for k in ("NODE_BIN", "SHOWDOWN_PATH") if k in os.environ}
+        if env_vars:
+            _env_vars.update(env_vars)
+
         self._procs = []
         for i in range(n_envs):
             p = ctx.Process(
                 target=_worker,
-                args=(i, format_id, self._action_qs[i], self._result_q),
+                args=(i, format_id, self._action_qs[i], self._result_q, _env_vars),
                 daemon=True,
             )
             p.start()
