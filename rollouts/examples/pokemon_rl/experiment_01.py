@@ -33,6 +33,8 @@ hardware = HardwareConfig(
             "torch>=2.4",
             "numpy",
             "gymnasium",
+            "trio",
+            "trio-asyncio",
             "poke-env @ git+https://github.com/hsahovic/poke-env.git",
         ),
         pip_index_url="https://download.pytorch.org/whl/cu124",
