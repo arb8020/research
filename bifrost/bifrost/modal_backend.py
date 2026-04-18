@@ -1354,7 +1354,9 @@ async def create_modal_sandbox(request: ModalExecutionRequest) -> ModalSandboxHa
 
     def emit(event: str, **data: Any) -> None:
         if request.run_logger is not None:
-            request.run_logger(
+            from rollouts.event_log import emit_run_event
+            emit_run_event(
+                request.run_logger,
                 event,
                 provider="modal",
                 run_name=request.run_name,
@@ -2309,7 +2311,9 @@ async def run_modal_request(request: ModalExecutionRequest) -> dict[str, Any]:
 
     def emit(event: str, **data: Any) -> None:
         if request.run_logger is not None:
-            request.run_logger(
+            from rollouts.event_log import emit_run_event
+            emit_run_event(
+                request.run_logger,
                 event,
                 provider="modal",
                 run_name=run_name,
