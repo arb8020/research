@@ -129,7 +129,8 @@ _docker_run = (
     f" --mem-fraction-static 0.85"
     f" --page-size 64"
     f" --nsa-prefill tilelang"
-    f" --nsa-decode aiter'"
+    f" --nsa-decode aiter"
+    f" --enable-cache-report'"
 )
 
 endpoint = OwnedEndpoint(

@@ -233,6 +233,45 @@ def _tool_to_openai(tool: Tool) -> dict[str, Any]:
     return result
 
 
+def _maybe_add_openrouter_cache_control(
+    model_id: str,
+    messages: list[dict[str, Any]],
+) -> None:
+    """Inject cache_control on the last user/assistant text block for OpenRouter models
+    that require explicit cache breakpoints (anthropic/* and google/* via Gemini).
+
+    DeepSeek, OpenAI, Grok, Moonshot, and Groq via OpenRouter use automatic caching —
+    no markers needed. Anthropic and Gemini require explicit cache_control on content
+    blocks to opt into caching, even when routed through OpenRouter.
+
+    Mutates messages in-place (same pattern as pi-mono's maybeAddOpenRouterAnthropicCacheControl).
+    """
+    provider_prefix = model_id.split("/")[0] if "/" in model_id else ""
+    if provider_prefix not in ("anthropic", "google"):
+        return
+
+    # Walk backwards to find the last user or assistant message with text content
+    # and stamp cache_control on its last text block.
+    for msg in reversed(messages):
+        if msg.get("role") not in ("user", "assistant"):
+            continue
+        content = msg.get("content")
+        if isinstance(content, str):
+            msg["content"] = [
+                {"type": "text", "text": content, "cache_control": {"type": "ephemeral"}}
+            ]
+            return
+        if isinstance(content, list):
+            for part in reversed(content):
+                if (
+                    isinstance(part, dict)
+                    and part.get("type") == "text"
+                    and "cache_control" not in part
+                ):
+                    part["cache_control"] = {"type": "ephemeral"}
+                    return
+
+
 def _parse_usage(u: CompletionUsage) -> Usage:
     """Parse OpenAI CompletionUsage into our Usage dataclass with cache/reasoning tokens."""
     assert u is not None
@@ -835,6 +874,9 @@ async def rollout_openai(
     # Strip details before sending to LLM
     llm_messages = _prepare_messages_for_llm(actor.trajectory.messages)
     messages = [_message_to_openai(m) for m in llm_messages]
+
+    if actor.endpoint.provider == "openrouter":
+        _maybe_add_openrouter_cache_control(actor.endpoint.model_id, messages)
 
     params = {
         "model": actor.endpoint.model_id,  # Use model_id, not full "provider/model" string

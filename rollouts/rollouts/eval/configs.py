@@ -238,7 +238,7 @@ class ExternalEndpoint:
 
     url: str
     model: str
-    provider: Literal["anthropic", "openai", "google", "sglang", "vllm"]
+    provider: Literal["anthropic", "openai", "google", "sglang", "vllm", "openrouter"]
     api_key: str | None = None
     temperature: float = 0.0
     max_tokens: int = 4096
@@ -262,6 +262,7 @@ class ExternalEndpoint:
             "google": "google-generative-ai",
             "sglang": "openai-completions",
             "vllm": "openai-completions",
+            "openrouter": "openai-completions",
         }
         return formats.get(self.provider, "openai-completions")
 
@@ -526,7 +527,7 @@ class EndpointConfig:
     self-hosted inference servers (SGLang, vLLM).
     """
 
-    provider: Literal["anthropic", "openai", "google", "sglang", "vllm"] = "anthropic"
+    provider: Literal["anthropic", "openai", "google", "sglang", "vllm", "openrouter"] = "anthropic"
     model: str = "claude-sonnet-4-20250514"
     base_url: str | None = None
     api_key: str | None = None
@@ -640,7 +641,7 @@ def materialize_endpoint(endpoint_config: InferenceEndpoint | EndpointConfig) ->
     else:
         configured_base_url = endpoint_config.base_url
         api_key = endpoint_config.api_key or get_api_key(provider) or ""
-    if not api_key and provider in ("anthropic", "openai", "google"):
+    if not api_key and provider in ("anthropic", "openai", "google", "openrouter"):
         raise ValueError(
             f"No API key found for {provider}. Set {provider.upper()}_API_KEY in environment."
         )
