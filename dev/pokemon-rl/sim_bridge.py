@@ -76,7 +76,7 @@ class ShowdownSim:
             [NODE_BIN, str(self._showdown_path), "simulate-battle"],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
         )
 
         BattleClass = DoubleBattle if self._doubles else Battle
@@ -201,6 +201,13 @@ class ShowdownSim:
                 if current_block:
                     self._process_block(current_block)
                 self._done = True
+                # Log stderr so we can see why Node exited
+                try:
+                    stderr_out = self._proc.stderr.read().decode(errors="replace").strip()
+                    if stderr_out:
+                        logger.error("showdown stderr: %s", stderr_out[:2000])
+                except Exception:
+                    pass
                 return
 
             if line == "":
