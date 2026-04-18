@@ -43,6 +43,9 @@ hardware = HardwareConfig(
             # Install nvm + Node v20 (better-sqlite3 requires v20, not v24)
             "curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash",
             "bash -c 'source ~/.nvm/nvm.sh && nvm install 20 && nvm use 20'",
+            # Symlink node/npm into /usr/local/bin so subprocesses can find them
+            "bash -c 'ln -sf $(source ~/.nvm/nvm.sh && nvm which 20) /usr/local/bin/node'",
+            "bash -c 'ln -sf $(dirname $(source ~/.nvm/nvm.sh && nvm which 20))/npm /usr/local/bin/npm'",
             # Clone and install Pokemon Showdown
             "git clone --depth 1 https://github.com/smogon/pokemon-showdown.git /opt/pokemon-showdown",
             "bash -c 'source ~/.nvm/nvm.sh && nvm use 20 && npm install --prefix /opt/pokemon-showdown'",
