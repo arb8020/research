@@ -2284,6 +2284,7 @@ async def run_modal_request(request: ModalExecutionRequest) -> dict[str, Any]:
 
     import modal
     import trio_asyncio
+    from rollouts.event_log import ARGUS_RUN_EVENT_SENTINEL
     from rollouts.modal_workload import (
         ARGUS_DIAG_EVENT_SENTINEL,
         REPO_ROOT,
@@ -2297,7 +2298,6 @@ async def run_modal_request(request: ModalExecutionRequest) -> dict[str, Any]:
         save_snapshot_to_cache,
     )
     from rollouts.remote_runtime import enforce_source_sync_policy
-    from rollouts.run_logger import ARGUS_RUN_EVENT_SENTINEL
 
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     run_name = request.run_name or f"modal_{timestamp}"
