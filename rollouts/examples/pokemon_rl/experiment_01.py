@@ -76,10 +76,20 @@ def train(config: PokemonRLConfig | None = None, **kwargs):
     import glob
 
     # Wire up Node + Showdown paths for the remote environment
+    import shutil
     node_bins = glob.glob("/root/.nvm/versions/node/v20.*/bin/node")
     if node_bins:
         os.environ["NODE_BIN"] = sorted(node_bins)[-1]
+    elif shutil.which("node"):
+        os.environ["NODE_BIN"] = shutil.which("node")
+    # else: leave NODE_BIN as-is (local default in sim_bridge.py)
+    if os.path.exists("/opt/pokemon-showdown/pokemon-showdown"):
         os.environ["SHOWDOWN_PATH"] = "/opt/pokemon-showdown/pokemon-showdown"
+    import logging as _logging
+    _logging.getLogger("experiment").info(
+        f"NODE_BIN={os.environ.get('NODE_BIN')} "
+        f"SHOWDOWN_PATH={os.environ.get('SHOWDOWN_PATH')}"
+    )
 
     # Add pokemon-rl package to path.
     # On Modal the repo is cloned to /root/research; locally it's the workspace root.

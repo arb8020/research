@@ -164,13 +164,15 @@ class PokemonEnv(gym.Env):
 
         if self._sim is not None:
             self._sim.close()
+            self._sim = None
 
-        self._sim = ShowdownSim(gen=9)
-        self._b1, self._b2 = self._sim.start(
+        sim = ShowdownSim(gen=9)
+        self._b1, self._b2 = sim.start(
             self.format_id,
             p1_team=self.p1_team,
             p2_team=self.p2_team,
         )
+        self._sim = sim
 
         obs = embed_battle(self._b1)
         info = {"action_mask": self._action_mask()}
