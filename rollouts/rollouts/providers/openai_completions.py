@@ -239,32 +239,53 @@ def _parse_usage(u: CompletionUsage) -> Usage:
     assert hasattr(u, "prompt_tokens")
     assert hasattr(u, "completion_tokens")
 
-    # Extract cache tokens from prompt_tokens_details
-    cached_tokens = 0
+    # Extract cache tokens from prompt_tokens_details.
+    # cache_write_tokens lives at the same nesting level as cached_tokens.
+    # OpenRouter (and some other providers) report cached_tokens as
+    # (cache_hits + cache_writes). Subtract cache_write to get true reads.
+    # TODO: parse CompletionUsage into a trusted frozen dataclass at the boundary
+    # so downstream code operates on real types instead of getattr gymnastics.
+    reported_cached_tokens = 0
+    cache_write_tokens = 0
     if hasattr(u, "prompt_tokens_details") and u.prompt_tokens_details:
-        cached_tokens = getattr(u.prompt_tokens_details, "cached_tokens", 0) or 0
+        reported_cached_tokens = getattr(u.prompt_tokens_details, "cached_tokens", 0) or 0
+        cache_write_tokens = getattr(u.prompt_tokens_details, "cache_write_tokens", 0) or 0
 
-    # Extract reasoning tokens from completion_tokens_details
+    assert reported_cached_tokens >= 0
+    assert cache_write_tokens >= 0
+    # When writes are present, reported_cached_tokens >= cache_write_tokens must hold
+    # because reported_cached_tokens = reads + writes (the overlapping representation).
+    if cache_write_tokens > 0:
+        assert reported_cached_tokens >= cache_write_tokens
+
+    cache_read_tokens = (
+        reported_cached_tokens - cache_write_tokens
+        if cache_write_tokens > 0
+        else reported_cached_tokens
+    )
+    assert cache_read_tokens >= 0
+    assert cache_read_tokens <= reported_cached_tokens
+
     reasoning_tokens = 0
     if hasattr(u, "completion_tokens_details") and u.completion_tokens_details:
         reasoning_tokens = getattr(u.completion_tokens_details, "reasoning_tokens", 0) or 0
+    assert reasoning_tokens >= 0
 
-    # Build Usage with granular token breakdown
-    # input_tokens = prompt tokens minus cached (non-cached input)
-    # output_tokens = completion tokens minus reasoning
-    # Guard against negative values (some providers may report inconsistently)
-    input_tokens = max(0, (u.prompt_tokens or 0) - cached_tokens)
+    input_tokens = max(0, (u.prompt_tokens or 0) - cache_read_tokens - cache_write_tokens)
     output_tokens = max(0, (u.completion_tokens or 0) - reasoning_tokens)
 
     result = Usage(
         input_tokens=input_tokens,
         output_tokens=output_tokens,
         reasoning_tokens=reasoning_tokens,
-        cache_read_tokens=cached_tokens,
+        cache_read_tokens=cache_read_tokens,
+        cache_write_tokens=cache_write_tokens,
     )
 
-    assert result.prompt_tokens >= 0
-    assert result.completion_tokens >= 0
+    assert result.input_tokens >= 0
+    assert result.output_tokens >= 0
+    assert result.cache_read_tokens >= 0
+    assert result.cache_write_tokens >= 0
     return result
 
 
