@@ -49,8 +49,8 @@ hardware = HardwareConfig(
             # Clone and install Pokemon Showdown, pre-build to avoid runtime `node build`
             "git clone --depth 1 https://github.com/smogon/pokemon-showdown.git /opt/pokemon-showdown",
             "bash -c 'source ~/.nvm/nvm.sh && nvm use 20 && npm install --prefix /opt/pokemon-showdown'",
-            # Pre-build: run simulate-battle once so TypeScript is compiled and cached
-            "bash -c 'echo \">start {\\\"formatid\\\":\\\"gen9randombattle\\\"}\" | timeout 10 /usr/local/bin/node /opt/pokemon-showdown/pokemon-showdown simulate-battle || true'",
+            # Pre-build: compile TypeScript explicitly so simulate-battle doesn't do it at runtime
+            "bash -c 'cd /opt/pokemon-showdown && /usr/local/bin/node build'",
         ),
     ),
 )
