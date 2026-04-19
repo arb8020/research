@@ -51,16 +51,18 @@ changes to tau2's stop-token protocol get picked up automatically.
 - Persona overrides beyond what the task carries. tau2's runtime
   PersonaConfig is not plumbed.
 
-## Known limitation: parallel mutating tool calls
+## Multi-tool turns
 
-The rollouts runtime serialize/deserialize cycle around `exec_tool` works
-fine for read-only parallel tool calls and for single mutating tool calls.
-For PARALLEL MUTATING tool calls (an AssistantMessage with N>1 tool calls
-where multiple of them mutate the database), we trim the unfinished group
-from tau2's set_state replay so the validator passes — but that means
-mutations from completed tools in the partial group are lost across the
-deserialize. Verified safe for the smoke set (retail tasks); revisit when
-adding a benchmark that depends on parallel mutating calls.
+When the agent issues a single AssistantMessage with multiple tool_calls,
+the rollouts runtime serializes/deserializes the env between each
+exec_tool call (for crash recovery). To keep tau2's `set_state` replay
+validator happy across these mid-turn snapshots, we BUFFER the
+AssistantMessage and its accumulating ToolMessages in `_pending_asst` /
+`_pending_tool_results` until the whole group is complete, then flush
+atomically into `_tau2_trajectory`. serialize() emits the pending buffer;
+deserialize() restores it AND re-applies the completed tool calls to the
+freshly-rebuilt env's database (so mutations from earlier tools in the
+group survive the deserialize round-trip).
 
 ## Serialize / Deserialize
 
@@ -329,6 +331,16 @@ class Tau2Environment:
     _user_state: Any = field(default=None, repr=False)
     _step_count: int = field(default=0, repr=False)
     _num_errors: int = field(default=0, repr=False)
+    # Pending-group buffer: when the agent emits an AssistantMessage with
+    # tool_calls, we hold it (and its arriving ToolMessages) here instead of
+    # appending to _tau2_trajectory. Once the last expected ToolMessage
+    # arrives, we flush the whole group atomically into _tau2_trajectory.
+    # This guarantees _tau2_trajectory only ever contains complete
+    # tool_call/tool_message groups — which is the invariant tau2's
+    # set_state replay requires.
+    _pending_asst: Any = field(default=None, repr=False)
+    _pending_tool_results: list[Any] = field(default_factory=list, repr=False)
+    _pending_expected_ids: set[str] = field(default_factory=set, repr=False)
     # Termination is tracked as the tau2 enum directly (set at the point of
     # detection in on_assistant_message / _run_user_simulator) so we don't
     # have to round-trip through StopReason heuristics at score time.
@@ -406,13 +418,25 @@ class Tau2Environment:
     ) -> ToolResult:
         """Dispatch a tool call into the tau2 domain env.
 
-        Maintains the parallel tau2 trajectory so scoring sees the full
-        conversation, not just the rollouts side.
+        Buffers the resulting ToolMessage in _pending_tool_results. When
+        the last expected result for the in-flight group lands, atomically
+        flushes [pending_asst, *pending_results] into _tau2_trajectory.
+        This keeps _tau2_trajectory always-balanced so tau2's set_state
+        replay (used by cold deserialize) never sees an orphan tool call.
         """
         tau2_tc = _rollouts_tc_to_tau2(tool_call, requestor="assistant")
         # Note: get_response is synchronous in tau2; tau2 envs don't block on I/O.
         tau2_tm = self._tau2_env.get_response(tau2_tc)
-        self._tau2_trajectory.append(tau2_tm)
+        self._pending_tool_results.append(tau2_tm)
+        self._pending_expected_ids.discard(tau2_tc.id)
+
+        # Last result for this group? Flush atomically.
+        if not self._pending_expected_ids and self._pending_asst is not None:
+            self._tau2_trajectory.append(self._pending_asst)
+            self._tau2_trajectory.extend(self._pending_tool_results)
+            self._pending_asst = None
+            self._pending_tool_results = []
+
         result = _tau2_tm_to_rollouts(tau2_tm)
         if result.is_error:
             self._num_errors += 1
@@ -457,8 +481,8 @@ class Tau2Environment:
         text = _message_text(message)
         tool_calls = message.get_tool_calls()
 
-        # Record on tau2 side. tau2's AssistantMessage accepts either
-        # content or tool_calls (or both).
+        # Build the tau2 AssistantMessage. tau2's AssistantMessage accepts
+        # either content or tool_calls (or both).
         tau2_tcs = (
             [_rollouts_tc_to_tau2(tc, requestor="assistant") for tc in tool_calls]
             if tool_calls
@@ -469,18 +493,30 @@ class Tau2Environment:
             content=text or None,
             tool_calls=tau2_tcs,
         )
+
+        # If this turn has tool_calls, defer recording it. exec_tool will
+        # collect the matching ToolMessages and flush the whole group into
+        # _tau2_trajectory atomically once the last result lands. This
+        # keeps _tau2_trajectory always-balanced from tau2's perspective,
+        # so set_state replay never sees orphan tool calls.
+        if tool_calls:
+            assert self._pending_asst is None, (
+                "Got new AssistantMessage with tool_calls while previous "
+                "tool group is still in flight — runtime invariant violated."
+            )
+            self._pending_asst = tau2_asst
+            self._pending_tool_results = []
+            self._pending_expected_ids = {tc.id for tc in tau2_tcs or []}
+            return self._check_caps(state)
+
+        # Text-only turn: append directly (no tool group to wait for).
         self._tau2_trajectory.append(tau2_asst)
 
         # Check agent stop using tau2's own classifier (text-only turns only;
         # tau2's protocol forbids text + tool_calls in the same turn).
-        if not tool_calls and LLMAgent.is_stop(tau2_asst):
+        if LLMAgent.is_stop(tau2_asst):
             self._termination_reason = TerminationReason.AGENT_STOP
             return replace(state, stop=StopReason.TASK_COMPLETED)
-
-        # If the agent called tools, control returns to run_agent_step which
-        # will invoke exec_tool for each. We don't call the user sim.
-        if tool_calls:
-            return self._check_caps(state)
 
         # Plain text → user simulator speaks next. Mirror what tau2's
         # UserSimulator._generate_next_message does to its own state, but
@@ -579,6 +615,17 @@ class Tau2Environment:
             ),
             "tau2_messages": [m.model_dump(mode="json") for m in self._tau2_trajectory],
             "user_state_messages": [m.model_dump(mode="json") for m in self._user_state.messages],
+            # Pending tool group: an in-flight AssistantMessage(tool_calls) and
+            # the ToolMessages received so far. Cold deserialize replays
+            # _tau2_trajectory through tau2's set_state (always balanced) and
+            # then re-applies these pending results to the new env's DB by
+            # calling the corresponding tools directly.
+            "pending_asst": (
+                self._pending_asst.model_dump(mode="json")
+                if self._pending_asst is not None
+                else None
+            ),
+            "pending_tool_results": [m.model_dump(mode="json") for m in self._pending_tool_results],
             "step_count": self._step_count,
             "num_errors": self._num_errors,
             "termination_reason": (
@@ -621,23 +668,54 @@ class Tau2Environment:
             ToolMessage=ToolMessage,
         )
 
+        # Restore the pending tool group (in-flight assistant message + the
+        # tool results received before serialize fired).
+        pending_asst_raw = data.get("pending_asst")
+        pending_asst = (
+            AssistantMessage.model_validate(pending_asst_raw) if pending_asst_raw else None
+        )
+        pending_tool_results = _rehydrate_tau2_messages(
+            data.get("pending_tool_results", []),
+            AssistantMessage=AssistantMessage,
+            UserMessage=UserMessage,
+            ToolMessage=ToolMessage,
+        )
+
         if tau2_env_live is not None:
             tau2_env = tau2_env_live
         else:
             tau2_env = _build_tau2_domain_env(domain)
-            # tau2's set_state validator requires every assistant/user
-            # tool_call in the replayed history to be followed by a matching
-            # ToolMessage. Mid-turn serializations (rollouts serializes the
-            # env before dispatching tool calls) can leave trailing orphan
-            # tool_calls — those will be re-executed via exec_tool after
-            # this deserialize, so we trim them from the replay set here.
-            # We keep the originals in our own _tau2_trajectory for scoring.
-            replayable = _trim_trailing_orphan_tool_calls(tau2_messages)
+            # _tau2_trajectory only contains complete tool groups (the
+            # pending-buffer fix in on_assistant_message/exec_tool ensures
+            # this), so set_state's balance validator is happy with the
+            # full message history — no trimming needed.
             _apply_task_initialization(
                 tau2_env,
                 task,
-                message_history=replayable,
+                message_history=tau2_messages,
             )
+            # Re-apply the pending tool results to the new env's DB. These
+            # mutations happened before serialize fired but aren't in
+            # _tau2_trajectory yet (the assistant message that owns them
+            # is buffered, so we deferred recording the whole group). We
+            # call get_response with the original tool_call so the new env
+            # sees the same mutations the original env saw.
+            if pending_asst is not None and pending_tool_results:
+                completed_ids = {tm.id for tm in pending_tool_results}
+                for tc in pending_asst.tool_calls or []:
+                    if tc.id in completed_ids:
+                        # Replay the call — discard the result (we already
+                        # have the canonical one in pending_tool_results).
+                        tau2_env.get_response(tc)
+
+        # Compute pending_expected_ids = the asst's tool_call ids that
+        # haven't been satisfied yet by pending_tool_results.
+        pending_expected_ids: set[str] = set()
+        if pending_asst is not None:
+            done = {tm.id for tm in pending_tool_results}
+            pending_expected_ids = {
+                tc.id for tc in (pending_asst.tool_calls or []) if tc.id not in done
+            }
 
         tools = [_tau2_tool_to_rollouts(t) for t in tau2_env.get_tools()]
 
@@ -681,6 +759,9 @@ class Tau2Environment:
             _tau2_trajectory=tau2_messages,
             _user_sim=user_sim,
             _user_state=user_state,
+            _pending_asst=pending_asst,
+            _pending_tool_results=pending_tool_results,
+            _pending_expected_ids=pending_expected_ids,
             _step_count=data.get("step_count", 0),
             _num_errors=data.get("num_errors", 0),
             _termination_reason=termination_reason,
@@ -947,85 +1028,3 @@ def _rehydrate_tau2_messages(
         else:
             raise ValueError(f"Unexpected tau2 message role: {role!r}")
     return out
-
-
-def _trim_trailing_orphan_tool_calls(messages: list[Any]) -> list[Any]:
-    """Trim the tail of the message list so every tool_call has its matching
-    ToolMessage in the returned prefix.
-
-    tau2's `set_state(message_history=...)` validates that every assistant/
-    user `tool_call` is followed by its matching `ToolMessage` (matched by
-    `id`). Mid-turn serialization can leave the trajectory in three bad
-    states:
-      (a) trailing AssistantMessage with N tool_calls and 0 tool results
-          (serialized after `on_assistant_message`, before any `exec_tool`).
-      (b) trailing AssistantMessage with N tool_calls and K<N tool results
-          (parallel-tool case: serialized between exec_tool calls).
-      (c) trailing ToolMessages from a previous turn whose AssistantMessage
-          is intact — fine to keep (rare, but defensive).
-
-    TODO(tau2-fidelity): case (b) is the parallel-mutating-tool fidelity gap.
-    For an AssistantMessage with N>1 mutating tool calls where K<N have
-    completed, we drop the whole assistant message from the replay set —
-    so on the post-deserialize env, mutations from the K completed tools
-    are LOST. Verified safe for retail/airline (mostly serial mutation).
-    Likely real cost on tasks that issue parallel exchange/refund/etc.
-    Fix: defer appending the AssistantMessage to _tau2_trajectory until
-    all its tool results land, and persist the partial-result buffer in
-    serialize() so we can resume mid-group.
-
-    Our trim algorithm: walk from the tail; while the last message is a
-    tool_call message OR a ToolMessage whose preceding tool_call(s) aren't
-    fully accounted for, drop it. We keep popping until the remaining
-    prefix is "balanced" — every tool_call has all its tool_messages.
-
-    Trimmed messages stay in `_tau2_trajectory` (used for scoring at end
-    of run); they're only excluded from tau2's set_state replay.
-
-    Earlier orphans (in the middle of the history) indicate corrupt state
-    and are left for set_state to surface as an error.
-    """
-    trimmed = list(messages)
-    # Iteratively remove trailing items until the suffix is balanced.
-    while trimmed:
-        # Scan forward: count expected tool results at each tool_call,
-        # check if all are present in the trimmed list.
-        balanced, last_unbalanced_idx = _check_balanced(trimmed)
-        if balanced:
-            return trimmed
-        # Drop everything from the unbalanced tool_call onward.
-        trimmed = trimmed[:last_unbalanced_idx]
-    return trimmed
-
-
-def _check_balanced(messages: list[Any]) -> tuple[bool, int]:
-    """Check if every tool_call in `messages` has its matching ToolMessage.
-
-    Returns (balanced, first_unbalanced_index). When balanced is True,
-    first_unbalanced_index is len(messages). When False, it points at the
-    earliest tool_call message whose results are incomplete.
-    """
-    i = 0
-    n = len(messages)
-    while i < n:
-        m = messages[i]
-        if hasattr(m, "is_tool_call") and m.is_tool_call():
-            tcs = m.tool_calls or []
-            needed_ids = {tc.id for tc in tcs}
-            j = i + 1
-            while j < n and needed_ids:
-                next_m = messages[j]
-                # tau2 ToolMessage has an `id` matching the tool_call id.
-                tm_id = getattr(next_m, "id", None)
-                role = getattr(next_m, "role", None)
-                if role == "tool" and tm_id in needed_ids:
-                    needed_ids.remove(tm_id)
-                    j += 1
-                else:
-                    break
-            if needed_ids:
-                return (False, i)
-            i = j
-        else:
-            i += 1
-    return (True, n)
