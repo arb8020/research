@@ -15,6 +15,7 @@ The migration target (training/loops/eval_loop.py) has the full plan.
 Until that migration is complete, this file remains the active eval implementation.
 """
 
+import inspect
 import json
 import logging
 import sys
@@ -1044,7 +1045,18 @@ async def evaluate_sample(
     config = runtime.config
     progress = runtime.progress
 
-    initial_messages = config.prepare_messages(sample_data) if config.prepare_messages else []
+    # prepare_messages may be sync or async — async lets it perform I/O
+    # (e.g. tau2's eval calls a user-simulator endpoint to seed the first
+    # user turn). Detect via inspect rather than asking every existing
+    # eval to update its signature.
+    if config.prepare_messages is None:
+        initial_messages = []
+    else:
+        prep = config.prepare_messages(sample_data)
+        if inspect.isawaitable(prep):
+            initial_messages = await prep
+        else:
+            initial_messages = prep
 
     # Build base run config with concurrency limiters
     base_run_config = _build_base_run_config(config, runtime.api_limiter, runtime.tool_limiter)
