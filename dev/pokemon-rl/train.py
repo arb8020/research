@@ -126,7 +126,7 @@ def train(cfg: Config):
     pool_size = cfg.n_envs + max(4, cfg.n_envs // 4)
     # On Modal, Node takes ~12-15s to load Showdown. Wait 20s before
     # enqueuing pool processes so they're actually ready when claimed.
-    warmup_secs = 30.0 if cfg.device == "cuda" else 0.0
+    warmup_secs = 5.0 if cfg.device == "cuda" else 0.0
     init_pool(pool_size, warmup_secs=warmup_secs)
     vec = ThreadedVecEnv(cfg.n_envs, format_id=cfg.format_id)
     policy = Policy(

@@ -50,6 +50,9 @@ hardware = HardwareConfig(
             # Clone and install Pokemon Showdown
             "git clone --depth 1 https://github.com/smogon/pokemon-showdown.git /opt/pokemon-showdown",
             "bash -c 'source ~/.nvm/nvm.sh && nvm use 20 && npm install --prefix /opt/pokemon-showdown'",
+            # Pre-build TypeScript once so runtime processes share compiled files
+            # without competing to write dist/ simultaneously (causes corruption).
+            "bash -c 'cd /opt/pokemon-showdown && /usr/local/bin/node build'",
         ),
     ),
 )

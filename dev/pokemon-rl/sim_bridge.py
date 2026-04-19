@@ -38,7 +38,7 @@ logger = logging.getLogger(__name__)
 
 def _spawn_node_proc() -> subprocess.Popen:
     return subprocess.Popen(
-        [NODE_BIN, str(SHOWDOWN_PATH.resolve()), "simulate-battle"],
+        [NODE_BIN, str(SHOWDOWN_PATH.resolve()), "simulate-battle", "--skip-build"],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
