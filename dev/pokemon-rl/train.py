@@ -19,7 +19,9 @@ Key hyperparameters (edit CONFIG below or pass via CLI):
 from __future__ import annotations
 
 import argparse
+import json
 import logging
+import os
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -36,10 +38,13 @@ from vecenv import ThreadedVecEnv
 
 log = logging.getLogger("train")
 logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s %(message)s",
+    level=logging.DEBUG,
+    format="%(asctime)s %(levelname)s %(name)s %(message)s",
     datefmt="%H:%M:%S",
 )
+# Keep noisy poke-env loggers quiet
+logging.getLogger("sim").setLevel(logging.WARNING)
+logging.getLogger("poke_env").setLevel(logging.WARNING)
 
 ACTION_DIM = 26
 
@@ -95,9 +100,25 @@ def masked_logits(logits: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
     return logits.masked_fill(safe_mask == 0, float("-inf"))
 
 
+def _jsonl_writer(path: Path):
+    """Returns a function that appends a json record to path."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    def write(**kwargs):
+        with path.open("a") as f:
+            f.write(json.dumps({"ts": time.strftime("%Y-%m-%dT%H:%M:%S"), **kwargs}) + "\n")
+    return write
+
+
 def train(cfg: Config):
     device = torch.device(cfg.device)
     log.info(f"device={cfg.device} n_envs={cfg.n_envs} horizon={cfg.horizon}")
+
+    # Structured output for argus monitoring — written to ROLLOUTS_OUTPUT_DIR if set
+    output_dir = Path(os.environ.get("ROLLOUTS_OUTPUT_DIR", cfg.checkpoint_dir))
+    write_training = _jsonl_writer(output_dir / "training.jsonl")
+    write_metrics  = _jsonl_writer(output_dir / "metrics.jsonl")
+    write_training(message="train_start", device=cfg.device, n_envs=cfg.n_envs,
+                   horizon=cfg.horizon, total_steps=cfg.total_steps, lr=cfg.lr)
 
     vec = ThreadedVecEnv(cfg.n_envs, format_id=cfg.format_id)
     policy = Policy(
@@ -267,13 +288,21 @@ def train(cfg: Config):
             elapsed = time.perf_counter() - t_start
             sps = global_step / elapsed
             win_rate = wins / (wins + losses) if (wins + losses) > 0 else float("nan")
-            mean_ep_rew = np.mean(episode_rewards[-100:]) if episode_rewards else float("nan")
+            mean_ep_rew = float(np.mean(episode_rewards[-100:])) if episode_rewards else float("nan")
+            pg_mean = float(np.mean(pg_losses))
+            vf_mean = float(np.mean(vf_losses))
+            ent_mean = float(np.mean(ent_losses))
             log.info(
                 f"step={global_step:,} rollout={rollout} sps={sps:.0f} "
                 f"win_rate={win_rate:.3f} mean_ep_rew={mean_ep_rew:.3f} "
-                f"pg={np.mean(pg_losses):.4f} vf={np.mean(vf_losses):.4f} "
-                f"ent={np.mean(ent_losses):.4f}"
+                f"pg={pg_mean:.4f} vf={vf_mean:.4f} ent={ent_mean:.4f}"
             )
+            write_training(message="step", step=global_step, rollout=rollout,
+                           sps=round(sps), win_rate=win_rate, mean_ep_rew=mean_ep_rew,
+                           pg_loss=pg_mean, vf_loss=vf_mean, entropy=ent_mean)
+            write_metrics(step=global_step, sps=round(sps), win_rate=win_rate,
+                          mean_ep_rew=mean_ep_rew, pg_loss=pg_mean,
+                          vf_loss=vf_mean, entropy=ent_mean)
 
         # Save checkpoint every 100 rollouts
         if rollout % 100 == 0:
@@ -283,6 +312,7 @@ def train(cfg: Config):
 
     vec.close()
     log.info(f"training done: {global_step:,} steps")
+    write_training(message="train_done", step=global_step)
 
 
 def main():

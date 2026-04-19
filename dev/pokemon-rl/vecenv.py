@@ -22,13 +22,19 @@ All arrays are numpy float32/int8, shape (N, ...).
 
 from __future__ import annotations
 
+import logging
+import time
 import numpy as np
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError
 
 from env import PokemonEnv
 from obs import obs_dim
 
 ACTION_SPACE_SIZE = 26
+STEP_TIMEOUT = 60.0   # seconds — a stuck env raises after this
+RESET_TIMEOUT = 120.0  # Node startup can be slow on cold container
+
+log = logging.getLogger("vecenv")
 
 
 class ThreadedVecEnv:
@@ -51,36 +57,52 @@ class ThreadedVecEnv:
 
     def reset(self) -> tuple[np.ndarray, np.ndarray]:
         def _reset(i):
+            t0 = time.perf_counter()
             obs, info = self._envs[i].reset()
+            log.debug("env %d reset in %.2fs", i, time.perf_counter() - t0)
             return i, obs, info["action_mask"]
 
-        futures = [self._executor.submit(_reset, i) for i in range(self.n_envs)]
-        for f in as_completed(futures):
+        t_reset = time.perf_counter()
+        log.info("resetting %d envs", self.n_envs)
+        futures = {self._executor.submit(_reset, i): i for i in range(self.n_envs)}
+        pending = set(futures.values())
+        for f in as_completed(futures, timeout=RESET_TIMEOUT):
             i, obs, mask = f.result()
+            pending.discard(i)
             self._obs_buf[i]  = obs
             self._mask_buf[i] = mask
+            log.debug("env %d ready (%d pending)", i, len(pending))
+        log.info("all envs reset in %.2fs", time.perf_counter() - t_reset)
         return self._obs_buf.copy(), self._mask_buf.copy()
 
     def step(self, actions: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         def _step(i, action):
+            t0 = time.perf_counter()
             obs, reward, done, _, info = self._envs[i].step(int(action))
             if done:
                 obs, reset_info = self._envs[i].reset()
                 mask = reset_info["action_mask"]
             else:
                 mask = info["action_mask"]
+            elapsed = time.perf_counter() - t0
+            if elapsed > 5.0:
+                log.warning("env %d step took %.2fs (done=%s)", i, elapsed, done)
             return i, obs, reward, done, mask
 
-        futures = [
-            self._executor.submit(_step, i, actions[i])
+        futures = {
+            self._executor.submit(_step, i, actions[i]): i
             for i in range(self.n_envs)
-        ]
-        for f in as_completed(futures):
+        }
+        pending = set(futures.values())
+        for f in as_completed(futures, timeout=STEP_TIMEOUT):
             i, obs, reward, done, mask = f.result()
+            pending.discard(i)
             self._obs_buf[i]  = obs
             self._rew_buf[i]  = reward
             self._done_buf[i] = done
             self._mask_buf[i] = mask
+        if pending:
+            log.error("step timed out waiting for envs: %s", sorted(pending))
         return (
             self._obs_buf.copy(),
             self._rew_buf.copy(),
