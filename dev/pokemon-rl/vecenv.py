@@ -66,12 +66,25 @@ class ThreadedVecEnv:
         log.info("resetting %d envs", self.n_envs)
         futures = {self._executor.submit(_reset, i): i for i in range(self.n_envs)}
         pending = set(futures.values())
-        for f in as_completed(futures, timeout=RESET_TIMEOUT):
-            i, obs, mask = f.result()
-            pending.discard(i)
-            self._obs_buf[i]  = obs
-            self._mask_buf[i] = mask
-            log.debug("env %d ready (%d pending)", i, len(pending))
+        try:
+            for f in as_completed(futures, timeout=RESET_TIMEOUT):
+                i, obs, mask = f.result()
+                pending.discard(i)
+                self._obs_buf[i]  = obs
+                self._mask_buf[i] = mask
+                log.debug("env %d ready (%d pending)", i, len(pending))
+        except TimeoutError:
+            log.error("reset timed out after %.1fs — stuck envs: %s", RESET_TIMEOUT, sorted(pending))
+            # Re-submit stuck envs with fresh state; they will retry on next reset
+            for i in pending:
+                self._envs[i].close()
+                future = self._executor.submit(_reset, i)
+                try:
+                    idx, obs, mask = future.result(timeout=RESET_TIMEOUT)
+                    self._obs_buf[idx]  = obs
+                    self._mask_buf[idx] = mask
+                except Exception:
+                    log.error("env %d failed retry reset — using zeros", i)
         log.info("all envs reset in %.2fs", time.perf_counter() - t_reset)
         return self._obs_buf.copy(), self._mask_buf.copy()
 
@@ -94,15 +107,24 @@ class ThreadedVecEnv:
             for i in range(self.n_envs)
         }
         pending = set(futures.values())
-        for f in as_completed(futures, timeout=STEP_TIMEOUT):
-            i, obs, reward, done, mask = f.result()
-            pending.discard(i)
-            self._obs_buf[i]  = obs
-            self._rew_buf[i]  = reward
-            self._done_buf[i] = done
-            self._mask_buf[i] = mask
-        if pending:
-            log.error("step timed out waiting for envs: %s", sorted(pending))
+        try:
+            for f in as_completed(futures, timeout=STEP_TIMEOUT):
+                i, obs, reward, done, mask = f.result()
+                pending.discard(i)
+                self._obs_buf[i]  = obs
+                self._rew_buf[i]  = reward
+                self._done_buf[i] = done
+                self._mask_buf[i] = mask
+        except TimeoutError:
+            log.error("step timed out — stuck envs: %s, resetting them", sorted(pending))
+            for i in pending:
+                self._envs[i].close()
+                try:
+                    obs, info = self._envs[i].reset()
+                    self._obs_buf[i]  = obs
+                    self._mask_buf[i] = info["action_mask"]
+                except Exception:
+                    log.error("env %d failed reset after step timeout", i)
         return (
             self._obs_buf.copy(),
             self._rew_buf.copy(),
