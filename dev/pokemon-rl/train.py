@@ -34,6 +34,7 @@ from torch.distributions import Categorical
 
 from obs import obs_dim
 from policy import Policy
+from sim_bridge import init_pool, close_pool
 from vecenv import ThreadedVecEnv
 
 log = logging.getLogger("train")
@@ -120,6 +121,10 @@ def train(cfg: Config):
     write_training(message="train_start", device=cfg.device, n_envs=cfg.n_envs,
                    horizon=cfg.horizon, total_steps=cfg.total_steps, lr=cfg.lr)
 
+    # Pre-warm Node processes: n_envs + 25% buffer so mid-rollout resets
+    # can pull immediately while replacements spawn in the background.
+    pool_size = cfg.n_envs + max(4, cfg.n_envs // 4)
+    init_pool(pool_size)
     vec = ThreadedVecEnv(cfg.n_envs, format_id=cfg.format_id)
     policy = Policy(
         obs_dim=obs_dim(),
@@ -311,6 +316,7 @@ def train(cfg: Config):
             log.info(f"saved {ckpt}")
 
     vec.close()
+    close_pool()
     log.info(f"training done: {global_step:,} steps")
     write_training(message="train_done", step=global_step)
 

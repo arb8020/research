@@ -18,8 +18,11 @@ Usage (async via thread):
 
 import json
 import logging
+import os
+import queue
 import random
 import subprocess
+import threading
 from pathlib import Path
 from typing import Optional
 
@@ -27,11 +30,117 @@ from poke_env.battle.battle import Battle
 from poke_env.battle.double_battle import DoubleBattle
 
 
-import os
 NODE_BIN = os.environ.get("NODE_BIN", "/Users/chiraagbalu/.nvm/versions/node/v20.20.2/bin/node")
 SHOWDOWN_PATH = Path(os.environ.get("SHOWDOWN_PATH", "pokemon-showdown/pokemon-showdown"))
 
 logger = logging.getLogger(__name__)
+
+
+def _spawn_node_proc() -> subprocess.Popen:
+    return subprocess.Popen(
+        [NODE_BIN, str(SHOWDOWN_PATH.resolve()), "simulate-battle"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+
+
+class NodeProcessPool:
+    """
+    Pre-warmed pool of idle Node simulate-battle processes.
+
+    Claim a process with acquire() — returns immediately if one is ready,
+    blocks until one is available otherwise. After a battle ends, call
+    release_and_refill() to kill the used process and background-spawn a
+    replacement so the pool stays full.
+
+    Thread-safe. Initialize once per training run via init().
+    """
+
+    def __init__(self, size: int):
+        self._size = size
+        self._q: queue.Queue[subprocess.Popen] = queue.Queue()
+        self._lock = threading.Lock()
+        self._filling = 0  # background spawns in flight
+
+        logger.info("NodeProcessPool: pre-warming %d Node processes", size)
+        for _ in range(size):
+            self._spawn_into_pool()
+
+    def _spawn_into_pool(self):
+        """Spawn one process in a background thread and enqueue it when ready."""
+        with self._lock:
+            self._filling += 1
+
+        def _do_spawn():
+            try:
+                proc = _spawn_node_proc()
+                self._q.put(proc)
+                logger.debug("NodeProcessPool: process ready (pool size ~%d)", self._q.qsize())
+            except Exception:
+                logger.exception("NodeProcessPool: spawn failed")
+            finally:
+                with self._lock:
+                    self._filling -= 1
+
+        threading.Thread(target=_do_spawn, daemon=True).start()
+
+    def acquire(self, timeout: float = 120.0) -> subprocess.Popen:
+        """Claim a ready process. Blocks up to timeout seconds."""
+        try:
+            proc = self._q.get(timeout=timeout)
+            logger.debug("NodeProcessPool: acquired process (pool size ~%d)", self._q.qsize())
+            return proc
+        except queue.Empty:
+            raise RuntimeError(
+                f"NodeProcessPool: no process available after {timeout}s "
+                f"(pool_size={self._size}, filling={self._filling})"
+            )
+
+    def release_and_refill(self, proc: subprocess.Popen):
+        """Kill the used process and spawn a replacement in the background."""
+        try:
+            proc.stdin.close()
+        except Exception:
+            pass
+        try:
+            proc.terminate()
+        except Exception:
+            pass
+        self._spawn_into_pool()
+
+    def close(self):
+        """Drain and kill all pooled processes."""
+        while True:
+            try:
+                proc = self._q.get_nowait()
+                try:
+                    proc.terminate()
+                except Exception:
+                    pass
+            except queue.Empty:
+                break
+
+
+# Module-level pool — initialized on first ShowdownSim.start() if pool_size > 0.
+_pool: Optional[NodeProcessPool] = None
+_pool_lock = threading.Lock()
+
+
+def init_pool(size: int):
+    """Call once before training to pre-warm Node processes."""
+    global _pool
+    with _pool_lock:
+        if _pool is None:
+            _pool = NodeProcessPool(size)
+
+
+def close_pool():
+    global _pool
+    with _pool_lock:
+        if _pool is not None:
+            _pool.close()
+            _pool = None
 
 
 class ShowdownSim:
@@ -72,12 +181,10 @@ class ShowdownSim:
         """Start a battle. Returns (battle_p1, battle_p2) once both sides have requests."""
         assert self._proc is None
 
-        self._proc = subprocess.Popen(
-            [NODE_BIN, str(self._showdown_path), "simulate-battle"],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
+        if _pool is not None:
+            self._proc = _pool.acquire()
+        else:
+            self._proc = _spawn_node_proc()
 
         BattleClass = DoubleBattle if self._doubles else Battle
         self._battle_p1 = BattleClass(
@@ -133,22 +240,26 @@ class ShowdownSim:
 
     def close(self):
         if self._proc is not None:
-            try:
-                self._proc.stdin.close()
-            except Exception:
-                pass
-            try:
-                self._proc.terminate()
-            except Exception:
-                pass
-            try:
-                self._proc.wait(timeout=2)
-            except subprocess.TimeoutExpired:
-                self._proc.kill()
-                self._proc.wait()
-            except Exception:
-                pass
+            proc = self._proc
             self._proc = None
+            if _pool is not None:
+                _pool.release_and_refill(proc)
+            else:
+                try:
+                    proc.stdin.close()
+                except Exception:
+                    pass
+                try:
+                    proc.terminate()
+                except Exception:
+                    pass
+                try:
+                    proc.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.wait()
+                except Exception:
+                    pass
 
     @property
     def needs_choice_p1(self) -> bool:
