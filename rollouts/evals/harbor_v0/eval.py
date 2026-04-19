@@ -28,13 +28,49 @@ from typing import Any
 
 from rollouts.core import Message
 from rollouts.core.eval import Metric, Score
-from rollouts.environments.harbor_environment import HarborEnvironment
+from rollouts.environments.harbor_environment import (
+    HarborEnvironment,
+    _aio_in_thread,
+    parse_harbor_host_config,
+)
 from rollouts.eval_runner import EvalSpec
 from rollouts.training.scoring import FunctionScorer
 
 from .prepare import TB2TaskRef, get_task
 
 logger = logging.getLogger(__name__)
+
+_HARBOR_HOST_KEY = "harbor_host"
+
+
+def _resolve_scoring_harbor_environment(sample: Any, context: Any) -> HarborEnvironment | None:
+    """Resolve the live HarborEnvironment for scoring.
+
+    The eval runtime threads the final live environment through
+    ScoringContext.environment. Older sample shapes may also carry an
+    `environment` attribute, so keep that as a compatibility fallback.
+    """
+    context_env = getattr(context, "environment", None)
+    if isinstance(context_env, HarborEnvironment):
+        return context_env
+
+    sample_env = getattr(sample, "environment", None)
+    if isinstance(sample_env, HarborEnvironment):
+        return sample_env
+
+    return None
+
+
+async def _run_harbor_verifier(verifier: Any) -> Any:
+    """Run Harbor's asyncio-native verifier from the Trio scoring loop.
+
+    Harbor's environment backends use asyncio internally. Our eval runtime is
+    Trio-based. Tool execution already crosses that boundary through
+    `_aio_in_thread`; scoring must do the same or Harbor's verifier ends up
+    awaiting backend calls on the wrong event loop.
+    """
+
+    return await _aio_in_thread(lambda: verifier.verify())
 
 
 # ── Per-sample environment construction ─────────────────────────────────────
@@ -60,6 +96,7 @@ async def make_environment(sample_data: dict[str, Any]) -> HarborEnvironment:
 
     # Per-sample session id so Harbor's resource naming is unique.
     session_id = f"{task_id}__{uuid.uuid4().hex[:8]}"
+    host = parse_harbor_host_config(sample_data.get(_HARBOR_HOST_KEY))
 
     return await HarborEnvironment.create(
         task_dir=task.environment_dir,
@@ -70,6 +107,7 @@ async def make_environment(sample_data: dict[str, Any]) -> HarborEnvironment:
         memory_mb=env_cfg.memory_mb,
         storage_mb=env_cfg.storage_mb,
         docker_image=env_cfg.docker_image,
+        host=host,
         tools="full",
     )
 
@@ -107,33 +145,36 @@ async def score_sample(sample: Any, _context: Any) -> Score:
 
     This happens at score time (post-agent). The environment passed in is
     the agent's final state; the Verifier operates on the live container.
+
+    TODO(parity-review): scoring is now aligned to Harbor's verifier
+    contract, but trajectory/runtime parity is still only partially proven.
+    We should later run the same short witness task through native Harbor,
+    Prime HarborEnv, and this eval, then compare prompts, tool transcripts,
+    stop reasons, and final reward to isolate any model-behavior drift.
     """
     from harbor.models.trial.paths import TrialPaths
     from harbor.verifier.verifier import Verifier
 
-    env = getattr(sample, "environment", None)
-    if env is None or not isinstance(env, HarborEnvironment):
+    env = _resolve_scoring_harbor_environment(sample, _context)
+    if env is None:
         return Score(
-            metrics=(Metric("passed", 0.0, weight=1.0, metadata={"error": "no HarborEnvironment"}),)
+            metrics=(
+                Metric(
+                    "passed",
+                    0.0,
+                    weight=1.0,
+                    metadata={"error": "no live HarborEnvironment in scoring context"},
+                ),
+            )
         )
 
     sample_data = sample.problem.payload if hasattr(sample, "problem") else {}
     task_id = sample_data.get("task_id", "unknown")
     task: TB2TaskRef = get_task(task_id)
 
-    # Parse task config for verifier timeout / test script name.
-    from harbor.models.task.config import TaskConfig
-
-    task_config = TaskConfig.model_validate_toml(task.task_toml.read_text())
-
-    # Verifier wants an object that looks like a harbor Task. Harbor's
-    # own loader normally produces one from a directory; we instantiate
-    # the minimum shape it needs: paths + config.
-    from harbor.models.task.paths import TaskPaths
     from harbor.models.task.task import Task
 
-    task_paths = TaskPaths(task_dir=task.task_dir)
-    harbor_task = Task(config=task_config, paths=task_paths)
+    harbor_task = Task(task.task_dir)
 
     # Verifier wants its own trial_paths for downloading verifier output.
     with tempfile.TemporaryDirectory(prefix="rollouts-harbor-verify-") as td:
@@ -147,7 +188,7 @@ async def score_sample(sample: Any, _context: Any) -> Score:
             environment=env.harbor_env,
         )
         try:
-            result = await verifier.verify()
+            result = await _run_harbor_verifier(verifier)
         except Exception as exc:
             logger.exception("Harbor Verifier failed for %s", task_id)
             return Score(

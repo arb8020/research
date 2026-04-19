@@ -48,9 +48,9 @@ import asyncio
 import logging
 import tempfile
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
-from typing import TYPE_CHECKING, Any, TypeVar
+from typing import TYPE_CHECKING, Any, Literal, TypeVar
 
 import trio
 
@@ -86,14 +86,16 @@ if TYPE_CHECKING:
     pass
 
 logger = logging.getLogger(__name__)
+_LIVE_HARBOR_BACKENDS: dict[str, Any] = {}
 
 
 # ── Harbor availability ─────────────────────────────────────────────────────
 
 _HARBOR_IMPORT_ERROR: str | None = None
+_HARBOR_DOCKER_IMPORT_ERROR: str | None = None
+_HARBOR_MODAL_IMPORT_ERROR: str | None = None
 try:
     from harbor.environments.base import BaseEnvironment as _HarborBaseEnvironment  # noqa: F401
-    from harbor.environments.docker.docker import DockerEnvironment as _HarborDockerEnvironment
     from harbor.models.task.config import EnvironmentConfig as _HarborEnvironmentConfig
     from harbor.models.trial.paths import TrialPaths as _HarborTrialPaths
 
@@ -101,9 +103,20 @@ try:
 except ImportError as exc:
     HARBOR_AVAILABLE = False
     _HARBOR_IMPORT_ERROR = str(exc)
-    _HarborDockerEnvironment = None  # type: ignore[assignment]
     _HarborEnvironmentConfig = None  # type: ignore[assignment]
     _HarborTrialPaths = None  # type: ignore[assignment]
+
+try:
+    from harbor.environments.docker.docker import DockerEnvironment as _HarborDockerEnvironment
+except ImportError as exc:
+    _HarborDockerEnvironment = None  # type: ignore[assignment]
+    _HARBOR_DOCKER_IMPORT_ERROR = str(exc)
+
+try:
+    from harbor.environments.modal import ModalEnvironment as _HarborModalEnvironment
+except ImportError as exc:
+    _HarborModalEnvironment = None  # type: ignore[assignment]
+    _HARBOR_MODAL_IMPORT_ERROR = str(exc)
 
 
 def _require_harbor() -> None:
@@ -120,6 +133,169 @@ def _require_harbor() -> None:
         "\n"
         f"Underlying import error: {_HARBOR_IMPORT_ERROR}"
     )
+
+
+def _require_harbor_docker() -> None:
+    _require_harbor()
+    if _HarborDockerEnvironment is not None:
+        return
+    raise ImportError(
+        "Harbor DockerEnvironment is unavailable. Ensure Harbor is installed correctly.\n"
+        f"Underlying import error: {_HARBOR_DOCKER_IMPORT_ERROR}"
+    )
+
+
+def _require_harbor_modal() -> None:
+    _require_harbor()
+    if _HarborModalEnvironment is not None:
+        return
+    raise ImportError(
+        "Harbor ModalEnvironment is unavailable. Install Harbor with Modal support.\n"
+        "Example:\n"
+        "    pip install 'harbor[modal]'\n"
+        "    uv tool install 'harbor[modal]'\n"
+        "\n"
+        f"Underlying import error: {_HARBOR_MODAL_IMPORT_ERROR}"
+    )
+
+
+@dataclass(frozen=True)
+class LocalHarborHost:
+    kind: Literal["local"] = "local"
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"kind": self.kind}
+
+
+@dataclass(frozen=True)
+class ModalHarborHost:
+    kind: Literal["modal"] = "modal"
+    app_name: str = "__harbor__"
+    secrets: tuple[str, ...] = ()
+    registry_secret: str | None = None
+    volumes: dict[str, str] | None = None
+    sandbox_timeout_secs: int = 60 * 60 * 24
+    sandbox_idle_timeout_secs: int | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "kind": self.kind,
+            "app_name": self.app_name,
+            "secrets": list(self.secrets),
+            "registry_secret": self.registry_secret,
+            "volumes": self.volumes,
+            "sandbox_timeout_secs": self.sandbox_timeout_secs,
+            "sandbox_idle_timeout_secs": self.sandbox_idle_timeout_secs,
+        }
+
+
+@dataclass(frozen=True)
+class SSHHarborHost:
+    kind: Literal["ssh"] = "ssh"
+    ssh: str = ""
+    ssh_key_path: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "kind": self.kind,
+            "ssh": self.ssh,
+            "ssh_key_path": self.ssh_key_path,
+        }
+
+
+HarborHostConfig = LocalHarborHost | ModalHarborHost | SSHHarborHost
+
+
+def parse_harbor_host_config(data: dict[str, Any] | None) -> HarborHostConfig:
+    if data is None:
+        return LocalHarborHost()
+
+    kind = data.get("kind", "local")
+    if kind == "local":
+        return LocalHarborHost()
+    if kind == "modal":
+        return ModalHarborHost(
+            app_name=data.get("app_name", "__harbor__"),
+            secrets=tuple(data.get("secrets", ())),
+            registry_secret=data.get("registry_secret"),
+            volumes=data.get("volumes"),
+            sandbox_timeout_secs=data.get("sandbox_timeout_secs", 60 * 60 * 24),
+            sandbox_idle_timeout_secs=data.get("sandbox_idle_timeout_secs"),
+        )
+    if kind == "ssh":
+        return SSHHarborHost(
+            ssh=data.get("ssh", ""),
+            ssh_key_path=data.get("ssh_key_path"),
+        )
+    raise ValueError(f"Unknown Harbor host kind: {kind!r}")
+
+
+def _serialize_harbor_host_config(host: HarborHostConfig) -> dict[str, Any]:
+    return host.to_dict()
+
+
+def attach_harbor_host_to_tasks(
+    tasks: list[dict[str, Any]],
+    host: HarborHostConfig,
+) -> list[dict[str, Any]]:
+    host_dict = _serialize_harbor_host_config(host)
+    return [{**task, "harbor_host": host_dict} for task in tasks]
+
+
+def _make_harbor_backend(
+    *,
+    host: HarborHostConfig,
+    task_dir: Path,
+    environment_name: str,
+    session_id: str,
+    trial_paths: Any,
+    task_env_config: Any,
+) -> Any:
+    # TODO(pooling): heterogeneous host pooling/lease management belongs above
+    # HarborEnvironment.create. Keep per-sample host selection here as a pure
+    # "which substrate realizes this task?" decision; do not smear pool policy
+    # into this constructor boundary.
+    if isinstance(host, LocalHarborHost):
+        _require_harbor_docker()
+        return _HarborDockerEnvironment(
+            environment_dir=task_dir,
+            environment_name=environment_name,
+            session_id=session_id,
+            trial_paths=trial_paths,
+            task_env_config=task_env_config,
+        )
+
+    if isinstance(host, ModalHarborHost):
+        _require_harbor_modal()
+        return _HarborModalEnvironment(
+            environment_dir=task_dir,
+            environment_name=environment_name,
+            session_id=session_id,
+            trial_paths=trial_paths,
+            task_env_config=task_env_config,
+            app_name=host.app_name,
+            secrets=list(host.secrets),
+            registry_secret=host.registry_secret,
+            volumes=host.volumes,
+            sandbox_timeout_secs=host.sandbox_timeout_secs,
+            sandbox_idle_timeout_secs=host.sandbox_idle_timeout_secs,
+        )
+
+    if isinstance(host, SSHHarborHost):
+        raise NotImplementedError(
+            "SSHHarborHost is not implemented yet. Harbor does not expose a built-in "
+            "SSH environment in the pinned commit we use today."
+        )
+
+    raise AssertionError(f"Unhandled Harbor host config: {host!r}")
+
+
+def _register_live_harbor_backend(session_id: str, harbor_env: Any) -> None:
+    _LIVE_HARBOR_BACKENDS[session_id] = harbor_env
+
+
+def _lookup_live_harbor_backend(session_id: str) -> Any | None:
+    return _LIVE_HARBOR_BACKENDS.get(session_id)
 
 
 # ── Workspace resource adapter ──────────────────────────────────────────────
@@ -233,9 +409,10 @@ class HarborEnvironmentSpec:
     memory_mb: int = 2048
     storage_mb: int = 10240
     docker_image: str | None = None
-    # TODO(harbor-warm-restore): a warm path would add a field like
-    # container_id / sandbox_handle so deserialize could reattach to a live
-    # resource instead of cold-starting. Deferred until pooling is real.
+    host: HarborHostConfig = LocalHarborHost()
+    # TODO(harbor-warm-restore): cross-process warm restore would add a field
+    # like container_id / sandbox_handle so deserialize could reattach without
+    # relying on an in-memory backend reference. Deferred until pooling is real.
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -248,6 +425,7 @@ class HarborEnvironmentSpec:
             "memory_mb": self.memory_mb,
             "storage_mb": self.storage_mb,
             "docker_image": self.docker_image,
+            "host": _serialize_harbor_host_config(self.host),
         }
 
     @classmethod
@@ -262,6 +440,7 @@ class HarborEnvironmentSpec:
             memory_mb=data.get("memory_mb", 2048),
             storage_mb=data.get("storage_mb", 10240),
             docker_image=data.get("docker_image"),
+            host=parse_harbor_host_config(data.get("host")),
         )
 
 
@@ -275,11 +454,13 @@ class HarborEnvironment(CodingEnvironment):
     Construct via `create()` (async, starts the container). Call `close()` to
     stop and optionally delete.
 
-    Serialize/deserialize implements the fold contract: serialize emits a
-    `HarborEnvironmentSpec`; deserialize cold-restarts a fresh container from
-    that spec. Replaying the session's effect log onto a cold-restarted env
-    reconstructs state. Warm-restart (reattaching to a still-live container)
-    is a v1 optimization on top; not implemented yet.
+    Serialize/deserialize has two modes because the runtime uses it in two
+    different ways:
+
+    - Hot path: between tool calls in the same process, reattach to the
+      existing Harbor substrate via an in-memory live-backend registry.
+    - Cold path: if no live backend reference is present, fall back to the
+      spec and cold-start a fresh Harbor backend.
     """
 
     def __init__(
@@ -300,6 +481,29 @@ class HarborEnvironment(CodingEnvironment):
         self.spec = spec
         self.harbor_env = harbor_env
 
+    @classmethod
+    def _from_live_backend(
+        cls,
+        *,
+        spec: HarborEnvironmentSpec,
+        harbor_env: Any,
+        current_working_dir: str | None = None,
+        tools: str | list[str] = "full",
+    ) -> HarborEnvironment:
+        working_dir = current_working_dir or spec.working_dir
+        if spec.working_dir != working_dir:
+            spec = replace(spec, working_dir=working_dir)
+        _register_live_harbor_backend(spec.session_id, harbor_env)
+        workspace = HarborWorkspaceResource(harbor_env=harbor_env, working_dir=working_dir)
+        command_runner = HarborCommandRunner(harbor_env=harbor_env)
+        return cls(
+            spec=spec,
+            harbor_env=harbor_env,
+            workspace=workspace,
+            command_runner=command_runner,
+            tools=tools,
+        )
+
     def get_name(self) -> str:
         return "harbor"
 
@@ -317,6 +521,7 @@ class HarborEnvironment(CodingEnvironment):
         memory_mb: int = 2048,
         storage_mb: int = 10240,
         docker_image: str | None = None,
+        host: HarborHostConfig = LocalHarborHost(),
         trial_dir: str | Path | None = None,
         force_build: bool = False,
         tools: str | list[str] = "full",
@@ -359,6 +564,7 @@ class HarborEnvironment(CodingEnvironment):
             memory_mb=memory_mb,
             storage_mb=storage_mb,
             docker_image=docker_image,
+            host=host,
         )
 
         env_config = _HarborEnvironmentConfig(
@@ -373,8 +579,9 @@ class HarborEnvironment(CodingEnvironment):
         if hasattr(trial_paths, "mkdir"):
             trial_paths.mkdir()
 
-        harbor_env = _HarborDockerEnvironment(
-            environment_dir=task_dir,
+        harbor_env = _make_harbor_backend(
+            host=host,
+            task_dir=task_dir,
             environment_name=environment_name,
             session_id=session_id,
             trial_paths=trial_paths,
@@ -382,22 +589,20 @@ class HarborEnvironment(CodingEnvironment):
         )
 
         logger.info(
-            "HarborEnvironment.create: starting (task_dir=%s, name=%s, session=%s, force_build=%s)",
+            "HarborEnvironment.create: starting (task_dir=%s, name=%s, session=%s, host=%s, force_build=%s)",
             task_dir,
             environment_name,
             session_id,
+            host.kind,
             force_build,
         )
         await _aio_in_thread(lambda: harbor_env.start(force_build=force_build))
         logger.info("HarborEnvironment.create: started")
 
-        workspace = HarborWorkspaceResource(harbor_env=harbor_env, working_dir=working_dir)
-        command_runner = HarborCommandRunner(harbor_env=harbor_env)
-        return cls(
+        return cls._from_live_backend(
             spec=spec,
             harbor_env=harbor_env,
-            workspace=workspace,
-            command_runner=command_runner,
+            current_working_dir=working_dir,
             tools=tools,
         )
 
@@ -409,25 +614,40 @@ class HarborEnvironment(CodingEnvironment):
         except Exception as exc:
             # Don't crash eval teardown because Harbor had trouble stopping.
             logger.warning("HarborEnvironment.close: harbor_env.stop raised: %s", exc)
+        finally:
+            if _lookup_live_harbor_backend(self.spec.session_id) is self.harbor_env:
+                _LIVE_HARBOR_BACKENDS.pop(self.spec.session_id, None)
 
     # ── Serialize / fold contract ─────────────────────────────────────────
 
     async def serialize(self) -> dict[str, Any]:
-        return self.spec.to_dict()
+        data = self.spec.to_dict()
+        # The runtime uses serialize/deserialize as a hot in-memory handoff
+        # between tool calls. Carry the current cwd; deserialize reattaches to
+        # the live backend via the in-process registry when available.
+        data["working_dir"] = self.current_working_dir
+        data["tools"] = self.tools
+        return data
 
     @staticmethod
     async def deserialize(data: dict[str, Any]) -> HarborEnvironment:
-        """Cold-restore: spin up a fresh container from the spec.
+        """Restore Harbor environment state.
 
-        Does NOT replay the session's effect log — that's the caller's job
-        (the fold lives at the session level, not on the environment). This
-        method returns an environment at its initial state; feed it effects
-        to reach the state that was serialized.
-
-        Warm-restore (reattach to an existing live container) is not
-        implemented; `deserialize` always takes the cold path.
+        If the live backend is still registered for this session, this is a
+        warm in-process reattach used by the runtime hot path. Otherwise fall
+        back to a cold create from the serialized spec.
         """
         spec = HarborEnvironmentSpec.from_dict(data)
+        tools = data.get("tools", "full")
+        live_harbor_env = _lookup_live_harbor_backend(spec.session_id)
+        if live_harbor_env is not None:
+            return HarborEnvironment._from_live_backend(
+                spec=spec,
+                harbor_env=live_harbor_env,
+                current_working_dir=spec.working_dir,
+                tools=tools,
+            )
+
         return await HarborEnvironment.create(
             task_dir=spec.task_dir,
             environment_name=spec.environment_name,
@@ -437,6 +657,8 @@ class HarborEnvironment(CodingEnvironment):
             memory_mb=spec.memory_mb,
             storage_mb=spec.storage_mb,
             docker_image=spec.docker_image,
+            host=spec.host,
+            tools=tools,
         )
 
 

@@ -7,6 +7,10 @@ the smoke is stable and we've run the 8, we extend further.
 Same requirements as smoke.py.
 """
 
+from harbor_v0.config_types import (
+    HarborTaskEnvironmentConfig,
+    LocalHarborHost,
+)
 from rollouts.config.tiers import EndpointConfig, OutputConfig, RunConfig
 
 endpoint = EndpointConfig(
@@ -23,6 +27,10 @@ run = RunConfig(
 
 output = OutputConfig(
     experiment_name="harbor_v0_full",
+)
+
+environment = HarborTaskEnvironmentConfig(
+    host=LocalHarborHost(),
 )
 
 # Eight hand-picked TB2 tasks — all with prebuilt images, varied

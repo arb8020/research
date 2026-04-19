@@ -88,6 +88,7 @@ def load_eval_module(eval_name: str) -> Any:
 
 def run_simple_eval(spec: Any, config_module: Any, args: argparse.Namespace) -> dict[str, Any]:
     """Run an eval using the EvalSpec pattern with shared runner."""
+    from rollouts.environments.harbor_environment import attach_harbor_host_to_tasks
     from rollouts.eval_runner import run_eval_from_spec
 
     kwargs: dict[str, Any] = {}
@@ -102,7 +103,13 @@ def run_simple_eval(spec: Any, config_module: Any, args: argparse.Namespace) -> 
 
     # Load tasks override if present
     if hasattr(config_module, "tasks_override"):
-        kwargs["tasks"] = config_module.tasks_override
+        tasks = config_module.tasks_override
+        if hasattr(config_module, "environment"):
+            environment = config_module.environment
+            host = getattr(environment, "host", None)
+            if host is not None:
+                tasks = attach_harbor_host_to_tasks(tasks, host)
+        kwargs["tasks"] = tasks
 
     # CLI overrides
     if args.model:

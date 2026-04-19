@@ -1,19 +1,19 @@
-"""Harbor v0 smoke: run 2 TB2 tasks end-to-end.
+"""Harbor v0 smoke on Modal: run 2 TB2 tasks end-to-end.
 
 Tasks: cancel-async-tasks, crack-7z-hash. Both have prebuilt docker images
-(no build time) and small tractable success criteria. If this works,
-widen the task set in mid.py / full.py.
+and small tractable success criteria. This is the live witness for Harbor's
+Modal-backed task container path.
 
 Requires:
-  - Harbor installed out-of-band:
-      uv pip install 'harbor @ git+https://github.com/laude-institute/harbor.git@e0fcdc2'
-  - Docker daemon running (HarborEnvironment uses docker compose).
+  - Harbor installed with Modal support:
+      uv pip install 'harbor[modal] @ git+https://github.com/laude-institute/harbor.git@e0fcdc2'
+  - Modal auth configured (`modal token new` or env vars).
   - ANTHROPIC_API_KEY set.
 """
 
 from harbor_v0.config_types import (
     HarborTaskEnvironmentConfig,
-    LocalHarborHost,
+    ModalHarborHost,
 )
 from rollouts.config.tiers import EndpointConfig, OutputConfig, RunConfig
 
@@ -30,14 +30,15 @@ run = RunConfig(
 )
 
 output = OutputConfig(
-    experiment_name="harbor_v0_smoke",
+    experiment_name="harbor_v0_modal_smoke",
 )
 
 environment = HarborTaskEnvironmentConfig(
-    host=LocalHarborHost(),
+    host=ModalHarborHost(
+        app_name="rollouts-harbor",
+    ),
 )
 
-# Two tight tasks with prebuilt images.
 tasks_override = [
     {"task_id": "cancel-async-tasks"},
     {"task_id": "crack-7z-hash"},
