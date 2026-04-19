@@ -67,6 +67,10 @@ class NodeProcessPool:
         for _ in range(size):
             self._spawn_into_pool()
 
+    # Seconds to wait after Popen before enqueuing — gives Node time to load
+    # Showdown (~1s locally, ~15s on Modal cold container).
+    _WARMUP_SECS: float = 0.0  # set by init_pool
+
     def _spawn_into_pool(self):
         """Spawn one process in a background thread and enqueue it when ready."""
         with self._lock:
@@ -75,6 +79,9 @@ class NodeProcessPool:
         def _do_spawn():
             try:
                 proc = _spawn_node_proc()
+                if self._WARMUP_SECS > 0:
+                    import time as _time
+                    _time.sleep(self._WARMUP_SECS)
                 self._q.put(proc)
                 logger.debug("NodeProcessPool: process ready (pool size ~%d)", self._q.qsize())
             except Exception:
@@ -127,12 +134,18 @@ _pool: Optional[NodeProcessPool] = None
 _pool_lock = threading.Lock()
 
 
-def init_pool(size: int):
-    """Call once before training to pre-warm Node processes."""
+def init_pool(size: int, warmup_secs: float = 0.0):
+    """Call once before training to pre-warm Node processes.
+
+    warmup_secs: seconds to wait after Popen before considering the process
+    ready. Set to ~15-20 on Modal where Node startup takes ~12-15s.
+    """
     global _pool
     with _pool_lock:
         if _pool is None:
-            _pool = NodeProcessPool(size)
+            pool = NodeProcessPool(size)
+            pool._WARMUP_SECS = warmup_secs
+            _pool = pool
 
 
 def close_pool():
@@ -285,12 +298,7 @@ class ShowdownSim:
         self._proc.stdin.write((line + "\n").encode())
         self._proc.stdin.flush()
 
-    def _readline(self, timeout: float = 30.0) -> Optional[str]:
-        """readline with timeout — raises TimeoutError if Node doesn't respond."""
-        import select
-        ready, _, _ = select.select([self._proc.stdout], [], [], timeout)
-        if not ready:
-            raise TimeoutError(f"Node process did not respond within {timeout}s")
+    def _readline(self) -> Optional[str]:
         raw = self._proc.stdout.readline()
         if not raw:
             return None

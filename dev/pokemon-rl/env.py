@@ -170,16 +170,11 @@ class PokemonEnv(gym.Env):
         _env_log = _logging.getLogger(__name__)
         for attempt in range(5):
             sim = ShowdownSim(gen=9)
-            try:
-                self._b1, self._b2 = sim.start(
-                    self.format_id,
-                    p1_team=self.p1_team,
-                    p2_team=self.p2_team,
-                )
-            except TimeoutError:
-                _env_log.warning("env reset attempt %d: Node timed out, retrying", attempt + 1)
-                sim.close()
-                continue
+            self._b1, self._b2 = sim.start(
+                self.format_id,
+                p1_team=self.p1_team,
+                p2_team=self.p2_team,
+            )
             if not sim.done:
                 break
             _env_log.warning(
