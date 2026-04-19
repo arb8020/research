@@ -31,7 +31,7 @@ from env import PokemonEnv
 from obs import obs_dim
 
 ACTION_SPACE_SIZE = 26
-STEP_TIMEOUT = 60.0   # seconds — a stuck env raises after this
+STEP_TIMEOUT = 35.0   # seconds — slightly above the 30s readline timeout in sim_bridge
 RESET_TIMEOUT = 120.0  # Node startup can be slow on cold container
 
 log = logging.getLogger("vecenv")

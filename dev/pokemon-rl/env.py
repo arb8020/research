@@ -166,24 +166,29 @@ class PokemonEnv(gym.Env):
             self._sim.close()
             self._sim = None
 
+        import logging as _logging
+        _env_log = _logging.getLogger(__name__)
         for attempt in range(5):
             sim = ShowdownSim(gen=9)
-            self._b1, self._b2 = sim.start(
-                self.format_id,
-                p1_team=self.p1_team,
-                p2_team=self.p2_team,
-            )
+            try:
+                self._b1, self._b2 = sim.start(
+                    self.format_id,
+                    p1_team=self.p1_team,
+                    p2_team=self.p2_team,
+                )
+            except TimeoutError:
+                _env_log.warning("env reset attempt %d: Node timed out, retrying", attempt + 1)
+                sim.close()
+                continue
             if not sim.done:
                 break
-            # Node process was defective (returned immediately) — discard and retry
-            import logging as _logging
-            _logging.getLogger(__name__).warning(
+            _env_log.warning(
                 "env reset attempt %d: battle finished immediately (winner=%s), retrying",
                 attempt + 1, sim.winner,
             )
             sim.close()
         else:
-            raise RuntimeError(f"env reset failed after 5 attempts: Node process always exits immediately")
+            raise RuntimeError("env reset failed after 5 attempts")
         self._sim = sim
 
         obs = embed_battle(self._b1)

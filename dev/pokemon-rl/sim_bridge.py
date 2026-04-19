@@ -285,7 +285,12 @@ class ShowdownSim:
         self._proc.stdin.write((line + "\n").encode())
         self._proc.stdin.flush()
 
-    def _readline(self) -> Optional[str]:
+    def _readline(self, timeout: float = 30.0) -> Optional[str]:
+        """readline with timeout — raises TimeoutError if Node doesn't respond."""
+        import select
+        ready, _, _ = select.select([self._proc.stdout], [], [], timeout)
+        if not ready:
+            raise TimeoutError(f"Node process did not respond within {timeout}s")
         raw = self._proc.stdout.readline()
         if not raw:
             return None
