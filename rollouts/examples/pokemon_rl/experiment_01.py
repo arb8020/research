@@ -62,7 +62,7 @@ hardware = HardwareConfig(
 @dataclass
 class PokemonRLConfig:
     format_id: str = "gen9randombattle"
-    n_envs: int = 4
+    n_envs: int = 16
     horizon: int = 64
     total_steps: int = 20_000_000
     lr: float = 3e-4

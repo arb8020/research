@@ -32,7 +32,7 @@ from torch.distributions import Categorical
 
 from obs import obs_dim
 from policy import Policy
-from vecenv import ProcessVecEnv
+from vecenv import ThreadedVecEnv
 
 log = logging.getLogger("train")
 logging.basicConfig(
@@ -99,7 +99,7 @@ def train(cfg: Config):
     device = torch.device(cfg.device)
     log.info(f"device={cfg.device} n_envs={cfg.n_envs} horizon={cfg.horizon}")
 
-    vec = ProcessVecEnv(cfg.n_envs, format_id=cfg.format_id)
+    vec = ThreadedVecEnv(cfg.n_envs, format_id=cfg.format_id)
     policy = Policy(
         obs_dim=obs_dim(),
         action_dim=ACTION_DIM,
