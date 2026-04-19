@@ -124,7 +124,10 @@ def train(cfg: Config):
     # Pre-warm Node processes: n_envs + 25% buffer so mid-rollout resets
     # can pull immediately while replacements spawn in the background.
     pool_size = cfg.n_envs + max(4, cfg.n_envs // 4)
-    init_pool(pool_size)
+    # On Modal, Node takes ~12-15s to load Showdown. Wait 20s before
+    # enqueuing pool processes so they're actually ready when claimed.
+    warmup_secs = 30.0 if cfg.device == "cuda" else 0.0
+    init_pool(pool_size, warmup_secs=warmup_secs)
     vec = ThreadedVecEnv(cfg.n_envs, format_id=cfg.format_id)
     policy = Policy(
         obs_dim=obs_dim(),
