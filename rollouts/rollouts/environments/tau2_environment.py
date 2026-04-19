@@ -964,6 +964,16 @@ def _trim_trailing_orphan_tool_calls(messages: list[Any]) -> list[Any]:
       (c) trailing ToolMessages from a previous turn whose AssistantMessage
           is intact — fine to keep (rare, but defensive).
 
+    TODO(tau2-fidelity): case (b) is the parallel-mutating-tool fidelity gap.
+    For an AssistantMessage with N>1 mutating tool calls where K<N have
+    completed, we drop the whole assistant message from the replay set —
+    so on the post-deserialize env, mutations from the K completed tools
+    are LOST. Verified safe for retail/airline (mostly serial mutation).
+    Likely real cost on tasks that issue parallel exchange/refund/etc.
+    Fix: defer appending the AssistantMessage to _tau2_trajectory until
+    all its tool results land, and persist the partial-result buffer in
+    serialize() so we can resume mid-group.
+
     Our trim algorithm: walk from the tail; while the last message is a
     tool_call message OR a ToolMessage whose preceding tool_call(s) aren't
     fully accounted for, drop it. We keep popping until the remaining
