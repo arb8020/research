@@ -104,6 +104,8 @@ async def make_environment(sample_data: dict[str, Any]) -> Tau2Environment:
         max_errors=sample_data.get("max_errors", 10),
         persona_config=_persona_config_from_row(sample_data),
         solo_mode=bool(sample_data.get("solo_mode", False)),
+        retrieval_variant=sample_data.get("retrieval_variant"),
+        retrieval_kwargs=sample_data.get("retrieval_kwargs"),
     )
 
 

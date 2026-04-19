@@ -132,7 +132,7 @@ logger = logging.getLogger(__name__)
 #      `knowledge` extra (`uv sync --extra knowledge`), and surface the
 #      retrieval pipeline config (BM25 / embeddings / RAG) through the
 #      sample row.
-Tau2Domain = Literal["airline", "retail", "telecom"]
+Tau2Domain = Literal["airline", "retail", "telecom", "banking_knowledge"]
 
 
 # ── Tool translation ────────────────────────────────────────────────────────
@@ -364,6 +364,12 @@ class Tau2Environment:
     # tau2 itself only exposes solo_mode on telecom; airline/retail raise
     # in _build_tau2_domain_env.
     solo_mode: bool = False
+    # banking_knowledge retrieval pipeline knobs. retrieval_variant names
+    # the variant (e.g. "qwen_embeddings_grep", "bm25") per
+    # tau2/knowledge/README.md; None lets tau2 default. retrieval_kwargs
+    # are extra params (e.g. {"top_k": 5}). Ignored for other domains.
+    retrieval_variant: str | None = None
+    retrieval_kwargs: dict[str, Any] | None = None
 
     # Populated by create(); internal mutable state.
     _tau2_env: Any = field(default=None, repr=False)
@@ -401,6 +407,8 @@ class Tau2Environment:
         max_errors: int = 10,
         persona_config: Any = None,
         solo_mode: bool = False,
+        retrieval_variant: str | None = None,
+        retrieval_kwargs: dict[str, Any] | None = None,
     ) -> Tau2Environment:
         """Build a Tau2Environment with a fresh tau2 domain env.
 
@@ -415,7 +423,13 @@ class Tau2Environment:
         the telecom domain supports solo_mode at the tau2 layer; airline
         and retail will raise in _build_tau2_domain_env.
         """
-        tau2_env = _build_tau2_domain_env(domain, solo_mode=solo_mode)
+        tau2_env = _build_tau2_domain_env(
+            domain,
+            solo_mode=solo_mode,
+            retrieval_variant=retrieval_variant,
+            retrieval_kwargs=retrieval_kwargs,
+            task=task,
+        )
         _apply_task_initialization(tau2_env, task, message_history=[])
         tools = [_tau2_tool_to_rollouts(t) for t in tau2_env.get_tools()]
         # In solo_mode, no user simulator at all — skip its construction.
@@ -438,6 +452,8 @@ class Tau2Environment:
             max_errors=max_errors,
             persona_config=persona_config,
             solo_mode=solo_mode,
+            retrieval_variant=retrieval_variant,
+            retrieval_kwargs=retrieval_kwargs,
             _tau2_env=tau2_env,
             _tau2_tools=tools,
             _tau2_trajectory=[],
@@ -668,6 +684,8 @@ class Tau2Environment:
             "max_steps": self.max_steps,
             "max_errors": self.max_errors,
             "solo_mode": self.solo_mode,
+            "retrieval_variant": self.retrieval_variant,
+            "retrieval_kwargs": self.retrieval_kwargs,
             "persona_config": (
                 self.persona_config.model_dump(mode="json")
                 if self.persona_config is not None
@@ -723,6 +741,8 @@ class Tau2Environment:
 
         domain: Tau2Domain = data["domain"]
         solo_mode: bool = bool(data.get("solo_mode", False))
+        retrieval_variant: str | None = data.get("retrieval_variant")
+        retrieval_kwargs: dict[str, Any] | None = data.get("retrieval_kwargs")
         task = Tau2Task.model_validate_json(data["task_json"])
         # user_endpoint may be None when solo_mode=True.
         user_endpoint_raw = data.get("user_endpoint")
@@ -751,7 +771,13 @@ class Tau2Environment:
         if tau2_env_live is not None:
             tau2_env = tau2_env_live
         else:
-            tau2_env = _build_tau2_domain_env(domain, solo_mode=solo_mode)
+            tau2_env = _build_tau2_domain_env(
+                domain,
+                solo_mode=solo_mode,
+                retrieval_variant=retrieval_variant,
+                retrieval_kwargs=retrieval_kwargs,
+                task=task,
+            )
             # _tau2_trajectory only contains complete tool groups (the
             # pending-buffer fix in on_assistant_message/exec_tool ensures
             # this), so set_state's balance validator is happy with the
@@ -826,6 +852,8 @@ class Tau2Environment:
             max_errors=data.get("max_errors", 10),
             persona_config=persona_config,
             solo_mode=solo_mode,
+            retrieval_variant=retrieval_variant,
+            retrieval_kwargs=retrieval_kwargs,
             _tau2_env=tau2_env,
             _tau2_tools=tools,
             _tau2_trajectory=tau2_messages,
@@ -1026,7 +1054,14 @@ class Tau2Environment:
 # ── Helpers ─────────────────────────────────────────────────────────────────
 
 
-def _build_tau2_domain_env(domain: Tau2Domain, *, solo_mode: bool = False) -> Any:
+def _build_tau2_domain_env(
+    domain: Tau2Domain,
+    *,
+    solo_mode: bool = False,
+    retrieval_variant: str | None = None,
+    retrieval_kwargs: dict[str, Any] | None = None,
+    task: Any = None,
+) -> Any:
     """Construct a fresh tau2 domain environment.
 
     `solo_mode` is currently only meaningful for telecom (which is the only
@@ -1034,6 +1069,11 @@ def _build_tau2_domain_env(domain: Tau2Domain, *, solo_mode: bool = False) -> An
     environment exposes the agent-only protocol — no user simulator turns,
     text-only assistant messages terminate the conversation. See
     Tau2Environment for how this is enforced upstream.
+
+    `retrieval_variant` / `retrieval_kwargs` / `task` are passed to
+    banking_knowledge's get_environment to configure the RAG pipeline
+    (BM25, embeddings, etc.). Ignored for other domains. See
+    src/tau2/knowledge/README.md for variant names and kwarg shapes.
     """
     if domain == "airline":
         if solo_mode:
@@ -1057,21 +1097,17 @@ def _build_tau2_domain_env(domain: Tau2Domain, *, solo_mode: bool = False) -> An
         from tau2.domains.telecom.environment import get_environment
 
         return get_environment(solo_mode=solo_mode)
-    # TODO(tau2-knowledge): banking_knowledge wiring. Requires tau2 installed
-    # with the knowledge extra, plus surfacing a retrieval-config block on
-    # the sample row (BM25 / embeddings / RAG variant + index path) so that
-    # `from tau2.domains.banking_knowledge.environment import get_environment`
-    # can be parameterised. See tau2/knowledge/README.md for retrieval config
-    # schema. Skeleton:
-    #   if domain == "banking_knowledge":
-    #       from tau2.domains.banking_knowledge.environment import get_environment
-    #       retrieval_cfg = ...  # build from row
-    #       return get_environment(retrieval_config=retrieval_cfg)
     if domain == "banking_knowledge":
-        raise NotImplementedError(
-            "domain='banking_knowledge' is not wired yet. Requires "
-            "`uv sync --extra knowledge` for tau2's RAG dependencies and "
-            "passing retrieval_config through the sample row."
+        if solo_mode:
+            raise NotImplementedError(
+                "solo_mode is not supported for the banking_knowledge domain by tau2."
+            )
+        from tau2.domains.banking_knowledge.environment import get_environment
+
+        return get_environment(
+            retrieval_variant=retrieval_variant,
+            retrieval_kwargs=retrieval_kwargs,
+            task=task,
         )
     raise ValueError(f"Unknown tau2 domain: {domain!r}")
 

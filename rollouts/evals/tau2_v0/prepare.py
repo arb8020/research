@@ -16,7 +16,7 @@ from typing import Any, Literal
 
 logger = logging.getLogger(__name__)
 
-Tau2Domain = Literal["airline", "retail", "telecom"]
+Tau2Domain = Literal["airline", "retail", "telecom", "banking_knowledge"]
 
 
 def load_domain_tasks(
@@ -26,9 +26,10 @@ def load_domain_tasks(
     """Return tau2 Task objects for the given domain.
 
     Args:
-        domain: one of airline, retail, telecom
+        domain: one of airline, retail, telecom, banking_knowledge
         split: for telecom, one of {"base" (114 official), "small" (20),
-            "train" (74), "test" (40), "full" (2285)}. Ignored for airline/retail.
+            "train" (74), "test" (40), "full" (2285)}. Ignored for the
+            other domains (their loaders take split=None).
 
     Returns: list[tau2.data_model.tasks.Task]
     """
@@ -44,6 +45,10 @@ def load_domain_tasks(
         from tau2.domains.telecom.environment import get_tasks
 
         return get_tasks(task_split_name=split or "base")
+    if domain == "banking_knowledge":
+        from tau2.domains.banking_knowledge.environment import get_tasks
+
+        return get_tasks(task_split_name=split)
     raise ValueError(f"Unknown domain: {domain!r}")
 
 
@@ -62,6 +67,8 @@ def build_sample_rows(
     user_endpoint: dict[str, str] | None = None,
     persona_config: dict[str, Any] | None = None,
     solo_mode: bool = False,
+    retrieval_variant: str | None = None,
+    retrieval_kwargs: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """Build dataset rows for the eval runner — one per tau2 task.
 
@@ -106,5 +113,9 @@ def build_sample_rows(
             row["persona_config"] = persona
         if solo_mode:
             row["solo_mode"] = True
+        if retrieval_variant is not None:
+            row["retrieval_variant"] = retrieval_variant
+        if retrieval_kwargs is not None:
+            row["retrieval_kwargs"] = dict(retrieval_kwargs)
         rows.append(row)
     return rows
