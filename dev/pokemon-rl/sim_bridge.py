@@ -63,9 +63,14 @@ class NodeProcessPool:
         self._lock = threading.Lock()
         self._filling = 0  # background spawns in flight
 
-        logger.info("NodeProcessPool: pre-warming %d Node processes", size)
-        for _ in range(size):
+        logger.info("NodeProcessPool: pre-warming %d Node processes (warmup=%.0fs)", size, self._WARMUP_SECS)
+        import time as _time
+        for i in range(size):
             self._spawn_into_pool()
+            # Stagger spawns by 0.5s to avoid simultaneous dist file reads
+            # that can corrupt Showdown's JS module loading on cold containers.
+            if i < size - 1:
+                _time.sleep(0.5)
 
     # Seconds to wait after Popen before enqueuing — gives Node time to load
     # Showdown (~1s locally, ~15s on Modal cold container).
