@@ -1425,6 +1425,7 @@ async def create_modal_sandbox(request: ModalExecutionRequest) -> ModalSandboxHa
                     app=app,
                     image=image,
                     gpu=gpu_spec,
+                    cpu=getattr(request.runtime, "cpu_count", None),
                     timeout=timeout_seconds,
                     name=sandbox_name,
                     encrypted_ports=request.encrypted_ports,

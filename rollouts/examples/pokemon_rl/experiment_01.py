@@ -23,6 +23,7 @@ from rollouts.training.configs import DepsConfig, HardwareConfig
 hardware = HardwareConfig(
     gpu_type="L4",
     gpu_count=1,
+    cpu_count=16.0,
     provider="modal",
     deps=DepsConfig(
         python_version="3.12",

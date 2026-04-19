@@ -237,9 +237,13 @@ class HardwareConfig:
     # TODO(boundary): shrink this toward provision-time runtime contract only.
     # Mutable workspace-scoped realization should move to the execution layer
     # instead of continuing to accumulate here.
+    # TODO(serving): HardwareConfig captures per-run hardware/runtime inputs, but
+    # serving also needs a way to describe deployment-level behavior such as how an
+    # endpoint scales or stays warm across replicas.
 
     gpu_type: str = "A100"
     gpu_count: int = 1
+    cpu_count: float | None = None  # Modal only; None = provider default
     provider: Literal["modal", "runpod", "lambdalabs", "vast", "local", "ssh"] = "runpod"
 
     # Shared runtime deps for the current single-env runners.
