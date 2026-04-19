@@ -351,13 +351,19 @@ class Tau2Environment:
 
     domain: Tau2Domain
     task: Any  # Tau2Task (not typed for lazy import reasons)
-    user_endpoint: Endpoint
+    user_endpoint: Endpoint | None  # may be None when solo_mode=True
     max_steps: int = 200
     max_errors: int = 10
     # Optional tau2 PersonaConfig — runtime persona overrides (verbosity,
     # interrupt tendency, etc.) layered on top of the task's baked-in
     # persona. None = tau2's default (no overrides), matching tau2 run.
     persona_config: Any = None
+    # solo_mode: agent runs without a user simulator. Text-only assistant
+    # turns either trigger AGENT_STOP (if stop classifier matches) or
+    # AGENT_ERROR (otherwise) — matching tau2 Orchestrator's solo loop.
+    # tau2 itself only exposes solo_mode on telecom; airline/retail raise
+    # in _build_tau2_domain_env.
+    solo_mode: bool = False
 
     # Populated by create(); internal mutable state.
     _tau2_env: Any = field(default=None, repr=False)
@@ -390,10 +396,11 @@ class Tau2Environment:
         *,
         domain: Tau2Domain,
         task: Any,
-        user_endpoint: Endpoint,
+        user_endpoint: Endpoint | None,
         max_steps: int = 200,
         max_errors: int = 10,
         persona_config: Any = None,
+        solo_mode: bool = False,
     ) -> Tau2Environment:
         """Build a Tau2Environment with a fresh tau2 domain env.
 
@@ -401,21 +408,28 @@ class Tau2Environment:
         runtime persona layer. The same value should be used by
         prepare_messages when building its throwaway UserSimulator so the
         bootstrap user-sim call uses the same prompt as later turns.
+
+        `solo_mode` (bool) runs the env with no user simulator: text-only
+        assistant turns terminate (AGENT_STOP if is_stop, AGENT_ERROR
+        otherwise). `user_endpoint` may be None when solo_mode=True. Only
+        the telecom domain supports solo_mode at the tau2 layer; airline
+        and retail will raise in _build_tau2_domain_env.
         """
-        tau2_env = _build_tau2_domain_env(domain)
+        tau2_env = _build_tau2_domain_env(domain, solo_mode=solo_mode)
         _apply_task_initialization(tau2_env, task, message_history=[])
         tools = [_tau2_tool_to_rollouts(t) for t in tau2_env.get_tools()]
-        # Telecom's user simulator has its own tools; other domains don't.
-        # tau2_env.get_user_tools() raises ValueError when user_tools is
-        # absent, so we guard with the live attribute check rather than
-        # try/except.
-        user_tools = tau2_env.get_user_tools() if tau2_env.user_tools is not None else None
-        user_sim = _build_user_simulator(
-            task,
-            persona_config=persona_config,
-            user_tools=user_tools,
-        )
-        user_state = user_sim.get_init_state()
+        # In solo_mode, no user simulator at all — skip its construction.
+        # Otherwise build one with the per-domain user_tools (telecom only).
+        user_sim: Any = None
+        user_state: Any = None
+        if not solo_mode:
+            user_tools = tau2_env.get_user_tools() if tau2_env.user_tools is not None else None
+            user_sim = _build_user_simulator(
+                task,
+                persona_config=persona_config,
+                user_tools=user_tools,
+            )
+            user_state = user_sim.get_init_state()
         return cls(
             domain=domain,
             task=task,
@@ -423,6 +437,7 @@ class Tau2Environment:
             max_steps=max_steps,
             max_errors=max_errors,
             persona_config=persona_config,
+            solo_mode=solo_mode,
             _tau2_env=tau2_env,
             _tau2_tools=tools,
             _tau2_trajectory=[],
@@ -554,6 +569,12 @@ class Tau2Environment:
             self._termination_reason = TerminationReason.AGENT_STOP
             return replace(state, stop=StopReason.TASK_COMPLETED)
 
+        # solo_mode: agent is supposed to only emit tool calls or stop. A
+        # text-only non-stop turn is an agent error in tau2's solo loop.
+        if self.solo_mode:
+            self._termination_reason = TerminationReason.AGENT_ERROR
+            return replace(state, stop=StopReason.ERROR)
+
         # Plain text → user simulator speaks next. Mirror what tau2's
         # UserSimulator._generate_next_message does to its own state, but
         # route the LLM call through OUR rollout() instead of tau2's
@@ -597,7 +618,7 @@ class Tau2Environment:
             simulation=sim,
             task=self.task,
             evaluation_type=EvaluationType.ALL,
-            solo_mode=False,
+            solo_mode=self.solo_mode,
             domain=self.domain,
         )
         passed = 1.0 if reward_info.reward >= 1.0 else 0.0
@@ -641,16 +662,23 @@ class Tau2Environment:
             "env_kind": "tau2",
             "domain": self.domain,
             "task_json": self.task.model_dump_json(exclude_none=True),
-            "user_endpoint": self.user_endpoint.to_json(),
+            "user_endpoint": (
+                self.user_endpoint.to_json() if self.user_endpoint is not None else None
+            ),
             "max_steps": self.max_steps,
             "max_errors": self.max_errors,
+            "solo_mode": self.solo_mode,
             "persona_config": (
                 self.persona_config.model_dump(mode="json")
                 if self.persona_config is not None
                 else None
             ),
             "tau2_messages": [m.model_dump(mode="json") for m in self._tau2_trajectory],
-            "user_state_messages": [m.model_dump(mode="json") for m in self._user_state.messages],
+            "user_state_messages": (
+                [m.model_dump(mode="json") for m in self._user_state.messages]
+                if self._user_state is not None
+                else []
+            ),
             # Pending tool group: an in-flight AssistantMessage(tool_calls) and
             # the ToolMessages received so far. Cold deserialize replays
             # _tau2_trajectory through tau2's set_state (always balanced) and
@@ -694,8 +722,11 @@ class Tau2Environment:
         from tau2.data_model.tasks import Task as Tau2Task
 
         domain: Tau2Domain = data["domain"]
+        solo_mode: bool = bool(data.get("solo_mode", False))
         task = Tau2Task.model_validate_json(data["task_json"])
-        user_endpoint = Endpoint.from_json(data["user_endpoint"])
+        # user_endpoint may be None when solo_mode=True.
+        user_endpoint_raw = data.get("user_endpoint")
+        user_endpoint = Endpoint.from_json(user_endpoint_raw) if user_endpoint_raw else None
 
         tau2_messages = _rehydrate_tau2_messages(
             data["tau2_messages"],
@@ -720,7 +751,7 @@ class Tau2Environment:
         if tau2_env_live is not None:
             tau2_env = tau2_env_live
         else:
-            tau2_env = _build_tau2_domain_env(domain)
+            tau2_env = _build_tau2_domain_env(domain, solo_mode=solo_mode)
             # _tau2_trajectory only contains complete tool groups (the
             # pending-buffer fix in on_assistant_message/exec_tool ensures
             # this), so set_state's balance validator is happy with the
@@ -765,20 +796,24 @@ class Tau2Environment:
 
         # Rebuild the UserSimulator and restore its message history so the
         # next user-sim call sees the same context it had pre-serialize.
-        user_tools = tau2_env.get_user_tools() if tau2_env.user_tools is not None else None
-        user_sim = _build_user_simulator(
-            task,
-            persona_config=persona_config,
-            user_tools=user_tools,
-        )
-        user_state = user_sim.get_init_state()
-        user_state_msgs = _rehydrate_tau2_messages(
-            data.get("user_state_messages", []),
-            AssistantMessage=AssistantMessage,
-            UserMessage=UserMessage,
-            ToolMessage=ToolMessage,
-        )
-        user_state.messages = user_state_msgs
+        # In solo_mode there's no user simulator at all.
+        user_sim: Any = None
+        user_state: Any = None
+        if not solo_mode:
+            user_tools = tau2_env.get_user_tools() if tau2_env.user_tools is not None else None
+            user_sim = _build_user_simulator(
+                task,
+                persona_config=persona_config,
+                user_tools=user_tools,
+            )
+            user_state = user_sim.get_init_state()
+            user_state_msgs = _rehydrate_tau2_messages(
+                data.get("user_state_messages", []),
+                AssistantMessage=AssistantMessage,
+                UserMessage=UserMessage,
+                ToolMessage=ToolMessage,
+            )
+            user_state.messages = user_state_msgs
 
         termination_raw = data.get("termination_reason")
         termination_reason = TerminationReason(termination_raw) if termination_raw else None
@@ -790,6 +825,7 @@ class Tau2Environment:
             max_steps=data.get("max_steps", 200),
             max_errors=data.get("max_errors", 10),
             persona_config=persona_config,
+            solo_mode=solo_mode,
             _tau2_env=tau2_env,
             _tau2_tools=tools,
             _tau2_trajectory=tau2_messages,
@@ -966,11 +1002,13 @@ class Tau2Environment:
             if m.role == "assistant":
                 tm = Tau2AssistantMessage(role="assistant", content=text)
                 self._tau2_trajectory.append(tm)
-                self._user_state.messages.append(tm)
+                if self._user_state is not None:
+                    self._user_state.messages.append(tm)
             elif m.role == "user":
                 tm = Tau2UserMessage(role="user", content=text)
                 self._tau2_trajectory.append(tm)
-                self._user_state.messages.append(tm)
+                if self._user_state is not None:
+                    self._user_state.messages.append(tm)
 
     def _check_caps(self, state: AgentState) -> AgentState:
         """Enforce max_steps / max_errors caps."""

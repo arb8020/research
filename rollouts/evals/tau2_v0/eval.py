@@ -51,11 +51,15 @@ from rollouts.training.scoring import FunctionScorer
 logger = logging.getLogger(__name__)
 
 
-def _user_endpoint_from_row(sample_data: dict[str, Any]) -> Endpoint:
+def _user_endpoint_from_row(sample_data: dict[str, Any]) -> Endpoint | None:
     """Build the user-simulator Endpoint from the row's `user_endpoint`
-    config block. The API key is resolved from an env var named in the row.
+    config block. Returns None if the row has no `user_endpoint` (which is
+    valid for solo_mode rows). The API key is resolved from an env var
+    named in the row.
     """
-    cfg = sample_data["user_endpoint"]
+    cfg = sample_data.get("user_endpoint")
+    if cfg is None:
+        return None
     api_key_env = cfg["api_key_env"]
     api_key = os.environ.get(api_key_env, "")
     if not api_key:
@@ -99,6 +103,7 @@ async def make_environment(sample_data: dict[str, Any]) -> Tau2Environment:
         max_steps=sample_data.get("max_steps", 200),
         max_errors=sample_data.get("max_errors", 10),
         persona_config=_persona_config_from_row(sample_data),
+        solo_mode=bool(sample_data.get("solo_mode", False)),
     )
 
 
@@ -123,6 +128,11 @@ async def prepare_messages(sample_data: dict[str, Any]) -> list[Message]:
     The env reconstructs `_user_state` from this seeded trajectory on its
     first `on_assistant_message` call (so we don't duplicate the bootstrap
     conversation in two places).
+
+    solo_mode: there's no user simulator at all, so we skip the user-sim
+    bootstrap and seed only [system AGENT_INSTRUCTION, user "Begin"].
+    The agent runs against tools alone; tau2's solo loop terminates on
+    AGENT_STOP or the first text-only non-stop turn (AGENT_ERROR).
     """
     from tau2.agent.llm_agent import AGENT_INSTRUCTION
     from tau2.data_model.message import (
@@ -134,6 +144,20 @@ async def prepare_messages(sample_data: dict[str, Any]) -> list[Message]:
 
     from rollouts.agents import Actor, rollout
     from rollouts.core import Trajectory
+
+    if sample_data.get("solo_mode"):
+        # Solo mode: no user-sim bootstrap. tau2's solo Orchestrator skips
+        # DEFAULT_FIRST_AGENT_MESSAGE entirely and asks the agent to
+        # generate the first message directly. The minimal "Begin." user
+        # message satisfies the provider's "messages can't be empty"
+        # contract without seeding any meaningful context for the agent.
+        # _sync_from_seeded_trajectory will record this as the first user
+        # message in _tau2_trajectory; tau2's evaluator scores on actions
+        # taken, not on the precise opener.
+        return [
+            Message(role="system", content=AGENT_INSTRUCTION),
+            Message(role="user", content="Begin."),
+        ]
 
     task = Tau2Task.model_validate_json(sample_data["task_json"])
     persona_config = _persona_config_from_row(sample_data)

@@ -61,6 +61,7 @@ def build_sample_rows(
     limit: int | None = None,
     user_endpoint: dict[str, str] | None = None,
     persona_config: dict[str, Any] | None = None,
+    solo_mode: bool = False,
 ) -> list[dict[str, Any]]:
     """Build dataset rows for the eval runner — one per tau2 task.
 
@@ -87,17 +88,23 @@ def build_sample_rows(
     tasks = load_domain_tasks(domain, split=split)
     if limit is not None:
         tasks = tasks[:limit]
-    ep = dict(user_endpoint or DEFAULT_USER_ENDPOINT)
+    # In solo_mode there's no user simulator at all, so the user_endpoint
+    # block is meaningless. Drop it from the row to avoid implying it
+    # gets used (eval.py reads it conditionally on solo_mode).
     persona = dict(persona_config) if persona_config else None
+    ep = None if solo_mode else dict(user_endpoint or DEFAULT_USER_ENDPOINT)
     rows: list[dict[str, Any]] = []
     for task in tasks:
-        row = {
+        row: dict[str, Any] = {
             "task_id": task.id,
             "domain": domain,
             "task_json": task.model_dump_json(exclude_none=True),
-            "user_endpoint": ep,
         }
+        if ep is not None:
+            row["user_endpoint"] = ep
         if persona is not None:
             row["persona_config"] = persona
+        if solo_mode:
+            row["solo_mode"] = True
         rows.append(row)
     return rows
