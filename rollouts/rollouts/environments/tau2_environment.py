@@ -43,13 +43,29 @@ changes to tau2's stop-token protocol get picked up automatically.
 
 ## What is NOT implemented
 
-- Telecom user_tools (the only domain where the user executes tools). Starts
-  text-only. A follow-up can wire user tool calls through the same
-  translation layer we use for agent tools.
-- Streaming events (StreamEvent) for user-sim calls. We pass a silent
-  handler, same as DialogueEnvironment.
-- Persona overrides beyond what the task carries. tau2's runtime
-  PersonaConfig is not plumbed.
+These are explicit NotImplementedError stubs — calling into them produces
+a clear "not wired yet" message rather than a confusing failure. Each
+location carries a TODO comment with the wiring sketch.
+
+- **Voice / full-duplex** — Tau2Environment is a half-duplex env (agent
+  text, user text, tool calls). tau2's voice mode requires a
+  `FullDuplexAgent` against `discrete_time_audio_native_agent.py` and a
+  realtime audio API; that's a separate runtime concern, not just an env.
+- **`banking_knowledge` domain** — needs `uv sync --extra knowledge` for
+  tau2's RAG deps + retrieval-config plumbing through the sample row.
+  Stub raises in `_build_tau2_domain_env`.
+- **`solo_mode`** for airline/retail — tau2 itself only exposes
+  `solo_mode` on telecom's `get_environment`. Stub raises with that
+  context. Telecom solo_mode is wired and works (defaults False, set
+  via `Tau2Environment.create(solo_mode=...)`).
+- **Streaming events for user-sim** — we pass `_silent_stream` to the
+  user-sim's `rollout()` call. The agent's streaming events are wired
+  normally (FirstToken, TextDelta, etc. flow into the eval runner's
+  progress + session log); only the user-sim's are silenced. tau2 itself
+  doesn't surface user-sim streaming either, so this is a UX gap rather
+  than a fidelity gap. To wire: thread the eval runner's on_chunk into
+  Tau2Environment via a constructor arg and pass it through
+  `_invoke_user_sim_once` instead of `_silent_stream`.
 
 ## Multi-tool turns
 
@@ -108,6 +124,14 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Domains we support today. tau2 also ships `banking_knowledge` (RAG-based)
+# and `mock` (testing). Adding a domain here requires:
+#   1. Add the literal value
+#   2. Add a branch in _build_tau2_domain_env
+#   3. For banking_knowledge specifically: ensure tau2 was installed with the
+#      `knowledge` extra (`uv sync --extra knowledge`), and surface the
+#      retrieval pipeline config (BM25 / embeddings / RAG) through the
+#      sample row.
 Tau2Domain = Literal["airline", "retail", "telecom"]
 
 
@@ -284,7 +308,19 @@ def _message_text(m: Message) -> str:
 
 
 async def _silent_stream(_event: StreamEvent) -> None:
-    """No-op stream handler for the user-sim rollout."""
+    """No-op stream handler for the user-sim rollout.
+
+    TODO(tau2-streaming): currently we discard streaming events from
+    user-sim LLM calls (TextDelta, ToolCallStart, etc.). This is a UX
+    gap — the user-sim's responses don't appear live in the TUI and
+    don't show timing breakdowns in semantic_trace. Fix is mechanical:
+    accept an `on_chunk` callable on Tau2Environment.create() (default
+    None / silent), thread it down to _invoke_user_sim_once, pass to
+    rollout() in place of _silent_stream. The eval runner already wraps
+    on_chunk to attach sample_id; just plumb that wrapped callable in.
+    Not a fidelity issue — tau2 itself doesn't surface user-sim
+    streaming either.
+    """
     return None
 
 
@@ -952,21 +988,53 @@ class Tau2Environment:
 # ── Helpers ─────────────────────────────────────────────────────────────────
 
 
-def _build_tau2_domain_env(domain: Tau2Domain) -> Any:
-    """Construct a fresh tau2 domain environment."""
+def _build_tau2_domain_env(domain: Tau2Domain, *, solo_mode: bool = False) -> Any:
+    """Construct a fresh tau2 domain environment.
+
+    `solo_mode` is currently only meaningful for telecom (which is the only
+    domain whose `get_environment` accepts the kwarg). When True the
+    environment exposes the agent-only protocol — no user simulator turns,
+    text-only assistant messages terminate the conversation. See
+    Tau2Environment for how this is enforced upstream.
+    """
     if domain == "airline":
+        if solo_mode:
+            raise NotImplementedError(
+                "solo_mode is not supported for the airline domain by tau2 "
+                "itself (only telecom exposes solo_mode in get_environment)."
+            )
         from tau2.domains.airline.environment import get_environment
 
         return get_environment()
     if domain == "retail":
+        if solo_mode:
+            raise NotImplementedError(
+                "solo_mode is not supported for the retail domain by tau2 "
+                "itself (only telecom exposes solo_mode in get_environment)."
+            )
         from tau2.domains.retail.environment import get_environment
 
         return get_environment()
     if domain == "telecom":
         from tau2.domains.telecom.environment import get_environment
 
-        # solo_mode=False: preserve user simulator path (telecom supports solo).
-        return get_environment(solo_mode=False)
+        return get_environment(solo_mode=solo_mode)
+    # TODO(tau2-knowledge): banking_knowledge wiring. Requires tau2 installed
+    # with the knowledge extra, plus surfacing a retrieval-config block on
+    # the sample row (BM25 / embeddings / RAG variant + index path) so that
+    # `from tau2.domains.banking_knowledge.environment import get_environment`
+    # can be parameterised. See tau2/knowledge/README.md for retrieval config
+    # schema. Skeleton:
+    #   if domain == "banking_knowledge":
+    #       from tau2.domains.banking_knowledge.environment import get_environment
+    #       retrieval_cfg = ...  # build from row
+    #       return get_environment(retrieval_config=retrieval_cfg)
+    if domain == "banking_knowledge":
+        raise NotImplementedError(
+            "domain='banking_knowledge' is not wired yet. Requires "
+            "`uv sync --extra knowledge` for tau2's RAG dependencies and "
+            "passing retrieval_config through the sample row."
+        )
     raise ValueError(f"Unknown tau2 domain: {domain!r}")
 
 
