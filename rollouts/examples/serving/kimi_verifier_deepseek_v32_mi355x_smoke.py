@@ -79,6 +79,11 @@ _docker_run = (
     f" --nsa-prefill-backend tilelang"
     f" --nsa-decode-backend aiter"
     f" --enable-cache-report"
+    # First run on v0.5.9 image JIT-compiles many aiter MoE kernels; warmup's
+    # 600s self-timeout fires before that finishes, SGLang SIGQUITs itself and
+    # the server dies. Skipping warmup means the first K2VV request pays the
+    # kernel-JIT tail instead — fine because we have a generous request_timeout_s.
+    f" --skip-server-warmup"
 )
 
 endpoint = OwnedEndpoint(
