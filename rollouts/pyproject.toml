@@ -21,6 +21,7 @@ dependencies = [
     "datasets>=4.4.1",
     "pyarrow>=22.0.0",
     "huggingface-hub>=1.0.0rc2",
+    "jsonschema>=4.0.0",
 ]
 
 [project.scripts]

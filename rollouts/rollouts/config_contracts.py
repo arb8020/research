@@ -35,6 +35,25 @@ def validate_train_config_module(config_module: Any, config_path: Path) -> None:
         raise ValueError(f"Training config {config_path} must export 'config'")
 
 
+def validate_serving_config_module(config_module: Any, config_path: Path) -> None:
+    """Validate the module contract for serving entrypoints.
+
+    Revives the contract that 0342b3e1 wired into resolve_workload_kind and
+    c45aa789 removed (the validator itself was never actually added to this
+    module, so the resolver's import broke and the whole branch was dropped
+    rather than completed). Serving configs export `serving_scenario:
+    ServingScenario`; that's the full contract.
+    """
+    from .serving.configs import ServingScenario
+
+    _require_prime_ci_status(config_module, config_path)
+    scenario = getattr(config_module, "serving_scenario", None)
+    if not isinstance(scenario, ServingScenario):
+        raise ValueError(
+            f"Serving config {config_path} must export serving_scenario: ServingScenario"
+        )
+
+
 def validate_eval_config_module(config_module: Any, config_path: Path) -> None:
     """Validate the module contract for eval entrypoints."""
     from .eval.configs import AgentRunSpec, EvalTaskSpec

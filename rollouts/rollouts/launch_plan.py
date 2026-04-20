@@ -169,11 +169,13 @@ def resolve_workload_kind(config_module: Any, config_path: Path) -> str:
     """Resolve the Rollouts workload kind for one config module."""
     from rollouts.config_contracts import (
         validate_eval_config_module,
+        validate_serving_config_module,
         validate_train_config_module,
     )
 
     train_error: ValueError | None = None
     eval_error: ValueError | None = None
+    serving_error: ValueError | None = None
 
     try:
         validate_train_config_module(config_module, config_path)
@@ -192,15 +194,22 @@ def resolve_workload_kind(config_module: Any, config_path: Path) -> str:
         return "training"
 
     try:
+        validate_serving_config_module(config_module, config_path)
+        return "serving"
+    except ValueError as exc:
+        serving_error = exc
+
+    try:
         validate_eval_config_module(config_module, config_path)
         return "evaluation"
     except ValueError as exc:
         eval_error = exc
 
     raise ValueError(
-        f"Config {config_path} is neither a valid training config nor eval config.\n"
+        f"Config {config_path} is neither a valid training config, eval config, nor serving config.\n"
         f"Training contract error: {train_error}\n"
-        f"Eval contract error: {eval_error}"
+        f"Eval contract error: {eval_error}\n"
+        f"Serving contract error: {serving_error}"
     )
 
 
