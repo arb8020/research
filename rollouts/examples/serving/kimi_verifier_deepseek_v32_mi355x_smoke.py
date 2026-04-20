@@ -63,6 +63,10 @@ _docker_run = (
     f" --env SGLANG_NSA_KV_CACHE_STORE_FP8=false"
     f" --env SGLANG_NSA_USE_REAL_INDEXER=true"
     f" --env SGLANG_NSA_USE_TILELANG_PREFILL=True"
+    # First-run aiter MoE kernel JIT compile on v0.5.9 overruns SGLang's
+    # default 600s warmup timeout. Bump to 30 min so warmup completes
+    # (validates full pipeline end-to-end) before server flips to healthy.
+    f" --env SGLANG_WARMUP_TIMEOUT=1800"
     f" --name sglang_bench_{PORT}"
     f" {_SGLANG_IMAGE}"
     f" python -m sglang.launch_server"
@@ -79,11 +83,6 @@ _docker_run = (
     f" --nsa-prefill-backend tilelang"
     f" --nsa-decode-backend aiter"
     f" --enable-cache-report"
-    # First run on v0.5.9 image JIT-compiles many aiter MoE kernels; warmup's
-    # 600s self-timeout fires before that finishes, SGLang SIGQUITs itself and
-    # the server dies. Skipping warmup means the first K2VV request pays the
-    # kernel-JIT tail instead — fine because we have a generous request_timeout_s.
-    f" --skip-server-warmup"
 )
 
 endpoint = OwnedEndpoint(
