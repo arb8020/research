@@ -63,6 +63,11 @@ _docker_run = (
     f" --env SGLANG_NSA_KV_CACHE_STORE_FP8=false"
     f" --env SGLANG_NSA_USE_REAL_INDEXER=true"
     f" --env SGLANG_NSA_USE_TILELANG_PREFILL=True"
+    # SemiAnalysis's working MI355X config (InferenceX benchmarks/single_node/
+    # glm5_fp8_mi355x.sh) disables fused decode MLA; leaving it on with
+    # tilelang decode backend is the combination most likely to diverge from
+    # the known-good path.
+    f" --env SGLANG_ROCM_FUSED_DECODE_MLA=0"
     # First-run aiter MoE kernel JIT compile on v0.5.9 overruns SGLang's
     # default 600s warmup timeout. Bump to 30 min so warmup completes
     # (validates full pipeline end-to-end) before server flips to healthy.
@@ -81,7 +86,12 @@ _docker_run = (
     f" --mem-fraction-static 0.85"
     f" --page-size 64"
     f" --nsa-prefill-backend tilelang"
-    f" --nsa-decode-backend aiter"
+    # aiter on v0.5.9: mla_decode_stage1_asm_fwd expects page_size: int but
+    # receives a float from nsa_backend (`RuntimeError: Expected a value of
+    # type 'int' for argument 'page_size' but instead found type 'float'`),
+    # so the decode kernel crashes on the very first forward batch and
+    # SIGQUITs the scheduler. tilelang decode works around this.
+    f" --nsa-decode-backend tilelang"
     f" --enable-cache-report"
     # First-run forward batches (warmup request + first few real requests) run
     # while aiter kernels are still JIT-compiling, so each forward batch can
