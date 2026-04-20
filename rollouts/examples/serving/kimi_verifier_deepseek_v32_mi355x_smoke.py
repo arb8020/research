@@ -83,6 +83,11 @@ _docker_run = (
     f" --nsa-prefill-backend tilelang"
     f" --nsa-decode-backend aiter"
     f" --enable-cache-report"
+    # First-run forward batches (warmup request + first few real requests) run
+    # while aiter kernels are still JIT-compiling, so each forward batch can
+    # easily exceed SGLang's default ~300s watchdog. Bump to 30 min alongside
+    # SGLANG_WARMUP_TIMEOUT — both need headroom for the JIT tail.
+    f" --watchdog-timeout 1800"
 )
 
 endpoint = OwnedEndpoint(
