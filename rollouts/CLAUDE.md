@@ -13,6 +13,16 @@ uv sync   # installs all workspace members including bifrost, broker, argus
 
 The rollouts-local `.venv` is missing `bifrost`/`broker` and won't work for remote jobs.
 
+<!-- TODO(nix): the workspace venv covers Python deps but not operational
+     tooling. Things like py-spy (needed for live process inspection when
+     remote runs hang), tmux, jq, and the specific Python/uv versions
+     referenced by argus and bifrost are all "works if you have them, else
+     figure it out." A `nix develop` shell that closes over
+       python + uv + tmux + jq + py-spy + docker-cli + ssh
+     would cut "fresh machine -> launching a remote run" from hours to
+     minutes. Does not replace the workspace venv — lives one level up. -->
+
+
 ## Running experiments
 
 Launch from `/Users/chiraagbalu/research/rollouts` using the workspace venv:

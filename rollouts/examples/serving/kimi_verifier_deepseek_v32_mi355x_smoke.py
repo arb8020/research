@@ -13,10 +13,9 @@ What gets measured:
   finish_tool_calls)
 - usage totals
 
-Specifically tests whether this deployment's `--tool-call-parser deepseekv31`
-plus `tool_chat_template_deepseekv32.jinja` preserve tool-calling correctness
-end-to-end on a corpus authored for K2 (the parser name mismatch is flagged
-in bench_deepseek_v3_2_amd_mi355x.py — this config measures the consequence).
+Uses `--tool-call-parser deepseekv32` and a matching `tool_chat_template_deepseekv32.jinja`
+on the v0.5.9-rocm700-mi35x image (the older dsv32-rocm image lacked the
+`deepseekv32` parser, which produced 0/20 triggers on the first K2VV smoke).
 """
 
 from __future__ import annotations
@@ -31,8 +30,26 @@ from rollouts.training.configs import DepsConfig, HardwareConfig
 
 MODEL = "deepseek-ai/DeepSeek-V3.2"
 PORT = 30000
-_SGLANG_IMAGE = "lmsysorg/sglang:dsv32-rocm"
+# v0.5.9 ships the `deepseekv32` tool-call parser (the DSML tag format that
+# DSV3.2 actually emits); the older `dsv32-rocm` image only has `deepseekv31`,
+# which matches a different wire format and produces 0/20 tool-call triggers
+# on K2VV. v0.5.9 also has tilelang pre-installed, so we drop the
+# `pip install /root/tilelang` prelude from the docker run command.
+_SGLANG_IMAGE = "lmsysorg/sglang:v0.5.9-rocm700-mi35x"
 
+# TODO(nix): this docker run command is an f-string jamming together image
+# selection, device flags, env vars, entrypoint shell, and sglang CLI flags.
+# Editing one value (e.g. --tool-call-parser) means staring at a 30-line
+# string literal looking for the right `--flag` to change. A nix derivation
+# that emits the docker run command from structured data (image, env_vars,
+# launch_args as a dict/list) would:
+#   - make the "which parser are we using" question one dict lookup
+#   - let shared fragments (NSA env block, MI355X device flags) live in one
+#     place and be reused across serving configs for DSV3.2
+#   - fail at eval time if a required env var is missing, instead of
+#     succeeding-but-wrong at runtime
+# The tool-call-parser mismatch that produced 0/20 in the first K2VV run
+# was exactly a needle-in-f-string bug — worth the nix leverage here.
 _docker_run = (
     f"docker run --rm"
     f" --device /dev/kfd --device /dev/dri"
@@ -48,20 +65,20 @@ _docker_run = (
     f" --env SGLANG_NSA_USE_TILELANG_PREFILL=True"
     f" --name sglang_bench_{PORT}"
     f" {_SGLANG_IMAGE}"
-    f" bash -c 'USE_ROCM=true ROCM_HOME=/opt/rocm pip install -q /root/tilelang && python -m sglang.launch_server"
+    f" python -m sglang.launch_server"
     f" --model-path {MODEL}"
     f" --host 0.0.0.0"
     f" --port {PORT}"
     f" --tp 8"
     f" --trust-remote-code"
-    f" --tool-call-parser deepseekv31"
+    f" --tool-call-parser deepseekv32"
     f" --chat-template /sgl-workspace/sglang/examples/chat_template/tool_chat_template_deepseekv32.jinja"
     f" --disable-cuda-graph"
     f" --mem-fraction-static 0.85"
     f" --page-size 64"
     f" --nsa-prefill tilelang"
     f" --nsa-decode aiter"
-    f" --enable-cache-report'"
+    f" --enable-cache-report"
 )
 
 endpoint = OwnedEndpoint(
@@ -103,8 +120,8 @@ serving_scenario = ServingScenario(
     workloads=[
         ToolCallVerifierWorkload(
             name="kimi_verifier_smoke",
-            concurrency=4,
-            max_samples=20,
+            concurrency=8,
+            max_samples=200,
             extra_body=_KVV_DEFAULT_EXTRA_BODY,
             request_timeout_s=600.0,
         ),

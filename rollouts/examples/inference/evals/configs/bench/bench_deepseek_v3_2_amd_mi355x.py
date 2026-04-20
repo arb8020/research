@@ -99,6 +99,11 @@ hardware = HardwareConfig(
 
 # tilelang is built at /root/tilelang in the image but not installed as a package.
 # Install it first, then launch sglang. Semicolon chains inside the container shell.
+# TODO(nix): same f-string-as-launch-spec pain as
+# examples/serving/kimi_verifier_deepseek_v32_mi355x_smoke.py — see the TODO
+# there. When nix fixes this, the tilelang pip-install prelude, the NSA env
+# var block, and the MI355X device flags should all become named fragments
+# shared across DSV3.2 configs instead of being duplicated verbatim.
 _docker_run = (
     f"docker run --rm"
     f" --device /dev/kfd --device /dev/dri"
