@@ -46,9 +46,11 @@ _no_op_scorer = FunctionScorer(lambda attempt, _ctx: Score(metrics=()))
 MODEL = "deepseek-ai/DeepSeek-V3.2"
 PORT = 30000
 
-# V3.2 requires tilelang for NSA (Native Sparse Attention) — not in the 0.5.6 image.
-# Use the dedicated lmsysorg image that ships tilelang + ROCm support for V3.2.
-_SGLANG_IMAGE = "lmsysorg/sglang:dsv32-rocm"
+# v0.5.9 ships the `deepseekv32` tool-call parser (matches DSV3.2's DSML tag
+# output format). Earlier `dsv32-rocm` image only had `deepseekv31`, which
+# matches V3.1's different wire format and silently drops V3.2 tool calls as
+# plain text content. v0.5.9 also has tilelang pre-installed.
+_SGLANG_IMAGE = "lmsysorg/sglang:v0.5.9-rocm700-mi35x"
 
 # ---------------------------------------------------------------------------
 # Workload
@@ -83,7 +85,6 @@ hardware = HardwareConfig(
             # Ensure NVMe is mounted — idempotent, fails silently if already mounted
             "mount /dev/nvme0n1 /models 2>/dev/null || true",
             # Pull the Docker image if not already cached.
-            # lmsysorg/sglang:dsv32-rocm includes tilelang required by V3.2 NSA.
             f"docker pull {_SGLANG_IMAGE}",
         ),
     ),
@@ -97,13 +98,11 @@ hardware = HardwareConfig(
 # --enable-dp-attention improves MoE throughput on multi-GPU.
 # ---------------------------------------------------------------------------
 
-# tilelang is built at /root/tilelang in the image but not installed as a package.
-# Install it first, then launch sglang. Semicolon chains inside the container shell.
-# TODO(nix): same f-string-as-launch-spec pain as
-# examples/serving/kimi_verifier_deepseek_v32_mi355x_smoke.py — see the TODO
-# there. When nix fixes this, the tilelang pip-install prelude, the NSA env
-# var block, and the MI355X device flags should all become named fragments
-# shared across DSV3.2 configs instead of being duplicated verbatim.
+# TODO(nix): f-string-as-launch-spec pain — see the matching TODO in
+# examples/serving/kimi_verifier_deepseek_v32_mi355x_smoke.py. When nix
+# fixes this, the NSA env var block, MI355X device flags, and sglang
+# launch-arg fragments should become named structured fragments shared
+# across all DSV3.2 configs.
 _docker_run = (
     f"docker run --rm"
     f" --device /dev/kfd --device /dev/dri"
@@ -117,25 +116,35 @@ _docker_run = (
     f" --env SGLANG_NSA_KV_CACHE_STORE_FP8=false"
     f" --env SGLANG_NSA_USE_REAL_INDEXER=true"
     f" --env SGLANG_NSA_USE_TILELANG_PREFILL=True"
+    # SemiAnalysis's working MI355X config (InferenceX benchmarks/single_node/
+    # glm5_fp8_mi355x.sh) disables fused decode MLA alongside tilelang decode
+    # backend. Keeps us on the known-good path.
+    f" --env SGLANG_ROCM_FUSED_DECODE_MLA=0"
+    # First-run aiter MoE kernel JIT compile on v0.5.9 overruns SGLang's
+    # default 600s warmup timeout; bump to 30 min.
+    f" --env SGLANG_WARMUP_TIMEOUT=1800"
     f" --name sglang_bench_{PORT}"
     f" {_SGLANG_IMAGE}"
-    f" bash -c 'USE_ROCM=true ROCM_HOME=/opt/rocm pip install -q /root/tilelang && python -m sglang.launch_server"
+    f" python -m sglang.launch_server"
     f" --model-path {MODEL}"
     f" --host 0.0.0.0"
     f" --port {PORT}"
     f" --tp 8"
     f" --trust-remote-code"
-    # The dsv32-rocm image lags the latest upstream parser registry and exposes
-    # `deepseekv31` rather than `deepseekv32`. This is the closest available
-    # tool-call parser on the deployed image.
-    f" --tool-call-parser deepseekv31"
+    f" --tool-call-parser deepseekv32"
     f" --chat-template /sgl-workspace/sglang/examples/chat_template/tool_chat_template_deepseekv32.jinja"
     f" --disable-cuda-graph"
     f" --mem-fraction-static 0.85"
     f" --page-size 64"
-    f" --nsa-prefill tilelang"
-    f" --nsa-decode aiter"
-    f" --enable-cache-report'"
+    # `--nsa-decode-backend aiter` hits a sglang↔aiter version-skew bug on
+    # v0.5.9 (softmax_scale float leaks into page_size int slot); tilelang
+    # decode avoids the broken aiter kernel path. Matches SemiAnalysis.
+    f" --nsa-prefill-backend tilelang"
+    f" --nsa-decode-backend tilelang"
+    f" --enable-cache-report"
+    # Same rationale as warmup timeout: first-run forward batches run during
+    # aiter JIT and can easily exceed SGLang's default ~300s watchdog.
+    f" --watchdog-timeout 1800"
 )
 
 endpoint = OwnedEndpoint(
