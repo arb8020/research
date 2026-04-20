@@ -76,8 +76,8 @@ _docker_run = (
     f" --disable-cuda-graph"
     f" --mem-fraction-static 0.85"
     f" --page-size 64"
-    f" --nsa-prefill tilelang"
-    f" --nsa-decode aiter"
+    f" --nsa-prefill-backend tilelang"
+    f" --nsa-decode-backend aiter"
     f" --enable-cache-report"
 )
 
