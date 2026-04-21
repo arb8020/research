@@ -7,6 +7,35 @@ This is the "oh cool it worked" surface. Given a repo, it:
     3. Folds into per-file virtual state with line-level attribution.
     4. Reconciles against the current repo via content match.
     5. Prints coverage stats, top sessions, and a sample file breakdown.
+
+## Open TODOs (captured from design discussion)
+
+- [ ] Shell-edit adapter: scrape Bash/exec_command tool calls for
+      heredoc (`cat > f <<EOF`), sed-in-place (`sed -i 's/X/Y/' f`),
+      echo-append (`echo x >> f`), and Python one-liners
+      (`open(p,'w').write(...)`, `Path(p).write_text(...)`). Feed the
+      synthetic FileEdits into provenance only — fold's virtual state
+      can't benefit from them without knowing the surrounding context.
+      Tag with `confidence` so UI can downweight uncertain hits.
+- [ ] Commit-range filter `--range base..tip`: attribute only the
+      +lines of `git diff base..tip`, using SHA mode under the hood at
+      the tip. The PR-blame use case.
+- [ ] Timestamped git seeding for fold: replace the single-source
+      seed with `git show <sha-at-edit-timestamp>:path`, so each
+      session's virtual state starts from what that session actually
+      saw. Requires a lightweight commit-at-timestamp lookup per file.
+      Would boost `virtual_*` match buckets; orthogonal to provenance.
+- [ ] OpenCode adapter. Sessions live at
+      `~/.local/share/opencode/`. Mirror `codex.py` structure.
+- [ ] Replace the 20-char cross-file threshold with TF-IDF line
+      distinctiveness. Current threshold is empirical and over-/under-
+      shoots by turns.
+- [ ] JSON output mode for UI consumption. Today's CLI prints for
+      humans; the UI wants per-line attribution as JSON keyed by
+      repo-relative path.
+- [ ] Transcript index: given a FileEdit, return the session's
+      messages around that tool call (±N turns). Needed for the
+      "why was this line written" panel.
 """
 
 from __future__ import annotations
