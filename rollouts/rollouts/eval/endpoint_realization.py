@@ -224,6 +224,40 @@ def _ssh_workspace_python(workspace_root: Path) -> str:
     return str(workspace_root / ".venv" / "bin" / "python")
 
 
+async def _remote_endpoint_is_healthy(
+    *,
+    ssh_target: str,
+    ssh_key_path: str,
+    port: int,
+    readiness_path: str,
+) -> bool:
+    """Check over SSH whether something is already serving on the remote port.
+
+    Opens a short-lived port-forward and hits the readiness path. Returns True
+    on 2xx, False on any other outcome (no server, timeout, non-2xx). We do
+    NOT inspect response body — caller is responsible for verifying the
+    endpoint's launch identity if that matters (see reuse_running_endpoint
+    docstring and the endpoint-fingerprint TODO).
+    """
+    import httpx
+
+    try:
+        async with _forward_ssh_port(
+            ssh_target=ssh_target,
+            ssh_key_path=ssh_key_path,
+            remote_port=port,
+        ) as local_port:
+            url = f"http://127.0.0.1:{local_port}{readiness_path}"
+            try:
+                async with httpx.AsyncClient(timeout=3.0) as client:
+                    resp = await client.get(url)
+                    return 200 <= resp.status_code < 300
+            except Exception:
+                return False
+    except Exception:
+        return False
+
+
 def _ssh_workspace_bootstrap_commands(
     *,
     workspace_root: Path,
@@ -945,6 +979,7 @@ async def _realize_ssh_endpoint(
     force_deploy_committed: bool = False,
     run_logger: Any | None,
     consumer_project_root: Path | None = None,
+    reuse_running_endpoint: bool = False,
 ) -> Any:
     from bifrost import AsyncBifrostClient, PythonProjectMaterialization
     from bifrost.types import ProcessSpec, ReadinessProbe, ServiceSpec, WorkspaceMaterializationSpec
@@ -953,6 +988,52 @@ async def _realize_ssh_endpoint(
     assert hardware_config.ssh_key_path is not None, (
         "ssh provider requires hardware_config.ssh_key_path"
     )
+
+    # Fast-path: if the caller opted in to endpoint reuse and there's already
+    # a healthy endpoint at the expected port on the remote, skip bifrost
+    # bootstrap + docker launch and just tunnel to it. Saves ~10min of
+    # sglang warmup on iteration runs. Only honors OwnedEndpoint reuse —
+    # EndpointConfig variants don't know the exact port/launch shape.
+    if reuse_running_endpoint and isinstance(endpoint_config, OwnedEndpoint):
+        if await _remote_endpoint_is_healthy(
+            ssh_target=hardware_config.ssh,
+            ssh_key_path=hardware_config.ssh_key_path,
+            port=endpoint_config.port,
+            readiness_path=endpoint_config.readiness_path or "/health",
+        ):
+            if run_logger is not None:
+                emit_run_event(
+                    run_logger,
+                    "inference_endpoint_reused",
+                    ssh_target=hardware_config.ssh,
+                    port=endpoint_config.port,
+                    model=endpoint_config.model,
+                )
+            async with _forward_ssh_port(
+                ssh_target=hardware_config.ssh,
+                ssh_key_path=hardware_config.ssh_key_path,
+                remote_port=endpoint_config.port,
+            ) as local_port:
+                base_url = f"http://127.0.0.1:{local_port}/v1"
+                yield RealizedEvalEndpoint(
+                    endpoint_config=_externalize_owned_endpoint(endpoint_config, base_url),
+                    metadata={
+                        "provider": "ssh",
+                        "ssh_target": hardware_config.ssh,
+                        "remote_port": endpoint_config.port,
+                        "local_port": local_port,
+                        "reused": True,
+                    },
+                )
+            return
+        if run_logger is not None:
+            emit_run_event(
+                run_logger,
+                "inference_endpoint_reuse_unavailable",
+                ssh_target=hardware_config.ssh,
+                port=endpoint_config.port,
+                note="no healthy endpoint at expected port; falling back to fresh boot",
+            )
 
     service = None
     startup_context: dict[str, Any] | None = None
@@ -1292,7 +1373,12 @@ async def realize_worker_backed_endpoint(
     force_deploy_committed: bool = False,
     run_logger: Any | None = None,
     consumer_project_root: Path | None = None,
+    reuse_running_endpoint: bool = False,
 ) -> Any:
+    # TODO(serving): This path realizes a single worker-backed endpoint, but the
+    # serving use case also needs a place to realize scaling behavior, endpoint
+    # exposure, and provider-managed lifecycle when one logical endpoint is backed
+    # by more than one replica.
     if isinstance(endpoint_config, ExternalEndpoint):
         yield RealizedEvalEndpoint(endpoint_config=endpoint_config)
         return
@@ -1345,6 +1431,7 @@ async def realize_worker_backed_endpoint(
             force_deploy_committed=force_deploy_committed,
             run_logger=run_logger,
             consumer_project_root=consumer_project_root,
+            reuse_running_endpoint=reuse_running_endpoint,
         ) as realized:
             yield realized
         return

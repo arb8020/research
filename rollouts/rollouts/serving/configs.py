@@ -119,6 +119,15 @@ class ServingRun:
     duration: timedelta | None = None
     on_engine_crash: OnEngineCrash = "fail"
     drain_timeout: timedelta | None = None
+    # When True and the endpoint is an OwnedEndpoint on an SSH target, skip
+    # teardown+reboot if a healthy endpoint is already running at the
+    # expected port. User is responsible for tearing it down when the launch
+    # config (model, flags, image) changes.
+    # TODO(endpoint-fingerprint): compare launch_cmd/model/image hash to a
+    # marker on the remote and refuse reuse on mismatch. See
+    # docs/design/consumer_project_threading.md for context on why the
+    # lifecycle/identity split lives here.
+    reuse_running_endpoint: bool = False
 
     def __post_init__(self) -> None:
         if not self.workloads:
