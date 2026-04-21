@@ -17,9 +17,12 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal, TextIO
+from typing import TYPE_CHECKING, Literal, TextIO
 
 from .training.configs import DepsConfig, HardwareConfig
+
+if TYPE_CHECKING:
+    from bifrost import PythonProjectMaterialization
 
 
 @dataclass(frozen=True)
@@ -147,3 +150,29 @@ def enforce_source_sync_policy(
         raise SystemExit(1)
 
     print("\nProceeding with committed-only source sync.\n", file=stream)
+
+
+def resolve_consumer_project(config_path: Path) -> PythonProjectMaterialization:
+    """Resolve the consumer project that owns this config file.
+
+    The consumer project is the Python project that depends on rollouts/argus
+    and whose config is being run — operationally, the first directory at or
+    above the config file that contains a ``pyproject.toml`` or ``.git``.
+
+    Returned as a ``bifrost.PythonProjectMaterialization`` so it can be handed
+    directly to bifrost materialize specs. Callers that just want the path can
+    read ``.local_root``.
+
+    Invariant: we always return *something*. If no project marker is found,
+    we fall back to the config file's parent directory. That keeps the caller
+    contract simple (never None) and mirrors the fallback the old
+    ``_find_config_project_root`` helpers used.
+    """
+    from bifrost import PythonProjectMaterialization
+
+    resolved = config_path.expanduser().resolve()
+    search_roots = [resolved.parent, *resolved.parents]
+    for candidate in search_roots:
+        if (candidate / "pyproject.toml").exists() or (candidate / ".git").exists():
+            return PythonProjectMaterialization(local_root=str(candidate))
+    return PythonProjectMaterialization(local_root=str(resolved.parent))
