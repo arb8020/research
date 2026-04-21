@@ -82,6 +82,10 @@ def _index_virtual_state(
     by_text: dict[str, list[FileEdit]] = defaultdict(list)
     for state in states.values():
         for attr in state.lines:
+            # Seeded (unattributed) lines don't help us attribute anything —
+            # they represent content whose origin we do not know. Exclude.
+            if attr.edit is None:
+                continue
             by_text[attr.text].append(attr.edit)
     for text, edits in by_text.items():
         edits.sort(key=lambda e: e.timestamp, reverse=True)
@@ -114,6 +118,8 @@ def reconcile_repo(
     virtual_by_path_and_text: dict[tuple[str, str], list[FileEdit]] = defaultdict(list)
     for path, state in virtual_states.items():
         for attr in state.lines:
+            if attr.edit is None:
+                continue  # seeded lines don't attribute
             virtual_by_path_and_text[(path, attr.text)].append(attr.edit)
     for k, edits in virtual_by_path_and_text.items():
         edits.sort(key=lambda e: e.timestamp, reverse=True)

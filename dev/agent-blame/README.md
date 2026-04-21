@@ -6,8 +6,13 @@ transcripts on disk and replaying their edits.
 
 ## Status
 
-v0: Claude Code adapter only. CLI prints coverage stats, top sessions, and
-per-file line-range attribution. No UI yet.
+v0: Claude Code + Codex adapters. CLI prints coverage stats, top sessions,
+and per-file line-range attribution. No UI yet.
+
+Codex edits are parsed from `apply_patch` tool calls (both `custom_tool_call`
+and `function_call` shapes). Shell-based edits (heredocs, `sed`, Python
+one-liners) are deliberately not parsed in v0 — they'd need a separate
+`shell_edits` adapter with per-pattern confidence.
 
 ## Run it
 
@@ -51,9 +56,20 @@ Expects Claude Code transcripts at `~/.claude/projects/<encoded-cwd>/<uuid>.json
 
 ## Limits / known gaps
 
-- Claude Code only. Codex adapter is next (see `docs/references/` for
-  `codex-session.ts` from Euphony as a parsing reference).
-- No UI. Next: Monaco blame gutter + per-line transcript panel.
-- No handling of `rm` / `mv` via Bash — agent shell-outs are opaque.
-- The 20-char cross-file threshold is empirical. A smarter approach would
-  be TF-IDF scoring of line distinctiveness.
+- **Staleness dominates.** On a real repo (rollouts, ~43 CC + 42 Codex
+  sessions), 72% of agent edits fail to match their `old_string` in our
+  virtual state. Cause: cross-session drift — humans and uncaptured
+  sessions modified files between the agent sessions we do have. Fixing
+  this properly needs timestamped git integration (seed each session's
+  initial file state from `git show <sha-at-timestamp>:path`) rather than
+  a single current-HEAD seed. That's the next correctness improvement.
+- **Low absolute coverage** (~2% on rollouts). Expected for a repo that
+  long predates the indexed sessions. Coverage will climb as more
+  sessions are persisted going forward.
+- **Shell-based edits are opaque.** `cat > file <<EOF`, `sed -i`, Python
+  one-liners. A separate `shell_edits` adapter is planned: whitelist
+  common heredoc / sed patterns, emit FileEdits with a confidence field.
+- **OpenCode adapter not written.** Would mirror `codex.py` structure.
+- **No UI.** Next: Monaco blame gutter + per-line transcript panel.
+- The 20-char cross-file threshold is empirical. A smarter approach
+  would be TF-IDF scoring of line distinctiveness.

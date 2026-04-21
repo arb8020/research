@@ -98,6 +98,35 @@ def test_edits_sorted_by_timestamp():
     assert states["/f.py"].lines[0].edit.session_id == "S2"
 
 
+def test_seed_reader_populates_initial_state_unattributed():
+    # First observed edit is an `edit`, not a `write`. Without seed, stale;
+    # with seed, the existing lines are in virtual state as unattributed,
+    # and the edit applies to them cleanly.
+    e = _edit("S1", 1, "/f.py", "OLD", "NEW")
+    states = fold_edits([e], seed_reader=lambda path: "a\nOLD\nc")
+    lines = states["/f.py"].lines
+    assert [a.text for a in lines] == ["a", "NEW", "c"]
+    # The unchanged lines are seed-sourced => edit is None (unknown).
+    assert lines[0].edit is None
+    assert lines[1].edit is not None and lines[1].edit.session_id == "S1"
+    assert lines[2].edit is None
+    # No staleness because the edit found its old_content in the seed.
+    assert states["/f.py"].stale_edits == []
+
+
+def test_seed_reader_not_called_when_first_op_is_write():
+    # Writes bootstrap state on their own; seeding would waste work and
+    # could mask a write-attribution invariant. Fold must not seed in that
+    # case.
+    calls = []
+    def reader(path: str) -> str | None:
+        calls.append(path)
+        return "SHOULD_NOT_APPEAR"
+    e = _write("S1", 1, "/f.py", "a\nb")
+    fold_edits([e], seed_reader=reader)
+    assert calls == []
+
+
 def test_insertion_at_line_start_attributes_new_lines_only():
     # Classic "add import at top" — first line unchanged, new lines on top.
     w = _write("S1", 1, "/f.py", "line1\nline2")

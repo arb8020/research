@@ -50,10 +50,17 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class LineAttr:
-    """One line of a virtual file, tagged with the edit that produced it."""
+    """One line of a virtual file, tagged with the edit that produced it.
+
+    `edit` is `None` when the line was seeded from the repo's current state
+    (because our earliest observed edit was an `edit`, not a `write`, so we
+    had to bootstrap from somewhere). These unattributed seed lines end up
+    as "unknown" in reconcile output — correct, since we genuinely do not
+    know which agent (or human) wrote them.
+    """
 
     text: str
-    edit: FileEdit
+    edit: FileEdit | None
 
 
 @dataclass
@@ -201,15 +208,26 @@ def _locate_line(line_starts: list[int], char_idx: int, n_lines: int) -> int:
     )
 
 
-def fold_edits(edits: Iterable[FileEdit]) -> dict[str, FileState]:
+def fold_edits(
+    edits: Iterable[FileEdit],
+    *,
+    seed_reader: "SeedReader | None" = None,
+) -> dict[str, FileState]:
     """Replay `edits` in order; return per-path FileState.
 
-    Caller is responsible for passing edits in the desired order. We sort
-    here as a safety net in case the caller merged streams naively, but the
-    stable sort preserves adapter emit order within equal timestamps.
+    If `seed_reader` is provided, it is called when a path's first edit is
+    an `edit` (not a `write`) — the returned text is used as the initial
+    virtual state, attributed to `None` (unknown). This lets us handle
+    agent edits against files whose original `write` is not in our session
+    history (e.g. human-authored code, or sessions deleted before indexing).
+
+    Without a seed_reader, such paths start empty and every `edit` against
+    them is stale.
+
+    We sort edits as a safety net in case the caller merged streams
+    naively; the stable sort preserves adapter emit order within equal
+    timestamps.
     """
-    # Materialize + sort. Assign an incrementing `seq` so the sort is stable
-    # and deterministic even for edits sharing a timestamp and session.
     indexed = list(enumerate(edits))
     indexed.sort(key=lambda pair: (pair[1].timestamp, pair[1].session_id, pair[0]))
 
@@ -219,11 +237,36 @@ def fold_edits(edits: Iterable[FileEdit]) -> dict[str, FileState]:
         if state is None:
             state = FileState(path=edit.path)
             states[edit.path] = state
+            # First-touch seeding: only if we don't have a Write kicking
+            # off this file's history. Writes overwrite anyway; seeding
+            # would be wasted work.
+            if edit.op == "edit" and seed_reader is not None:
+                seed_text = seed_reader(edit.path)
+                if seed_text is not None:
+                    state.lines = [
+                        LineAttr(text=line, edit=None)
+                        for line in _split_lines(seed_text)
+                    ]
         state.history.append(edit)
         if edit.op == "write":
             _apply_write(state, edit)
         elif edit.op == "edit":
             _apply_edit(state, edit)
+            # A stale edit means our virtual state has drifted from what
+            # the agent saw (usually: cross-session drift where humans or
+            # uncaptured sessions modified the file in between). We do not
+            # attempt to recover by re-seeding — that would wipe prior
+            # attribution for *all* lines of the file. Instead, we accept
+            # the loss of this one edit's attribution and keep going.
+            # Reconcile via content-match often still recovers most of
+            # what this edit produced, since it matches by text not
+            # position.
         else:
             raise AssertionError(f"unknown op {edit.op!r} in fold")
     return states
+
+
+# Callable protocol for `seed_reader`. Kept as an alias rather than a class
+# to avoid a heavy abstraction for a one-parameter callable.
+SeedReader = object  # spec: Callable[[str], str | None]
+

@@ -18,7 +18,7 @@ import sys
 from collections import Counter, defaultdict
 from pathlib import Path
 
-from .adapters import claude_code
+from .adapters import claude_code, codex
 from .fold import fold_edits
 from .reconcile import (
     FileAttribution,
@@ -112,25 +112,39 @@ def main(argv: list[str] | None = None) -> int:
     # unrelated parts of a monorepo). Use `git ls-files` with a pathspec.
     scope_rel = repo_root.relative_to(git_root) if repo_root != git_root else Path(".")
 
-    # 1. Find candidate sessions.
+    # 1. Find candidate sessions across all supported agents.
     cc_sessions = claude_code.list_sessions_for_cwd(repo_root)
+    cx_sessions = codex.list_sessions_for_cwd(repo_root)
     print(f"Claude Code sessions with cwd in {repo_root}: {len(cc_sessions)}")
-    if not cc_sessions:
+    print(f"Codex       sessions with cwd in {repo_root}: {len(cx_sessions)}")
+    if not cc_sessions and not cx_sessions:
         print("No sessions found. Nothing to attribute.", file=sys.stderr)
         return 0
 
-    # 2. Parse -> FileEdits.
+    # 2. Parse -> FileEdits from each adapter.
     all_edits = []
     for session_path in cc_sessions:
-        edits = list(claude_code.iter_file_edits(session_path))
-        all_edits.extend(edits)
-    print(f"Parsed {len(all_edits)} file edits across {len(cc_sessions)} sessions")
+        all_edits.extend(claude_code.iter_file_edits(session_path))
+    cc_edit_count = len(all_edits)
+    for session_path in cx_sessions:
+        all_edits.extend(codex.iter_file_edits(session_path))
+    cx_edit_count = len(all_edits) - cc_edit_count
+    print(f"Parsed {cc_edit_count} Claude Code edits + {cx_edit_count} Codex edits "
+          f"= {len(all_edits)} total")
 
     if not all_edits:
         return 0
 
-    # 3. Fold.
-    virtual_states = fold_edits(all_edits)
+    # 3. Fold, seeded from current repo contents for files we didn't observe
+    # a Write for. Without seeding, all edits against pre-existing files
+    # (most of them) show up as stale.
+    def seed_reader(path: str) -> str | None:
+        p = Path(path)
+        try:
+            return p.read_text()
+        except (OSError, UnicodeDecodeError):
+            return None
+    virtual_states = fold_edits(all_edits, seed_reader=seed_reader)
     stale_total = sum(len(s.stale_edits) for s in virtual_states.values())
     print(f"Touched {len(virtual_states)} distinct file paths "
           f"({stale_total} stale edits — old_content missing from virtual state)")
