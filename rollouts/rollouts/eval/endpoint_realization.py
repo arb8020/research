@@ -224,10 +224,6 @@ def _ssh_workspace_python(workspace_root: Path) -> str:
     return str(workspace_root / ".venv" / "bin" / "python")
 
 
-def _remote_project_root(workspace_root: Path) -> Path:
-    return workspace_root / "rollouts"
-
-
 def _ssh_workspace_bootstrap_commands(
     *,
     workspace_root: Path,
@@ -1020,7 +1016,7 @@ async def _realize_ssh_endpoint(
                 process=ProcessSpec(
                     command="bash",
                     args=("-lc", launch_cmd),
-                    cwd=str(_remote_project_root(Path(workspace.root))),
+                    cwd=str(workspace.root),
                 ),
                 port=worker.inference.port,
                 readiness_probe=ReadinessProbe(kind="http", target=readiness_target),
@@ -1207,7 +1203,7 @@ async def _realize_modal_endpoint(
                         process=ProcessSpec(
                             command="bash",
                             args=("-lc", launch_cmd),
-                            cwd=str(_remote_project_root(Path(workspace.root))),
+                            cwd=str(workspace.root),
                         ),
                         port=worker.inference.port,
                         readiness_probe=ReadinessProbe(kind="http", target=readiness_target),
