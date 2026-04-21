@@ -46,6 +46,15 @@ _no_op_scorer = FunctionScorer(lambda attempt, _ctx: Score(metrics=()))
 MODEL = "deepseek-ai/DeepSeek-V3.2"
 PORT = 30000
 
+# Node rental cost (root@66.42.120.238, 8x MI355X). Computed 2026-04-20 from
+# $10,849.02 total spend since 2026-03-31 15:59 UTC (~489h).
+# Used by scripts/cost_floor_from_spans.py to compute break-even $/1M-tokens.
+# Update when the rental terms change or when we get a non-amortized figure.
+# TODO(cost): this is an amortized figure over 20 days of not-always-utilized
+# hours; true marginal $/hour when the node is pinned to inference is the
+# right number for break-even math. Replace when known.
+NODE_COST_USD_PER_HOUR = 22.18
+
 # v0.5.9 ships the `deepseekv32` tool-call parser (matches DSV3.2's DSML tag
 # output format). Earlier `dsv32-rocm` image only had `deepseekv31`, which
 # matches V3.1's different wire format and silently drops V3.2 tool calls as
