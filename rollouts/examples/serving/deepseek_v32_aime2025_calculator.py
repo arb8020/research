@@ -10,10 +10,21 @@ Usage:
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 from examples.inference.evals.configs.bench.bench_deepseek_v3_2_amd_mi355x import (
-    endpoint,
+    endpoint as _bench_endpoint,
+)
+from examples.inference.evals.configs.bench.bench_deepseek_v3_2_amd_mi355x import (
     hardware,
 )
+
+# AIME problems need room to reason; the bench endpoint's 256-token cap
+# truncates every response to finish_reason="length" before the model
+# can ever reach a tool call. 8192 is a comfortable ceiling for a
+# per-turn generation; the calculator workload is multi-turn so total
+# generation can exceed this across turns.
+endpoint = replace(_bench_endpoint, max_tokens=8192)
 from examples.serving.math_serving_lib import (
     AIME2025_CALCULATOR_SYSTEM_PROMPT,
     AIME2025_SINGLE_TURN_SYSTEM_PROMPT,

@@ -80,8 +80,13 @@ _docker_run = (
     f" --port {PORT}"
     f" --tp 8"
     f" --trust-remote-code"
+    # Per docs.sglang.io/basic_usage/deepseek_v32.html: for DeepSeek-V3.2
+    # (non-Exp) do NOT pass --chat-template. The bundled
+    # tool_chat_template_deepseekv32.jinja file in the image is mislabeled —
+    # it's the V3.2-Exp template (V3.1-format delimiters) and mismatches the
+    # deepseekv32 parser. See closed sglang issue #17593.
     f" --tool-call-parser deepseekv32"
-    f" --chat-template /sgl-workspace/sglang/examples/chat_template/tool_chat_template_deepseekv32.jinja"
+    f" --reasoning-parser deepseek-v3"
     f" --disable-cuda-graph"
     f" --mem-fraction-static 0.85"
     f" --page-size 64"
