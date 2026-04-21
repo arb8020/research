@@ -302,4 +302,9 @@ serving_scenario = ServingScenario(
     output=ServingOutputConfig(
         experiment_name="mixture_mi355x_smoke",
     ),
+    # Iterate fast: if sglang is already up at port 30000 on the MI355X node
+    # from a prior run, tunnel to it instead of paying the ~10min warmup
+    # cost. If the launch config changes (model / docker flags / image),
+    # SSH in and `docker stop sglang_mixture_30000` first.
+    reuse_running_endpoint=True,
 )
