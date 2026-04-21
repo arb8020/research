@@ -980,6 +980,7 @@ async def _realize_ssh_endpoint(
     run_logger: Any | None,
     consumer_project_root: Path | None = None,
     reuse_running_endpoint: bool = False,
+    leave_endpoint_running: bool = False,
 ) -> Any:
     from bifrost import AsyncBifrostClient, PythonProjectMaterialization
     from bifrost.types import ProcessSpec, ReadinessProbe, ServiceSpec, WorkspaceMaterializationSpec
@@ -1159,7 +1160,20 @@ async def _realize_ssh_endpoint(
                 )
         finally:
             if service is not None:
-                await service.stop()
+                if leave_endpoint_running:
+                    if run_logger is not None:
+                        emit_run_event(
+                            run_logger,
+                            "inference_endpoint_leave_running",
+                            ssh_target=hardware_config.ssh,
+                            port=worker.inference.port,
+                            note=(
+                                "service left running per leave_endpoint_running=True; "
+                                "user is responsible for cleanup"
+                            ),
+                        )
+                else:
+                    await service.stop()
 
 
 @asynccontextmanager
@@ -1374,6 +1388,7 @@ async def realize_worker_backed_endpoint(
     run_logger: Any | None = None,
     consumer_project_root: Path | None = None,
     reuse_running_endpoint: bool = False,
+    leave_endpoint_running: bool = False,
 ) -> Any:
     # TODO(serving): This path realizes a single worker-backed endpoint, but the
     # serving use case also needs a place to realize scaling behavior, endpoint
@@ -1432,6 +1447,7 @@ async def realize_worker_backed_endpoint(
             run_logger=run_logger,
             consumer_project_root=consumer_project_root,
             reuse_running_endpoint=reuse_running_endpoint,
+            leave_endpoint_running=leave_endpoint_running,
         ) as realized:
             yield realized
         return

@@ -309,6 +309,7 @@ async def _run_serving(
             run_logger=run_logger,
             consumer_project_root=consumer_project_root,
             reuse_running_endpoint=scenario.reuse_running_endpoint,
+            leave_endpoint_running=scenario.leave_endpoint_running,
         ) as realized:
             child_env["ROLLOUTS_ENDPOINT_BASE_URL"] = realized.endpoint_config.base_url or ""
             return await _run_with_endpoint()

@@ -128,6 +128,12 @@ class ServingRun:
     # docs/design/consumer_project_threading.md for context on why the
     # lifecycle/identity split lives here.
     reuse_running_endpoint: bool = False
+    # When True, don't tear down the endpoint on normal exit. Pairs with
+    # reuse_running_endpoint for iteration: first run warms up and leaves
+    # the endpoint running, subsequent runs reuse it with zero warmup cost.
+    # Always leaves the endpoint running even if we booted it this run.
+    # User is responsible for cleanup (ssh in, docker stop).
+    leave_endpoint_running: bool = False
 
     def __post_init__(self) -> None:
         if not self.workloads:
