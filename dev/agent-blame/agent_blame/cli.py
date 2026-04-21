@@ -20,12 +20,14 @@ from pathlib import Path
 
 from .adapters import claude_code, codex
 from .fold import fold_edits
+from .provenance import build_provenance
 from .reconcile import (
     FileAttribution,
-    reconcile_repo,
+    reconcile,
     summary_stats,
     top_sessions_by_lines,
 )
+from .sources import git_sha_reader, working_tree_reader
 
 
 def _tracked_text_files(git_root: Path, scope: Path) -> list[Path]:
@@ -83,6 +85,9 @@ def _run_label(line) -> str:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="git blame for coding agents")
     parser.add_argument("repo", type=Path, help="repo root (must be a git repo)")
+    parser.add_argument("--sha", type=str, default=None,
+                        help="reconcile against file contents at this git SHA/ref "
+                             "(default: working tree)")
     parser.add_argument("--sample-file", type=str, default=None,
                         help="show per-line run breakdown for this path (relative to repo)")
     parser.add_argument("--verbose", "-v", action="store_true")
@@ -135,26 +140,45 @@ def main(argv: list[str] | None = None) -> int:
     if not all_edits:
         return 0
 
-    # 3. Fold, seeded from current repo contents for files we didn't observe
-    # a Write for. Without seeding, all edits against pre-existing files
-    # (most of them) show up as stale.
-    def seed_reader(path: str) -> str | None:
-        p = Path(path)
+    # 3. Pick source reader up front. If --sha, we also seed fold from
+    # that SHA so virtual-state edit anchors match what the SHA has, not
+    # what the working tree has. That's the consistent choice.
+    if args.sha:
         try:
-            return p.read_text()
-        except (OSError, UnicodeDecodeError):
-            return None
-    virtual_states = fold_edits(all_edits, seed_reader=seed_reader)
+            source = git_sha_reader(args.sha, git_root)
+        except ValueError as e:
+            print(f"error: {e}", file=sys.stderr)
+            return 2
+        print(f"Source: git SHA {args.sha}")
+    else:
+        source = working_tree_reader()
+        print("Source: working tree")
+
+    # 4. Fold, seeded from the same source. Fold's seed_reader has the
+    # same signature as SourceReader; passing it through keeps the story
+    # simple: seed and reconcile always agree on "what does the file
+    # currently look like."
+    virtual_states = fold_edits(all_edits, seed_reader=source)
     stale_total = sum(len(s.stale_edits) for s in virtual_states.values())
     print(f"Touched {len(virtual_states)} distinct file paths "
           f"({stale_total} stale edits — old_content missing from virtual state)")
 
-    # 4. Reconcile against tracked files in scope.
+    # 5. Provenance index (flat line -> edits). Independent of fold;
+    # used as a fallback when virtual-state attribution misses.
+    provenance = build_provenance(all_edits)
+
+    # 6. Reconcile against tracked files in scope.
     tracked = _tracked_text_files(git_root, scope_rel)
     print(f"Reconciling against {len(tracked)} git-tracked files under {scope_rel}...")
-    attributions = reconcile_repo(git_root, virtual_states, tracked)
+    attributions = reconcile(
+        repo_root=git_root,
+        virtual_states=virtual_states,
+        provenance=provenance,
+        source=source,
+        files=tracked,
+    )
 
-    # 5. Print stats.
+    # 7. Print stats.
     stats = summary_stats(attributions)
     total = stats["total_lines"] or 1
     pct_attr = 100.0 * stats["attributed"] / total
@@ -163,6 +187,13 @@ def main(argv: list[str] | None = None) -> int:
     print("Coverage:")
     print(f"  attributed   {stats['attributed']:>8}  ({pct_attr:5.1f}%)")
     print(f"  unknown      {stats['unknown']:>8}  ({pct_unk:5.1f}%)")
+    print()
+    print("Match kind breakdown:")
+    for kind in ("virtual_same_path", "provenance_same_path",
+                 "virtual_cross_file", "provenance_cross_file"):
+        n = stats.get(f"kind_{kind}", 0)
+        if n:
+            print(f"  {kind:<24} {n:>8}")
 
     print()
     print("Top sessions by lines:")

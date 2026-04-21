@@ -1,66 +1,77 @@
-"""Reconcile virtual file state with the current repo.
+"""Reconcile attribution against a source (working tree, git SHA, ...).
 
-The fold produced a per-file virtual state: "if you'd replayed every agent
-edit, here's what each file would look like and who wrote each line." The
-repo on disk is the ground truth of what files *actually* look like today.
+The fold produces a per-file virtual state. The provenance index maps every
+line text ever emitted by an agent to the edits that emitted it. Reconcile
+joins both against a `source` — a callable that returns the current text
+of a file — and emits per-line attributions for every file the source
+knows about.
 
-Reconciliation is the join. For each line in the current repo file:
+## Attribution order
 
-    - If the line's text matches a line in the virtual state, we attribute
-      it to that line's edit.
-    - If no match, we attribute it to "unknown" (human-authored, or
-      pre-agent, or the agent-edit didn't survive rebase/formatter).
+For each line of each source file we try, in order:
 
-We match by line content only, not position. This handles the common
-cases: auto-formatters reshuffle whitespace, humans insert lines above
-agent code, git rebase merges branches. As long as the *text of the line*
-is unique enough, we can still find it.
+    1. Virtual-state same-path match   (strongest; fold's intra-session coherence)
+    2. Provenance same-path match       (any agent wrote this line to this file)
+    3. Virtual-state cross-file match   (only if line is distinctive enough)
+    4. Provenance cross-file match      (same distinctiveness guard)
+    5. Unknown                          (no agent we know of wrote this text)
 
-## Ambiguity
+Virtual-state matches are preferred over provenance because they benefit
+from intra-session chaining: an unchanged line in a session's virtual
+state keeps its original author across later edits, whereas provenance
+only sees the raw `new_content` of individual edits.
 
-Short lines like `}`, ``, `return` appear many times across virtual
-states. When a repo line matches multiple candidates, we pick the most
-recent edit by timestamp. If the match is across different sessions with
-similar timestamps, the result is under-specified — reconcile returns the
-pick but flags ambiguity, leaving the UI layer to decide whether to show
-"multiple candidates."
+## Distinctiveness
 
-## Why not `git blame`
+Short or whitespace-heavy lines (`}`, ``, `    return`) match ubiquitously
+across files. We require ≥20 non-whitespace characters for cross-file
+matches in both virtual-state and provenance. Same-path matches have no
+such threshold — being at the same path is already a strong signal.
 
-`git blame` gives us commit SHAs, not session IDs. Unless we committed
-session metadata into commit trailers (the approach we deliberately did
-not take), blame SHAs are not useful for joining with transcripts. We
-use current file content directly and let content hash carry the join.
+## Why no `git blame`
+
+We do not join against `git blame` SHAs. Unless commits are stamped with
+session IDs (the approach this project deliberately avoids), SHAs are
+not useful for joining with transcripts. We match by content instead.
 """
 
 from __future__ import annotations
 
 from collections import Counter, defaultdict
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable
 
 from .effects import FileEdit
 from .fold import FileState
+from .provenance import ProvenanceIndex
+from .sources import SourceReader
+
+CROSS_FILE_MIN_CHARS = 20
+"""Minimum stripped length for a line to be eligible for cross-file match.
+
+Below this threshold, only same-path matches are allowed. This keeps
+`}`, blank lines, and short boilerplate from getting attributed en masse
+to any agent that ever wrote such a line.
+"""
 
 
 @dataclass(frozen=True)
 class LineAttribution:
-    """Attribution for one line of a current repo file."""
-
     line_number: int  # 1-indexed, like git blame
     text: str
-    edit: FileEdit | None  # None means "unknown" (human or unmatched)
+    edit: FileEdit | None  # None means 'unknown'
     ambiguous: bool = False
-    """True if multiple virtual-state lines matched this line's text."""
+    match_kind: str = "unknown"
+    """Which attribution strategy hit:
+        'virtual_same_path' | 'virtual_cross_file'
+        | 'provenance_same_path' | 'provenance_cross_file'
+        | 'unknown'"""
 
 
 @dataclass
 class FileAttribution:
-    """Per-file line-by-line attribution, ready to print or serialize."""
-
-    repo_path: Path
-    """Path relative to repo root."""
+    repo_path: Path  # repo-relative
     lines: list[LineAttribution]
 
     @property
@@ -72,125 +83,154 @@ class FileAttribution:
         return sum(1 for l in self.lines if l.edit is None)
 
 
+# --------------------------------------------------------------------------
+# Virtual-state indices
+# --------------------------------------------------------------------------
+
+
 def _index_virtual_state(
     states: dict[str, FileState],
-) -> dict[str, list[FileEdit]]:
-    """Flatten fold output to `line_text -> [edits that produced this text]`.
+) -> tuple[dict[str, list[FileEdit]], dict[tuple[str, str], list[FileEdit]]]:
+    """Build (by_text, by_path_and_text) from the fold output.
 
-    Sorted latest-first so the first match in reconcile is the most recent.
+    Seeded (edit=None) lines are excluded — they represent content whose
+    origin we don't know, and we must not fabricate attribution for them.
     """
     by_text: dict[str, list[FileEdit]] = defaultdict(list)
-    for state in states.values():
+    by_path_and_text: dict[tuple[str, str], list[FileEdit]] = defaultdict(list)
+    for path, state in states.items():
         for attr in state.lines:
-            # Seeded (unattributed) lines don't help us attribute anything —
-            # they represent content whose origin we do not know. Exclude.
             if attr.edit is None:
                 continue
             by_text[attr.text].append(attr.edit)
-    for text, edits in by_text.items():
-        edits.sort(key=lambda e: e.timestamp, reverse=True)
-    return by_text
+            by_path_and_text[(path, attr.text)].append(attr.edit)
+    for bucket in by_text.values():
+        bucket.sort(key=lambda e: e.timestamp, reverse=True)
+    for bucket in by_path_and_text.values():
+        bucket.sort(key=lambda e: e.timestamp, reverse=True)
+    return by_text, by_path_and_text
 
 
-def reconcile_repo(
+# --------------------------------------------------------------------------
+# Reconcile
+# --------------------------------------------------------------------------
+
+
+def reconcile(
+    *,
     repo_root: Path,
     virtual_states: dict[str, FileState],
-    repo_files: Iterable[Path],
+    provenance: ProvenanceIndex,
+    source: SourceReader,
+    files: Iterable[Path],
 ) -> list[FileAttribution]:
-    """Attribute every line of every repo file to a FileEdit or None.
+    """Attribute every line of every file in `files` via the source reader.
 
     Args:
-        repo_root: Absolute path to the repo root. Used to produce
-            repo-relative paths in the output.
-        virtual_states: Fold output, keyed by the absolute path the agent
-            wrote to.
-        repo_files: Paths (absolute or repo-relative) to reconcile. Binary
-            or non-text files should be filtered upstream.
+        repo_root: for producing repo-relative paths in output.
+        virtual_states: fold output.
+        provenance: provenance index (built from the same edits as fold).
+        source: callable(abs_path) -> text | None. Working-tree or git-sha.
+        files: absolute or repo-relative paths to reconcile.
 
-    Returns:
-        One FileAttribution per file, in the order `repo_files` yielded them.
+    Returns: one FileAttribution per readable file, in input order.
     """
-    by_text = _index_virtual_state(virtual_states)
-
-    # Secondary index: same line text might repeat within one file's virtual
-    # state; we want to prefer matches from a virtual state for the *same*
-    # file path over cross-file matches, to reduce cross-file noise.
-    virtual_by_path_and_text: dict[tuple[str, str], list[FileEdit]] = defaultdict(list)
-    for path, state in virtual_states.items():
-        for attr in state.lines:
-            if attr.edit is None:
-                continue  # seeded lines don't attribute
-            virtual_by_path_and_text[(path, attr.text)].append(attr.edit)
-    for k, edits in virtual_by_path_and_text.items():
-        edits.sort(key=lambda e: e.timestamp, reverse=True)
+    v_by_text, v_by_path_and_text = _index_virtual_state(virtual_states)
 
     out: list[FileAttribution] = []
-    for fpath in repo_files:
+    for fpath in files:
         abs_path = (repo_root / fpath).resolve() if not fpath.is_absolute() else fpath
-        try:
-            text = abs_path.read_text()
-        except (OSError, UnicodeDecodeError):
+        text = source(str(abs_path))
+        if text is None:
             continue
         rel = abs_path.relative_to(repo_root) if abs_path.is_absolute() else fpath
         lines = text.split("\n")
-        # A file ending in "\n" splits to a trailing "" — don't attribute it.
+        # File ending in newline -> trailing "" which is not a real line.
         if lines and lines[-1] == "":
             lines = lines[:-1]
 
         abs_str = str(abs_path)
         attributions: list[LineAttribution] = []
         for i, line_text in enumerate(lines, start=1):
-            # Same-path match is always acceptable — the agent wrote to this
-            # exact path, so matching line text in the same virtual-state
-            # file is a strong signal.
-            same_path_candidates = virtual_by_path_and_text.get((abs_str, line_text), [])
-            # Cross-file match is only acceptable for distinctive lines.
-            # Short/whitespace-only lines (`}`, ``, `    return`) match
-            # ubiquitously and would inflate attribution. Threshold chosen
-            # empirically: 20 non-whitespace chars filters most glue lines
-            # while retaining signatures, docstrings, and most real code.
             stripped = line_text.strip()
-            cross_file_allowed = len(stripped) >= 20
-            cross_file_candidates = (
-                by_text.get(line_text, []) if cross_file_allowed else []
-            )
-            candidates = same_path_candidates or cross_file_candidates
-            if not candidates:
+            cross_file_allowed = len(stripped) >= CROSS_FILE_MIN_CHARS
+
+            # 1. Virtual same-path
+            cands = v_by_path_and_text.get((abs_str, line_text), [])
+            if cands:
+                attributions.append(_make_attr(i, line_text, cands, "virtual_same_path"))
+                continue
+
+            # 2. Provenance same-path
+            cands = provenance.by_path_and_text.get((abs_str, line_text), [])
+            if cands:
+                attributions.append(_make_attr(i, line_text, cands, "provenance_same_path"))
+                continue
+
+            if not cross_file_allowed:
                 attributions.append(LineAttribution(
                     line_number=i, text=line_text, edit=None,
                 ))
                 continue
-            # Latest by timestamp wins; flag ambiguity if multiple distinct
-            # sessions competed for the same line text.
-            distinct_sessions = {e.session_id for e in candidates}
+
+            # 3. Virtual cross-file
+            cands = v_by_text.get(line_text, [])
+            if cands:
+                attributions.append(_make_attr(i, line_text, cands, "virtual_cross_file"))
+                continue
+
+            # 4. Provenance cross-file
+            cands = provenance.by_text.get(line_text, [])
+            if cands:
+                attributions.append(_make_attr(i, line_text, cands, "provenance_cross_file"))
+                continue
+
+            # 5. Unknown
             attributions.append(LineAttribution(
-                line_number=i,
-                text=line_text,
-                edit=candidates[0],
-                ambiguous=len(distinct_sessions) > 1,
+                line_number=i, text=line_text, edit=None,
             ))
         out.append(FileAttribution(repo_path=rel, lines=attributions))
     return out
 
 
+def _make_attr(
+    line_number: int, text: str, cands: list[FileEdit], match_kind: str,
+) -> LineAttribution:
+    distinct_sessions = {e.session_id for e in cands}
+    return LineAttribution(
+        line_number=line_number,
+        text=text,
+        edit=cands[0],  # latest-first sort done at index time
+        ambiguous=len(distinct_sessions) > 1,
+        match_kind=match_kind,
+    )
+
+
+# --------------------------------------------------------------------------
+# Summary helpers
+# --------------------------------------------------------------------------
+
+
 def summary_stats(attributions: list[FileAttribution]) -> dict[str, int]:
-    """Aggregate across all files."""
     total = sum(len(a.lines) for a in attributions)
     attributed = sum(a.attributed_count for a in attributions)
+    # Per-match-kind breakdown is useful to judge whether fold or
+    # provenance is carrying the attribution.
+    kinds: Counter[str] = Counter()
+    for fa in attributions:
+        for line in fa.lines:
+            kinds[line.match_kind] += 1
     return {
         "total_lines": total,
         "attributed": attributed,
         "unknown": total - attributed,
+        **{f"kind_{k}": v for k, v in kinds.items()},
     }
 
 
 def top_sessions_by_lines(
     attributions: list[FileAttribution], n: int = 10,
 ) -> list[tuple[str, str, int]]:
-    """Return top-N (source, session_id, line_count) by lines attributed.
-
-    Ties broken by source+session_id for determinism.
-    """
     counter: Counter[tuple[str, str]] = Counter()
     for fa in attributions:
         for line in fa.lines:

@@ -20,11 +20,18 @@ one-liners) are deliberately not parsed in v0 — they'd need a separate
 cd /Users/chiraagbalu/research/dev/agent-blame
 /Users/chiraagbalu/research/.venv/bin/python -m agent_blame.cli /path/to/repo
 
+# Attribute against a specific git ref/SHA instead of the working tree
+... --sha HEAD~50
+... --sha main
+... --sha abc1234
+
 # Show per-line runs for a specific file
 ... --sample-file path/to/file.py
 ```
 
-Expects Claude Code transcripts at `~/.claude/projects/<encoded-cwd>/<uuid>.jsonl`.
+Expects:
+- Claude Code transcripts at `~/.claude/projects/<encoded-cwd>/<uuid>.jsonl`
+- Codex transcripts at `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`
 
 ## How it works
 
@@ -38,10 +45,29 @@ Expects Claude Code transcripts at `~/.claude/projects/<encoded-cwd>/<uuid>.json
    the `FileEdit` that introduced it. Unchanged lines preserve their prior
    attribution across subsequent edits.
 
-3. **Reconcile** (`agent_blame.reconcile`): joins virtual state against
-   current repo files by line-text match. Same-path match always wins;
-   cross-file match only allowed for lines ≥20 non-whitespace chars to
-   avoid `}` / blank-line noise. Unmatched lines get `edit=None` ("unknown").
+3. **Provenance index** (`agent_blame.provenance`): a flat `line_text -> [edit]`
+   map over every `new_content` of every edit, independent of fold.
+   Catches edits that went stale mid-fold but whose output text still
+   survives in the current file.
+
+4. **Source reader** (`agent_blame.sources`): callable `abs_path -> text | None`.
+   Built-in variants are `working_tree_reader()` (current files on disk)
+   and `git_sha_reader(sha, git_root)` (streams via `git cat-file --batch`).
+   Both fold seeding and reconcile use the same reader, so they always
+   agree on "what does the file look like in this source."
+
+5. **Reconcile** (`agent_blame.reconcile`): attributes each source line
+   via a 5-level fallback chain:
+
+       1. virtual same-path       (fold's intra-session chain, this path)
+       2. provenance same-path    (any edit ever wrote this line to this path)
+       3. virtual cross-file      (fold, any path; requires ≥20 non-ws chars)
+       4. provenance cross-file   (any edit, any path; same threshold)
+       5. unknown
+
+   Reported in the match-kind breakdown so you can see which path is
+   carrying attribution. On real rollouts data, provenance carries more
+   than fold — because stale fold edits still emit valid provenance.
 
 ## Design notes
 
