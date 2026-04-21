@@ -79,8 +79,14 @@ def _ensure_tau2_data_dir() -> None:
 
 _ensure_tau2_data_dir()
 
+from harbor_v0.config_types import ModalHarborHost  # noqa: E402
+from harbor_v0.eval import make_environment as harbor_make_environment  # noqa: E402
+from harbor_v0.eval import prepare_messages as harbor_prepare_messages  # noqa: E402
+from harbor_v0.eval import score_sample as harbor_score_sample  # noqa: E402
 from tau2_v0.eval import make_environment, prepare_messages, score_sample  # noqa: E402
 from tau2_v0.prepare import DEFAULT_USER_ENDPOINT, build_sample_rows  # noqa: E402
+
+from rollouts.environments.harbor_environment import attach_harbor_host_to_tasks  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Shared endpoint (DSV3.2 on MI355X, same docker config as the single-workload
@@ -231,6 +237,35 @@ _sharegpt_eval = EvalTaskSpec(
 )
 
 # ---------------------------------------------------------------------------
+# Workload 4: harbor (Modal-backed TB2 tool execution, agent multi-turn).
+# DSV3.2 will likely underperform Sonnet on pass rate; we include it for
+# traffic shape (multi-turn + Modal sandbox orchestration), not eval quality.
+# ---------------------------------------------------------------------------
+
+_HARBOR_TASKS = attach_harbor_host_to_tasks(
+    [{"task_id": "cancel-async-tasks"}],
+    ModalHarborHost(app_name="rollouts-harbor"),
+)
+
+_harbor_eval = EvalTaskSpec(
+    tasks=_HARBOR_TASKS,
+    run_spec=AgentRunSpec(
+        endpoint=endpoint,
+        prepare_messages=harbor_prepare_messages,
+        environment_factory=harbor_make_environment,
+    ),
+    scorer=FunctionScorer(harbor_score_sample),
+    run=EvalRunConfig(
+        max_concurrent=1,
+        max_samples=1,
+        max_turns=20,
+        verbose=False,
+        show_progress=False,
+    ),
+    output=EvalOutputConfig(experiment_name="harbor_tb2"),
+)
+
+# ---------------------------------------------------------------------------
 # The mixture
 # ---------------------------------------------------------------------------
 
@@ -256,6 +291,12 @@ serving_scenario = ServingScenario(
             eval_task=_sharegpt_eval,
             concurrency=_SHAREGPT_WORKLOAD.max_concurrent,
             max_samples=_SHAREGPT_WORKLOAD.num_prompts,
+        ),
+        EvalServingWorkload(
+            name="harbor_tb2",
+            eval_task=_harbor_eval,
+            concurrency=1,
+            max_samples=1,
         ),
     ],
     output=ServingOutputConfig(
