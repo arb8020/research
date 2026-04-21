@@ -1163,7 +1163,11 @@ async def _realize_modal_endpoint(
         async with trio_asyncio.open_loop():
             baseline_sandbox_ids = await _list_modal_sandbox_ids()
             sandbox_handle = await create_modal_sandbox(request)
-            session = ModalExecutionSession(sandbox_handle=sandbox_handle, local_root=REPO_ROOT)
+            session = ModalExecutionSession(
+                sandbox_handle=sandbox_handle,
+                local_root=REPO_ROOT,
+                extra_source_roots=tuple(Path(root) for root in request.extra_source_roots),
+            )
             service = None
             startup_context: dict[str, Any] | None = None
             try:
