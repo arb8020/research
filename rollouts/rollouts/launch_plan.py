@@ -40,7 +40,7 @@ class LocalInProcessLaunchPlan:
 def build_local_eval_launch_plan(
     *,
     config_path: Path,
-    repo_root: Path,
+    consumer_project_root: Path,
     max_samples: int | None,
     force_deploy_committed: bool,
     python_executable: str | None = None,
@@ -48,14 +48,14 @@ def build_local_eval_launch_plan(
     """Build the local eval subprocess plan.
 
     Rollouts owns this boundary:
-    - local eval runs live under `results/eval/run_<timestamp>`
+    - local eval runs live under `<consumer_project_root>/results/eval/run_<timestamp>`
     - the supervisor entrypoint is `rollouts.eval.supervisor`
     - the control-plane journal for eval is `control.jsonl`
     """
 
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     run_name = f"run_{timestamp}"
-    run_dir = repo_root / "results" / "eval" / run_name
+    run_dir = consumer_project_root / "results" / "eval" / run_name
     command = [
         python_executable or sys.executable,
         "-m",
@@ -81,7 +81,7 @@ def build_local_eval_launch_plan(
 def build_local_serving_launch_plan(
     *,
     config_path: Path,
-    repo_root: Path,
+    consumer_project_root: Path,
     force_deploy_committed: bool,
     python_executable: str | None = None,
 ) -> LocalSubprocessLaunchPlan:
@@ -89,7 +89,7 @@ def build_local_serving_launch_plan(
 
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     run_name = f"run_{timestamp}"
-    run_dir = repo_root / "results" / "serving" / run_name
+    run_dir = consumer_project_root / "results" / "serving" / run_name
     command = [
         python_executable or sys.executable,
         "-m",
@@ -217,7 +217,7 @@ def build_local_workload_plan(
     *,
     config_module: Any,
     config_path: Path,
-    repo_root: Path,
+    consumer_project_root: Path,
     max_samples: int | None,
     force_deploy_committed: bool,
     python_executable: str | None,
@@ -232,7 +232,7 @@ def build_local_workload_plan(
     if workload_kind == "evaluation":
         return build_local_eval_launch_plan(
             config_path=config_path,
-            repo_root=repo_root,
+            consumer_project_root=consumer_project_root,
             max_samples=max_samples,
             force_deploy_committed=force_deploy_committed,
             python_executable=python_executable,
@@ -240,7 +240,7 @@ def build_local_workload_plan(
     if workload_kind == "serving":
         return build_local_serving_launch_plan(
             config_path=config_path,
-            repo_root=repo_root,
+            consumer_project_root=consumer_project_root,
             force_deploy_committed=force_deploy_committed,
             python_executable=python_executable,
         )

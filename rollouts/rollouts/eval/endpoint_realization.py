@@ -948,8 +948,9 @@ async def _realize_ssh_endpoint(
     run_name: str,
     force_deploy_committed: bool = False,
     run_logger: Any | None,
+    consumer_project_root: Path | None = None,
 ) -> Any:
-    from bifrost import AsyncBifrostClient
+    from bifrost import AsyncBifrostClient, PythonProjectMaterialization
     from bifrost.types import ProcessSpec, ReadinessProbe, ServiceSpec, WorkspaceMaterializationSpec
 
     assert hardware_config.ssh is not None, "ssh provider requires hardware_config.ssh"
@@ -962,6 +963,23 @@ async def _realize_ssh_endpoint(
     remote_output_dir: Path | None = None
     engine_log_sink = JsonlEventSink(output_dir / "engine.jsonl")
 
+    extra_python_projects: tuple[PythonProjectMaterialization, ...] = ()
+    if consumer_project_root is not None:
+        primary_workspace_root = REPO_ROOT.parent.resolve()
+        resolved_consumer = consumer_project_root.expanduser().resolve()
+        # Only include the consumer project as an "extra" if it lives outside
+        # the primary workspace. Inside the monorepo, the primary bundle
+        # already contains it.
+        try:
+            resolved_consumer.relative_to(primary_workspace_root)
+        except ValueError:
+            extra_python_projects = (
+                PythonProjectMaterialization(
+                    local_root=str(resolved_consumer),
+                    primary_workspace_local_root=str(primary_workspace_root),
+                ),
+            )
+
     async with AsyncBifrostClient(
         hardware_config.ssh,
         ssh_key_path=hardware_config.ssh_key_path,
@@ -971,6 +989,7 @@ async def _realize_ssh_endpoint(
                 requested_root="~/.bifrost/workspaces/rollouts-eval",
                 bootstrap_commands=(),
                 allow_dirty=force_deploy_committed,
+                extra_python_projects=extra_python_projects,
             )
         )
         remote_output_dir = Path(workspace.root) / "results" / "eval" / run_name
@@ -1076,6 +1095,7 @@ async def _realize_modal_endpoint(
     run_name: str,
     force_deploy_committed: bool,
     run_logger: Any | None,
+    consumer_project_root: Path | None = None,
 ) -> Any:
     import modal
     import trio_asyncio
@@ -1094,6 +1114,16 @@ async def _realize_modal_endpoint(
 
     runtime = runtime_contract_from_hardware(hardware_config)
     engine_log_sink = JsonlEventSink(output_dir / "engine.jsonl")
+
+    extra_source_roots: tuple[str, ...] = ()
+    if consumer_project_root is not None:
+        primary_workspace_root = REPO_ROOT.parent.resolve()
+        resolved_consumer = consumer_project_root.expanduser().resolve()
+        try:
+            resolved_consumer.relative_to(primary_workspace_root)
+        except ValueError:
+            extra_source_roots = (str(resolved_consumer),)
+
     request = ModalExecutionRequest(
         config_path="eval-worker-endpoint",
         runtime=runtime,
@@ -1116,6 +1146,7 @@ async def _realize_modal_endpoint(
         },
         run_logger=run_logger,
         encrypted_ports=(worker.inference.port,),
+        extra_source_roots=extra_source_roots,
     )
 
     def emit_modal_event(event: str, **data: Any) -> None:
@@ -1260,6 +1291,7 @@ async def realize_worker_backed_endpoint(
     run_name: str = "eval-endpoint",
     force_deploy_committed: bool = False,
     run_logger: Any | None = None,
+    consumer_project_root: Path | None = None,
 ) -> Any:
     if isinstance(endpoint_config, ExternalEndpoint):
         yield RealizedEvalEndpoint(endpoint_config=endpoint_config)
@@ -1299,6 +1331,7 @@ async def realize_worker_backed_endpoint(
             run_name=run_name,
             force_deploy_committed=force_deploy_committed,
             run_logger=run_logger,
+            consumer_project_root=consumer_project_root,
         ) as realized:
             yield realized
         return
@@ -1311,6 +1344,7 @@ async def realize_worker_backed_endpoint(
             run_name=run_name,
             force_deploy_committed=force_deploy_committed,
             run_logger=run_logger,
+            consumer_project_root=consumer_project_root,
         ) as realized:
             yield realized
         return

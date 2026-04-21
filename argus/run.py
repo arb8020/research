@@ -268,6 +268,7 @@ from rollouts.remote_runtime import (
     SourceSyncPolicy,
     enforce_source_sync_policy,
     materialization_plan_from_runtime,
+    resolve_consumer_project,
     runtime_contract_from_hardware,
 )
 from rollouts.training.configs import HardwareConfig, WorkerTopologyConfig
@@ -2132,7 +2133,7 @@ Examples:
         local_workload_plan = build_local_workload_plan(
             config_module=config_module,
             config_path=config_path,
-            repo_root=REPO_ROOT,
+            consumer_project_root=Path(resolve_consumer_project(config_path).local_root),
             max_samples=args.max_samples,
             force_deploy_committed=args.force_deploy_committed,
             python_executable=sys.executable,
