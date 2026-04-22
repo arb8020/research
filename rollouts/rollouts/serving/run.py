@@ -1238,6 +1238,14 @@ def main() -> int:
     print(f"Workloads: {', '.join(workload.name for workload in scenario.workloads)}")
     print(f"Output dir: {output_dir}")
 
+    # Bind a span sink for this serving-child process. spans.jsonl is shared
+    # with the parent serving supervisor (see parent process binding). POSIX
+    # atomic-append on writes under 16KB keeps the two writers from
+    # interleaving.
+    from .._observability import SpanSink, set_sink
+
+    span_sink = SpanSink(output_dir / "spans.jsonl")
+    set_sink(span_sink)
     try:
         scenario_report = trio_asyncio.run(_run_scenario, config_path, scenario, output_dir)
     except KeyboardInterrupt:
@@ -1250,6 +1258,8 @@ def main() -> int:
     except Exception as exc:
         logger.exception("Serving scenario failed: %s", exc)
         return 1
+    finally:
+        span_sink.close()
 
     print("\n" + "=" * 60)
     print("RESULTS")

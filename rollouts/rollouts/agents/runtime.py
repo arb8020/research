@@ -9,7 +9,7 @@ import logging
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import replace
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import trio
 
@@ -232,24 +232,63 @@ async def rollout(
     assert on_chunk is not None
     assert callable(on_chunk)
 
+    from .._observability import start_span
     from ..providers import get_provider_function_by_format
 
     # Get the appropriate provider function via API format
     provider_func = get_provider_function_by_format(actor.endpoint.api_format)
 
-    # Call with provider-specific kwargs if needed
-    # Anthropic needs extra params, others don't - but **kwargs makes this flexible
-    new_actor = await provider_func(
-        actor,
-        on_chunk,
-        user_message_for_thinking=user_message_for_thinking,
-        turn_idx=turn_idx,
-        inline_thinking=inline_thinking,
-        cancel_scope=cancel_scope,
-        session_id=session_id,
-        session_store=session_store,
-    )
-    return new_actor
+    # llm_call span: wraps the single outbound provider request. All five
+    # providers dispatch through this one function, so one wrapper here gives
+    # us OTel gen_ai.* coverage across OpenAI/Anthropic/Google/sglang/vllm.
+    # Attributes follow OTel gen-ai semantic conventions. Token usage is read
+    # from the returned actor's last completion after the call returns; set
+    # here rather than inside each provider so we don't fork the attribute
+    # shape per-provider.
+    span_attrs: dict[str, Any] = {
+        "gen_ai.request.model": actor.endpoint.model,
+        "gen_ai.system": actor.endpoint.provider,
+        "gen_ai.operation.name": "chat",
+        "turn_idx": turn_idx,
+    }
+    if session_id is not None:
+        span_attrs["session_id"] = session_id
+
+    async with start_span("llm_call", attributes=span_attrs) as span:
+        new_actor = await provider_func(
+            actor,
+            on_chunk,
+            user_message_for_thinking=user_message_for_thinking,
+            turn_idx=turn_idx,
+            inline_thinking=inline_thinking,
+            cancel_scope=cancel_scope,
+            session_id=session_id,
+            session_store=session_store,
+        )
+        # Extract token usage from the new completion (if the provider set it).
+        # Mirror the key names the Anthropic/OpenAI variants use so we're
+        # robust to either wire format.
+        if new_actor.trajectory.completions:
+            usage = getattr(new_actor.trajectory.completions[-1], "usage", None)
+            if usage is not None:
+                tokens_in = getattr(usage, "input_tokens", None) or getattr(
+                    usage, "prompt_tokens", None
+                )
+                output = (
+                    getattr(usage, "output_tokens", 0)
+                    or getattr(usage, "completion_tokens", 0)
+                    or 0
+                )
+                reasoning = getattr(usage, "reasoning_tokens", 0) or 0
+                tokens_out = (output + reasoning) if (output or reasoning) else None
+                if tokens_in is not None:
+                    span.set_attr("gen_ai.usage.input_tokens", tokens_in)
+                if tokens_out is not None:
+                    span.set_attr("gen_ai.usage.output_tokens", tokens_out)
+                cost = getattr(getattr(usage, "cost", None), "total", None)
+                if cost is not None:
+                    span.set_attr("gen_ai.usage.cost_usd", cost)
+        return new_actor
 
 
 async def run_agent_step(
