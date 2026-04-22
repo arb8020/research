@@ -1092,12 +1092,25 @@ async def _run_scenario(
             }
 
     async def _run_named_workload(workload: ServingWorkload) -> None:
-        if isinstance(workload, EvalServingWorkload):
-            await _run_eval_servng_workload(workload)
-        elif isinstance(workload, ToolCallVerifierWorkload):
-            await _run_tool_call_verifier_serving_workload(workload)
-        else:
-            raise AssertionError(f"Unhandled workload variant: {type(workload)!r}")
+        from .._observability import start_span
+
+        async with start_span(
+            "workload",
+            attributes={
+                "workload.name": workload.name,
+                "workload.kind": "eval"
+                if isinstance(workload, EvalServingWorkload)
+                else "tool_call_verifier",
+                "workload.concurrency": workload.concurrency,
+                "workload.max_samples": workload.max_samples,
+            },
+        ):
+            if isinstance(workload, EvalServingWorkload):
+                await _run_eval_servng_workload(workload)
+            elif isinstance(workload, ToolCallVerifierWorkload):
+                await _run_tool_call_verifier_serving_workload(workload)
+            else:
+                raise AssertionError(f"Unhandled workload variant: {type(workload)!r}")
 
     # Drain-aware nursery: if the supervisor sends SIGINT/SIGTERM to this
     # child process (duration elapsed, operator stop, etc), Python raises
@@ -1106,29 +1119,43 @@ async def _run_scenario(
     # than "the scenario crashed" — per-workload reports that finished
     # still count, scenario_report is still written, exit code is 0.
     scenario_drained = False
-    try:
-        async with trio.open_nursery() as nursery:
-            for workload in scenario.workloads:
-                nursery.start_soon(_run_named_workload, workload)
-    except BaseExceptionGroup as eg:  # noqa: F821,UP041 — stdlib class, present 3.11+
-        # Walk the nested ExceptionGroup leaves. If every leaf is a
-        # KeyboardInterrupt or trio.Cancelled, this was a shutdown request
-        # (duration watchdog → supervisor → SIGINT → Python KeyboardInterrupt
-        # in child → trio Cancel). Otherwise it's a real failure.
-        def _leaves(exc: BaseException) -> list[BaseException]:
-            if isinstance(exc, BaseExceptionGroup):  # noqa: F821 — stdlib 3.11+
-                out: list[BaseException] = []
-                for sub in exc.exceptions:
-                    out.extend(_leaves(sub))
-                return out
-            return [exc]
+    from .._observability import new_trace_id, start_span
 
-        stop_types = (KeyboardInterrupt, trio.Cancelled)
-        all_leaves = _leaves(eg)
-        if all_leaves and all(isinstance(leaf, stop_types) for leaf in all_leaves):
-            scenario_drained = True
-        else:
-            raise
+    # serving_run span: one root per ServingRun. Trace id is minted here and
+    # inherited by every workload span. Each sample_attempt nested inside a
+    # workload will still get its own trace_id (samples are independent units
+    # of work); serving_run and workload spans are cross-trace anchors.
+    async with start_span(
+        "serving_run",
+        trace_id=new_trace_id(),
+        attributes={
+            "serving_run.experiment_name": scenario.output.experiment_name,
+            "serving_run.workload_count": len(scenario.workloads),
+        },
+    ):
+        try:
+            async with trio.open_nursery() as nursery:
+                for workload in scenario.workloads:
+                    nursery.start_soon(_run_named_workload, workload)
+        except BaseExceptionGroup as eg:  # noqa: F821,UP041 — stdlib class, present 3.11+
+            # Walk the nested ExceptionGroup leaves. If every leaf is a
+            # KeyboardInterrupt or trio.Cancelled, this was a shutdown request
+            # (duration watchdog → supervisor → SIGINT → Python KeyboardInterrupt
+            # in child → trio Cancel). Otherwise it's a real failure.
+            def _leaves(exc: BaseException) -> list[BaseException]:
+                if isinstance(exc, BaseExceptionGroup):  # noqa: F821 — stdlib 3.11+
+                    out: list[BaseException] = []
+                    for sub in exc.exceptions:
+                        out.extend(_leaves(sub))
+                    return out
+                return [exc]
+
+            stop_types = (KeyboardInterrupt, trio.Cancelled)
+            all_leaves = _leaves(eg)
+            if all_leaves and all(isinstance(leaf, stop_types) for leaf in all_leaves):
+                scenario_drained = True
+            else:
+                raise
 
     failed_workloads = {
         name: result for name, result in results.items() if result.get("status") == "failed"
