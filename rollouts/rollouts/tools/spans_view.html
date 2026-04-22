@@ -457,12 +457,12 @@
     letter-spacing: 0.05em;
     text-transform: uppercase;
     white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    position: sticky;
-    left: 0;
     height: 26px;
     flex-shrink: 0;
+    /* sticky top so header stays visible when lane is tall and user scrolls down */
+    position: sticky;
+    top: 24px; /* below the axis */
+    z-index: 5;
   }
 
   .trace-lane-svg-wrap {
@@ -1394,40 +1394,76 @@ function renderFlame() {
   const viewEnd   = state.flameViewEnd;
   const viewSpan  = viewEnd - viewStart;
 
-  // Assign per-span global row index so multiple workload subtrees stack
-  // vertically rather than sharing depth rows and overlapping.
-  // Each root spans its own subtree; we walk roots in time order and
-  // accumulate a depth offset so subtree N starts below subtree N-1.
-  const roots = state.tree.roots;
-  // depthOffset[span_id of root] = first row this subtree occupies.
-  const rootDepthOffset = new Map();
-  let runningOffset = 0;
-  for (const root of roots) {
-    rootDepthOffset.set(root.span_id, runningOffset);
-    // Max depth within this subtree.
-    let subtreeMaxDepth = 0;
-    const walkDepth = (node) => {
-      if ((node.depth || 0) > subtreeMaxDepth) subtreeMaxDepth = node.depth;
-      for (const c of node.children) walkDepth(c);
-    };
-    walkDepth(root);
-    runningOffset += subtreeMaxDepth + 1;  // +1 to leave a gap between workloads
-  }
-  const totalRows = runningOffset || 1;
+  // Flamegraph row assignment: stack workload subtrees vertically so parallel
+  // workloads don't share rows and overlap. Strategy:
+  //   - The tree root (serving_run) renders at row 0.
+  //   - Its children (workload spans) each get their own vertical band.
+  //   - Band N starts directly below band N-1.
+  //   - Row for any span = bandOffset[band_root] + (span.depth - band_root.depth)
+  //   - Spans above the band level (serving_run itself) get depth-based row.
+  //
+  // "Band roots" = depth-1 children of the tree root (the workload spans),
+  // or if there's no clear single root, the tree roots themselves.
+  const treeRoots = state.tree.roots;
 
-  // Find root ancestor for each span to look up its offset.
-  function rootAncestorId(span) {
+  // Collect band roots: workload children of a single root, or all roots.
+  let bandRoots;
+  if (treeRoots.length === 1 && treeRoots[0].children.length > 0) {
+    // One root with children — partition at child level (the workloads).
+    // The root itself renders above row 0 in its own row.
+    bandRoots = [...treeRoots[0].children].sort((a, b) => a.start_time_unix_nano - b.start_time_unix_nano);
+  } else {
+    bandRoots = treeRoots;
+  }
+
+  // For each band root, compute the max depth within its subtree (relative
+  // to the band root's own depth), giving us the band's height in rows.
+  function subtreeRelativeMaxDepth(root) {
+    let maxRel = 0;
+    const walk = (node) => {
+      const rel = (node.depth || 0) - (root.depth || 0);
+      if (rel > maxRel) maxRel = rel;
+      for (const c of node.children) walk(c);
+    };
+    walk(root);
+    return maxRel;
+  }
+
+  // bandOffset[span_id] = first Y-row of this band.
+  const bandOffset = new Map();
+  // Spans above band level (e.g. serving_run) each get their own single row
+  // at the very top, before the bands.
+  const aboveBandSpans = treeRoots.length === 1 && treeRoots[0].children.length > 0
+    ? [treeRoots[0]]
+    : [];
+  let runningOffset = aboveBandSpans.length; // row 0..N-1 for above-band spans
+
+  for (const br of bandRoots) {
+    bandOffset.set(br.span_id, runningOffset);
+    runningOffset += subtreeRelativeMaxDepth(br) + 2; // +1 for the band root row, +1 gap
+  }
+  const totalRows = Math.max(runningOffset, 1);
+
+  // Walk up to find the band-root ancestor of a span.
+  const bandRootIdSet = new Set(bandRoots.map(b => b.span_id));
+  function bandRootAncestor(span) {
     let cur = span;
-    while (cur.parent_span_id && state.tree.byId[cur.parent_span_id]) {
+    while (cur) {
+      if (bandRootIdSet.has(cur.span_id)) return cur;
       cur = state.tree.byId[cur.parent_span_id];
     }
-    return cur.span_id;
+    return null;
   }
 
   function flameRow(span) {
-    const rid = rootAncestorId(span);
-    const offset = rootDepthOffset.get(rid) ?? 0;
-    return offset + (span.depth || 0);
+    // Above-band spans (e.g. serving_run) get their own rows at the top.
+    const aboveIdx = aboveBandSpans.findIndex(s => s.span_id === span.span_id);
+    if (aboveIdx !== -1) return aboveIdx;
+
+    const br = bandRootAncestor(span);
+    if (!br) return 0; // fallback
+    const offset = bandOffset.get(br.span_id) ?? 0;
+    return offset + ((span.depth || 0) - (br.depth || 0));
   }
 
   const ROW_H  = 22;
@@ -1674,14 +1710,16 @@ function renderTrace() {
   const ROW_GAP = 1;
   const AXIS_H = 24;
 
-  // Group spans by workload/trace_id lane. Each lane is an independent
-  // depth stack — depth is relative to the lane's own root spans.
-  // We reuse the same grouping logic as gantt but operate on all timed spans.
+  // Group spans by workload lane. Each lane is one workload subtree.
+  // Key = workload.name from the nearest workload ancestor. Spans above the
+  // workload level (serving_run etc.) are skipped — they span the full time
+  // range and clutter the swimlane view; the flamegraph shows them better.
   const laneMap = new Map();
   for (const s of timedSpans) {
-    const key = resolveWorkloadName(s) || s.trace_id || '(unknown)';
-    if (!laneMap.has(key)) laneMap.set(key, []);
-    laneMap.get(key).push(s);
+    const wn = resolveWorkloadName(s);
+    if (!wn) continue; // skip serving_run and other above-workload spans
+    if (!laneMap.has(wn)) laneMap.set(wn, []);
+    laneMap.get(wn).push(s);
   }
   // Sort lanes by earliest span.
   const lanes = [...laneMap.entries()].map(([key, spans]) => {
