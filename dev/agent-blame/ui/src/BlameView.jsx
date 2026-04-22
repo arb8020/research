@@ -51,26 +51,15 @@ function editKey(edit) {
   return edit ? `${edit.source}:${edit.session_id}` : null
 }
 
-// Given the raw line array, compute a per-line "effective edit" that
-// bridges single-line unknowns between matching session neighbors. Returns
-// an array of `edit | null` parallel to `lines`.
+// Per-line effective edit = the server's edit, no bridging.
+//
+// We previously bridged single-line unknowns between same-session
+// neighbors for visual continuity. That was a mistake: clicking the
+// run's annotation block then opened the bridged edit even for lines
+// that were genuinely unknown (e.g. a human-inserted line sandwiched
+// between two agent-written lines). Honest gaps beat smooth lies.
 function computeEffectiveEdits(lines) {
-  const eff = lines.map(l => l.edit)
-  for (let i = 1; i < eff.length - 1; i++) {
-    if (eff[i] !== null && eff[i] !== undefined) continue
-    // Find the next non-null downstream.
-    let j = i + 1
-    while (j < eff.length && !eff[j]) j++
-    if (j >= eff.length) break
-    const prev = eff[i - 1]
-    const next = eff[j]
-    // Bridge only same-session, and only if the gap is a single line
-    // (j == i + 1). Multi-line gaps likely reflect real human edits.
-    if (prev && next && editKey(prev) === editKey(next) && j === i + 1) {
-      eff[i] = { ...prev, __bridged: true }
-    }
-  }
-  return eff
+  return lines.map(l => l.edit)
 }
 
 // Group consecutive same-session lines into runs. A run is
