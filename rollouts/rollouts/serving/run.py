@@ -1099,9 +1099,30 @@ async def _run_scenario(
         else:
             raise AssertionError(f"Unhandled workload variant: {type(workload)!r}")
 
-    async with trio.open_nursery() as nursery:
-        for workload in scenario.workloads:
-            nursery.start_soon(_run_named_workload, workload)
+    # Drain-aware nursery: if the supervisor sends SIGINT/SIGTERM to this
+    # child process (duration elapsed, operator stop, etc), Python raises
+    # KeyboardInterrupt which trio repackages as BaseExceptionGroup. We
+    # catch that and treat it as "the scenario was asked to stop" rather
+    # than "the scenario crashed" — per-workload reports that finished
+    # still count, scenario_report is still written, exit code is 0.
+    scenario_drained = False
+    try:
+        async with trio.open_nursery() as nursery:
+            for workload in scenario.workloads:
+                nursery.start_soon(_run_named_workload, workload)
+    except BaseExceptionGroup as eg:  # noqa: F821,UP041 — stdlib class, present 3.11+
+        # Pull out just the "user/supervisor asked us to stop" causes; any
+        # other exception type means something really went wrong and we
+        # should let it propagate so the caller sees a failure.
+        interrupts = eg.split(KeyboardInterrupt)[0]
+        cancels = eg.split(trio.Cancelled)[0]
+        non_stop = eg.split(lambda exc: not isinstance(exc, (KeyboardInterrupt, trio.Cancelled)))[0]
+        if non_stop is not None:
+            raise non_stop from eg
+        if interrupts is not None or cancels is not None:
+            scenario_drained = True
+        else:
+            raise
 
     failed_workloads = {
         name: result for name, result in results.items() if result.get("status") == "failed"
@@ -1115,6 +1136,7 @@ async def _run_scenario(
         "total_samples": sum(int(result["total_samples"]) for result in results.values()),
         "completed_workloads": len(results),
         "failed_workloads": len(failed_workloads),
+        "status": "drained" if scenario_drained else "completed",
     }
     if scenario.output.save_report:
         (output_dir / "scenario_report.json").write_text(json.dumps(scenario_report, indent=2))
@@ -1212,6 +1234,13 @@ def main() -> int:
 
     try:
         scenario_report = trio_asyncio.run(_run_scenario, config_path, scenario, output_dir)
+    except KeyboardInterrupt:
+        # Supervisor asked us to stop before we even started the nursery
+        # (or between workloads exiting and reporting). Treat as drained.
+        # In practice _run_scenario now catches cancellation internally, so
+        # this branch is a belt-and-suspenders guard.
+        logger.info("Serving scenario interrupted before completion")
+        return 0
     except Exception as exc:
         logger.exception("Serving scenario failed: %s", exc)
         return 1
