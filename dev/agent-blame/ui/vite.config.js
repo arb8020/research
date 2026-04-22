@@ -9,7 +9,7 @@ import tailwindcss from '@tailwindcss/vite'
 // API_PORT env var can override the backend port; the launcher threads
 // this through so the two processes always agree.
 
-const apiPort = process.env.API_PORT || '7979'
+const apiPort = process.env.API_PORT || '7981'
 
 export default defineConfig({
   plugins: [react(), tailwindcss()],
