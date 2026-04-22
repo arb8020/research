@@ -18,16 +18,36 @@ one-liners) are deliberately not parsed in v0 — they'd need a separate
 
 ```bash
 cd /Users/chiraagbalu/research/dev/agent-blame
+
+# CLI — coverage + top sessions
 /Users/chiraagbalu/research/.venv/bin/python -m agent_blame.cli /path/to/repo
 
-# Attribute against a specific git ref/SHA instead of the working tree
-... --sha HEAD~50
-... --sha main
-... --sha abc1234
+# CLI against a specific SHA
+... --sha HEAD~50  |  --sha main  |  --sha abc1234
 
-# Show per-line runs for a specific file
+# Per-file run breakdown
 ... --sample-file path/to/file.py
 ```
+
+### Web UI (divergent fork of pr-bot)
+
+```bash
+# Terminal 1 — API server (picks up /api/repo, /api/files, /api/blame, /api/chat, /api/session)
+cd /Users/chiraagbalu/research/dev/agent-blame
+/Users/chiraagbalu/research/.venv/bin/python server.py /path/to/repo
+# optionally: --sha <ref>  --port <n>
+
+# Terminal 2 — Vite dev server
+cd /Users/chiraagbalu/research/dev/agent-blame/ui
+npm install   # first time
+npm run dev -- --host 127.0.0.1
+# open http://127.0.0.1:5173/
+```
+
+The UI is forked from `~/research/dev/pr-bot/ui/`. Shared substrate: Shiki
+singleton + Devin-derived CSS tokens + three-column layout. Divergent bits
+are called out inline with breadcrumbs. Expected to consolidate into a
+shared `codeview` package once the two tools' divergence stabilizes.
 
 Expects:
 - Claude Code transcripts at `~/.claude/projects/<encoded-cwd>/<uuid>.jsonl`
