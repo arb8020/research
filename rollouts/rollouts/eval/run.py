@@ -472,6 +472,15 @@ Examples:
         raise _EvalInterrupted
 
     signal.signal(signal.SIGINT, _handle_sigint)
+    # Bind a span sink for this eval process. spans.jsonl lives at the run's
+    # output_dir root so the serving supervisor (in a sibling process) can
+    # append to the same file — POSIX atomic-append keeps them from
+    # interleaving. We don't use set_sink's token here because the process
+    # exits right after; the sink.close() in the finally flushes cleanly.
+    from .._observability import SpanSink, set_sink
+
+    span_sink = SpanSink(output_config.output_dir / "spans.jsonl")
+    set_sink(span_sink)
     try:
         results = trio_asyncio.run(_run)
     except _EvalInterrupted:
@@ -482,6 +491,7 @@ Examples:
         return 1
     finally:
         signal.signal(signal.SIGINT, original_sigint_handler)
+        span_sink.close()
 
     # Print results
     print("\n" + "=" * 60)

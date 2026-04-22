@@ -8,6 +8,7 @@ import os
 import sys
 from dataclasses import asdict, replace
 from datetime import datetime
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -1004,6 +1005,18 @@ def _scenario_manifest(
     }
 
 
+def _engine_metrics_interval_s(scenario: ServingScenario) -> float:
+    """Choose a scrape cadence at the serving-run boundary.
+
+    Short finite runs benefit from denser scrapes for trend inspection.
+    Long soaks keep the poller's 5s default so telemetry volume does not
+    silently triple.
+    """
+    if scenario.duration is None:
+        return 2.0
+    return 5.0 if scenario.duration.total_seconds() >= 3600.0 else 2.0
+
+
 async def _run_scenario(
     config_path: Path,
     scenario: ServingScenario,
@@ -1027,6 +1040,10 @@ async def _run_scenario(
         (output_dir / "scenario_manifest.json").write_text(json.dumps(manifest, indent=2))
 
     results: dict[str, dict[str, Any]] = {}
+    scenario_base_url = getattr(endpoint_config, "base_url", None)
+    if scenario_base_url is None:
+        scenario_base_url = endpoint_config.get_base_url()
+    assert isinstance(scenario_base_url, str) and scenario_base_url
 
     async def _run_eval_servng_workload(workload: EvalServingWorkload) -> None:
         workload_output_dir = workload_dirs[workload.name]
@@ -1060,11 +1077,10 @@ async def _run_scenario(
     ) -> None:
         workload_output_dir = workload_dirs[workload.name]
         workload_output_dir.mkdir(parents=True, exist_ok=True)
-        endpoint = materialize_endpoint(endpoint_config)
         try:
             result = await run_tool_call_verifier_workload(
-                base_url=endpoint.base_url,
-                api_key=endpoint.api_key or None,
+                base_url=scenario_base_url,
+                api_key=getattr(endpoint_config, "api_key", None) or None,
                 model=endpoint_config.model,
                 corpus_path=workload.corpus_path,
                 max_samples=workload.max_samples,
@@ -1092,16 +1108,102 @@ async def _run_scenario(
             }
 
     async def _run_named_workload(workload: ServingWorkload) -> None:
-        if isinstance(workload, EvalServingWorkload):
-            await _run_eval_servng_workload(workload)
-        elif isinstance(workload, ToolCallVerifierWorkload):
-            await _run_tool_call_verifier_serving_workload(workload)
-        else:
-            raise AssertionError(f"Unhandled workload variant: {type(workload)!r}")
+        # TODO(workload-shape): ToolCallVerifierWorkload dispatches into its
+        # own runner (serving/tool_call_verifier/runner.py) that bypasses
+        # the agent loop entirely to get raw-response access for K2VV
+        # fidelity. That's why its span tree under the workload row looks
+        # different from EvalServingWorkload's (no sample_attempt /
+        # agent_step layers — spans go straight from workload -> llm_call).
+        # This is a smell: the "workload" concept forks into two code paths
+        # that agree only at the outer boundary. Before adding a third
+        # conformance-style workload (schema probes, structured-output
+        # probes, etc), factor out the shared "iterate rows, send, classify,
+        # emit" shape so all workloads land in the same span hierarchy and
+        # reports have the same structure. See the matching TODO in
+        # serving/tool_call_verifier/runner.py docstring.
+        from .._observability import start_span
 
-    async with trio.open_nursery() as nursery:
-        for workload in scenario.workloads:
-            nursery.start_soon(_run_named_workload, workload)
+        async with start_span(
+            "workload",
+            attributes={
+                "workload.name": workload.name,
+                "workload.kind": "eval"
+                if isinstance(workload, EvalServingWorkload)
+                else "tool_call_verifier",
+                "workload.concurrency": workload.concurrency,
+                "workload.max_samples": workload.max_samples,
+            },
+        ):
+            if isinstance(workload, EvalServingWorkload):
+                await _run_eval_servng_workload(workload)
+            elif isinstance(workload, ToolCallVerifierWorkload):
+                await _run_tool_call_verifier_serving_workload(workload)
+            else:
+                raise AssertionError(f"Unhandled workload variant: {type(workload)!r}")
+
+    async def _run_all_workloads(parent_nursery: trio.Nursery) -> None:
+        try:
+            async with trio.open_nursery() as workload_nursery:
+                for workload in scenario.workloads:
+                    workload_nursery.start_soon(_run_named_workload, workload)
+        finally:
+            parent_nursery.cancel_scope.cancel()
+
+    # Drain-aware nursery: if the supervisor sends SIGINT/SIGTERM to this
+    # child process (duration elapsed, operator stop, etc), Python raises
+    # KeyboardInterrupt which trio repackages as BaseExceptionGroup. We
+    # catch that and treat it as "the scenario was asked to stop" rather
+    # than "the scenario crashed" — per-workload reports that finished
+    # still count, scenario_report is still written, exit code is 0.
+    scenario_drained = False
+    from .._observability import new_trace_id, start_span
+
+    # serving_run span: one root per ServingRun. Trace id is minted here and
+    # inherited by every workload span. Each sample_attempt nested inside a
+    # workload will still get its own trace_id (samples are independent units
+    # of work); serving_run and workload spans are cross-trace anchors.
+    async with start_span(
+        "serving_run",
+        trace_id=new_trace_id(),
+        attributes={
+            "serving_run.experiment_name": scenario.output.experiment_name,
+            "serving_run.workload_count": len(scenario.workloads),
+        },
+    ):
+        try:
+            from .._observability.engine_metrics import poll_engine_metrics
+
+            async with trio.open_nursery() as nursery:
+                if endpoint_config.provider == "sglang":
+                    nursery.start_soon(
+                        partial(
+                            poll_engine_metrics,
+                            base_url=scenario_base_url,
+                            output_path=output_dir / "engine_metrics.jsonl",
+                            interval_s=_engine_metrics_interval_s(scenario),
+                            cancel_scope=nursery.cancel_scope,
+                        )
+                    )
+                nursery.start_soon(_run_all_workloads, nursery)
+        except BaseExceptionGroup as eg:  # noqa: F821,UP041 — stdlib class, present 3.11+
+            # Walk the nested ExceptionGroup leaves. If every leaf is a
+            # KeyboardInterrupt or trio.Cancelled, this was a shutdown request
+            # (duration watchdog → supervisor → SIGINT → Python KeyboardInterrupt
+            # in child → trio Cancel). Otherwise it's a real failure.
+            def _leaves(exc: BaseException) -> list[BaseException]:
+                if isinstance(exc, BaseExceptionGroup):  # noqa: F821 — stdlib 3.11+
+                    out: list[BaseException] = []
+                    for sub in exc.exceptions:
+                        out.extend(_leaves(sub))
+                    return out
+                return [exc]
+
+            stop_types = (KeyboardInterrupt, trio.Cancelled)
+            all_leaves = _leaves(eg)
+            if all_leaves and all(isinstance(leaf, stop_types) for leaf in all_leaves):
+                scenario_drained = True
+            else:
+                raise
 
     failed_workloads = {
         name: result for name, result in results.items() if result.get("status") == "failed"
@@ -1115,6 +1217,7 @@ async def _run_scenario(
         "total_samples": sum(int(result["total_samples"]) for result in results.values()),
         "completed_workloads": len(results),
         "failed_workloads": len(failed_workloads),
+        "status": "drained" if scenario_drained else "completed",
     }
     if scenario.output.save_report:
         (output_dir / "scenario_report.json").write_text(json.dumps(scenario_report, indent=2))
@@ -1210,11 +1313,28 @@ def main() -> int:
     print(f"Workloads: {', '.join(workload.name for workload in scenario.workloads)}")
     print(f"Output dir: {output_dir}")
 
+    # Bind a span sink for this serving-child process. spans.jsonl is shared
+    # with the parent serving supervisor (see parent process binding). POSIX
+    # atomic-append on writes under 16KB keeps the two writers from
+    # interleaving.
+    from .._observability import SpanSink, set_sink
+
+    span_sink = SpanSink(output_dir / "spans.jsonl")
+    set_sink(span_sink)
     try:
         scenario_report = trio_asyncio.run(_run_scenario, config_path, scenario, output_dir)
+    except KeyboardInterrupt:
+        # Supervisor asked us to stop before we even started the nursery
+        # (or between workloads exiting and reporting). Treat as drained.
+        # In practice _run_scenario now catches cancellation internally, so
+        # this branch is a belt-and-suspenders guard.
+        logger.info("Serving scenario interrupted before completion")
+        return 0
     except Exception as exc:
         logger.exception("Serving scenario failed: %s", exc)
         return 1
+    finally:
+        span_sink.close()
 
     print("\n" + "=" * 60)
     print("RESULTS")

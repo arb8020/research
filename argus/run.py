@@ -268,6 +268,7 @@ from rollouts.remote_runtime import (
     SourceSyncPolicy,
     enforce_source_sync_policy,
     materialization_plan_from_runtime,
+    resolve_consumer_project,
     runtime_contract_from_hardware,
 )
 from rollouts.training.configs import HardwareConfig, WorkerTopologyConfig
@@ -1973,9 +1974,16 @@ Examples:
 
     config_path = Path(args.config)
     if not config_path.is_absolute():
+        # Honor CWD first (works for any consumer, including courier from its
+        # own checkout). Fall back to historical REPO_ROOT-relative paths for
+        # callers that still assume `--config rollouts/examples/...` works
+        # from `~/research/`.
+        cwd_relative = (Path.cwd() / config_path).resolve()
         repo_relative = REPO_ROOT / config_path
         workspace_relative = REPO_ROOT.parent / config_path
-        if repo_relative.exists():
+        if cwd_relative.exists():
+            config_path = cwd_relative
+        elif repo_relative.exists():
             config_path = repo_relative
         else:
             config_path = workspace_relative
@@ -2132,7 +2140,7 @@ Examples:
         local_workload_plan = build_local_workload_plan(
             config_module=config_module,
             config_path=config_path,
-            repo_root=REPO_ROOT,
+            consumer_project_root=Path(resolve_consumer_project(config_path).local_root),
             max_samples=args.max_samples,
             force_deploy_committed=args.force_deploy_committed,
             python_executable=sys.executable,

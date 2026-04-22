@@ -17,9 +17,12 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal, TextIO
+from typing import TYPE_CHECKING, Literal, TextIO
 
 from .training.configs import DepsConfig, HardwareConfig
+
+if TYPE_CHECKING:
+    from bifrost import PythonProjectMaterialization
 
 
 @dataclass(frozen=True)
@@ -147,3 +150,77 @@ def enforce_source_sync_policy(
         raise SystemExit(1)
 
     print("\nProceeding with committed-only source sync.\n", file=stream)
+
+
+def resolve_consumer_project(config_path: Path) -> PythonProjectMaterialization:
+    """Resolve the consumer project that owns this config file.
+
+    The consumer project is the Python project that *depends on* rollouts/argus
+    (i.e. the top-level project the user is working in), not rollouts itself.
+
+    Discovery walks up from the config file:
+      1. Keep climbing past any pyproject whose directory is declared as a
+         ``[tool.uv.workspace].members`` entry in a parent pyproject. The
+         parent is the workspace root and owns results / deploy semantics.
+      2. Stop at the first pyproject that is itself a workspace root
+         (``[tool.uv.workspace]`` present) or a non-member project.
+      3. Fall back to the nearest ``.git`` dir, then to the config file's
+         parent, if no pyproject was found.
+
+    Rationale: in the research monorepo the nearest pyproject to an example
+    config is ``rollouts/pyproject.toml`` (rollouts is a workspace member).
+    The "consumer project" we actually want is ``~/research/`` — the
+    workspace root. In courier, the nearest pyproject is courier's own and
+    rollouts lives under ``third_party/research_deps/``, so the first hit is
+    already correct.
+
+    Returned as a ``bifrost.PythonProjectMaterialization`` so it can be
+    handed directly to bifrost materialize specs. Callers that just want the
+    path can read ``.local_root``.
+    """
+    import tomllib
+
+    from bifrost import PythonProjectMaterialization
+
+    resolved = config_path.expanduser().resolve()
+
+    def _parse(path: Path) -> dict | None:
+        try:
+            with path.open("rb") as f:
+                return tomllib.load(f)
+        except Exception:
+            return None
+
+    def _is_workspace_root(data: dict) -> bool:
+        return "workspace" in data.get("tool", {}).get("uv", {})
+
+    def _workspace_members(data: dict) -> tuple[str, ...]:
+        members = data.get("tool", {}).get("uv", {}).get("workspace", {}).get("members", [])
+        return tuple(str(m) for m in members)
+
+    # Walk up from the config file, collecting pyproject.toml locations.
+    candidates = [resolved.parent, *resolved.parents]
+    pyproject_hits: list[Path] = [c for c in candidates if (c / "pyproject.toml").exists()]
+
+    # Look for a workspace root that declares one of the hits as a member.
+    for hit_idx, hit in enumerate(pyproject_hits):
+        # Check parents for a workspace that lists `hit` as a member.
+        for parent in pyproject_hits[hit_idx + 1 :]:
+            parent_data = _parse(parent / "pyproject.toml")
+            if parent_data is None:
+                continue
+            if not _is_workspace_root(parent_data):
+                continue
+            members = _workspace_members(parent_data)
+            for member in members:
+                member_path = (parent / member).resolve()
+                if member_path == hit.resolve():
+                    return PythonProjectMaterialization(local_root=str(parent))
+        # No workspace parent declared `hit` as a member -> `hit` wins.
+        return PythonProjectMaterialization(local_root=str(hit))
+
+    # No pyproject found; fall back to .git then to config parent.
+    for c in candidates:
+        if (c / ".git").exists():
+            return PythonProjectMaterialization(local_root=str(c))
+    return PythonProjectMaterialization(local_root=str(resolved.parent))

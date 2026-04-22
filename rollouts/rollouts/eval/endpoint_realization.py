@@ -224,8 +224,38 @@ def _ssh_workspace_python(workspace_root: Path) -> str:
     return str(workspace_root / ".venv" / "bin" / "python")
 
 
-def _remote_project_root(workspace_root: Path) -> Path:
-    return workspace_root / "rollouts"
+async def _remote_endpoint_is_healthy(
+    *,
+    ssh_target: str,
+    ssh_key_path: str,
+    port: int,
+    readiness_path: str,
+) -> bool:
+    """Check over SSH whether something is already serving on the remote port.
+
+    Opens a short-lived port-forward and hits the readiness path. Returns True
+    on 2xx, False on any other outcome (no server, timeout, non-2xx). We do
+    NOT inspect response body — caller is responsible for verifying the
+    endpoint's launch identity if that matters (see reuse_running_endpoint
+    docstring and the endpoint-fingerprint TODO).
+    """
+    import httpx
+
+    try:
+        async with _forward_ssh_port(
+            ssh_target=ssh_target,
+            ssh_key_path=ssh_key_path,
+            remote_port=port,
+        ) as local_port:
+            url = f"http://127.0.0.1:{local_port}{readiness_path}"
+            try:
+                async with httpx.AsyncClient(timeout=3.0) as client:
+                    resp = await client.get(url)
+                    return 200 <= resp.status_code < 300
+            except Exception:
+                return False
+    except Exception:
+        return False
 
 
 def _ssh_workspace_bootstrap_commands(
@@ -948,8 +978,11 @@ async def _realize_ssh_endpoint(
     run_name: str,
     force_deploy_committed: bool = False,
     run_logger: Any | None,
+    consumer_project_root: Path | None = None,
+    reuse_running_endpoint: bool = False,
+    leave_endpoint_running: bool = False,
 ) -> Any:
-    from bifrost import AsyncBifrostClient
+    from bifrost import AsyncBifrostClient, PythonProjectMaterialization
     from bifrost.types import ProcessSpec, ReadinessProbe, ServiceSpec, WorkspaceMaterializationSpec
 
     assert hardware_config.ssh is not None, "ssh provider requires hardware_config.ssh"
@@ -957,10 +990,73 @@ async def _realize_ssh_endpoint(
         "ssh provider requires hardware_config.ssh_key_path"
     )
 
+    # Fast-path: if the caller opted in to endpoint reuse and there's already
+    # a healthy endpoint at the expected port on the remote, skip bifrost
+    # bootstrap + docker launch and just tunnel to it. Saves ~10min of
+    # sglang warmup on iteration runs. Only honors OwnedEndpoint reuse —
+    # EndpointConfig variants don't know the exact port/launch shape.
+    if reuse_running_endpoint and isinstance(endpoint_config, OwnedEndpoint):
+        if await _remote_endpoint_is_healthy(
+            ssh_target=hardware_config.ssh,
+            ssh_key_path=hardware_config.ssh_key_path,
+            port=endpoint_config.port,
+            readiness_path=endpoint_config.readiness_path or "/health",
+        ):
+            if run_logger is not None:
+                emit_run_event(
+                    run_logger,
+                    "inference_endpoint_reused",
+                    ssh_target=hardware_config.ssh,
+                    port=endpoint_config.port,
+                    model=endpoint_config.model,
+                )
+            async with _forward_ssh_port(
+                ssh_target=hardware_config.ssh,
+                ssh_key_path=hardware_config.ssh_key_path,
+                remote_port=endpoint_config.port,
+            ) as local_port:
+                base_url = f"http://127.0.0.1:{local_port}/v1"
+                yield RealizedEvalEndpoint(
+                    endpoint_config=_externalize_owned_endpoint(endpoint_config, base_url),
+                    metadata={
+                        "provider": "ssh",
+                        "ssh_target": hardware_config.ssh,
+                        "remote_port": endpoint_config.port,
+                        "local_port": local_port,
+                        "reused": True,
+                    },
+                )
+            return
+        if run_logger is not None:
+            emit_run_event(
+                run_logger,
+                "inference_endpoint_reuse_unavailable",
+                ssh_target=hardware_config.ssh,
+                port=endpoint_config.port,
+                note="no healthy endpoint at expected port; falling back to fresh boot",
+            )
+
     service = None
     startup_context: dict[str, Any] | None = None
     remote_output_dir: Path | None = None
     engine_log_sink = JsonlEventSink(output_dir / "engine.jsonl")
+
+    extra_python_projects: tuple[PythonProjectMaterialization, ...] = ()
+    if consumer_project_root is not None:
+        primary_workspace_root = REPO_ROOT.parent.resolve()
+        resolved_consumer = consumer_project_root.expanduser().resolve()
+        # Only include the consumer project as an "extra" if it lives outside
+        # the primary workspace. Inside the monorepo, the primary bundle
+        # already contains it.
+        try:
+            resolved_consumer.relative_to(primary_workspace_root)
+        except ValueError:
+            extra_python_projects = (
+                PythonProjectMaterialization(
+                    local_root=str(resolved_consumer),
+                    primary_workspace_local_root=str(primary_workspace_root),
+                ),
+            )
 
     async with AsyncBifrostClient(
         hardware_config.ssh,
@@ -971,6 +1067,7 @@ async def _realize_ssh_endpoint(
                 requested_root="~/.bifrost/workspaces/rollouts-eval",
                 bootstrap_commands=(),
                 allow_dirty=force_deploy_committed,
+                extra_python_projects=extra_python_projects,
             )
         )
         remote_output_dir = Path(workspace.root) / "results" / "eval" / run_name
@@ -1001,7 +1098,7 @@ async def _realize_ssh_endpoint(
                 process=ProcessSpec(
                     command="bash",
                     args=("-lc", launch_cmd),
-                    cwd=str(_remote_project_root(Path(workspace.root))),
+                    cwd=str(workspace.root),
                 ),
                 port=worker.inference.port,
                 readiness_probe=ReadinessProbe(kind="http", target=readiness_target),
@@ -1063,7 +1160,20 @@ async def _realize_ssh_endpoint(
                 )
         finally:
             if service is not None:
-                await service.stop()
+                if leave_endpoint_running:
+                    if run_logger is not None:
+                        emit_run_event(
+                            run_logger,
+                            "inference_endpoint_leave_running",
+                            ssh_target=hardware_config.ssh,
+                            port=worker.inference.port,
+                            note=(
+                                "service left running per leave_endpoint_running=True; "
+                                "user is responsible for cleanup"
+                            ),
+                        )
+                else:
+                    await service.stop()
 
 
 @asynccontextmanager
@@ -1076,6 +1186,7 @@ async def _realize_modal_endpoint(
     run_name: str,
     force_deploy_committed: bool,
     run_logger: Any | None,
+    consumer_project_root: Path | None = None,
 ) -> Any:
     import modal
     import trio_asyncio
@@ -1094,6 +1205,16 @@ async def _realize_modal_endpoint(
 
     runtime = runtime_contract_from_hardware(hardware_config)
     engine_log_sink = JsonlEventSink(output_dir / "engine.jsonl")
+
+    extra_source_roots: tuple[str, ...] = ()
+    if consumer_project_root is not None:
+        primary_workspace_root = REPO_ROOT.parent.resolve()
+        resolved_consumer = consumer_project_root.expanduser().resolve()
+        try:
+            resolved_consumer.relative_to(primary_workspace_root)
+        except ValueError:
+            extra_source_roots = (str(resolved_consumer),)
+
     request = ModalExecutionRequest(
         config_path="eval-worker-endpoint",
         runtime=runtime,
@@ -1116,6 +1237,7 @@ async def _realize_modal_endpoint(
         },
         run_logger=run_logger,
         encrypted_ports=(worker.inference.port,),
+        extra_source_roots=extra_source_roots,
     )
 
     def emit_modal_event(event: str, **data: Any) -> None:
@@ -1132,7 +1254,11 @@ async def _realize_modal_endpoint(
         async with trio_asyncio.open_loop():
             baseline_sandbox_ids = await _list_modal_sandbox_ids()
             sandbox_handle = await create_modal_sandbox(request)
-            session = ModalExecutionSession(sandbox_handle=sandbox_handle, local_root=REPO_ROOT)
+            session = ModalExecutionSession(
+                sandbox_handle=sandbox_handle,
+                local_root=REPO_ROOT,
+                extra_source_roots=tuple(Path(root) for root in request.extra_source_roots),
+            )
             service = None
             startup_context: dict[str, Any] | None = None
             try:
@@ -1172,7 +1298,7 @@ async def _realize_modal_endpoint(
                         process=ProcessSpec(
                             command="bash",
                             args=("-lc", launch_cmd),
-                            cwd=str(_remote_project_root(Path(workspace.root))),
+                            cwd=str(workspace.root),
                         ),
                         port=worker.inference.port,
                         readiness_probe=ReadinessProbe(kind="http", target=readiness_target),
@@ -1260,7 +1386,14 @@ async def realize_worker_backed_endpoint(
     run_name: str = "eval-endpoint",
     force_deploy_committed: bool = False,
     run_logger: Any | None = None,
+    consumer_project_root: Path | None = None,
+    reuse_running_endpoint: bool = False,
+    leave_endpoint_running: bool = False,
 ) -> Any:
+    # TODO(serving): This path realizes a single worker-backed endpoint, but the
+    # serving use case also needs a place to realize scaling behavior, endpoint
+    # exposure, and provider-managed lifecycle when one logical endpoint is backed
+    # by more than one replica.
     if isinstance(endpoint_config, ExternalEndpoint):
         yield RealizedEvalEndpoint(endpoint_config=endpoint_config)
         return
@@ -1299,6 +1432,7 @@ async def realize_worker_backed_endpoint(
             run_name=run_name,
             force_deploy_committed=force_deploy_committed,
             run_logger=run_logger,
+            consumer_project_root=consumer_project_root,
         ) as realized:
             yield realized
         return
@@ -1311,6 +1445,9 @@ async def realize_worker_backed_endpoint(
             run_name=run_name,
             force_deploy_committed=force_deploy_committed,
             run_logger=run_logger,
+            consumer_project_root=consumer_project_root,
+            reuse_running_endpoint=reuse_running_endpoint,
+            leave_endpoint_running=leave_endpoint_running,
         ) as realized:
             yield realized
         return

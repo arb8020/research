@@ -12,6 +12,8 @@ from rollouts.dtypes import (
     Logprobs,
     Message,
     StopReason,
+    StreamChunk,
+    ToolCallError,
     Trajectory,
     Usage,
 )
@@ -400,6 +402,104 @@ async def test_evaluate_sample_preserves_llm_runtime_metrics() -> None:
     assert llm_metrics[0]["model"] == "test-model"
 
 
+@pytest.mark.trio
+async def test_evaluate_sample_tracks_tool_call_failures(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    emitted_events: list[tuple[str, dict[str, object]]] = []
+
+    def _capture_eval_event(event: str, **data: object) -> None:
+        emitted_events.append((event, data))
+
+    monkeypatch.setattr("rollouts.eval.native._emit_eval_event", _capture_eval_event)
+
+    final_trajectory = Trajectory(messages=[Message(role="assistant", content="done")])
+    final_state = AgentState(
+        actor=Actor(trajectory=final_trajectory, endpoint=None, tools=[]),
+        environment=None,
+    )
+
+    async def _fake_run_agent_with_error_handling(
+        initial_state: AgentState,
+        run_config: object,
+        sample_id: str,
+    ) -> _AgentRunResult:
+        del sample_id
+        await run_config.on_chunk(  # type: ignore[attr-defined]
+            StreamChunk("turn_start", {"turn": 0})
+        )
+        await run_config.on_chunk(  # type: ignore[attr-defined]
+            ToolCallError(
+                content_index=0,
+                tool_call_id="tc-1",
+                tool_name="write_file",
+                error="Invalid JSON arguments: missing }",
+                raw_arguments='{"path": "/tmp/x"',
+            )
+        )
+        await run_config.on_chunk(  # type: ignore[attr-defined]
+            StreamChunk(
+                "tool_call_dispatch",
+                {
+                    "turn": 0,
+                    "tool_call_id": "tc-1",
+                    "tool_name": "write_file",
+                    "action": "parse_error",
+                    "error": "Invalid JSON arguments: missing }",
+                },
+            )
+        )
+        await run_config.on_chunk(  # type: ignore[attr-defined]
+            StreamChunk(
+                "tool_call_dispatch",
+                {
+                    "turn": 0,
+                    "tool_call_id": "tc-2",
+                    "tool_name": "write_file",
+                    "action": "schema_error",
+                    "error": "Arguments failed schema validation: 'content' is a required property",
+                },
+            )
+        )
+        return _AgentRunResult(
+            states=[initial_state, replace(final_state, turn_idx=1)],
+            final_trajectory=final_trajectory,
+        )
+
+    monkeypatch.setattr(
+        "rollouts.eval.native._run_agent_with_error_handling",
+        _fake_run_agent_with_error_handling,
+    )
+
+    config = EvalConfig(
+        endpoint=None,
+        prepare_messages=lambda _: [Message(role="user", content="hi")],
+        scorer=FunctionScorer(lambda _sample, _context: Score(metrics=())),
+        verbose=False,
+        show_progress=False,
+    )
+    runtime = EvalRuntime(config=config)
+
+    result = await evaluate_sample(
+        sample_data={"prompt": "hello"},
+        sample_id="sample_0000",
+        runtime=runtime,
+    )
+
+    assert result.metadata["tool_call_error_count"] == 1
+    assert result.metadata["tool_dispatch_count"] == 2
+    assert result.metadata["tool_call_parse_error_count"] == 1
+    assert result.metadata["tool_call_schema_error_count"] == 1
+    assert result.metadata["tool_call_execute_count"] == 0
+    assert result.metadata["tool_call_error_metrics"][0]["tool_name"] == "write_file"
+    assert result.metadata["tool_dispatch_metrics"][1]["action"] == "schema_error"
+    assert any(event == "tool_call_error" for event, _ in emitted_events)
+    assert any(
+        event == "tool_call_dispatch" and data.get("action") == "schema_error"
+        for event, data in emitted_events
+    )
+
+
 def test_compute_summary_metrics_includes_llm_runtime_telemetry() -> None:
     first = RowAttempt(
         attempt_id="sample-1",
@@ -418,6 +518,8 @@ def test_compute_summary_metrics_includes_llm_runtime_telemetry() -> None:
                     "status": "success",
                 }
             ],
+            "tool_call_error_metrics": [],
+            "tool_dispatch_metrics": [],
             "tool_execution_metrics": [],
         },
     )
@@ -439,6 +541,25 @@ def test_compute_summary_metrics_includes_llm_runtime_telemetry() -> None:
                     "status": "error",
                 }
             ],
+            "tool_call_error_metrics": [
+                {
+                    "tool_call_id": "tc-1",
+                    "tool_name": "write_file",
+                    "error": "Invalid JSON arguments",
+                }
+            ],
+            "tool_dispatch_metrics": [
+                {
+                    "tool_call_id": "tc-1",
+                    "tool_name": "write_file",
+                    "action": "parse_error",
+                },
+                {
+                    "tool_call_id": "tc-2",
+                    "tool_name": "write_file",
+                    "action": "schema_error",
+                },
+            ],
             "tool_execution_metrics": [
                 {
                     "duration_ms": 55.0,
@@ -458,6 +579,10 @@ def test_compute_summary_metrics_includes_llm_runtime_telemetry() -> None:
     assert summary["llm_ttft_ms_p50"] == 60.0
     assert summary["sample_duration_seconds_mean"] == 3.0
     assert summary["tool_execution_count_total"] == 1
+    assert summary["tool_call_error_count_total"] == 1
+    assert summary["tool_call_dispatch_total"] == 2
+    assert summary["tool_call_parse_error_total"] == 1
+    assert summary["tool_call_schema_error_total"] == 1
     assert summary["llm_tpot_ms_p50"] == 22.0
     assert summary["llm_itl_ms_p50"] == 22.0
 

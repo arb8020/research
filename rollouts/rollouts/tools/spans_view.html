@@ -1,0 +1,2041 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>spans_view — rollouts span tree</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+  /* ------------------------------------------------------------
+     spans_view — self-contained renderer for rollouts spans.jsonl
+
+     Aesthetic: scientific instrument. Dark oscilloscope background,
+     amber phosphor for data, dim rule for structure. Monospace only.
+     Nothing moves unless it has to.
+
+     Layer 1: drop a spans.jsonl → tree renders, collapsed to the
+              first two levels. Durations visible on every row.
+     Layer 2: search box filters the tree by name / workload / model
+              / trace_id. ESC clears.
+     Layer 3: click any row to reveal its full attributes in the
+              right pane. Copy-as-JSON button.
+     ------------------------------------------------------------ */
+
+  @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&display=swap');
+
+  :root {
+    --bg:        #0a0e0a;
+    --bg-alt:    #11161a;
+    --grid:      #1a2025;
+    --fg:        #d3c5a8;    /* warm amber-cream for body text */
+    --fg-dim:    #6b6657;
+    --fg-muted:  #3f3d37;
+    --accent:    #f0b84c;    /* signal amber */
+    --accent-2:  #4fb3a8;    /* secondary teal — used for durations only */
+    --err:       #e06050;
+    --ok:        var(--fg-dim);
+    --rule:      #252a2e;
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body {
+    margin: 0; padding: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font-family: 'JetBrains Mono', ui-monospace, Menlo, monospace;
+    font-size: 13px;
+    line-height: 1.55;
+    height: 100%;
+    overflow: hidden;
+  }
+
+  /* Subtle horizontal grid lines to evoke oscilloscope graticule.
+     Scrolls with the body so it doesn't feel like a static wallpaper. */
+  body::before {
+    content: '';
+    position: fixed; inset: 0;
+    background-image: linear-gradient(to bottom, transparent 0, transparent 31px, var(--grid) 32px);
+    background-size: 100% 32px;
+    opacity: 0.35;
+    pointer-events: none;
+    z-index: 0;
+  }
+
+  .app {
+    position: relative;
+    z-index: 1;
+    display: grid;
+    grid-template-columns: 1fr 380px;
+    grid-template-rows: auto 1fr;
+    height: 100vh;
+  }
+
+  header {
+    grid-column: 1 / -1;
+    padding: 14px 22px;
+    border-bottom: 1px solid var(--rule);
+    display: flex;
+    align-items: center;
+    gap: 22px;
+    background: rgba(10,14,10,0.92);
+  }
+
+  .brand {
+    font-weight: 700;
+    font-size: 12px;
+    letter-spacing: 0.18em;
+    color: var(--accent);
+    text-transform: uppercase;
+  }
+  .brand::before {
+    content: '○';
+    margin-right: 8px;
+    color: var(--accent);
+    animation: pulse 2.8s ease-in-out infinite;
+  }
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50%      { opacity: 0.35; }
+  }
+
+  .search {
+    flex: 1;
+    max-width: 520px;
+    position: relative;
+  }
+  .search input {
+    width: 100%;
+    background: var(--bg-alt);
+    border: 1px solid var(--rule);
+    color: var(--fg);
+    font-family: inherit;
+    font-size: 12px;
+    padding: 7px 11px 7px 28px;
+    outline: none;
+  }
+  .search input:focus {
+    border-color: var(--accent);
+  }
+  .search::before {
+    content: '/';
+    position: absolute;
+    left: 11px; top: 50%;
+    transform: translateY(-50%);
+    color: var(--fg-dim);
+    font-weight: 700;
+  }
+
+  .stats {
+    font-size: 11px;
+    color: var(--fg-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+  }
+  .stats span.v { color: var(--fg); font-weight: 500; }
+  .stats span.sep { color: var(--fg-muted); margin: 0 8px; }
+
+  /* ---------- main tree pane ---------- */
+
+  .tree {
+    overflow: auto;
+    padding: 18px 22px 100px;
+    position: relative;
+    grid-column: 1;
+    grid-row: 2;
+  }
+
+  .drop-hint {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    color: var(--fg-dim);
+    text-align: center;
+    gap: 12px;
+    cursor: pointer;
+  }
+  .drop-hint:hover .big { text-shadow: 0 0 12px rgba(240,184,76,0.4); }
+  .drop-hint .big {
+    font-size: 42px;
+    color: var(--accent);
+    letter-spacing: 0.06em;
+    font-weight: 700;
+  }
+  .drop-hint .small {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.22em;
+  }
+  .drop-hint .tiny {
+    font-size: 10px;
+    color: var(--fg-muted);
+    max-width: 34ch;
+    letter-spacing: 0.04em;
+    line-height: 1.7;
+  }
+
+  body.dragover .tree { background: rgba(240,184,76,0.04); }
+  body.dragover .drop-hint .big { color: var(--accent); text-shadow: 0 0 12px rgba(240,184,76,0.5); }
+
+  .row {
+    display: grid;
+    grid-template-columns: auto 1fr auto auto auto;
+    gap: 10px;
+    align-items: baseline;
+    padding: 1px 4px;
+    cursor: pointer;
+    white-space: nowrap;
+    border-left: 2px solid transparent;
+  }
+  .row:hover         { background: rgba(240,184,76,0.05); }
+  .row.selected      { background: rgba(240,184,76,0.10); border-left-color: var(--accent); }
+  .row.filtered      { opacity: 0.25; }
+
+  .row .toggle       { color: var(--fg-muted); width: 12px; display: inline-block; text-align: center; user-select: none; }
+  .row .name         { color: var(--fg); font-weight: 500; }
+  .row .name.err     { color: var(--err); }
+  .row.workload .name,
+  .row.serving_run .name { color: var(--accent); font-weight: 700; letter-spacing: 0.02em; }
+  .row .detail       { color: var(--fg-dim); font-size: 12px; overflow: hidden; text-overflow: ellipsis; }
+  /* Duration heatmap. Color bands track per-span-name percentiles so a
+     long llm_call stands out against other llm_calls, not against agent_steps
+     (which are inherently longer because they wrap llm_calls). Five bands:
+     cool (<p50), normal (<p75, body color), warm (<p90), hot (<p99), crit (>=p99).
+     Small-n span classes stay in body color — see MIN_N_FOR_HEATMAP. */
+  .row .dur          { color: var(--fg); font-variant-numeric: tabular-nums; font-size: 12px; }
+  .row .dur.cool     { color: var(--fg-dim); }
+  .row .dur.warm     { color: var(--accent-2); }
+  .row .dur.hot      { color: var(--accent); }
+  .row .dur.crit     { color: var(--err); }
+  .row .ts           { color: var(--fg-muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+  .row .status-err   { color: var(--err); font-weight: 700; }
+
+  /* indentation via inline style.paddingLeft; the rule below draws
+     a faint left margin ruler so depth is visible at a glance */
+  .tree-body {
+    position: relative;
+  }
+
+  /* ---------- detail pane ---------- */
+
+  .detail-pane {
+    border-left: 1px solid var(--rule);
+    background: var(--bg-alt);
+    overflow: auto;
+    padding: 18px 20px 40px;
+    font-size: 12px;
+    grid-column: 2;
+    grid-row: 2;
+  }
+  .detail-pane h2 {
+    margin: 0 0 4px;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.22em;
+    color: var(--fg-dim);
+    font-weight: 500;
+  }
+  .detail-pane .span-name {
+    font-size: 16px;
+    color: var(--accent);
+    font-weight: 700;
+    margin: 0 0 16px;
+    letter-spacing: 0.01em;
+  }
+  .detail-pane .meta-row {
+    display: grid;
+    grid-template-columns: 120px 1fr;
+    gap: 8px;
+    padding: 3px 0;
+    border-bottom: 1px dotted var(--rule);
+  }
+  .detail-pane .k {
+    color: var(--fg-dim);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+  }
+  .detail-pane .v {
+    color: var(--fg);
+    word-break: break-all;
+    font-variant-numeric: tabular-nums;
+  }
+  .detail-pane .v.err { color: var(--err); }
+  .detail-pane .section {
+    margin-top: 22px;
+  }
+  .detail-pane .section h3 {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.22em;
+    color: var(--fg-dim);
+    margin: 0 0 8px;
+    font-weight: 500;
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+  }
+  .detail-pane .copy-btn {
+    background: transparent;
+    border: 1px solid var(--rule);
+    color: var(--fg-dim);
+    font-family: inherit;
+    font-size: 10px;
+    padding: 3px 8px;
+    cursor: pointer;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+  }
+  .detail-pane .copy-btn:hover { border-color: var(--accent); color: var(--accent); }
+  .detail-pane pre {
+    background: var(--bg);
+    border: 1px solid var(--rule);
+    padding: 10px 12px;
+    font-size: 11px;
+    line-height: 1.55;
+    overflow: auto;
+    max-height: 640px;
+    color: var(--fg);
+    margin: 0;
+    white-space: pre;
+  }
+  /* Pretty-JSON token coloring. The palette stays inside our amber/teal
+     instrument theme — distinct enough to read, not a rainbow. */
+  .detail-pane pre .jkey    { color: var(--accent-2); }          /* object keys in teal */
+  .detail-pane pre .jstr    { color: var(--fg); }                /* strings in body color */
+  .detail-pane pre .jnum    { color: var(--accent); }            /* numbers in amber */
+  .detail-pane pre .jbool   { color: var(--accent); font-weight: 500; }
+  .detail-pane pre .jnull   { color: var(--fg-dim); font-style: italic; }
+  .detail-pane pre .jpunct  { color: var(--fg-muted); }
+  .detail-pane pre .jline   { display: block; padding-left: var(--indent, 0); }
+
+  .detail-pane .empty {
+    color: var(--fg-muted);
+    font-style: italic;
+    padding: 40px 0;
+    text-align: center;
+  }
+
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--rule); }
+  ::-webkit-scrollbar-thumb:hover { background: var(--fg-muted); }
+
+  /* ---------- view toggle ---------- */
+
+  .view-toggle {
+    display: flex;
+    align-items: center;
+    gap: 0;
+    border: 1px solid var(--rule);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+  }
+  .view-toggle button {
+    background: transparent;
+    border: none;
+    color: var(--fg-dim);
+    font-family: inherit;
+    font-size: 11px;
+    padding: 5px 12px;
+    cursor: pointer;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    line-height: 1;
+  }
+  .view-toggle button:not(:last-child) {
+    border-right: 1px solid var(--rule);
+  }
+  .view-toggle button.active {
+    color: var(--accent);
+    background: rgba(240,184,76,0.08);
+  }
+  .view-toggle button:hover:not(.active) {
+    color: var(--fg);
+  }
+
+  .group-toggle {
+    display: none;
+    align-items: center;
+    gap: 0;
+    border: 1px solid var(--rule);
+  }
+  .group-toggle.visible { display: flex; }
+  .group-toggle button {
+    background: transparent;
+    border: none;
+    color: var(--fg-dim);
+    font-family: inherit;
+    font-size: 11px;
+    padding: 5px 12px;
+    cursor: pointer;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    line-height: 1;
+  }
+  .group-toggle button:not(:last-child) {
+    border-right: 1px solid var(--rule);
+  }
+  .group-toggle button.active {
+    color: var(--accent-2);
+    background: rgba(79,179,168,0.08);
+  }
+  .group-toggle button:hover:not(.active) { color: var(--fg); }
+
+  /* ---------- gantt pane ---------- */
+
+  #gantt-view {
+    display: none;
+    overflow: auto;
+    position: relative;
+    user-select: none;
+    /* Occupy same grid cell as .tree (row 2, col 1). */
+    grid-column: 1;
+    grid-row: 2;
+  }
+  #gantt-view.visible { display: block; }
+
+  /* ---------- flame pane ---------- */
+
+  #flame-view {
+    display: none;
+    overflow: auto;
+    position: relative;
+    user-select: none;
+    grid-column: 1;
+    grid-row: 2;
+  }
+  #flame-view.visible { display: block; }
+
+  /* ---------- trace swimlane pane ---------- */
+
+  #trace-view {
+    display: none;
+    overflow: auto;
+    position: relative;
+    user-select: none;
+    grid-column: 1;
+    grid-row: 2;
+  }
+  #trace-view.visible { display: block; }
+
+  .trace-container {
+    display: flex;
+    flex-direction: column;
+    min-height: 100%;
+  }
+
+  .trace-axis {
+    position: sticky;
+    top: 0;
+    z-index: 10;
+    background: rgba(10,14,10,0.96);
+    border-bottom: 1px solid var(--rule);
+    height: 24px;
+    overflow: hidden;
+  }
+
+  /* Each workload gets a lane: a label row + an SVG area below it */
+  .trace-lane {
+    display: flex;
+    flex-direction: column;
+    border-bottom: 1px solid var(--rule);
+  }
+
+  .trace-lane-header {
+    display: flex;
+    align-items: center;
+    background: var(--bg-alt);
+    border-bottom: 1px solid var(--rule);
+    padding: 4px 10px;
+    font-size: 11px;
+    font-weight: 700;
+    color: var(--accent);
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    white-space: nowrap;
+    height: 26px;
+    flex-shrink: 0;
+    /* sticky top so header stays visible when lane is tall and user scrolls down */
+    position: sticky;
+    top: 24px; /* below the axis */
+    z-index: 5;
+  }
+
+  .trace-lane-svg-wrap {
+    position: relative;
+    /* height set by JS */
+  }
+
+  .flame-container {
+    display: flex;
+    flex-direction: column;
+    min-height: 100%;
+  }
+
+  /* Sticky time axis for flame — mirrors gantt axis */
+  .flame-axis {
+    position: sticky;
+    top: 0;
+    z-index: 10;
+    background: rgba(10,14,10,0.96);
+    border-bottom: 1px solid var(--rule);
+    height: 24px;
+    overflow: hidden;
+  }
+
+  .flame-svg-wrap {
+    position: relative;
+    flex: 1;
+    /* height set by JS to fit all rows */
+  }
+
+  /* SVG rects get class via JS; mirror gantt bar bands */
+  .flame-svg-wrap svg .flame-bar { cursor: pointer; opacity: 0.88; }
+  .flame-svg-wrap svg .flame-bar:hover { opacity: 1; }
+  .flame-svg-wrap svg .flame-bar.selected { stroke: var(--accent); stroke-width: 1.5; opacity: 1; }
+
+  /* Gantt layout: fixed label column + scrollable SVG area */
+  .gantt-container {
+    display: flex;
+    flex-direction: column;
+    min-height: 100%;
+  }
+
+  /* Time axis at the top, sticky */
+  .gantt-axis {
+    position: sticky;
+    top: 0;
+    z-index: 10;
+    background: rgba(10,14,10,0.96);
+    border-bottom: 1px solid var(--rule);
+    display: flex;
+  }
+  .gantt-axis .label-col {
+    flex: 0 0 180px;
+    border-right: 1px solid var(--rule);
+  }
+  .gantt-axis .axis-svg-wrap {
+    flex: 1;
+    overflow: hidden;
+    position: relative;
+  }
+
+  /* Group header rows */
+  .gantt-group-header {
+    display: flex;
+    align-items: center;
+    background: var(--bg-alt);
+    border-bottom: 1px solid var(--rule);
+    border-top: 1px solid var(--rule);
+    margin-top: 8px;
+    padding: 4px 10px;
+    font-size: 11px;
+    font-weight: 700;
+    color: var(--accent);
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    position: sticky;
+    left: 0;
+  }
+  .gantt-group-header .gh-label {
+    flex: 0 0 180px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .gantt-group-header .gh-spacer {
+    flex: 1;
+  }
+
+  /* Span rows in gantt */
+  .gantt-row {
+    display: flex;
+    align-items: center;
+    border-bottom: 1px solid rgba(37,42,46,0.6);
+    height: 22px;
+    cursor: pointer;
+  }
+  .gantt-row:hover { background: rgba(240,184,76,0.04); }
+  .gantt-row.selected { background: rgba(240,184,76,0.10); }
+  .gantt-row .gr-label {
+    flex: 0 0 180px;
+    padding: 0 10px;
+    font-size: 11px;
+    color: var(--fg-dim);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    border-right: 1px solid var(--rule);
+  }
+  .gantt-row.selected .gr-label { color: var(--fg); }
+  .gantt-row .gr-bar-area {
+    flex: 1;
+    height: 100%;
+    position: relative;
+    overflow: hidden;
+  }
+
+  /* Individual bar inside the bar area. Position set via JS inline style. */
+  .gantt-bar {
+    position: absolute;
+    top: 3px;
+    height: 16px;
+    min-width: 2px;
+    background: var(--fg-dim);
+    opacity: 0.85;
+    border-left: 1px solid rgba(255,255,255,0.12);
+  }
+  .gantt-bar.cool { background: var(--fg-dim); }
+  .gantt-bar.warm { background: var(--accent-2); }
+  .gantt-bar.hot  { background: var(--accent); }
+  .gantt-bar.crit { background: var(--err); }
+  /* normal band = default var(--fg-dim) above */
+
+  /* "now" (t=0 left-edge) reference line is handled by the axis SVG */
+
+  /* Tooltip */
+  .gantt-tooltip {
+    position: fixed;
+    z-index: 1000;
+    background: var(--bg-alt);
+    border: 1px solid var(--rule);
+    padding: 8px 12px;
+    font-size: 11px;
+    color: var(--fg);
+    pointer-events: none;
+    display: none;
+    max-width: 320px;
+    line-height: 1.7;
+  }
+  .gantt-tooltip .tt-name { color: var(--accent); font-weight: 700; margin-bottom: 4px; }
+  .gantt-tooltip .tt-row { display: flex; gap: 8px; }
+  .gantt-tooltip .tt-k { color: var(--fg-dim); flex: 0 0 80px; }
+  .gantt-tooltip .tt-v { color: var(--fg); }
+</style>
+</head>
+<body>
+<div class="app">
+  <header>
+    <div class="brand">spans_view</div>
+    <div class="search">
+      <input id="q" placeholder="filter: name, workload, model, trace_id…" autocomplete="off" />
+    </div>
+    <div class="stats" id="stats">
+      <span class="v" id="stat-count">0</span> spans
+      <span class="sep">·</span>
+      <span class="v" id="stat-traces">0</span> traces
+      <span class="sep">·</span>
+      <span class="v" id="stat-errors">0</span> errors
+    </div>
+    <div class="view-toggle">
+      <button id="btn-tree" class="active" onclick="setView('tree')">tree</button>
+      <button id="btn-gantt" onclick="setView('gantt')">gantt</button>
+      <button id="btn-flame" onclick="setView('flame')">flame</button>
+      <button id="btn-trace" onclick="setView('trace')">trace</button>
+    </div>
+    <button id="btn-perfetto" onclick="openPerfetto()" style="background:transparent;border:1px solid var(--rule);color:var(--fg-dim);font-family:inherit;font-size:11px;padding:5px 12px;cursor:pointer;text-transform:uppercase;letter-spacing:0.1em;line-height:1;" onmouseover="this.style.color='var(--accent)';this.style.borderColor='var(--accent)'" onmouseout="this.style.color='var(--fg-dim)';this.style.borderColor='var(--rule)'">↗ Perfetto</button>
+    <div class="group-toggle" id="group-toggle">
+      <button id="btn-grp-workload" class="active" onclick="setGroupBy('workload')">workload</button>
+      <button id="btn-grp-trace" onclick="setGroupBy('trace_id')">trace</button>
+    </div>
+  </header>
+
+  <div class="tree" id="tree">
+    <div class="tree-body" id="tree-body"></div>
+    <label class="drop-hint" id="drop-hint" for="file-input">
+      <div class="big">spans.jsonl</div>
+      <div class="small">drop a file · or click to choose</div>
+      <div class="tiny">
+        expects the jsonl produced by rollouts._observability.<br>
+        one row per span. parent_span_id + trace_id linkage.
+      </div>
+    </label>
+    <input type="file" id="file-input" accept=".jsonl,.json,application/jsonl" style="position:absolute;width:1px;height:1px;opacity:0;pointer-events:none">
+  </div>
+
+  <div id="gantt-view"></div>
+  <div id="flame-view"></div>
+  <div id="trace-view"></div>
+
+  <aside class="detail-pane" id="detail-pane">
+    <div class="empty">click a span to see its full record</div>
+  </aside>
+</div>
+
+<div class="gantt-tooltip" id="gantt-tooltip"></div>
+
+<script>
+/* ------------------------------------------------------------------
+   Pure functions first (parse, tree build, filter). UI plumbing at end.
+   No framework, no build, no external runtime deps.
+   ------------------------------------------------------------------ */
+
+function parseJsonl(text) {
+  const out = [];
+  const lines = text.split(/\r?\n/);
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trim();
+    if (!line) continue;
+    try { out.push(JSON.parse(line)); }
+    catch (e) { console.warn('skip malformed line', i + 1, e); }
+  }
+  return out;
+}
+
+function buildTree(spans) {
+  // Returns { roots, byId }. Each span gets .children[] and .depth filled in.
+  const byId = {};
+  for (const s of spans) {
+    s.children = [];
+    byId[s.span_id] = s;
+  }
+  const roots = [];
+  for (const s of spans) {
+    if (s.parent_span_id && byId[s.parent_span_id]) {
+      byId[s.parent_span_id].children.push(s);
+    } else {
+      roots.push(s);
+    }
+  }
+  // Sort children by start time so the tree reads left-to-right in time.
+  const sortRec = (node, depth) => {
+    node.depth = depth;
+    node.children.sort((a, b) => a.start_time_unix_nano - b.start_time_unix_nano);
+    for (const c of node.children) sortRec(c, depth + 1);
+  };
+  roots.sort((a, b) => a.start_time_unix_nano - b.start_time_unix_nano);
+  for (const r of roots) sortRec(r, 0);
+  return { roots, byId };
+}
+
+function durationMs(span) {
+  if (!span.end_time_unix_nano || !span.start_time_unix_nano) return null;
+  return (span.end_time_unix_nano - span.start_time_unix_nano) / 1e6;
+}
+
+function fmtDuration(ms) {
+  if (ms == null) return '—';
+  if (ms < 1) return ms.toFixed(2) + 'ms';
+  if (ms < 1000) return ms.toFixed(0) + 'ms';
+  if (ms < 60000) return (ms / 1000).toFixed(1) + 's';
+  const m = Math.floor(ms / 60000);
+  const s = ((ms % 60000) / 1000).toFixed(0);
+  return m + 'm' + s.padStart(2, '0') + 's';
+}
+
+function fmtStart(nanos, originNanos) {
+  // Show time since the earliest span, as a relative offset.
+  // Absolute wall time is usually noise for debugging; relative is what humans
+  // use to correlate events inside one run.
+  const ms = (nanos - originNanos) / 1e6;
+  if (ms < 1000) return '+' + ms.toFixed(0) + 'ms';
+  return '+' + (ms / 1000).toFixed(2) + 's';
+}
+
+function inlineDetail(span) {
+  // One-line "what was this span about" summary shown on the tree row.
+  const a = span.attributes || {};
+  switch (span.name) {
+    case 'llm_call': {
+      const model = a['gen_ai.request.model'] || '?';
+      const inTok = a['gen_ai.usage.input_tokens'];
+      const outTok = a['gen_ai.usage.output_tokens'];
+      const toks = (inTok != null || outTok != null)
+        ? `  in=${inTok ?? '?'} out=${outTok ?? '?'}` : '';
+      return `${model}${toks}`;
+    }
+    case 'tool_call': {
+      const name = a['tool.name'] || '?';
+      const status = a['tool.status'];
+      return status ? `${name}  status=${status}` : name;
+    }
+    case 'agent_step': {
+      const turn = a['turn_idx'];
+      return turn != null ? `turn ${turn}` : '';
+    }
+    case 'sample_attempt': {
+      return a['sample.id'] || a['sample_id'] || '';
+    }
+    case 'workload': {
+      const kind = a['workload.kind'] || '';
+      const conc = a['workload.concurrency'];
+      return `${a['workload.name'] || '?'}${kind ? ' · ' + kind : ''}${conc ? ' · c=' + conc : ''}`;
+    }
+    case 'serving_run': {
+      const n = a['serving_run.workload_count'];
+      return `${a['serving_run.experiment_name'] || ''}${n ? ' · ' + n + ' workloads' : ''}`;
+    }
+    default:
+      return '';
+  }
+}
+
+function computeDurationPercentiles(spans) {
+  // Per-span-name duration percentiles. Each span name gets its own ramp
+  // because a 2-minute agent_step is normal while a 2-minute llm_call is a
+  // big deal. Rendering picks a color band from this tuple; see durationBand.
+  //
+  // We also return n so the renderer can back off to a neutral color when a
+  // class only has a handful of samples — percentiles on n=1 or n=2 are
+  // noise, and painting the lone harbor sample red just because it's also
+  // its own max is misleading.
+  const durs = {};
+  for (const s of spans) {
+    const d = durationMs(s);
+    if (d == null) continue;
+    (durs[s.name] = durs[s.name] || []).push(d);
+  }
+  const pct = (arr, q) => arr[Math.min(arr.length - 1, Math.floor(arr.length * q))];
+  const p = {};
+  for (const [name, arr] of Object.entries(durs)) {
+    arr.sort((a, b) => a - b);
+    p[name] = {
+      n: arr.length,
+      p50: pct(arr, 0.50),
+      p75: pct(arr, 0.75),
+      p90: pct(arr, 0.90),
+      p99: pct(arr, 0.99),
+      max: arr[arr.length - 1],
+    };
+  }
+  return p;
+}
+
+// Heatmap band names match the CSS classes .dur.{cool|normal|warm|hot|crit}.
+// We require n >= MIN_N before honoring bands above "normal"; below that the
+// percentiles aren't meaningful and we stay in body color. See the
+// tail-sampling TODO at the head of render() for the broader story.
+const MIN_N_FOR_HEATMAP = 10;
+
+function durationBand(ms, p) {
+  if (ms == null || !p) return '';
+  if (p.n < MIN_N_FOR_HEATMAP) return '';
+  if (ms < p.p50) return 'cool';
+  if (ms < p.p75) return '';           // body color
+  if (ms < p.p90) return 'warm';
+  if (ms < p.p99) return 'hot';
+  return 'crit';
+}
+
+function matchesQuery(span, q) {
+  if (!q) return true;
+  const needle = q.toLowerCase();
+  if (span.name.toLowerCase().includes(needle)) return true;
+  if ((span.trace_id || '').toLowerCase().includes(needle)) return true;
+  const a = span.attributes || {};
+  for (const v of Object.values(a)) {
+    if (typeof v === 'string' && v.toLowerCase().includes(needle)) return true;
+    if (typeof v === 'number' && String(v).includes(needle)) return true;
+  }
+  return false;
+}
+
+/* ------------------- rendering ------------------- */
+
+const state = {
+  spans: [],
+  tree: { roots: [], byId: {} },
+  percentiles: {},
+  expanded: new Set(),    // span_ids that are expanded
+  selected: null,
+  query: '',
+  originNs: 0,
+  currentView: 'tree',   // 'tree' | 'gantt' | 'flame' | 'trace'
+  groupBy: 'workload',   // 'workload' | 'trace_id'
+  // Gantt viewport: start/end in ms relative to originNs. null = fit-to-data.
+  ganttViewStart: null,
+  ganttViewEnd: null,
+  // Flame viewport: same semantics as gantt.
+  flameViewStart: null,
+  flameViewEnd: null,
+  // Trace viewport: same semantics.
+  traceViewStart: null,
+  traceViewEnd: null,
+};
+
+// TODO(tail-sampling): this viewer assumes we keep 100% of spans. That's
+// fine while the writer is a local jsonl and volumes are small, but once
+// we pipe into a real backend (Tempo, Honeycomb, etc.) we'll want the
+// emitter side to do tail sampling — always keep errors, always keep
+// >= p99 slow spans, keep all spans of flagged trace_ids, sample the happy
+// path at 1-5% — per Boris Tane's logging_sucks.md. The *viewer* probably
+// doesn't change when that happens (it just sees fewer rows), but we may
+// want to surface "this trace was sampled in because of <reason>" when
+// present so we can tell intentional keeps from random sampling.
+function render() {
+  const body = document.getElementById('tree-body');
+  body.innerHTML = '';
+  document.getElementById('drop-hint').style.display = state.spans.length ? 'none' : 'flex';
+  if (!state.spans.length) return;
+
+  // With a filter, auto-expand ancestors of hits so they stay visible.
+  // Without a filter, honor the user's expand/collapse state exactly —
+  // clicking a row should open/close that fold, nvim-style.
+  const matches = new Set();
+  const visible = new Set();
+  if (state.query) {
+    for (const s of state.spans) if (matchesQuery(s, state.query)) matches.add(s.span_id);
+    for (const id of matches) {
+      let cur = state.tree.byId[id];
+      while (cur) {
+        visible.add(cur.span_id);
+        if (cur.parent_span_id) state.expanded.add(cur.parent_span_id);
+        cur = state.tree.byId[cur.parent_span_id];
+      }
+    }
+  } else {
+    for (const s of state.spans) visible.add(s.span_id);
+  }
+
+  const renderRow = (span) => {
+    if (!visible.has(span.span_id)) return;
+
+    const row = document.createElement('div');
+    row.className = 'row ' + span.name;
+    if (state.selected === span.span_id) row.classList.add('selected');
+    if (state.query && !matches.has(span.span_id)) row.classList.add('filtered');
+    row.style.paddingLeft = (span.depth * 18 + 4) + 'px';
+    row.dataset.id = span.span_id;
+
+    const toggle = document.createElement('span');
+    toggle.className = 'toggle';
+    if (span.children.length) {
+      toggle.textContent = state.expanded.has(span.span_id) ? '▾' : '▸';
+    } else {
+      toggle.textContent = '·';
+    }
+    row.appendChild(toggle);
+
+    const name = document.createElement('span');
+    name.className = 'name';
+    if (span.status && span.status.code === 'ERROR') name.classList.add('err');
+    name.textContent = span.name;
+    row.appendChild(name);
+
+    const detail = document.createElement('span');
+    detail.className = 'detail';
+    detail.textContent = inlineDetail(span);
+    row.appendChild(detail);
+
+    const dur = document.createElement('span');
+    dur.className = 'dur';
+    const d = durationMs(span);
+    const band = durationBand(d, state.percentiles[span.name]);
+    if (band) dur.classList.add(band);
+    dur.textContent = fmtDuration(d);
+    row.appendChild(dur);
+
+    const ts = document.createElement('span');
+    ts.className = 'ts';
+    ts.textContent = fmtStart(span.start_time_unix_nano, state.originNs);
+    row.appendChild(ts);
+
+    body.appendChild(row);
+
+    if (state.expanded.has(span.span_id)) {
+      for (const c of span.children) renderRow(c);
+    }
+  };
+
+  for (const r of state.tree.roots) renderRow(r);
+}
+
+function renderDetail(span) {
+  const pane = document.getElementById('detail-pane');
+  if (!span) {
+    pane.innerHTML = '<div class="empty">click a span to see its full record</div>';
+    return;
+  }
+  // Single-pane view: just the raw JSON, syntax-colored. The meta/attributes
+  // breakout that used to sit above was redundant with the raw view (every
+  // field shows there already) and ate vertical space. Specialized renderers
+  // for specific span kinds (messages, tool_call diffs, etc.) will live in
+  // other views later, not here.
+  pane.innerHTML = '';
+
+  const h2 = document.createElement('h2');
+  h2.textContent = 'span';
+  pane.appendChild(h2);
+
+  const title = document.createElement('div');
+  title.className = 'span-name';
+  title.textContent = span.name;
+  pane.appendChild(title);
+
+  const pre = document.createElement('pre');
+  // Drop transient view-only fields (we mutate spans at parse time to
+  // build the tree — children[] and depth are not on the source jsonl).
+  const rawText = JSON.stringify(
+    span,
+    (k, v) => (k === 'children' || k === 'depth') ? undefined : v,
+    2,
+  );
+  pre.innerHTML = prettyJson(rawText);
+  pane.appendChild(pre);
+}
+
+function prettyJson(text) {
+  // Minimal JSON syntax highlighter. Works on already-indented JSON text.
+  // We escape HTML first, then wrap token classes. Order matters:
+  // keys must match before strings so we can distinguish them.
+  const esc = text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+  return esc.replace(
+    /("(?:\\.|[^"\\])*")(\s*:)?|\b(-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)\b|\b(true|false)\b|\b(null)\b|([{}\[\],])/g,
+    (m, strOrKey, colon, num, bool, nul, punct) => {
+      if (strOrKey !== undefined) {
+        if (colon) return '<span class="jkey">' + strOrKey + '</span><span class="jpunct">' + colon + '</span>';
+        return '<span class="jstr">' + strOrKey + '</span>';
+      }
+      if (num  !== undefined) return '<span class="jnum">'   + num  + '</span>';
+      if (bool !== undefined) return '<span class="jbool">'  + bool + '</span>';
+      if (nul  !== undefined) return '<span class="jnull">'  + nul  + '</span>';
+      if (punct!== undefined) return '<span class="jpunct">' + punct+ '</span>';
+      return m;
+    }
+  );
+}
+
+/* ------------------- view switching ------------------- */
+
+function setView(v) {
+  state.currentView = v;
+  document.getElementById('btn-tree').classList.toggle('active', v === 'tree');
+  document.getElementById('btn-gantt').classList.toggle('active', v === 'gantt');
+  document.getElementById('btn-flame').classList.toggle('active', v === 'flame');
+  document.getElementById('btn-trace').classList.toggle('active', v === 'trace');
+  document.getElementById('tree').style.display = v === 'tree' ? '' : 'none';
+  document.getElementById('gantt-view').classList.toggle('visible', v === 'gantt');
+  document.getElementById('flame-view').classList.toggle('visible', v === 'flame');
+  document.getElementById('trace-view').classList.toggle('visible', v === 'trace');
+  document.getElementById('group-toggle').classList.toggle('visible', v === 'gantt');
+  if (v === 'gantt') renderGantt();
+  else if (v === 'flame') renderFlame();
+  else if (v === 'trace') renderTrace();
+}
+
+function setGroupBy(g) {
+  state.groupBy = g;
+  document.getElementById('btn-grp-workload').classList.toggle('active', g === 'workload');
+  document.getElementById('btn-grp-trace').classList.toggle('active', g === 'trace_id');
+  state.ganttViewStart = null;
+  state.ganttViewEnd = null;
+  renderGantt();
+}
+
+function renderCurrentView() {
+  if (state.currentView === 'tree') render();
+  else if (state.currentView === 'gantt') renderGantt();
+  else if (state.currentView === 'flame') renderFlame();
+  else if (state.currentView === 'trace') renderTrace();
+}
+
+/* ------------------- gantt helpers ------------------- */
+
+// Walk up the parent chain to find the nearest ancestor (or self) that has
+// workload.name set in its attributes. Returns the workload name string or null.
+function resolveWorkloadName(span) {
+  let cur = span;
+  while (cur) {
+    const wn = (cur.attributes || {})['workload.name'];
+    if (wn) return wn;
+    cur = state.tree.byId[cur.parent_span_id];
+  }
+  return null;
+}
+
+// Collect "leaf-ish" spans: spans with no children, or spans whose name is
+// a known leaf type regardless of children count.
+const LEAF_SPAN_NAMES = new Set(['llm_call', 'tool_call', 'sample_attempt', 'agent_step']);
+function collectGanttSpans(spans) {
+  return spans.filter(s => {
+    if (!s.start_time_unix_nano || !s.end_time_unix_nano) return false;
+    return s.children.length === 0 || LEAF_SPAN_NAMES.has(s.name);
+  });
+}
+
+// Group spans by the current groupBy key. Returns array of { key, spans[] } in
+// order of earliest span start within each group.
+function groupGanttSpans(spans) {
+  const groups = new Map();
+  for (const s of spans) {
+    let key;
+    if (state.groupBy === 'workload') {
+      key = resolveWorkloadName(s) || '(no workload)';
+    } else {
+      key = s.trace_id || '(no trace)';
+    }
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(s);
+  }
+  // Sort groups by earliest span start; sort spans within each group by start.
+  const sorted = [...groups.entries()].map(([key, spans]) => {
+    spans.sort((a, b) => a.start_time_unix_nano - b.start_time_unix_nano);
+    return { key, spans, earliest: spans[0].start_time_unix_nano };
+  });
+  sorted.sort((a, b) => a.earliest - b.earliest);
+  return sorted;
+}
+
+// Gantt pan/zoom state (separate from state.ganttViewStart/End for drag delta).
+const ganttDrag = { active: false, startX: 0, startViewStart: 0, startViewEnd: 0 };
+
+function renderGantt() {
+  const container = document.getElementById('gantt-view');
+  if (!state.spans.length) {
+    container.innerHTML = '<div style="padding:40px;color:var(--fg-dim);text-align:center;font-style:italic;">drop a spans.jsonl file to begin</div>';
+    return;
+  }
+
+  const ganttSpans = collectGanttSpans(state.spans);
+  if (!ganttSpans.length) {
+    container.innerHTML = '<div style="padding:40px;color:var(--fg-dim);text-align:center;font-style:italic;">no renderable spans (all lack timing data)</div>';
+    return;
+  }
+
+  // Total time domain in ms relative to originNs.
+  const totalStartMs = 0;
+  const totalEndMs = (Math.max(...state.spans.filter(s => s.end_time_unix_nano).map(s => s.end_time_unix_nano)) - state.originNs) / 1e6;
+
+  // Initialize viewport to full range if unset.
+  if (state.ganttViewStart == null) state.ganttViewStart = totalStartMs;
+  if (state.ganttViewEnd == null)   state.ganttViewEnd   = totalEndMs || 1;
+
+  const viewStart = state.ganttViewStart;
+  const viewEnd   = state.ganttViewEnd;
+  const viewSpan  = viewEnd - viewStart;
+
+  const groups = groupGanttSpans(ganttSpans);
+
+  // Build DOM. We clear and rebuild on every renderGantt() call — the data is
+  // the source of truth, not the DOM.
+  container.innerHTML = '';
+
+  // -- Axis row (sticky top) --
+  const axis = document.createElement('div');
+  axis.className = 'gantt-axis';
+  const axisLabelCol = document.createElement('div');
+  axisLabelCol.className = 'label-col';
+  axis.appendChild(axisLabelCol);
+  const axisSvgWrap = document.createElement('div');
+  axisSvgWrap.className = 'axis-svg-wrap';
+  axisSvgWrap.style.height = '24px';
+  axis.appendChild(axisSvgWrap);
+  container.appendChild(axis);
+
+  // We use a ResizeObserver so the axis ticks respond to column width changes.
+  // On first render we draw immediately after append.
+  function drawAxis(wrapEl) {
+    const w = wrapEl.clientWidth || 600;
+    const tickCount = Math.min(10, Math.max(4, Math.floor(w / 80)));
+    const ticks = [];
+    for (let i = 0; i <= tickCount; i++) {
+      const ms = viewStart + (viewSpan * i / tickCount);
+      const x = (i / tickCount) * w;
+      ticks.push({ ms, x });
+    }
+    let svg = `<svg width="${w}" height="24" xmlns="http://www.w3.org/2000/svg" style="display:block;overflow:visible">`;
+    // t=0 reference line (left edge = origin)
+    const zeroX = ((0 - viewStart) / viewSpan) * w;
+    if (zeroX >= 0 && zeroX <= w) {
+      svg += `<line x1="${zeroX.toFixed(1)}" y1="0" x2="${zeroX.toFixed(1)}" y2="24" stroke="var(--accent)" stroke-width="1" opacity="0.4"/>`;
+    }
+    for (const t of ticks) {
+      svg += `<line x1="${t.x.toFixed(1)}" y1="18" x2="${t.x.toFixed(1)}" y2="24" stroke="var(--rule)" stroke-width="1"/>`;
+      const label = fmtDuration(t.ms);
+      const anchor = t.x < 20 ? 'start' : t.x > w - 20 ? 'end' : 'middle';
+      svg += `<text x="${t.x.toFixed(1)}" y="14" text-anchor="${anchor}" font-family="JetBrains Mono,monospace" font-size="10" fill="var(--fg-muted)">${label}</text>`;
+    }
+    svg += '</svg>';
+    wrapEl.innerHTML = svg;
+  }
+  // Draw now (clientWidth may be 0 before layout — we'll also draw on next animation frame).
+  drawAxis(axisSvgWrap);
+  requestAnimationFrame(() => drawAxis(axisSvgWrap));
+
+  // -- Vertical grid lines in bar area: reuse tick positions from axis.
+  // These are drawn per-row via background linear-gradient (no extra DOM).
+
+  // -- Group sections --
+  const barAreaWidth = { value: 0 }; // filled in after layout
+  const allBarAreas = []; // collect for zoom/pan recomputation
+
+  for (const group of groups) {
+    // Group header
+    const header = document.createElement('div');
+    header.className = 'gantt-group-header';
+    const ghLabel = document.createElement('div');
+    ghLabel.className = 'gh-label';
+    const shortKey = group.key.length > 38 ? group.key.slice(0, 36) + '…' : group.key;
+    ghLabel.textContent = shortKey;
+    ghLabel.title = group.key;
+    header.appendChild(ghLabel);
+    const ghSpacer = document.createElement('div');
+    ghSpacer.className = 'gh-spacer';
+    header.appendChild(ghSpacer);
+    container.appendChild(header);
+
+    // Span rows
+    for (const span of group.spans) {
+      const row = document.createElement('div');
+      row.className = 'gantt-row';
+      if (state.selected === span.span_id) row.classList.add('selected');
+      row.dataset.id = span.span_id;
+
+      const label = document.createElement('div');
+      label.className = 'gr-label';
+      label.textContent = span.name;
+      label.title = span.name;
+      row.appendChild(label);
+
+      const barArea = document.createElement('div');
+      barArea.className = 'gr-bar-area';
+      barArea.dataset.id = span.span_id;
+      row.appendChild(barArea);
+      allBarAreas.push({ barArea, span });
+
+      container.appendChild(row);
+
+      // Row click → select + detail
+      row.addEventListener('click', () => {
+        state.selected = span.span_id;
+        renderGantt();
+        renderDetail(span);
+      });
+    }
+  }
+
+  // Position bars. We need the bar area width which requires layout to have run.
+  function positionBars() {
+    const sampleBarArea = allBarAreas[0] && allBarAreas[0].barArea;
+    if (!sampleBarArea) return;
+    const w = sampleBarArea.clientWidth;
+    if (w === 0) { requestAnimationFrame(positionBars); return; }
+
+    for (const { barArea, span } of allBarAreas) {
+      barArea.innerHTML = '';
+      const startMs = (span.start_time_unix_nano - state.originNs) / 1e6;
+      const endMs   = (span.end_time_unix_nano   - state.originNs) / 1e6;
+      const durMs   = endMs - startMs;
+
+      const leftFrac  = (startMs - viewStart) / viewSpan;
+      const widthFrac = durMs / viewSpan;
+      const leftPx    = leftFrac * w;
+      const widthPx   = Math.max(2, widthFrac * w);
+
+      // Skip bars fully outside the viewport.
+      if (leftPx + widthPx < 0 || leftPx > w) continue;
+
+      const bar = document.createElement('div');
+      bar.className = 'gantt-bar';
+      const band = durationBand(durMs, state.percentiles[span.name]);
+      if (band) bar.classList.add(band);
+      bar.style.left  = leftPx.toFixed(1) + 'px';
+      bar.style.width = widthPx.toFixed(1) + 'px';
+      bar.dataset.id = span.span_id;
+      barArea.appendChild(bar);
+    }
+
+    // Redraw axis now that we have real width.
+    drawAxis(axisSvgWrap);
+  }
+  requestAnimationFrame(positionBars);
+}
+
+/* ------------------- gantt tooltip ------------------- */
+
+const tooltip = document.getElementById('gantt-tooltip');
+
+function showTooltip(span, x, y) {
+  const a = span.attributes || {};
+  const wn = resolveWorkloadName(span) || '—';
+  const model = a['gen_ai.request.model'] || null;
+  const durMs = durationMs(span);
+  let html = `<div class="tt-name">${span.name}</div>`;
+  html += `<div class="tt-row"><span class="tt-k">duration</span><span class="tt-v">${fmtDuration(durMs)}</span></div>`;
+  html += `<div class="tt-row"><span class="tt-k">workload</span><span class="tt-v">${wn}</span></div>`;
+  if (model) {
+    html += `<div class="tt-row"><span class="tt-k">model</span><span class="tt-v">${model}</span></div>`;
+  }
+  tooltip.innerHTML = html;
+  tooltip.style.display = 'block';
+  tooltip.style.left = (x + 14) + 'px';
+  tooltip.style.top  = (y + 14) + 'px';
+}
+
+function hideTooltip() {
+  tooltip.style.display = 'none';
+}
+
+// Delegate tooltip events to the gantt-view container (bars are recreated on
+// each render so direct listeners would need cleanup).
+document.getElementById('gantt-view').addEventListener('mousemove', (e) => {
+  const bar = e.target.closest('.gantt-bar');
+  if (bar) {
+    const span = state.tree.byId[bar.dataset.id];
+    if (span) showTooltip(span, e.clientX, e.clientY);
+  } else {
+    hideTooltip();
+  }
+});
+document.getElementById('gantt-view').addEventListener('mouseleave', hideTooltip);
+
+/* ------------------- gantt zoom / pan ------------------- */
+
+document.getElementById('gantt-view').addEventListener('wheel', (e) => {
+  if (!state.spans.length) return;
+  e.preventDefault();
+  const container = document.getElementById('gantt-view');
+  const rect = container.getBoundingClientRect();
+  const LABEL_W = 180; // matches .gr-label flex-basis
+  const barW = rect.width - LABEL_W;
+  if (barW <= 0) return;
+
+  // Mouse position as fraction of bar area [0,1].
+  const frac = Math.max(0, Math.min(1, (e.clientX - rect.left - LABEL_W) / barW));
+  const viewSpan = state.ganttViewEnd - state.ganttViewStart;
+  const pivot = state.ganttViewStart + frac * viewSpan;
+
+  // Zoom factor: wheel deltaY. Pinch-zoom on trackpads sends ctrlKey=true.
+  const zoomFactor = e.ctrlKey ? 1 + e.deltaY * 0.01 : 1 + e.deltaY * 0.003;
+  const newSpan = Math.max(1, viewSpan * zoomFactor);
+  state.ganttViewStart = pivot - frac * newSpan;
+  state.ganttViewEnd   = pivot + (1 - frac) * newSpan;
+  renderGantt();
+}, { passive: false });
+
+document.getElementById('gantt-view').addEventListener('mousedown', (e) => {
+  // Only drag on the bar area (not labels or group headers).
+  if (e.target.closest('.gr-label') || e.target.closest('.gantt-group-header')) return;
+  if (e.button !== 0) return;
+  ganttDrag.active = true;
+  ganttDrag.startX = e.clientX;
+  ganttDrag.startViewStart = state.ganttViewStart;
+  ganttDrag.startViewEnd   = state.ganttViewEnd;
+  document.body.style.cursor = 'grabbing';
+});
+
+document.addEventListener('mousemove', (e) => {
+  if (!ganttDrag.active) return;
+  const container = document.getElementById('gantt-view');
+  const rect = container.getBoundingClientRect();
+  const LABEL_W = 180;
+  const barW = rect.width - LABEL_W;
+  if (barW <= 0) return;
+  const viewSpan = ganttDrag.startViewEnd - ganttDrag.startViewStart;
+  const dxMs = -((e.clientX - ganttDrag.startX) / barW) * viewSpan;
+  state.ganttViewStart = ganttDrag.startViewStart + dxMs;
+  state.ganttViewEnd   = ganttDrag.startViewEnd   + dxMs;
+  renderGantt();
+});
+
+document.addEventListener('mouseup', () => {
+  if (ganttDrag.active) {
+    ganttDrag.active = false;
+    document.body.style.cursor = '';
+  }
+  if (flameDrag.active) {
+    flameDrag.active = false;
+    document.body.style.cursor = '';
+  }
+  if (traceDrag.active) {
+    traceDrag.active = false;
+    document.body.style.cursor = '';
+  }
+});
+
+/* ------------------- flame renderer ------------------- */
+
+// Drag pan states — declared before the merged mouseup handler references them
+// (the handler is only called at runtime so declaration order in the script
+// would be fine for var, but const is block-scoped; hoist declarations up here
+// to be explicit).
+const flameDrag = { active: false, startX: 0, startViewStart: 0, startViewEnd: 0 };
+const traceDrag = { active: false, startX: 0, startViewStart: 0, startViewEnd: 0 };
+
+// Band → fill color (must match CSS palette since SVG doesn't inherit CSS classes easily).
+const FLAME_COLORS = {
+  cool:   '#6b6657',   // --fg-dim
+  '':     '#3f3d37',   // --fg-muted / "normal" band — slightly lighter than bg
+  warm:   '#4fb3a8',   // --accent-2
+  hot:    '#f0b84c',   // --accent
+  crit:   '#e06050',   // --err
+};
+
+function renderFlame() {
+  const container = document.getElementById('flame-view');
+  if (!state.spans.length) {
+    container.innerHTML = '<div style="padding:40px;color:var(--fg-dim);text-align:center;font-style:italic;">drop a spans.jsonl file to begin</div>';
+    return;
+  }
+
+  // Only spans with timing data.
+  const timedSpans = state.spans.filter(s => s.start_time_unix_nano && s.end_time_unix_nano);
+  if (!timedSpans.length) {
+    container.innerHTML = '<div style="padding:40px;color:var(--fg-dim);text-align:center;font-style:italic;">no renderable spans (all lack timing data)</div>';
+    return;
+  }
+
+  const totalStartMs = 0;
+  const totalEndMs = (Math.max(...timedSpans.map(s => s.end_time_unix_nano)) - state.originNs) / 1e6;
+
+  if (state.flameViewStart == null) state.flameViewStart = totalStartMs;
+  if (state.flameViewEnd   == null) state.flameViewEnd   = totalEndMs || 1;
+
+  const viewStart = state.flameViewStart;
+  const viewEnd   = state.flameViewEnd;
+  const viewSpan  = viewEnd - viewStart;
+
+  // Flamegraph row assignment: stack workload subtrees vertically so parallel
+  // workloads don't share rows and overlap. Strategy:
+  //   - The tree root (serving_run) renders at row 0.
+  //   - Its children (workload spans) each get their own vertical band.
+  //   - Band N starts directly below band N-1.
+  //   - Row for any span = bandOffset[band_root] + (span.depth - band_root.depth)
+  //   - Spans above the band level (serving_run itself) get depth-based row.
+  //
+  // "Band roots" = depth-1 children of the tree root (the workload spans),
+  // or if there's no clear single root, the tree roots themselves.
+  const treeRoots = state.tree.roots;
+
+  // Collect band roots: workload children of a single root, or all roots.
+  let bandRoots;
+  if (treeRoots.length === 1 && treeRoots[0].children.length > 0) {
+    // One root with children — partition at child level (the workloads).
+    // The root itself renders above row 0 in its own row.
+    bandRoots = [...treeRoots[0].children].sort((a, b) => a.start_time_unix_nano - b.start_time_unix_nano);
+  } else {
+    bandRoots = treeRoots;
+  }
+
+  // For each band root, compute the max depth within its subtree (relative
+  // to the band root's own depth), giving us the band's height in rows.
+  function subtreeRelativeMaxDepth(root) {
+    let maxRel = 0;
+    const walk = (node) => {
+      const rel = (node.depth || 0) - (root.depth || 0);
+      if (rel > maxRel) maxRel = rel;
+      for (const c of node.children) walk(c);
+    };
+    walk(root);
+    return maxRel;
+  }
+
+  // bandOffset[span_id] = first Y-row of this band.
+  const bandOffset = new Map();
+  // Spans above band level (e.g. serving_run) each get their own single row
+  // at the very top, before the bands.
+  const aboveBandSpans = treeRoots.length === 1 && treeRoots[0].children.length > 0
+    ? [treeRoots[0]]
+    : [];
+  let runningOffset = aboveBandSpans.length; // row 0..N-1 for above-band spans
+
+  for (const br of bandRoots) {
+    bandOffset.set(br.span_id, runningOffset);
+    runningOffset += subtreeRelativeMaxDepth(br) + 2; // +1 for the band root row, +1 gap
+  }
+  const totalRows = Math.max(runningOffset, 1);
+
+  // Walk up to find the band-root ancestor of a span.
+  const bandRootIdSet = new Set(bandRoots.map(b => b.span_id));
+  function bandRootAncestor(span) {
+    let cur = span;
+    while (cur) {
+      if (bandRootIdSet.has(cur.span_id)) return cur;
+      cur = state.tree.byId[cur.parent_span_id];
+    }
+    return null;
+  }
+
+  function flameRow(span) {
+    // Above-band spans (e.g. serving_run) get their own rows at the top.
+    const aboveIdx = aboveBandSpans.findIndex(s => s.span_id === span.span_id);
+    if (aboveIdx !== -1) return aboveIdx;
+
+    const br = bandRootAncestor(span);
+    if (!br) return 0; // fallback
+    const offset = bandOffset.get(br.span_id) ?? 0;
+    return offset + ((span.depth || 0) - (br.depth || 0));
+  }
+
+  const ROW_H  = 22;
+  const ROW_GAP = 1;
+  const AXIS_H = 24;
+  const svgH = totalRows * (ROW_H + ROW_GAP);
+
+  container.innerHTML = '';
+
+  const wrap = document.createElement('div');
+  wrap.className = 'flame-container';
+  container.appendChild(wrap);
+
+  // -- Axis (sticky) --
+  const axisDiv = document.createElement('div');
+  axisDiv.className = 'flame-axis';
+  wrap.appendChild(axisDiv);
+
+  // -- SVG area --
+  const svgWrap = document.createElement('div');
+  svgWrap.className = 'flame-svg-wrap';
+  svgWrap.style.height = svgH + 'px';
+  wrap.appendChild(svgWrap);
+
+  function drawFlameAxis(w) {
+    const tickCount = Math.min(10, Math.max(4, Math.floor(w / 80)));
+    let svg = `<svg width="${w}" height="${AXIS_H}" xmlns="http://www.w3.org/2000/svg" style="display:block">`;
+    const zeroX = ((0 - viewStart) / viewSpan) * w;
+    if (zeroX >= 0 && zeroX <= w) {
+      svg += `<line x1="${zeroX.toFixed(1)}" y1="0" x2="${zeroX.toFixed(1)}" y2="${AXIS_H}" stroke="var(--accent)" stroke-width="1" opacity="0.4"/>`;
+    }
+    for (let i = 0; i <= tickCount; i++) {
+      const ms = viewStart + (viewSpan * i / tickCount);
+      const x  = (i / tickCount) * w;
+      svg += `<line x1="${x.toFixed(1)}" y1="18" x2="${x.toFixed(1)}" y2="${AXIS_H}" stroke="var(--rule)" stroke-width="1"/>`;
+      const label  = fmtDuration(ms);
+      const anchor = x < 20 ? 'start' : x > w - 20 ? 'end' : 'middle';
+      svg += `<text x="${x.toFixed(1)}" y="14" text-anchor="${anchor}" font-family="JetBrains Mono,monospace" font-size="10" fill="var(--fg-muted)">${label}</text>`;
+    }
+    svg += '</svg>';
+    axisDiv.innerHTML = svg;
+  }
+
+  function buildFlameSvg(w) {
+    // One clipPath per rect so text is clipped to the bar.
+    // We batch into a single SVG for performance.
+    const MIN_LABEL_W = 40;
+    let defs = '<defs>';
+    let rects = '';
+    let texts = '';
+
+    for (const span of timedSpans) {
+      const startMs = (span.start_time_unix_nano - state.originNs) / 1e6;
+      const endMs   = (span.end_time_unix_nano   - state.originNs) / 1e6;
+      const durMs   = endMs - startMs;
+
+      const leftFrac  = (startMs - viewStart) / viewSpan;
+      const widthFrac = durMs / viewSpan;
+      const x  = leftFrac * w;
+      const bw = Math.max(2, widthFrac * w);
+
+      // Skip bars fully outside viewport.
+      if (x + bw < 0 || x > w) continue;
+
+      const y = flameRow(span) * (ROW_H + ROW_GAP);
+
+      const band = durationBand(durMs, state.percentiles[span.name]);
+      const fill = FLAME_COLORS[band] ?? FLAME_COLORS[''];
+
+      const isSelected = state.selected === span.span_id;
+      const strokeAttrs = isSelected
+        ? ` stroke="var(--accent)" stroke-width="1.5"`
+        : ` stroke="rgba(255,255,255,0.07)" stroke-width="0.5"`;
+
+      const clipId = 'fc-' + span.span_id;
+      defs += `<clipPath id="${clipId}"><rect x="${x.toFixed(1)}" y="${y}" width="${bw.toFixed(1)}" height="${ROW_H}"/></clipPath>`;
+
+      rects += `<rect class="flame-bar${isSelected ? ' selected' : ''}" x="${x.toFixed(1)}" y="${y}" width="${bw.toFixed(1)}" height="${ROW_H}" fill="${fill}" opacity="${isSelected ? 1 : 0.88}"${strokeAttrs} data-id="${span.span_id}"/>`;
+
+      if (bw >= MIN_LABEL_W) {
+        const tx = Math.max(x, 0) + 4;
+        texts += `<text clip-path="url(#${clipId})" x="${tx.toFixed(1)}" y="${(y + 14).toFixed(1)}" font-family="JetBrains Mono,monospace" font-size="10" fill="rgba(211,197,168,0.92)" pointer-events="none">${span.name.replace(/&/g,'&amp;').replace(/</g,'&lt;')}</text>`;
+      }
+    }
+
+    defs += '</defs>';
+    const svg = `<svg width="${w}" height="${svgH}" xmlns="http://www.w3.org/2000/svg" style="display:block;cursor:default">${defs}${rects}${texts}</svg>`;
+    svgWrap.innerHTML = svg;
+
+    // Attach tooltip + click events to the SVG element (not individual rects —
+    // those are recreated on every render).
+    const svgEl = svgWrap.querySelector('svg');
+    svgEl.addEventListener('mousemove', (e) => {
+      const bar = e.target.closest('rect[data-id]');
+      if (bar) {
+        const span = state.tree.byId[bar.dataset.id];
+        if (span) showTooltip(span, e.clientX, e.clientY);
+      } else {
+        hideTooltip();
+      }
+    });
+    svgEl.addEventListener('mouseleave', hideTooltip);
+    svgEl.addEventListener('click', (e) => {
+      const bar = e.target.closest('rect[data-id]');
+      if (!bar) return;
+      const span = state.tree.byId[bar.dataset.id];
+      if (!span) return;
+      state.selected = span.span_id;
+      renderFlame();
+      renderDetail(span);
+    });
+  }
+
+  function draw() {
+    const w = svgWrap.clientWidth || container.clientWidth || 800;
+    if (w === 0) { requestAnimationFrame(draw); return; }
+    drawFlameAxis(w);
+    buildFlameSvg(w);
+  }
+  draw();
+  requestAnimationFrame(draw);
+}
+
+// Flame wheel zoom.
+document.getElementById('flame-view').addEventListener('wheel', (e) => {
+  if (!state.spans.length) return;
+  e.preventDefault();
+  const container = document.getElementById('flame-view');
+  const rect = container.getBoundingClientRect();
+  const w = rect.width;
+  if (w <= 0) return;
+  const frac = Math.max(0, Math.min(1, (e.clientX - rect.left) / w));
+  const viewSpan = state.flameViewEnd - state.flameViewStart;
+  const pivot = state.flameViewStart + frac * viewSpan;
+  const zoomFactor = e.ctrlKey ? 1 + e.deltaY * 0.01 : 1 + e.deltaY * 0.003;
+  const newSpan = Math.max(1, viewSpan * zoomFactor);
+  state.flameViewStart = pivot - frac * newSpan;
+  state.flameViewEnd   = pivot + (1 - frac) * newSpan;
+  renderFlame();
+}, { passive: false });
+
+// Flame left-drag pan.
+document.getElementById('flame-view').addEventListener('mousedown', (e) => {
+  if (e.button !== 0) return;
+  flameDrag.active = true;
+  flameDrag.startX = e.clientX;
+  flameDrag.startViewStart = state.flameViewStart;
+  flameDrag.startViewEnd   = state.flameViewEnd;
+  document.body.style.cursor = 'grabbing';
+});
+
+document.addEventListener('mousemove', (e) => {
+  if (!flameDrag.active) return;
+  const container = document.getElementById('flame-view');
+  const w = container.clientWidth || 800;
+  if (w <= 0) return;
+  const viewSpan = flameDrag.startViewEnd - flameDrag.startViewStart;
+  const dxMs = -((e.clientX - flameDrag.startX) / w) * viewSpan;
+  state.flameViewStart = flameDrag.startViewStart + dxMs;
+  state.flameViewEnd   = flameDrag.startViewEnd   + dxMs;
+  renderFlame();
+});
+
+
+/* ------------------- Perfetto export ------------------- */
+
+function openPerfetto() {
+  if (!state.spans.length) {
+    alert('No spans loaded. Drop a spans.jsonl file first.');
+    return;
+  }
+
+  // Convert spans → Chrome Trace Format (complete events, ph:"X").
+  const traceEvents = state.spans
+    .filter(s => s.start_time_unix_nano && s.end_time_unix_nano)
+    .map(s => {
+      const workload = resolveWorkloadName(s) || s.trace_id || 'unknown';
+      return {
+        name: s.name,
+        cat:  workload,
+        ph:   'X',
+        ts:   s.start_time_unix_nano / 1000,   // ns → µs
+        dur:  (s.end_time_unix_nano - s.start_time_unix_nano) / 1000,
+        pid:  workload,
+        tid:  s.span_id,
+        args: s.attributes || {},
+      };
+    });
+
+  const payload = JSON.stringify(traceEvents);
+  const win = window.open('https://ui.perfetto.dev');
+  if (!win) {
+    alert('Pop-up blocked. Allow pop-ups from this page and try again.');
+    return;
+  }
+
+  const ORIGIN = 'https://ui.perfetto.dev';
+  const poll = setInterval(() => {
+    win.postMessage('PING', ORIGIN);
+  }, 500);
+
+  window.addEventListener('message', function handler(e) {
+    if (e.source !== win || e.origin !== ORIGIN) return;
+    if (e.data === 'PONG') {
+      clearInterval(poll);
+      window.removeEventListener('message', handler);
+      win.postMessage({
+        perfetto: {
+          buffer: new TextEncoder().encode(payload),
+          title:  'spans.jsonl',
+          url:    'spans.jsonl',
+        },
+      }, ORIGIN);
+    }
+  });
+}
+
+/* ------------------- trace swimlane renderer ------------------- */
+
+function renderTrace() {
+  const container = document.getElementById('trace-view');
+  if (!state.spans.length) {
+    container.innerHTML = '<div style="padding:40px;color:var(--fg-dim);text-align:center;font-style:italic;">drop a spans.jsonl file to begin</div>';
+    return;
+  }
+
+  const timedSpans = state.spans.filter(s => s.start_time_unix_nano && s.end_time_unix_nano);
+  if (!timedSpans.length) {
+    container.innerHTML = '<div style="padding:40px;color:var(--fg-dim);text-align:center;font-style:italic;">no renderable spans (all lack timing data)</div>';
+    return;
+  }
+
+  const totalStartMs = 0;
+  const totalEndMs = (Math.max(...timedSpans.map(s => s.end_time_unix_nano)) - state.originNs) / 1e6;
+
+  if (state.traceViewStart == null) state.traceViewStart = totalStartMs;
+  if (state.traceViewEnd   == null) state.traceViewEnd   = totalEndMs || 1;
+
+  const viewStart = state.traceViewStart;
+  const viewEnd   = state.traceViewEnd;
+  const viewSpan  = viewEnd - viewStart;
+
+  const ROW_H  = 22;
+  const ROW_GAP = 1;
+  const AXIS_H = 24;
+
+  // Group spans by workload lane. Each lane is one workload subtree.
+  // Key = workload.name from the nearest workload ancestor. Spans above the
+  // workload level (serving_run etc.) are skipped — they span the full time
+  // range and clutter the swimlane view; the flamegraph shows them better.
+  const laneMap = new Map();
+  for (const s of timedSpans) {
+    const wn = resolveWorkloadName(s);
+    if (!wn) continue; // skip serving_run and other above-workload spans
+    if (!laneMap.has(wn)) laneMap.set(wn, []);
+    laneMap.get(wn).push(s);
+  }
+  // Sort lanes by earliest span.
+  const lanes = [...laneMap.entries()].map(([key, spans]) => {
+    spans.sort((a, b) => a.start_time_unix_nano - b.start_time_unix_nano);
+    return { key, spans, earliest: spans[0].start_time_unix_nano };
+  }).sort((a, b) => a.earliest - b.earliest);
+
+  container.innerHTML = '';
+  const wrap = document.createElement('div');
+  wrap.className = 'trace-container';
+  container.appendChild(wrap);
+
+  // Sticky axis
+  const axisDiv = document.createElement('div');
+  axisDiv.className = 'trace-axis';
+  wrap.appendChild(axisDiv);
+
+  function drawTraceAxis(w) {
+    const tickCount = Math.min(10, Math.max(4, Math.floor(w / 80)));
+    let svg = `<svg width="${w}" height="${AXIS_H}" xmlns="http://www.w3.org/2000/svg" style="display:block">`;
+    const zeroX = ((0 - viewStart) / viewSpan) * w;
+    if (zeroX >= 0 && zeroX <= w) {
+      svg += `<line x1="${zeroX.toFixed(1)}" y1="0" x2="${zeroX.toFixed(1)}" y2="${AXIS_H}" stroke="var(--accent)" stroke-width="1" opacity="0.4"/>`;
+    }
+    for (let i = 0; i <= tickCount; i++) {
+      const ms = viewStart + (viewSpan * i / tickCount);
+      const x  = (i / tickCount) * w;
+      svg += `<line x1="${x.toFixed(1)}" y1="18" x2="${x.toFixed(1)}" y2="${AXIS_H}" stroke="var(--rule)" stroke-width="1"/>`;
+      const label  = fmtDuration(ms);
+      const anchor = x < 20 ? 'start' : x > w - 20 ? 'end' : 'middle';
+      svg += `<text x="${x.toFixed(1)}" y="14" text-anchor="${anchor}" font-family="JetBrains Mono,monospace" font-size="10" fill="var(--fg-muted)">${label}</text>`;
+    }
+    svg += '</svg>';
+    axisDiv.innerHTML = svg;
+  }
+
+  // Build each lane.
+  const allLaneSvgWraps = [];
+
+  for (const lane of lanes) {
+    const laneEl = document.createElement('div');
+    laneEl.className = 'trace-lane';
+    wrap.appendChild(laneEl);
+
+    // Lane header (sticky label)
+    const header = document.createElement('div');
+    header.className = 'trace-lane-header';
+    const shortKey = lane.key.length > 60 ? lane.key.slice(0, 58) + '…' : lane.key;
+    header.textContent = shortKey;
+    header.title = lane.key;
+    laneEl.appendChild(header);
+
+    // Compute max depth within this lane. Depth is relative to each span's
+    // own subtree root within the lane — we use the existing .depth field
+    // but offset it so each root in the lane starts at 0.
+    // Within a lane, spans belong to one workload so they typically share
+    // a single root. We walk to find roots and their depth offsets.
+    const laneRootIds = new Set();
+    const laneSpanSet = new Set(lane.spans.map(s => s.span_id));
+    for (const s of lane.spans) {
+      const parentInLane = s.parent_span_id && laneSpanSet.has(s.parent_span_id);
+      if (!parentInLane) laneRootIds.add(s.span_id);
+    }
+
+    // Assign lane-local row to each span: find root ancestor within lane,
+    // use accumulated offset from roots sorted by time.
+    const laneRoots = lane.spans.filter(s => laneRootIds.has(s.span_id));
+    laneRoots.sort((a, b) => a.start_time_unix_nano - b.start_time_unix_nano);
+
+    const laneRootOffset = new Map();
+    let laneRunning = 0;
+    for (const root of laneRoots) {
+      laneRootOffset.set(root.span_id, laneRunning);
+      let subtreeMax = 0;
+      const wk = (node) => {
+        if ((node.depth || 0) > subtreeMax) subtreeMax = node.depth || 0;
+        for (const c of node.children) if (laneSpanSet.has(c.span_id)) wk(c);
+      };
+      wk(root);
+      // root.depth is absolute; we want relative depth within the subtree.
+      // For the first level root.depth may be non-zero (e.g., the root has
+      // depth=0 from buildTree). Use subtreeMax - root.depth for the subtree height.
+      const subtreeHeight = (subtreeMax - (root.depth || 0)) + 1;
+      laneRunning += subtreeHeight;
+    }
+    const laneMaxRows = laneRunning || 1;
+
+    function laneRow(span) {
+      // Walk up within lane to find lane-root ancestor.
+      let cur = span;
+      while (cur.parent_span_id && laneSpanSet.has(cur.parent_span_id)) {
+        cur = state.tree.byId[cur.parent_span_id] || cur;
+        if (!laneSpanSet.has(cur.span_id)) break;
+      }
+      const rootSpan = cur;
+      const offset = laneRootOffset.get(rootSpan.span_id) ?? 0;
+      const rootDepth = rootSpan.depth || 0;
+      return offset + ((span.depth || 0) - rootDepth);
+    }
+
+    const laneH = laneMaxRows * (ROW_H + ROW_GAP);
+    const svgWrap = document.createElement('div');
+    svgWrap.className = 'trace-lane-svg-wrap';
+    svgWrap.style.height = laneH + 'px';
+    laneEl.appendChild(svgWrap);
+    allLaneSvgWraps.push({ svgWrap, lane, laneRow, laneH });
+
+    // Tooltip + click events — delegate from svgWrap
+    svgWrap.addEventListener('mousemove', (e) => {
+      const bar = e.target.closest && e.target.closest('rect[data-id]');
+      if (bar) {
+        const span = state.tree.byId[bar.dataset.id];
+        if (span) showTooltip(span, e.clientX, e.clientY);
+      } else {
+        hideTooltip();
+      }
+    });
+    svgWrap.addEventListener('mouseleave', hideTooltip);
+    svgWrap.addEventListener('click', (e) => {
+      const bar = e.target.closest && e.target.closest('rect[data-id]');
+      if (!bar) return;
+      const span = state.tree.byId[bar.dataset.id];
+      if (!span) return;
+      state.selected = span.span_id;
+      renderTrace();
+      renderDetail(span);
+    });
+  }
+
+  function buildAllLanes(w) {
+    const MIN_LABEL_W = 40;
+    for (const { svgWrap, lane, laneRow: lr, laneH } of allLaneSvgWraps) {
+      let defs = '<defs>';
+      let rects = '';
+      let texts = '';
+
+      for (const span of lane.spans) {
+        const startMs = (span.start_time_unix_nano - state.originNs) / 1e6;
+        const endMs   = (span.end_time_unix_nano   - state.originNs) / 1e6;
+        const durMs   = endMs - startMs;
+
+        const leftFrac  = (startMs - viewStart) / viewSpan;
+        const widthFrac = durMs / viewSpan;
+        const x  = leftFrac * w;
+        const bw = Math.max(2, widthFrac * w);
+
+        if (x + bw < 0 || x > w) continue;
+
+        const row = lr(span);
+        const y   = row * (ROW_H + ROW_GAP);
+
+        const band = durationBand(durMs, state.percentiles[span.name]);
+        const fill = FLAME_COLORS[band] ?? FLAME_COLORS[''];
+
+        const isSelected = state.selected === span.span_id;
+        const strokeAttrs = isSelected
+          ? ` stroke="var(--accent)" stroke-width="1.5"`
+          : ` stroke="rgba(255,255,255,0.07)" stroke-width="0.5"`;
+
+        const clipId = 'tc-' + span.span_id;
+        defs += `<clipPath id="${clipId}"><rect x="${x.toFixed(1)}" y="${y}" width="${bw.toFixed(1)}" height="${ROW_H}"/></clipPath>`;
+        rects += `<rect class="flame-bar${isSelected ? ' selected' : ''}" x="${x.toFixed(1)}" y="${y}" width="${bw.toFixed(1)}" height="${ROW_H}" fill="${fill}" opacity="${isSelected ? 1 : 0.88}"${strokeAttrs} data-id="${span.span_id}"/>`;
+
+        if (bw >= MIN_LABEL_W) {
+          const tx = Math.max(x, 0) + 4;
+          texts += `<text clip-path="url(#${clipId})" x="${tx.toFixed(1)}" y="${(y + 14).toFixed(1)}" font-family="JetBrains Mono,monospace" font-size="10" fill="rgba(211,197,168,0.92)" pointer-events="none">${span.name.replace(/&/g,'&amp;').replace(/</g,'&lt;')}</text>`;
+        }
+      }
+
+      defs += '</defs>';
+      svgWrap.innerHTML = `<svg width="${w}" height="${laneH}" xmlns="http://www.w3.org/2000/svg" style="display:block;cursor:default">${defs}${rects}${texts}</svg>`;
+    }
+  }
+
+  function draw() {
+    const w = wrap.clientWidth || container.clientWidth || 800;
+    if (w === 0) { requestAnimationFrame(draw); return; }
+    drawTraceAxis(w);
+    buildAllLanes(w);
+  }
+  draw();
+  requestAnimationFrame(draw);
+}
+
+// Trace wheel zoom.
+document.getElementById('trace-view').addEventListener('wheel', (e) => {
+  if (!state.spans.length) return;
+  e.preventDefault();
+  const container = document.getElementById('trace-view');
+  const rect = container.getBoundingClientRect();
+  const w = rect.width;
+  if (w <= 0) return;
+  const frac = Math.max(0, Math.min(1, (e.clientX - rect.left) / w));
+  const viewSpan = state.traceViewEnd - state.traceViewStart;
+  const pivot = state.traceViewStart + frac * viewSpan;
+  const zoomFactor = e.ctrlKey ? 1 + e.deltaY * 0.01 : 1 + e.deltaY * 0.003;
+  const newSpan = Math.max(1, viewSpan * zoomFactor);
+  state.traceViewStart = pivot - frac * newSpan;
+  state.traceViewEnd   = pivot + (1 - frac) * newSpan;
+  renderTrace();
+}, { passive: false });
+
+// Trace left-drag pan.
+document.getElementById('trace-view').addEventListener('mousedown', (e) => {
+  if (e.button !== 0) return;
+  traceDrag.active = true;
+  traceDrag.startX = e.clientX;
+  traceDrag.startViewStart = state.traceViewStart;
+  traceDrag.startViewEnd   = state.traceViewEnd;
+  document.body.style.cursor = 'grabbing';
+});
+
+document.addEventListener('mousemove', (e) => {
+  if (!traceDrag.active) return;
+  const container = document.getElementById('trace-view');
+  const w = container.clientWidth || 800;
+  if (w <= 0) return;
+  const viewSpan = traceDrag.startViewEnd - traceDrag.startViewStart;
+  const dxMs = -((e.clientX - traceDrag.startX) / w) * viewSpan;
+  state.traceViewStart = traceDrag.startViewStart + dxMs;
+  state.traceViewEnd   = traceDrag.startViewEnd   + dxMs;
+  renderTrace();
+});
+
+function loadSpans(spans) {
+  state.spans = spans;
+  state.tree = buildTree(spans);
+  state.percentiles = computeDurationPercentiles(spans);
+  state.originNs = spans.length ? Math.min(...spans.map(s => s.start_time_unix_nano)) : 0;
+  // Default: expand first two levels so the user lands on structure, not a
+  // single root row.
+  state.expanded = new Set();
+  const expand = (node, untilDepth) => {
+    if (node.depth < untilDepth) state.expanded.add(node.span_id);
+    for (const c of node.children) expand(c, untilDepth);
+  };
+  for (const r of state.tree.roots) expand(r, 2);
+
+  const errors = spans.filter(s => (s.status && s.status.code) === 'ERROR').length;
+  const traces = new Set(spans.map(s => s.trace_id)).size;
+  document.getElementById('stat-count').textContent = spans.length;
+  document.getElementById('stat-traces').textContent = traces;
+  document.getElementById('stat-errors').textContent = errors;
+  if (errors) document.getElementById('stat-errors').style.color = 'var(--err)';
+
+  // Reset gantt/flame/trace viewports to fit-to-data on new file load.
+  state.ganttViewStart = null;
+  state.ganttViewEnd = null;
+  state.flameViewStart = null;
+  state.flameViewEnd = null;
+  state.traceViewStart = null;
+  state.traceViewEnd = null;
+
+  renderCurrentView();
+}
+
+/* ------------------- file loading ------------------- */
+
+function handleFile(file) {
+  const reader = new FileReader();
+  reader.onload = () => loadSpans(parseJsonl(reader.result));
+  reader.readAsText(file);
+}
+
+document.getElementById('file-input').addEventListener('change', (e) => {
+  if (e.target.files[0]) handleFile(e.target.files[0]);
+});
+
+// Whole-body drop target so the user doesn't have to aim precisely.
+document.body.addEventListener('dragover', (e) => {
+  e.preventDefault();
+  document.body.classList.add('dragover');
+});
+document.body.addEventListener('dragleave', (e) => {
+  if (e.target === document.body) document.body.classList.remove('dragover');
+});
+document.body.addEventListener('drop', (e) => {
+  e.preventDefault();
+  document.body.classList.remove('dragover');
+  const f = e.dataTransfer.files[0];
+  if (f) handleFile(f);
+});
+
+/* ------------------- interaction ------------------- */
+
+document.getElementById('q').addEventListener('input', (e) => {
+  state.query = e.target.value.trim();
+  renderCurrentView();
+});
+document.getElementById('q').addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') { e.target.value = ''; state.query = ''; renderCurrentView(); }
+});
+
+document.getElementById('tree-body').addEventListener('click', (e) => {
+  const row = e.target.closest('.row');
+  if (!row) return;
+  const id = row.dataset.id;
+  const span = state.tree.byId[id];
+  // Click anywhere on a parent row toggles expansion; leaf rows just select.
+  // Selection always updates so the detail pane follows the last click.
+  if (span.children.length) {
+    if (state.expanded.has(id)) state.expanded.delete(id);
+    else state.expanded.add(id);
+  }
+  state.selected = id;
+  render();
+  renderDetail(span);
+});
+
+// Slash key focuses the filter, classic instrument-panel habit.
+document.addEventListener('keydown', (e) => {
+  if (e.key === '/' && document.activeElement.tagName !== 'INPUT') {
+    e.preventDefault();
+    document.getElementById('q').focus();
+  }
+});
+</script>
+</body>
+</html>

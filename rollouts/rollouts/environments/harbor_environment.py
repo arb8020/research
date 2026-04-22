@@ -87,6 +87,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 _LIVE_HARBOR_BACKENDS: dict[str, Any] = {}
+_MODAL_FILE_IO_CHUNK_BYTES = 16 * 1024 * 1024
 
 
 # ── Harbor availability ─────────────────────────────────────────────────────
@@ -119,6 +120,88 @@ except ImportError as exc:
     _HARBOR_MODAL_IMPORT_ERROR = str(exc)
 
 
+async def _modal_sandbox_upload_file(
+    *,
+    sandbox: Any,
+    source_path: Path | str,
+    target_path: str,
+) -> None:
+    source = Path(source_path)
+    target_parent = str(PurePosixPath(target_path).parent)
+
+    if target_parent not in ("", ".", "/"):
+        await sandbox.mkdir.aio(target_parent, parents=True)
+
+    remote_file = await sandbox.open.aio(target_path, "wb")
+    try:
+        with source.open("rb") as local_file:
+            while True:
+                chunk = local_file.read(_MODAL_FILE_IO_CHUNK_BYTES)
+                if not chunk:
+                    break
+                await remote_file.write.aio(chunk)
+    finally:
+        await remote_file.close.aio()
+
+
+async def _modal_sandbox_download_file(
+    *,
+    sandbox: Any,
+    source_path: str,
+    target_path: Path | str,
+) -> None:
+    local_path = Path(target_path)
+    local_path.parent.mkdir(parents=True, exist_ok=True)
+
+    remote_file = await sandbox.open.aio(source_path, "rb")
+    try:
+        with local_path.open("wb") as local_file:
+            while True:
+                chunk = await remote_file.read.aio(_MODAL_FILE_IO_CHUNK_BYTES)
+                if not chunk:
+                    break
+                local_file.write(chunk)
+    finally:
+        await remote_file.close.aio()
+
+
+def _patch_harbor_modal_filesystem_compat(
+    *,
+    harbor_modal_environment_cls: type[Any],
+    sandbox_cls: type[Any],
+) -> None:
+    if hasattr(sandbox_cls, "filesystem"):
+        return
+    if getattr(harbor_modal_environment_cls, "_rollouts_modal_fs_compat", False):
+        return
+
+    async def _sdk_upload_file(self: Any, source_path: Path | str, target_path: str) -> None:
+        if not self._sandbox:
+            raise RuntimeError("Sandbox not found. Please start the environment first.")
+        await _modal_sandbox_upload_file(
+            sandbox=self._sandbox,
+            source_path=source_path,
+            target_path=target_path,
+        )
+
+    async def _sdk_download_file(
+        self: Any,
+        source_path: str,
+        target_path: Path | str,
+    ) -> None:
+        if not self._sandbox:
+            raise RuntimeError("Sandbox not found. Please start the environment first.")
+        await _modal_sandbox_download_file(
+            sandbox=self._sandbox,
+            source_path=source_path,
+            target_path=target_path,
+        )
+
+    harbor_modal_environment_cls._sdk_upload_file = _sdk_upload_file
+    harbor_modal_environment_cls._sdk_download_file = _sdk_download_file
+    harbor_modal_environment_cls._rollouts_modal_fs_compat = True
+
+
 def _require_harbor() -> None:
     """Raise a helpful ImportError if harbor isn't installed."""
     if HARBOR_AVAILABLE:
@@ -148,6 +231,12 @@ def _require_harbor_docker() -> None:
 def _require_harbor_modal() -> None:
     _require_harbor()
     if _HarborModalEnvironment is not None:
+        import modal
+
+        _patch_harbor_modal_filesystem_compat(
+            harbor_modal_environment_cls=_HarborModalEnvironment,
+            sandbox_cls=modal.Sandbox,
+        )
         return
     raise ImportError(
         "Harbor ModalEnvironment is unavailable. Install Harbor with Modal support.\n"

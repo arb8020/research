@@ -13,7 +13,8 @@ import trio
 from argus.event_log import RunEventSinks, build_jsonl_run_event_sinks, emit_run_event
 from rollouts.eval.configs import EndpointConfig, resolve_eval_task_spec
 from rollouts.eval.endpoint_realization import realize_worker_backed_endpoint
-from rollouts.eval.run import REPO_ROOT, load_config_module
+from rollouts.eval.run import load_config_module
+from rollouts.remote_runtime import resolve_consumer_project
 
 
 def _resolve_eval_worker(config_module: Any) -> Any | None:
@@ -65,7 +66,7 @@ def _emit_child_failure_summary(
 
 
 def _spawn_child(
-    *, command: list[str], output_dir: Path, child_env: dict[str, str]
+    *, command: list[str], output_dir: Path, child_env: dict[str, str], cwd: Path
 ) -> subprocess.Popen[bytes]:
     stdout_log = output_dir / "stdout.log"
     stderr_log = output_dir / "stderr.log"
@@ -74,7 +75,7 @@ def _spawn_child(
     try:
         return subprocess.Popen(
             command,
-            cwd=str(REPO_ROOT.parent),
+            cwd=str(cwd),
             env=child_env,
             stdin=subprocess.DEVNULL,
             stdout=stdout_handle,
@@ -93,6 +94,7 @@ async def _run_eval(
     *,
     config_path: Path,
     output_dir: Path,
+    consumer_project_root: Path,
     max_samples: int | None,
     force_deploy_committed: bool,
 ) -> int:
@@ -122,12 +124,23 @@ async def _run_eval(
             run_name=output_dir.name,
             force_deploy_committed=force_deploy_committed,
             run_logger=run_logger,
+            consumer_project_root=consumer_project_root,
         ) as realized:
             child_env["ROLLOUTS_ENDPOINT_BASE_URL"] = realized.endpoint_config.base_url or ""
-            proc = _spawn_child(command=command, output_dir=output_dir, child_env=child_env)
+            proc = _spawn_child(
+                command=command,
+                output_dir=output_dir,
+                child_env=child_env,
+                cwd=consumer_project_root,
+            )
             return await _wait_for_process(proc)
 
-    proc = _spawn_child(command=command, output_dir=output_dir, child_env=child_env)
+    proc = _spawn_child(
+        command=command,
+        output_dir=output_dir,
+        child_env=child_env,
+        cwd=consumer_project_root,
+    )
     return await _wait_for_process(proc)
 
 
@@ -141,10 +154,12 @@ def main(argv: list[str] | None = None) -> int:
 
     config_path = args.config
     if not config_path.is_absolute():
-        config_path = (REPO_ROOT / config_path).resolve()
+        config_path = (Path.cwd() / config_path).resolve()
 
     output_dir = args.output_dir.resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
+
+    consumer_project_root = Path(resolve_consumer_project(config_path).local_root)
 
     run_logger = _setup_run_logging(output_dir)
     try:
@@ -153,6 +168,7 @@ def main(argv: list[str] | None = None) -> int:
                 _run_eval,
                 config_path=config_path,
                 output_dir=output_dir,
+                consumer_project_root=consumer_project_root,
                 max_samples=args.max_samples,
                 force_deploy_committed=args.force_deploy_committed,
             )

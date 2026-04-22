@@ -1,0 +1,134 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# agent-blame launcher.
+#
+# Usage:
+#   ./agent-blame <repo>              # attribute working tree
+#   ./agent-blame <repo> --sha <ref>  # attribute a specific commit
+#
+# Opens a tmux session with two panes: attribution API server (Python) on
+# the top, vite dev server on the bottom. Detach with Ctrl-B D; kill the
+# whole thing by killing the session.
+#
+# Falls back to a foreground tee-prefixed split (like playcalling-game's
+# dev.sh) if tmux is not available.
+
+ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
+UI_DIR="$ROOT_DIR/ui"
+
+API_PORT="${API_PORT:-7981}"
+UI_PORT="${UI_PORT:-5181}"
+SESSION_NAME="${SESSION_NAME:-agent-blame}"
+PY="${PY:-/Users/chiraagbalu/research/.venv/bin/python}"
+
+if [[ $# -lt 1 ]]; then
+  cat >&2 <<EOF
+usage: $(basename "$0") <repo> [--sha <ref>]
+
+  <repo>        path to the repo (or subdir of a git repo) to attribute
+  --sha <ref>   reconcile against this git SHA instead of the working tree
+
+Env overrides:
+  API_PORT       default 7979
+  UI_PORT        default 5173
+  SESSION_NAME   default 'agent-blame'
+  PY             python to use (default: workspace venv)
+EOF
+  exit 2
+fi
+
+REPO="$1"; shift
+EXTRA_ARGS=("$@")
+
+if [[ ! -d "$REPO" ]]; then
+  echo "error: repo $REPO does not exist" >&2
+  exit 2
+fi
+if [[ ! -x "$PY" ]]; then
+  echo "error: python $PY not executable" >&2
+  exit 2
+fi
+if [[ ! -d "$UI_DIR/node_modules" ]]; then
+  echo "first run: installing UI deps..." >&2
+  (cd "$UI_DIR" && npm install)
+fi
+
+# Free any stale processes on our ports. This matches playcalling-game's dev.sh
+# behavior — cheap and avoids the confusing "proxy silently empty" failure
+# mode we hit when a previous server is half-dead.
+for port in "$API_PORT" "$UI_PORT"; do
+  # -iTCP:<port> catches both IPv4 and IPv6 listeners. -sTCP:LISTEN
+  # filters out clients that merely happen to have a local port number
+  # matching. The bare `lsof -ti :$port` form misses IPv6-bound
+  # processes in some macOS lsof builds — we hit exactly this earlier.
+  pids=$(lsof -ti "TCP:$port" -sTCP:LISTEN 2>/dev/null || true)
+  if [[ -n "$pids" ]]; then
+    echo "killing stale pid(s) $pids on :$port" >&2
+    echo "$pids" | xargs kill -9 2>/dev/null || true
+    sleep 0.3
+  fi
+done
+
+API_CMD=("$PY" "$ROOT_DIR/server.py" "$REPO" --port "$API_PORT" "${EXTRA_ARGS[@]}")
+# API_PORT is exported so vite.config.js's proxy picks up the same value.
+UI_CMD=(env "API_PORT=$API_PORT" npm run dev -- --port "$UI_PORT" --host 127.0.0.1)
+
+# If tmux is available, use it. Otherwise fall back to a tee-prefixed split.
+if command -v tmux >/dev/null 2>&1; then
+  # Kill any prior session of the same name so re-running doesn't stack.
+  if tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
+    echo "killing existing tmux session '$SESSION_NAME'" >&2
+    tmux kill-session -t "$SESSION_NAME"
+  fi
+
+  # Quote commands for tmux (which receives them as a shell string).
+  api_cmd_str=$(printf '%q ' "${API_CMD[@]}")
+  ui_cmd_str=$(printf '%q ' "${UI_CMD[@]}")
+
+  tmux new-session -d -s "$SESSION_NAME" -n main -c "$ROOT_DIR" "$api_cmd_str"
+  tmux split-window -v -t "$SESSION_NAME:main" -c "$UI_DIR" "$ui_cmd_str"
+  tmux select-pane -t "$SESSION_NAME:main.0"
+
+  echo "✅ started tmux session '$SESSION_NAME'"
+  echo "   api: http://127.0.0.1:$API_PORT"
+  echo "   ui:  http://127.0.0.1:$UI_PORT"
+  echo
+  echo "attach:  tmux attach -t $SESSION_NAME"
+  echo "detach:  Ctrl-B D"
+  echo "kill:    tmux kill-session -t $SESSION_NAME"
+
+  # Auto-attach by default so this reads as a single command. Set
+  # SESSION_NAME=... or AGENT_BLAME_NOATTACH=1 to skip.
+  if [[ -z "${AGENT_BLAME_NOATTACH:-}" && -z "${TMUX:-}" ]]; then
+    exec tmux attach -t "$SESSION_NAME"
+  fi
+  exit 0
+fi
+
+# --- tmux-less fallback -----------------------------------------------------
+
+echo "tmux not found — running in tee-prefixed foreground mode" >&2
+
+cleanup() {
+  echo -e "\n🛑 stopping agent-blame..."
+  [[ -n "${API_PID:-}" ]] && kill "$API_PID" >/dev/null 2>&1 || true
+  [[ -n "${UI_PID:-}" ]]  && kill "$UI_PID"  >/dev/null 2>&1 || true
+  wait >/dev/null 2>&1 || true
+  echo "✅ stopped"
+}
+trap cleanup INT TERM
+
+( "${API_CMD[@]}" ) 2>&1 | sed -e 's/^/[api] /' &
+API_PID=$!
+sleep 2
+( cd "$UI_DIR" && "${UI_CMD[@]}" ) 2>&1 | sed -e 's/^/[ui]  /' &
+UI_PID=$!
+
+echo
+echo "api: http://127.0.0.1:$API_PORT"
+echo "ui:  http://127.0.0.1:$UI_PORT"
+echo
+echo "press ENTER or Ctrl-C to stop"
+read -r _ || true
+cleanup

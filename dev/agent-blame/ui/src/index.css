@@ -1,0 +1,103 @@
+@import "tailwindcss";
+
+/* Geist fonts — same CDN Devin uses */
+@font-face {
+  font-family: "Geist";
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url(https://fonts.gstatic.com/s/geist/v3/gyByhwUxId8gMEwcGFWNOITd.woff2) format("woff2");
+}
+@font-face {
+  font-family: "Geist Mono";
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url(https://fonts.gstatic.com/s/geistmono/v2/or3NQ6H61MkMTYa5PGd-Gg.woff2) format("woff2");
+}
+
+/* Devin's exact design tokens */
+:root {
+  /* Raw color palette */
+  --red-900: #7f1d1d;
+  --green-900: #14532d;
+  --blue-900: #1e3a5f;
+  --neutral-950: #0a0a0a;
+  --neutral-800: #262626;
+
+  /* Devin semantic tokens (dark mode — their app is dark-only in practice) */
+  --bg-page: rgb(20 20 20);
+  --bg-wash: rgb(25 25 25);
+  --bg-elevated: rgb(31 31 31);
+  --bg-component: #252525;
+  --bg-diff: #1e1e1e;
+  --bg-surface: #181818;
+
+  --text-primary: rgb(255 255 255 / 0.9);
+  --text-secondary: rgb(255 255 255 / 0.52);
+  --text-disabled: rgb(255 255 255 / 0.4);
+
+  --border-primary: rgb(255 255 255 / 0.08);
+  --color-border: #353535;
+  --color-border-hover: #454545;
+
+  --text-green: rgb(0 236 126);
+  --text-red: rgb(245 59 58);
+  --bg-green: rgb(0 236 126 / 0.08);
+  --bg-red: rgb(245 59 58 / 0.12);
+
+  /* Word-level diff highlight (from PRSidebar.css) */
+  --word-diff-removed-bg: var(--red-900);
+  --word-diff-added-bg: var(--green-900);
+  --word-diff-text: white;
+
+  --font-sans: "Geist", system-ui, sans-serif;
+  --font-mono: "Geist Mono", ui-monospace, monospace;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body, #root {
+  height: 100%;
+  overflow: hidden;
+  background: var(--bg-page);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Scrollbars — Devin style */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255,255,255,0.1) transparent;
+}
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.18); }
+
+/* Diff row backgrounds — exactly Devin's layered gradient approach */
+.diff-row-added {
+  background-image:
+    linear-gradient(rgb(0 236 126 / 0.08), rgb(0 236 126 / 0.08)),
+    linear-gradient(#1e1e1e, #1e1e1e);
+}
+.diff-row-removed {
+  background-image:
+    linear-gradient(rgb(245 59 58 / 0.12), rgb(245 59 58 / 0.12)),
+    linear-gradient(#1e1e1e, #1e1e1e);
+}
+
+/* Word-level highlights */
+.word-diff-added   { background: var(--word-diff-added-bg);   color: var(--word-diff-text); border-radius: 2px; }
+.word-diff-removed { background: var(--word-diff-removed-bg); color: var(--word-diff-text); border-radius: 2px; }
+
+/* Diff code lines — no wrapping */
+.diff-code {
+  white-space: pre;
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  line-height: 20px;
+  tab-size: 4;
+}
