@@ -1005,6 +1005,18 @@ def _scenario_manifest(
     }
 
 
+def _engine_metrics_interval_s(scenario: ServingScenario) -> float:
+    """Choose a scrape cadence at the serving-run boundary.
+
+    Short finite runs benefit from denser scrapes for trend inspection.
+    Long soaks keep the poller's 5s default so telemetry volume does not
+    silently triple.
+    """
+    if scenario.duration is None:
+        return 2.0
+    return 5.0 if scenario.duration.total_seconds() >= 3600.0 else 2.0
+
+
 async def _run_scenario(
     config_path: Path,
     scenario: ServingScenario,
@@ -1168,6 +1180,7 @@ async def _run_scenario(
                             poll_engine_metrics,
                             base_url=scenario_base_url,
                             output_path=output_dir / "engine_metrics.jsonl",
+                            interval_s=_engine_metrics_interval_s(scenario),
                             cancel_scope=nursery.cancel_scope,
                         )
                     )

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import timedelta
 from pathlib import Path
 
 import pytest
@@ -8,7 +9,7 @@ from rollouts.core import Message, Metric, Score, Trajectory
 from rollouts.eval import AgentRunSpec, EvalOutputConfig, EvalRunConfig, EvalTaskSpec
 from rollouts.eval.configs import ExternalEndpoint
 from rollouts.serving.configs import EvalServingWorkload, ServingOutputConfig, ServingScenario
-from rollouts.serving.run import _run_scenario
+from rollouts.serving.run import _engine_metrics_interval_s, _run_scenario
 from rollouts.training.scoring import FunctionScorer
 from rollouts.training.types import DatasetRow, RowAttempt
 
@@ -45,6 +46,56 @@ async def _attempt_executor(
             metadata={"executor": "test"},
         ),
         metadata={"status": "success", "turns_used": 1},
+    )
+
+
+def test_engine_metrics_interval_s_prefers_dense_scrapes_for_short_runs() -> None:
+    scenario = ServingScenario(
+        endpoint=ExternalEndpoint(
+            url="http://localhost:30000/v1",
+            model="dummy",
+            provider="sglang",
+        ),
+        workloads=[
+            EvalServingWorkload(
+                name="single_turn",
+                eval_task=EvalTaskSpec(
+                    tasks=[{"id": "one", "prompt": "1+1", "answer": 2}],
+                    run_spec=AgentRunSpec(
+                        endpoint=ExternalEndpoint(
+                            url="http://localhost:30000/v1",
+                            model="dummy",
+                            provider="sglang",
+                        ),
+                        attempt_executor=_attempt_executor,
+                    ),
+                    scorer=FunctionScorer(_score_exact_match),
+                    run=EvalRunConfig(
+                        max_concurrent=1,
+                        max_samples=1,
+                        max_turns=1,
+                        verbose=False,
+                        show_progress=False,
+                    ),
+                    output=EvalOutputConfig(experiment_name="base_eval"),
+                ),
+                concurrency=1,
+            )
+        ],
+        output=ServingOutputConfig(experiment_name="serving_smoke"),
+    )
+
+    assert _engine_metrics_interval_s(scenario) == 2.0
+    assert (
+        _engine_metrics_interval_s(
+            ServingScenario(
+                endpoint=scenario.endpoint,
+                workloads=scenario.workloads,
+                output=scenario.output,
+                duration=timedelta(hours=24),
+            )
+        )
+        == 5.0
     )
 
 

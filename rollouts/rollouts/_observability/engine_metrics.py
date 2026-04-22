@@ -195,6 +195,9 @@ async def poll_engine_metrics(
 
     output_file = await trio.open_file(output_path, "a")
     client = httpx.AsyncClient(timeout=_HTTP_TIMEOUT)
+    successful_scrapes = 0
+    total_rows_written = 0
+    logger.info("Started engine metrics poller: url=%s", metrics_url)
     try:
         while True:
             try:
@@ -210,11 +213,18 @@ async def poll_engine_metrics(
                 logger.warning("Skipping engine metrics scrape from %s: %s", metrics_url, exc)
             else:
                 payload = "".join(json.dumps(row) + "\n" for row in rows)
+                successful_scrapes += 1
+                total_rows_written += len(rows)
                 if payload:
                     await output_file.write(payload)
                     await output_file.flush()
             await trio.sleep(interval_s)
     finally:
         with trio.CancelScope(shield=True):
+            logger.info(
+                "Stopped engine metrics poller: scrapes=%d rows_written=%d",
+                successful_scrapes,
+                total_rows_written,
+            )
             await output_file.aclose()
             await client.aclose()

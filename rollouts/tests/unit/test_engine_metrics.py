@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+import logging
+from pathlib import Path
+
 import pytest
 
+from rollouts._observability import engine_metrics
 from rollouts._observability.engine_metrics import (
     _metrics_url_from_base_url,
     _parse_prometheus_metrics,
+    poll_engine_metrics,
 )
 
 
@@ -65,3 +70,47 @@ def test_parse_prometheus_metrics_preserves_kind_and_labels() -> None:
 def test_parse_prometheus_metrics_rejects_malformed_lines() -> None:
     with pytest.raises(ValueError, match="Malformed metric line"):
         _parse_prometheus_metrics("sglang:num_running_reqs", scrape_ts_unix_nano=123)
+
+
+@pytest.mark.trio
+async def test_poll_engine_metrics_logs_start_and_summary(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    payload = """
+    # TYPE sglang:num_running_reqs gauge
+    sglang:num_running_reqs{model_name="demo"} 1
+    """
+
+    class _FakeResponse:
+        def __init__(self, text: str) -> None:
+            self.text = text
+
+        def raise_for_status(self) -> None:
+            return None
+
+    class _FakeClient:
+        async def get(self, url: str) -> _FakeResponse:
+            assert url == "http://localhost:30000/metrics"
+            return _FakeResponse(payload)
+
+        async def aclose(self) -> None:
+            return None
+
+    monkeypatch.setattr(engine_metrics.httpx, "AsyncClient", lambda timeout: _FakeClient())
+
+    logger_name = "rollouts._observability.engine_metrics"
+    with caplog.at_level(logging.INFO, logger=logger_name):
+        with engine_metrics.trio.move_on_after(0.03):
+            await poll_engine_metrics(
+                base_url="http://localhost:30000/v1",
+                output_path=tmp_path / "engine_metrics.jsonl",
+                interval_s=0.01,
+            )
+
+    messages = [record.getMessage() for record in caplog.records]
+    assert "Started engine metrics poller: url=http://localhost:30000/metrics" in messages
+    assert any(
+        message.startswith("Stopped engine metrics poller: scrapes=") for message in messages
+    )
