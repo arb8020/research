@@ -43,6 +43,7 @@ from agent_blame.reconcile import (
     reconcile,
 )
 from agent_blame.sources import SourceReader, git_sha_reader, working_tree_reader
+from agent_blame.transcript import TranscriptNotFound, load_transcript
 
 logger = logging.getLogger(__name__)
 
@@ -200,6 +201,26 @@ def make_handler(
                     return
                 self._send_json(_attribution_to_json(fa))
                 return
+            if route == "/api/session":
+                source = (params.get("source") or [""])[0]
+                session_id = (params.get("session_id") or [""])[0]
+                if not source or not session_id:
+                    self._send_json({"error": "need ?source=X&session_id=Y"}, status=400)
+                    return
+                try:
+                    messages = load_transcript(source, session_id)
+                except TranscriptNotFound as e:
+                    self._send_404(str(e))
+                    return
+                except ValueError as e:
+                    self._send_json({"error": str(e)}, status=400)
+                    return
+                self._send_json({
+                    "source": source,
+                    "session_id": session_id,
+                    "messages": messages,
+                })
+                return
             self._send_404()
 
         def do_POST(self):
@@ -211,11 +232,6 @@ def make_handler(
                 self._send_json({
                     "response": f"[stub] received {message!r}. Chat not wired up yet.",
                 })
-                return
-            if self.path == "/api/session":
-                # TODO: given {source, session_id, tool_call_id}, load the
-                # session's JSONL and return messages around that tool call.
-                self._send_json({"response": "[stub] session lookup not wired up yet."})
                 return
             self._send_404()
 

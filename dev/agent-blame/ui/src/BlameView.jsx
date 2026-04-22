@@ -12,7 +12,7 @@
 // reuses pr-bot's chevron + filename + dir layout (Devin-exact) with
 // per-file attribution counts replacing the +/- counts.
 
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 import { useSingleFileHighlight } from './useShiki'
 
 // Deterministic color per session. 12-slot palette picked to be distinct
@@ -34,25 +34,63 @@ function escHtml(s) {
   return String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
 }
 
-function Gutter({ edit }) {
+function Gutter({ edit, hovered, onHover, onLeave, onClick }) {
   const color = edit ? colorFor(edit.source, edit.session_id) : 'transparent'
-  const title = edit
-    ? `${edit.source} ${edit.session_id.slice(0, 8)}  (${new Date(edit.timestamp).toLocaleString()})`
-    : 'unknown'
+  const interactive = !!edit
   return (
     <span
-      title={title}
+      onMouseEnter={interactive ? onHover : undefined}
+      onMouseLeave={interactive ? onLeave : undefined}
+      onClick={interactive ? onClick : undefined}
       style={{
-        width: 3, flexShrink: 0,
+        width: interactive ? (hovered ? 6 : 3) : 3,
+        flexShrink: 0,
         background: color,
         alignSelf: 'stretch',
         marginRight: 8,
+        cursor: interactive ? 'pointer' : 'default',
+        transition: 'width 80ms',
       }}
     />
   )
 }
 
-function Line({ line, highlightedHtml }) {
+function HoverCard({ edit, anchorRect }) {
+  if (!edit || !anchorRect) return null
+  const ts = new Date(edit.timestamp)
+  // Anchor to the right of the gutter stripe, vertically centered on the row.
+  const top = anchorRect.top + anchorRect.height / 2
+  const left = anchorRect.right + 12
+  return (
+    <div style={{
+      position: 'fixed',
+      top, left, transform: 'translateY(-50%)',
+      zIndex: 100,
+      padding: '8px 12px',
+      background: 'var(--bg-elevated)',
+      border: '1px solid var(--color-border)',
+      borderRadius: 4,
+      fontFamily: 'var(--font-mono)', fontSize: 11.5,
+      color: 'var(--text-primary)',
+      boxShadow: '0 4px 16px rgba(0,0,0,0.4)',
+      pointerEvents: 'none', // don't steal hover from the line
+      maxWidth: 360,
+      whiteSpace: 'nowrap',
+    }}>
+      <div style={{ fontWeight: 500 }}>
+        {edit.source} {edit.session_id.slice(0, 8)}
+      </div>
+      <div style={{ color: 'var(--text-secondary)', marginTop: 2 }}>
+        {ts.toLocaleString()}
+      </div>
+      <div style={{ color: 'var(--text-disabled)', marginTop: 4, fontSize: 10.5 }}>
+        click to open session
+      </div>
+    </div>
+  )
+}
+
+function Line({ line, highlightedHtml, onGutterHover, onGutterLeave, onGutterClick, hoveredLine }) {
   return (
     <div
       className="diff-code"
@@ -69,7 +107,13 @@ function Line({ line, highlightedHtml }) {
       }}>
         {line.n}
       </span>
-      <Gutter edit={line.edit} />
+      <Gutter
+        edit={line.edit}
+        hovered={hoveredLine === line.n}
+        onHover={e => onGutterHover(line, e.currentTarget.getBoundingClientRect())}
+        onLeave={onGutterLeave}
+        onClick={() => onGutterClick(line)}
+      />
       <code
         style={{ flex: 1, paddingRight: 24, minWidth: 0, lineHeight: '20px' }}
         dangerouslySetInnerHTML={{
@@ -80,12 +124,13 @@ function Line({ line, highlightedHtml }) {
   )
 }
 
-export function BlameView({ path, blame }) {
+export function BlameView({ path, blame, onSelectEdit }) {
   const content = useMemo(
     () => (blame?.lines ?? []).map(l => l.text).join('\n'),
     [blame]
   )
   const highlighted = useSingleFileHighlight({ path, content })
+  const [hover, setHover] = useState(null)  // {line, rect} | null
 
   if (!blame) return (
     <div style={{
@@ -131,9 +176,18 @@ export function BlameView({ path, blame }) {
       {/* Body */}
       <div style={{ overflowX: 'auto' }}>
         {blame.lines.map((line, i) => (
-          <Line key={line.n} line={line} highlightedHtml={highlighted[i]} />
+          <Line
+            key={line.n}
+            line={line}
+            highlightedHtml={highlighted[i]}
+            hoveredLine={hover?.line.n}
+            onGutterHover={(line, rect) => setHover({ line, rect })}
+            onGutterLeave={() => setHover(null)}
+            onGutterClick={line => onSelectEdit && line.edit && onSelectEdit(line.edit)}
+          />
         ))}
       </div>
+      <HoverCard edit={hover?.line.edit} anchorRect={hover?.rect} />
     </div>
   )
 }

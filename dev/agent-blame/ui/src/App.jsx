@@ -8,12 +8,14 @@ import { useEffect, useState } from 'react'
 import { BlameView } from './BlameView'
 import { ChatPanel } from './ChatPanel'
 import { FileList } from './FileList'
+import { SessionPanel } from './SessionPanel'
 import { useBlame, useFileList, useRepoInfo } from './useBlame'
 
 export default function App() {
   const { info, error: repoError } = useRepoInfo()
   const { files, error: filesError } = useFileList()
   const [selected, setSelected] = useState(null)
+  const [selectedEdit, setSelectedEdit] = useState(null)  // {source, session_id, tool_call_id, timestamp}
   const { blame, error: blameError } = useBlame(selected)
 
   // Default-select the top attributed file once the list arrives.
@@ -77,7 +79,11 @@ export default function App() {
           background: 'var(--bg-page)',
         }}>
           {selected
-            ? <BlameView path={selected} blame={blame} />
+            ? <BlameView
+                path={selected}
+                blame={blame}
+                onSelectEdit={setSelectedEdit}
+              />
             : <div style={{
                 padding: 24, fontFamily: 'var(--font-mono)',
                 fontSize: 13, color: 'var(--text-secondary)',
@@ -87,7 +93,12 @@ export default function App() {
           }
         </div>
 
-        <ChatPanel />
+        {selectedEdit
+          ? <SessionPanel
+              session={selectedEdit}
+              onClose={() => setSelectedEdit(null)}
+            />
+          : <ChatPanel />}
       </div>
     </div>
   )
