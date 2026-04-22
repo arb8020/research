@@ -1,11 +1,12 @@
 """Mixed-workload serving scenario against one DSV3.2 endpoint on MI355X.
 
-Three workloads run in parallel through a single shared sglang endpoint,
+Four workloads run in parallel through a single shared sglang endpoint,
 exercising the multi-workload serving path end-to-end:
 
-- tau2 retail: multi-turn agent with user simulator + tool use
+- tau2 telecom: multi-turn agent with user simulator + tool use
 - kimi_verifier (K2VV): single-turn tool-call conformance requests
 - sharegpt bench: raw throughput load from real first-turn human prompts
+- harbor tb2: multi-turn coding workload with Modal sandbox orchestration
 
 This is the "can we serve a realistic mixture at all, observably" smoke.
 Sample counts are intentionally small so the whole mixture finishes in a
@@ -52,7 +53,7 @@ from rollouts.training.configs import DepsConfig, HardwareConfig
 from rollouts.training.scoring import FunctionScorer
 
 # ---------------------------------------------------------------------------
-# tau2 imports (same fragile sys.path dance as tau2_retail_c4_smoke.py)
+# tau2 imports (same fragile sys.path dance as tau2 telecom/retail configs)
 # ---------------------------------------------------------------------------
 
 _EVALS_ROOT = Path(__file__).resolve().parents[2] / "evals"
@@ -65,14 +66,14 @@ def _ensure_tau2_data_dir() -> None:
         return
 
     candidates = [
-        *Path.home().glob(".cache/uv/git-v0/checkouts/*/*/data/tau2/domains/retail/tasks.json"),
+        *Path.home().glob(".cache/uv/git-v0/checkouts/*/*/data/tau2/domains/telecom/tasks.json"),
         *Path.home().glob(
-            ".cache/uv/archive-v0/*/inspect_evals/tau2/data/domains/retail/tasks.json"
+            ".cache/uv/archive-v0/*/inspect_evals/tau2/data/domains/telecom/tasks.json"
         ),
     ]
     if not candidates:
         raise FileNotFoundError(
-            "Could not locate tau2 retail task data. Set TAU2_DATA_DIR explicitly."
+            "Could not locate tau2 telecom task data. Set TAU2_DATA_DIR explicitly."
         )
     os.environ["TAU2_DATA_DIR"] = str(candidates[0].parents[3])
 
@@ -192,11 +193,12 @@ hardware = HardwareConfig(
 )
 
 # ---------------------------------------------------------------------------
-# Workload 1: tau2 retail (multi-turn agent with user simulator + tools)
+# Workload 1: tau2 telecom (multi-turn agent with user simulator + tools)
 # ---------------------------------------------------------------------------
 
 _TAU2_TASKS = build_sample_rows(
-    domain="retail",
+    domain="telecom",
+    split="base",
     limit=2,
     user_endpoint=DEFAULT_USER_ENDPOINT,
 )
@@ -216,11 +218,11 @@ _tau2_eval = EvalTaskSpec(
     run=EvalRunConfig(
         max_concurrent=2,
         max_samples=2,
-        max_turns=20,
+        max_turns=40,
         verbose=False,
         show_progress=False,
     ),
-    output=EvalOutputConfig(experiment_name="tau2_retail"),
+    output=EvalOutputConfig(experiment_name="tau2_telecom"),
 )
 
 # ---------------------------------------------------------------------------
@@ -306,7 +308,7 @@ serving_scenario = ServingScenario(
     hardware=hardware,
     workloads=[
         EvalServingWorkload(
-            name="tau2_retail",
+            name="tau2_telecom",
             eval_task=_tau2_eval,
             concurrency=2,
             max_samples=2,
