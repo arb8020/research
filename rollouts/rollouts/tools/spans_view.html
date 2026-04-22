@@ -625,6 +625,11 @@ function renderDetail(span) {
     pane.innerHTML = '<div class="empty">click a span to see its full record</div>';
     return;
   }
+  // Single-pane view: just the raw JSON, syntax-colored. The meta/attributes
+  // breakout that used to sit above was redundant with the raw view (every
+  // field shows there already) and ate vertical space. Specialized renderers
+  // for specific span kinds (messages, tool_call diffs, etc.) will live in
+  // other views later, not here.
   pane.innerHTML = '';
 
   const h2 = document.createElement('h2');
@@ -636,71 +641,6 @@ function renderDetail(span) {
   title.textContent = span.name;
   pane.appendChild(title);
 
-  const status = (span.status && span.status.code) || '?';
-  const d = durationMs(span);
-
-  const meta = [
-    ['status', status, status === 'ERROR' ? 'err' : ''],
-    ['duration', fmtDuration(d), ''],
-    ['start', fmtStart(span.start_time_unix_nano, state.originNs), ''],
-    ['trace_id', span.trace_id || '', ''],
-    ['span_id', span.span_id || '', ''],
-    ['parent_span_id', span.parent_span_id || '(root)', ''],
-  ];
-  if (status === 'ERROR' && span.status && span.status.message) {
-    meta.push(['error', span.status.message, 'err']);
-  }
-  for (const [k, v, cls] of meta) {
-    const row = document.createElement('div');
-    row.className = 'meta-row';
-    const kEl = document.createElement('div'); kEl.className = 'k'; kEl.textContent = k;
-    const vEl = document.createElement('div'); vEl.className = 'v' + (cls ? ' ' + cls : ''); vEl.textContent = v;
-    row.append(kEl, vEl);
-    pane.appendChild(row);
-  }
-
-  const attrs = span.attributes || {};
-  const attrKeys = Object.keys(attrs).sort();
-  if (attrKeys.length) {
-    const section = document.createElement('div');
-    section.className = 'section';
-
-    const h3 = document.createElement('h3');
-    h3.innerHTML = '<span>attributes</span>';
-    const copyBtn = document.createElement('button');
-    copyBtn.className = 'copy-btn';
-    copyBtn.textContent = 'copy json';
-    copyBtn.addEventListener('click', async (e) => {
-      e.stopPropagation();
-      try {
-        await navigator.clipboard.writeText(JSON.stringify(span, null, 2));
-        copyBtn.textContent = 'copied';
-        setTimeout(() => { copyBtn.textContent = 'copy json'; }, 1500);
-      } catch { copyBtn.textContent = 'blocked'; }
-    });
-    h3.appendChild(copyBtn);
-    section.appendChild(h3);
-
-    for (const k of attrKeys) {
-      const row = document.createElement('div');
-      row.className = 'meta-row';
-      const kEl = document.createElement('div'); kEl.className = 'k'; kEl.textContent = k;
-      const vEl = document.createElement('div'); vEl.className = 'v';
-      const v = attrs[k];
-      vEl.textContent = (typeof v === 'object') ? JSON.stringify(v) : String(v);
-      row.append(kEl, vEl);
-      section.appendChild(row);
-    }
-    pane.appendChild(section);
-  }
-
-  // Raw JSON block at the bottom for the power user. Syntax-colored by a
-  // tiny regex tokenizer — no external highlighter library needed.
-  const rawSection = document.createElement('div');
-  rawSection.className = 'section';
-  const rawH = document.createElement('h3');
-  rawH.innerHTML = '<span>raw</span>';
-  rawSection.appendChild(rawH);
   const pre = document.createElement('pre');
   // Drop transient view-only fields (we mutate spans at parse time to
   // build the tree — children[] and depth are not on the source jsonl).
@@ -710,8 +650,7 @@ function renderDetail(span) {
     2,
   );
   pre.innerHTML = prettyJson(rawText);
-  rawSection.appendChild(pre);
-  pane.appendChild(rawSection);
+  pane.appendChild(pre);
 }
 
 function prettyJson(text) {
