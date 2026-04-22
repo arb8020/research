@@ -8,6 +8,7 @@ import os
 import sys
 from dataclasses import asdict, replace
 from datetime import datetime
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -1027,6 +1028,10 @@ async def _run_scenario(
         (output_dir / "scenario_manifest.json").write_text(json.dumps(manifest, indent=2))
 
     results: dict[str, dict[str, Any]] = {}
+    scenario_base_url = getattr(endpoint_config, "base_url", None)
+    if scenario_base_url is None:
+        scenario_base_url = endpoint_config.get_base_url()
+    assert isinstance(scenario_base_url, str) and scenario_base_url
 
     async def _run_eval_servng_workload(workload: EvalServingWorkload) -> None:
         workload_output_dir = workload_dirs[workload.name]
@@ -1060,11 +1065,10 @@ async def _run_scenario(
     ) -> None:
         workload_output_dir = workload_dirs[workload.name]
         workload_output_dir.mkdir(parents=True, exist_ok=True)
-        endpoint = materialize_endpoint(endpoint_config)
         try:
             result = await run_tool_call_verifier_workload(
-                base_url=endpoint.base_url,
-                api_key=endpoint.api_key or None,
+                base_url=scenario_base_url,
+                api_key=getattr(endpoint_config, "api_key", None) or None,
                 model=endpoint_config.model,
                 corpus_path=workload.corpus_path,
                 max_samples=workload.max_samples,
@@ -1125,6 +1129,14 @@ async def _run_scenario(
             else:
                 raise AssertionError(f"Unhandled workload variant: {type(workload)!r}")
 
+    async def _run_all_workloads(parent_nursery: trio.Nursery) -> None:
+        try:
+            async with trio.open_nursery() as workload_nursery:
+                for workload in scenario.workloads:
+                    workload_nursery.start_soon(_run_named_workload, workload)
+        finally:
+            parent_nursery.cancel_scope.cancel()
+
     # Drain-aware nursery: if the supervisor sends SIGINT/SIGTERM to this
     # child process (duration elapsed, operator stop, etc), Python raises
     # KeyboardInterrupt which trio repackages as BaseExceptionGroup. We
@@ -1147,9 +1159,19 @@ async def _run_scenario(
         },
     ):
         try:
+            from .._observability.engine_metrics import poll_engine_metrics
+
             async with trio.open_nursery() as nursery:
-                for workload in scenario.workloads:
-                    nursery.start_soon(_run_named_workload, workload)
+                if endpoint_config.provider == "sglang":
+                    nursery.start_soon(
+                        partial(
+                            poll_engine_metrics,
+                            base_url=scenario_base_url,
+                            output_path=output_dir / "engine_metrics.jsonl",
+                            cancel_scope=nursery.cancel_scope,
+                        )
+                    )
+                nursery.start_soon(_run_all_workloads, nursery)
         except BaseExceptionGroup as eg:  # noqa: F821,UP041 — stdlib class, present 3.11+
             # Walk the nested ExceptionGroup leaves. If every leaf is a
             # KeyboardInterrupt or trio.Cancelled, this was a shutdown request

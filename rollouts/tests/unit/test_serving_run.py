@@ -98,6 +98,7 @@ async def test_run_scenario_writes_per_workload_eval_artifacts(tmp_path: Path) -
     assert report["total_samples"] == 4
     assert (output_dir / "scenario_manifest.json").exists()
     assert (output_dir / "scenario_report.json").exists()
+    assert (output_dir / "engine_metrics.jsonl").exists()
     assert (output_dir / "workloads" / "single_turn" / "report.json").exists()
     assert (output_dir / "workloads" / "single_turn" / "events.jsonl").exists()
     assert (output_dir / "workloads" / "calculator" / "report.json").exists()
