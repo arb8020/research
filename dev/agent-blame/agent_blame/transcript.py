@@ -40,6 +40,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from .adapters import claude_code, codex
+from .tool_diff import render_tool_call
 
 logger = logging.getLogger(__name__)
 
@@ -121,10 +122,13 @@ def _render_cc_content(content: Any) -> tuple[str, list[dict]]:
         if t == "text":
             text_parts.append(block.get("text", ""))
         elif t == "tool_use":
+            name = block.get("name", "")
+            inp = block.get("input", {})
             tool_calls.append({
                 "tool_call_id": block.get("id", ""),
-                "name": block.get("name", ""),
-                "input": block.get("input", {}),
+                "name": name,
+                "input": inp,
+                "render": render_tool_call(name, inp),
             })
     return "\n".join(p for p in text_parts if p), tool_calls
 
@@ -270,6 +274,7 @@ def _load_codex(session_id: str) -> list[dict]:
                             "tool_call_id": call_id,
                             "name": name,
                             "input": inp,
+                            "render": render_tool_call(name, inp),
                         }],
                         "tool_result_for": None,
                         "source_type": f"response_item.{ptype}",

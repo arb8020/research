@@ -20,39 +20,133 @@ function relativeTime(iso) {
   }
 }
 
-function ToolCallBlock({ tc, highlight }) {
-  const input = tc.input
-  let body
-  if (typeof input === 'string') {
-    body = input
-  } else if (input == null) {
-    body = ''
-  } else {
-    try {
-      body = JSON.stringify(input, null, 2)
-    } catch {
-      body = String(input)
-    }
-  }
+// One file's worth of hunks from render_tool_call's output.
+function ToolCallFileDiff({ file }) {
   return (
-    <pre style={{
+    <div style={{
+      border: '1px solid var(--color-border)',
+      borderRadius: 3,
+      marginBottom: 6,
+      overflow: 'hidden',
+      background: 'var(--bg-diff)',
+    }}>
+      <div style={{
+        padding: '4px 8px',
+        background: 'var(--bg-elevated)',
+        borderBottom: '1px solid var(--color-border)',
+        fontFamily: 'var(--font-mono)', fontSize: 10.5,
+        color: 'var(--text-secondary)',
+        display: 'flex', gap: 8,
+      }}>
+        <span style={{
+          color: file.op === 'add' ? 'var(--text-green)' : 'var(--text-primary)',
+          fontWeight: 500,
+        }}>
+          {file.op === 'add' ? '+ new' : '~ edit'}
+        </span>
+        <span style={{
+          overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+        }}>
+          {file.path}
+        </span>
+      </div>
+      {file.hunks.map((hunk, hi) => (
+        <div key={hi} style={{
+          borderTop: hi > 0 ? '1px dashed var(--color-border)' : 'none',
+        }}>
+          {hunk.rows.map((row, ri) => (
+            <DiffRow key={ri} row={row} />
+          ))}
+        </div>
+      ))}
+    </div>
+  )
+}
+
+function DiffRow({ row }) {
+  const rowClass =
+    row.op === 'add' ? 'diff-row-added' :
+    row.op === 'remove' ? 'diff-row-removed' : ''
+  const numColor =
+    row.op === 'add' ? 'var(--text-green)' :
+    row.op === 'remove' ? 'var(--text-red)' :
+    'var(--text-disabled)'
+  const sign = row.op === 'add' ? '+' : row.op === 'remove' ? '-' : ' '
+  return (
+    <div className={rowClass} style={{
+      display: 'flex', minHeight: 16, width: '100%',
+      fontFamily: 'var(--font-mono)', fontSize: 11, lineHeight: '16px',
+    }}>
+      <span style={{
+        width: 30, flexShrink: 0, textAlign: 'right',
+        paddingRight: 6,
+        color: numColor, userSelect: 'none',
+      }}>
+        {row.before_line ?? row.after_line ?? ''}
+      </span>
+      <span style={{
+        width: 10, flexShrink: 0, textAlign: 'center',
+        color: numColor, userSelect: 'none',
+      }}>
+        {sign}
+      </span>
+      <code style={{
+        flex: 1, paddingRight: 8, minWidth: 0,
+        whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+        color: 'var(--text-primary)',
+      }}>
+        {row.text || '\u00A0'}
+      </code>
+    </div>
+  )
+}
+
+function ToolCallBlock({ tc, highlight }) {
+  const render = tc.render
+  const renderable = render?.renderable
+
+  return (
+    <div style={{
       margin: 0, padding: 8,
       background: 'var(--bg-diff)',
       borderLeft: `2px solid ${highlight ? 'var(--text-green)' : 'var(--color-border)'}`,
-      color: 'var(--text-primary)',
-      fontFamily: 'var(--font-mono)', fontSize: 11.5, lineHeight: '16px',
-      whiteSpace: 'pre-wrap', wordBreak: 'break-word',
       borderRadius: 3,
-      maxHeight: highlight ? 'none' : 300,
+      maxHeight: highlight ? 'none' : 400,
       overflow: highlight ? 'visible' : 'auto',
     }}>
       <div style={{
         fontSize: 10, color: 'var(--text-disabled)',
-        marginBottom: 4, fontWeight: 500,
+        marginBottom: 6, fontWeight: 500,
+        fontFamily: 'var(--font-mono)',
       }}>
         {tc.name || 'tool'}  ·  {tc.tool_call_id?.slice(0, 16) || ''}
         {highlight && <span style={{ color: 'var(--text-green)', marginLeft: 8 }}>← this edit</span>}
       </div>
+      {renderable
+        ? render.files.map((file, i) => (
+            <ToolCallFileDiff key={i} file={file} />
+          ))
+        : <FallbackJson input={tc.input} />
+      }
+    </div>
+  )
+}
+
+function FallbackJson({ input }) {
+  let body
+  if (typeof input === 'string') body = input
+  else if (input == null) body = ''
+  else {
+    try { body = JSON.stringify(input, null, 2) }
+    catch { body = String(input) }
+  }
+  return (
+    <pre style={{
+      margin: 0,
+      color: 'var(--text-primary)',
+      fontFamily: 'var(--font-mono)', fontSize: 11.5, lineHeight: '16px',
+      whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+    }}>
       {body}
     </pre>
   )
@@ -118,7 +212,7 @@ function Message({ m, targetToolCallId, anchorRef }) {
 }
 
 export function SessionPanel({ session, onClose }) {
-  const { source, session_id, tool_call_id } = session || {}
+  const { source, session_id, tool_call_id, _nonce } = session || {}
   const [data, setData] = useState(null)
   const [error, setError] = useState(null)
   const anchorRef = useRef(null)
@@ -161,7 +255,11 @@ export function SessionPanel({ session, onClose }) {
       })
     })
     return () => cancelAnimationFrame(id)
-  }, [data, strippedTargetId])
+    // _nonce is bumped by the parent every click so re-clicking the same
+    // session still re-fires this effect. Without it, React compares the
+    // session prop shallowly and bails, leaving the panel where the user
+    // had scrolled it.
+  }, [data, strippedTargetId, _nonce])
 
   return (
     <div style={{

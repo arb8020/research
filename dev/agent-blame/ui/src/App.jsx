@@ -15,8 +15,16 @@ export default function App() {
   const { info, error: repoError } = useRepoInfo()
   const { files, error: filesError } = useFileList()
   const [selected, setSelected] = useState(null)
-  const [selectedEdit, setSelectedEdit] = useState(null)  // {source, session_id, tool_call_id, timestamp}
+  const [selectedEdit, setSelectedEdit] = useState(null)  // {source, session_id, tool_call_id, timestamp, _nonce}
   const { blame, error: blameError } = useBlame(selected)
+
+  // Incrementing nonce so clicking the SAME edit twice still triggers the
+  // scroll effect in SessionPanel. Without this, React bails on an
+  // identical object and the panel stays where the user scrolled it.
+  const selectEdit = edit => setSelectedEdit({
+    ...edit,
+    _nonce: (selectedEdit?._nonce ?? 0) + 1,
+  })
 
   // Default-select the top attributed file once the list arrives.
   useEffect(() => {
@@ -76,7 +84,7 @@ export default function App() {
           files={files}
           selected={selected}
           onSelectFile={setSelected}
-          onOpenSession={s => setSelectedEdit({
+          onOpenSession={s => selectEdit({
             source: s.source,
             session_id: s.session_id,
             // no tool_call_id -> SessionPanel scrolls to end
@@ -91,7 +99,7 @@ export default function App() {
             ? <BlameView
                 path={selected}
                 blame={blame}
-                onSelectEdit={setSelectedEdit}
+                onSelectEdit={selectEdit}
               />
             : <div style={{
                 padding: 24, fontFamily: 'var(--font-mono)',
