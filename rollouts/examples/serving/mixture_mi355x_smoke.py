@@ -99,43 +99,71 @@ NODE_COST_USD_PER_HOUR = 22.18
 
 _SGLANG_IMAGE = "lmsysorg/sglang:v0.5.9-rocm700-mi35x"
 
-_docker_run = (
-    f"docker run --rm"
-    f" --device /dev/kfd --device /dev/dri"
-    f" --group-add video"
-    f" --ipc host --network host"
-    f" --shm-size 128G"
-    f" --volume /models:/models"
-    f" --env ROCR_VISIBLE_DEVICES=0,1,2,3,4,5,6,7"
-    f" --env HF_HOME=/models/hf_cache"
-    f" --env SGLANG_NSA_FUSE_TOPK=false"
-    f" --env SGLANG_NSA_KV_CACHE_STORE_FP8=false"
-    f" --env SGLANG_NSA_USE_REAL_INDEXER=true"
-    f" --env SGLANG_NSA_USE_TILELANG_PREFILL=True"
-    f" --env SGLANG_ROCM_FUSED_DECODE_MLA=0"
-    f" --env SGLANG_WARMUP_TIMEOUT=1800"
-    f" --name sglang_mixture_{PORT}"
-    f" {_SGLANG_IMAGE}"
-    f" python -m sglang.launch_server"
-    f" --model-path {MODEL}"
-    f" --host 0.0.0.0"
-    f" --port {PORT}"
-    f" --tp 8"
-    f" --trust-remote-code"
-    f" --tool-call-parser deepseekv32"
-    f" --reasoning-parser deepseek-v3"
-    # Keep the same tilelang attention path but re-enable CUDA graphs
-    # explicitly. Upstream merged stable graph capture for DeepSeek-V3.2 NSA
-    # on AMD; cap capture at bs=64 to make this a single, bounded experiment.
-    f" --cuda-graph-max-bs 64"
-    f" --mem-fraction-static 0.85"
-    f" --page-size 64"
-    f" --nsa-prefill-backend tilelang"
-    f" --nsa-decode-backend tilelang"
-    f" --enable-cache-report"
-    f" --enable-metrics"
-    f" --watchdog-timeout 1800"
-)
+
+def _build_docker_run(
+    *,
+    enable_request_time_stats_logging: bool = False,
+    enable_cuda_profiler: bool = False,
+    enable_layerwise_nvtx_tracing: bool = False,
+) -> str:
+    docker_parts = [
+        "docker run --rm",
+        "--device /dev/kfd --device /dev/dri",
+        "--group-add video",
+        "--ipc host --network host",
+        "--shm-size 128G",
+        "--volume /models:/models",
+        "--env ROCR_VISIBLE_DEVICES=0,1,2,3,4,5,6,7",
+        "--env HF_HOME=/models/hf_cache",
+        "--env SGLANG_NSA_FUSE_TOPK=false",
+        "--env SGLANG_NSA_KV_CACHE_STORE_FP8=false",
+        "--env SGLANG_NSA_USE_REAL_INDEXER=true",
+        "--env SGLANG_NSA_USE_TILELANG_PREFILL=True",
+        "--env SGLANG_ROCM_FUSED_DECODE_MLA=0",
+        "--env SGLANG_WARMUP_TIMEOUT=1800",
+        f"--name sglang_mixture_{PORT}",
+        _SGLANG_IMAGE,
+        "python -m sglang.launch_server",
+        f"--model-path {MODEL}",
+        "--host 0.0.0.0",
+        f"--port {PORT}",
+        "--tp 8",
+        "--trust-remote-code",
+        "--tool-call-parser deepseekv32",
+        "--reasoning-parser deepseek-v3",
+        # Keep the same tilelang attention path but re-enable CUDA graphs
+        # explicitly. Upstream merged stable graph capture for DeepSeek-V3.2 NSA
+        # on AMD; cap capture at bs=64 to make this a single, bounded experiment.
+        "--cuda-graph-max-bs 64",
+        "--mem-fraction-static 0.85",
+        "--page-size 64",
+        "--nsa-prefill-backend tilelang",
+        "--nsa-decode-backend tilelang",
+        "--enable-cache-report",
+        # Cheap observability: keep these on for baseline serving runs.
+        "--enable-metrics",
+        "--enable-mfu-metrics",
+        "--enable-metrics-for-all-schedulers",
+        "--watchdog-timeout 1800",
+    ]
+
+    if enable_request_time_stats_logging:
+        # Useful on short diagnosis runs, but noisy enough to keep off the
+        # default serving smoke.
+        docker_parts.append("--enable-request-time-stats-logging")
+
+    if enable_cuda_profiler:
+        # This only enables the profiler hook; capture still requires an
+        # explicit POST /start_profile or external profiler attach.
+        docker_parts.append("--profiler-config.profiler=cuda")
+
+    if enable_layerwise_nvtx_tracing:
+        docker_parts.append("--enable-layerwise-nvtx-tracing")
+
+    return " ".join(docker_parts)
+
+
+_docker_run = _build_docker_run()
 
 endpoint = OwnedEndpoint(
     spec="custom-http",
