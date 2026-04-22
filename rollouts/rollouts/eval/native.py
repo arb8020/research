@@ -40,6 +40,7 @@ from ..dtypes import (
     TextDelta,
     TextEnd,
     ThinkingDelta,
+    ToolCallError,
     ToolExecutionEnd,
 )
 from ..event_log import emit_logger_event
@@ -435,6 +436,8 @@ def _log_sample_completion(
 def _build_sample_runtime_metrics(
     *,
     llm_call_metrics: list[dict[str, Any]],
+    tool_call_error_metrics: list[dict[str, Any]],
+    tool_dispatch_metrics: list[dict[str, Any]],
     tool_execution_metrics: list[dict[str, Any]],
 ) -> dict[str, Any]:
     """Summarize per-sample runtime telemetry for report/sample artifacts.
@@ -445,8 +448,12 @@ def _build_sample_runtime_metrics(
     """
     metrics: dict[str, Any] = {
         "llm_call_metrics": llm_call_metrics,
+        "tool_call_error_metrics": tool_call_error_metrics,
+        "tool_dispatch_metrics": tool_dispatch_metrics,
         "tool_execution_metrics": tool_execution_metrics,
         "llm_call_count": len(llm_call_metrics),
+        "tool_call_error_count": len(tool_call_error_metrics),
+        "tool_dispatch_count": len(tool_dispatch_metrics),
         "tool_execution_count": len(tool_execution_metrics),
     }
 
@@ -489,6 +496,22 @@ def _build_sample_runtime_metrics(
             ),
             "tool_execution_duration_ms_total": sum(tool_durations),
             "tool_execution_duration_ms_mean": sum(tool_durations) / len(tool_durations),
+        })
+
+    if tool_dispatch_metrics:
+        metrics.update({
+            "tool_call_execute_count": sum(
+                1 for call in tool_dispatch_metrics if call.get("action") == "execute"
+            ),
+            "tool_call_parse_error_count": sum(
+                1 for call in tool_dispatch_metrics if call.get("action") == "parse_error"
+            ),
+            "tool_call_schema_error_count": sum(
+                1 for call in tool_dispatch_metrics if call.get("action") == "schema_error"
+            ),
+            "tool_call_missing_environment_count": sum(
+                1 for call in tool_dispatch_metrics if call.get("action") == "missing_environment"
+            ),
         })
 
     return metrics
@@ -1095,6 +1118,8 @@ async def evaluate_sample(
     last_status: dict[str, str] = {}  # Track last status to avoid duplicate events
     current_turn: dict[str, int] = {}  # Track current turn per sample for wide events
     llm_call_metrics: list[dict[str, Any]] = []
+    tool_call_error_metrics: list[dict[str, Any]] = []
+    tool_dispatch_metrics: list[dict[str, Any]] = []
     tool_execution_metrics: list[dict[str, Any]] = []
 
     async def on_chunk_with_sample_id(event: object) -> None:
@@ -1139,6 +1164,13 @@ async def evaluate_sample(
                     tool_calls=event.data.get("tool_calls", []),
                 )
             elif event.type == "tool_call_dispatch":
+                tool_dispatch_metrics.append({
+                    "turn": event.data.get("turn", current_turn.get(sample_id, 0)),
+                    "tool_call_id": event.data.get("tool_call_id"),
+                    "tool_name": event.data.get("tool_name"),
+                    "action": event.data.get("action"),
+                    "error": event.data.get("error"),
+                })
                 _emit_eval_event(
                     "tool_call_dispatch",
                     sample_id=sample_id,
@@ -1220,6 +1252,25 @@ async def evaluate_sample(
                 tokens_out=event.tokens_out,
                 status=event.status,
                 error=event.error,
+            )
+        elif isinstance(event, ToolCallError):
+            tool_call_error_metrics.append({
+                "turn": sample_turn,
+                "content_index": event.content_index,
+                "tool_call_id": event.tool_call_id,
+                "tool_name": event.tool_name,
+                "error": event.error,
+                "raw_arguments": event.raw_arguments,
+            })
+            _emit_eval_event(
+                "tool_call_error",
+                sample_id=sample_id,
+                turn=sample_turn,
+                content_index=event.content_index,
+                tool_call_id=event.tool_call_id,
+                tool_name=event.tool_name,
+                error=event.error,
+                raw_arguments=event.raw_arguments,
             )
         elif isinstance(event, ToolExecutionEnd):
             tool_execution_metrics.append({
@@ -1445,6 +1496,8 @@ async def evaluate_sample(
             **exec_metadata,
             **_build_sample_runtime_metrics(
                 llm_call_metrics=llm_call_metrics,
+                tool_call_error_metrics=tool_call_error_metrics,
+                tool_dispatch_metrics=tool_dispatch_metrics,
                 tool_execution_metrics=tool_execution_metrics,
             ),
         }
@@ -1935,9 +1988,35 @@ def compute_summary_metrics(
         for call in result.metadata.get("tool_execution_metrics", [])
         if isinstance(call, dict)
     ]
+    tool_call_errors = [
+        call
+        for result in results
+        for call in result.metadata.get("tool_call_error_metrics", [])
+        if isinstance(call, dict)
+    ]
+    tool_dispatches = [
+        call
+        for result in results
+        for call in result.metadata.get("tool_dispatch_metrics", [])
+        if isinstance(call, dict)
+    ]
     summary["tool_execution_count_total"] = len(tool_calls)
     summary["tool_execution_error_count"] = sum(
         1 for call in tool_calls if call.get("status") != "success"
+    )
+    summary["tool_call_error_count_total"] = len(tool_call_errors)
+    summary["tool_call_dispatch_total"] = len(tool_dispatches)
+    summary["tool_call_execute_total"] = sum(
+        1 for call in tool_dispatches if call.get("action") == "execute"
+    )
+    summary["tool_call_parse_error_total"] = sum(
+        1 for call in tool_dispatches if call.get("action") == "parse_error"
+    )
+    summary["tool_call_schema_error_total"] = sum(
+        1 for call in tool_dispatches if call.get("action") == "schema_error"
+    )
+    summary["tool_call_missing_environment_total"] = sum(
+        1 for call in tool_dispatches if call.get("action") == "missing_environment"
     )
     _add_distribution_summary(
         summary,
