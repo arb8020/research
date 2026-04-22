@@ -700,6 +700,8 @@ async def process_pending_tools(
     # SERIALIZE environment state before tool processing
     env_data = await current_state.environment.serialize()
 
+    from .._observability import start_span as _tool_start_span
+
     for i in range(state.next_tool_idx, len(state.pending_tool_calls)):
         tool_call = state.pending_tool_calls[i]
         current_state = replace(current_state, next_tool_idx=i)
@@ -709,31 +711,18 @@ async def process_pending_tools(
         # Track tool execution time (only set if tool actually executes)
         tool_duration_ms: float | None = None
 
-        if tool_call.parse_error:
-            await rcfg.on_chunk(
-                StreamChunk(
-                    "tool_call_dispatch",
-                    {
-                        "turn": current_state.turn_idx,
-                        "tool_call_id": tool_call.id,
-                        "tool_name": tool_call.name,
-                        "action": "parse_error",
-                        "error": tool_call.parse_error,
-                    },
-                )
-            )
-            tool_result = ToolResult(
-                tool_call_id=tool_call.id,
-                is_error=True,
-                error=tool_call.parse_error,
-                content="",
-            )
-            confirm_result = None  # No confirmation for parse errors
-        else:
-            # Get confirmation result
-            current_state, confirm_result = await rcfg.confirm_tool(tool_call, current_state, rcfg)
-
-            if confirm_result.proceed:
+        # One tool_call span per iteration. tool.name and id set up-front;
+        # outcome (status, duration, error) set at close from the computed
+        # tool_result + tool_duration_ms below, via the context manager exit.
+        async with _tool_start_span(
+            "tool_call",
+            attributes={
+                "tool.name": tool_call.name,
+                "tool.call_id": tool_call.id,
+                "turn_idx": current_state.turn_idx,
+            },
+        ) as _tool_span:
+            if tool_call.parse_error:
                 await rcfg.on_chunk(
                     StreamChunk(
                         "tool_call_dispatch",
@@ -741,64 +730,112 @@ async def process_pending_tools(
                             "turn": current_state.turn_idx,
                             "tool_call_id": tool_call.id,
                             "tool_name": tool_call.name,
-                            "action": "execute",
+                            "action": "parse_error",
+                            "error": tool_call.parse_error,
                         },
                     )
                 )
-                # DESERIALIZE fresh environment for each tool call
-                assert current_state.environment is not None  # Maintained through loop
-                fresh_env = await current_state.environment.__class__.deserialize(env_data)
-
-                # Copy runtime attributes (like GPU pool references) that can't be serialized
-                if hasattr(fresh_env, "copy_runtime_from"):
-                    fresh_env.copy_runtime_from(current_state.environment)
-
-                # Update debug context for interrupt diagnostics
-                try:
-                    from ..frontends.runner import get_debug_context
-
-                    debug_ctx = get_debug_context()
-                    debug_ctx.set_tool(tool_call.name)
-                except ImportError:
-                    pass
-
-                # Wide event: time the full tool execution
-                tool_start_time = time.perf_counter()
-
-                # Emit tool execution start event (for TUI spinner)
-                await rcfg.on_chunk(
-                    ToolExecutionStart(
-                        tool_call_id=tool_call.id,
-                        tool_name=tool_call.name,
-                    )
+                tool_result = ToolResult(
+                    tool_call_id=tool_call.id,
+                    is_error=True,
+                    error=tool_call.parse_error,
+                    content="",
+                )
+                confirm_result = None  # No confirmation for parse errors
+            else:
+                # Get confirmation result
+                current_state, confirm_result = await rcfg.confirm_tool(
+                    tool_call, current_state, rcfg
                 )
 
-                # Execute tool on fresh environment with cancellation support
-                # If tool_limiter is set, acquire slot before executing
-                # This enables two-level concurrency: samples waiting for API don't hold tool slots
-                async def do_exec_tool(
-                    env: Environment = fresh_env,
-                    tc: ToolCall = tool_call,
-                    state: AgentState = current_state,
-                ) -> ToolResult:
-                    return await env.exec_tool(
-                        tc,
-                        state,
-                        rcfg,
-                        cancel_scope=rcfg.cancel_scope,
+                if confirm_result.proceed:
+                    await rcfg.on_chunk(
+                        StreamChunk(
+                            "tool_call_dispatch",
+                            {
+                                "turn": current_state.turn_idx,
+                                "tool_call_id": tool_call.id,
+                                "tool_name": tool_call.name,
+                                "action": "execute",
+                            },
+                        )
+                    )
+                    # DESERIALIZE fresh environment for each tool call
+                    assert current_state.environment is not None  # Maintained through loop
+                    fresh_env = await current_state.environment.__class__.deserialize(env_data)
+
+                    # Copy runtime attributes (like GPU pool references) that can't be serialized
+                    if hasattr(fresh_env, "copy_runtime_from"):
+                        fresh_env.copy_runtime_from(current_state.environment)
+
+                    # Update debug context for interrupt diagnostics
+                    try:
+                        from ..frontends.runner import get_debug_context
+
+                        debug_ctx = get_debug_context()
+                        debug_ctx.set_tool(tool_call.name)
+                    except ImportError:
+                        pass
+
+                    # Wide event: time the full tool execution
+                    tool_start_time = time.perf_counter()
+
+                    # Emit tool execution start event (for TUI spinner)
+                    await rcfg.on_chunk(
+                        ToolExecutionStart(
+                            tool_call_id=tool_call.id,
+                            tool_name=tool_call.name,
+                        )
                     )
 
-                if rcfg.tool_limiter is not None:
-                    # Emit semaphore wait event for observability
-                    await rcfg.on_chunk(SemaphoreWaitStart(limiter_type="tool"))
-                    wait_start = time.perf_counter()
-                    async with rcfg.tool_limiter:
-                        wait_duration_ms = (time.perf_counter() - wait_start) * 1000
-                        await rcfg.on_chunk(
-                            SemaphoreAcquired(
-                                limiter_type="tool", wait_duration_ms=wait_duration_ms
-                            )
+                    # Execute tool on fresh environment with cancellation support
+                    # If tool_limiter is set, acquire slot before executing
+                    # This enables two-level concurrency: samples waiting for API don't hold tool slots
+                    async def do_exec_tool(
+                        env: Environment = fresh_env,
+                        tc: ToolCall = tool_call,
+                        state: AgentState = current_state,
+                    ) -> ToolResult:
+                        return await env.exec_tool(
+                            tc,
+                            state,
+                            rcfg,
+                            cancel_scope=rcfg.cancel_scope,
                         )
+
+                    if rcfg.tool_limiter is not None:
+                        # Emit semaphore wait event for observability
+                        await rcfg.on_chunk(SemaphoreWaitStart(limiter_type="tool"))
+                        wait_start = time.perf_counter()
+                        async with rcfg.tool_limiter:
+                            wait_duration_ms = (time.perf_counter() - wait_start) * 1000
+                            await rcfg.on_chunk(
+                                SemaphoreAcquired(
+                                    limiter_type="tool", wait_duration_ms=wait_duration_ms
+                                )
+                            )
+                            try:
+                                tool_result = await do_exec_tool()
+                            except WorkspaceInfraError as exc:
+                                await rcfg.on_chunk(
+                                    StreamChunk(
+                                        "infra_failure_terminal",
+                                        {
+                                            "turn": current_state.turn_idx,
+                                            "tool_call_id": tool_call.id,
+                                            "tool_name": tool_call.name,
+                                            "kind": exc.kind,
+                                            "error": str(exc),
+                                        },
+                                    )
+                                )
+                                return replace(
+                                    current_state,
+                                    stop=StopReason.ERROR,
+                                    error=str(exc),
+                                    pending_tool_calls=[],
+                                )
+                    else:
                         try:
                             tool_result = await do_exec_tool()
                         except WorkspaceInfraError as exc:
@@ -820,159 +857,148 @@ async def process_pending_tools(
                                 error=str(exc),
                                 pending_tool_calls=[],
                             )
-                else:
+
+                    # Calculate tool duration for profiling
+                    tool_duration_ms = (time.perf_counter() - tool_start_time) * 1000
+
+                    # Update debug context - tool execution complete
                     try:
-                        tool_result = await do_exec_tool()
-                    except WorkspaceInfraError as exc:
-                        await rcfg.on_chunk(
-                            StreamChunk(
-                                "infra_failure_terminal",
-                                {
-                                    "turn": current_state.turn_idx,
-                                    "tool_call_id": tool_call.id,
-                                    "tool_name": tool_call.name,
-                                    "kind": exc.kind,
-                                    "error": str(exc),
-                                },
-                            )
+                        debug_ctx.set_phase("tool_complete")
+                    except (NameError, UnboundLocalError):
+                        pass
+
+                    # ALWAYS serialize the environment state after tool execution
+                    # (even if tool failed, environment state like _initialized may have changed)
+                    env_data = await fresh_env.serialize()
+
+                    # DESERIALIZE again to update current_state
+                    assert current_state.environment is not None  # Maintained through loop
+                    new_env = await current_state.environment.__class__.deserialize(env_data)
+
+                    # Copy runtime attributes (like GPU pool references) that can't be serialized
+                    if hasattr(new_env, "copy_runtime_from"):
+                        new_env.copy_runtime_from(current_state.environment)
+
+                    current_state = replace(
+                        current_state,
+                        environment=new_env,
+                    )
+                else:
+                    await rcfg.on_chunk(
+                        StreamChunk(
+                            "tool_call_dispatch",
+                            {
+                                "turn": current_state.turn_idx,
+                                "tool_call_id": tool_call.id,
+                                "tool_name": tool_call.name,
+                                "action": "rejected",
+                                "error": (
+                                    confirm_result.tool_result.error
+                                    if confirm_result.tool_result is not None
+                                    else None
+                                ),
+                            },
                         )
-                        return replace(
-                            current_state,
-                            stop=StopReason.ERROR,
-                            error=str(exc),
-                            pending_tool_calls=[],
-                        )
+                    )
+                    # Use the provided tool result
+                    tool_result = confirm_result.tool_result
+                    # TODO: handle None on tool results
 
-                # Calculate tool duration for profiling
-                tool_duration_ms = (time.perf_counter() - tool_start_time) * 1000
-
-                # Update debug context - tool execution complete
-                try:
-                    debug_ctx.set_phase("tool_complete")
-                except (NameError, UnboundLocalError):
-                    pass
-
-                # ALWAYS serialize the environment state after tool execution
-                # (even if tool failed, environment state like _initialized may have changed)
-                env_data = await fresh_env.serialize()
-
-                # DESERIALIZE again to update current_state
-                assert current_state.environment is not None  # Maintained through loop
-                new_env = await current_state.environment.__class__.deserialize(env_data)
-
-                # Copy runtime attributes (like GPU pool references) that can't be serialized
-                if hasattr(new_env, "copy_runtime_from"):
-                    new_env.copy_runtime_from(current_state.environment)
-
-                current_state = replace(
-                    current_state,
-                    environment=new_env,
+            # Emit tool result
+            assert tool_result
+            await rcfg.on_chunk(
+                ToolResultReceived(
+                    tool_call_id=tool_call.id,
+                    content=tool_result.content,
+                    is_error=tool_result.is_error,
+                    error=tool_result.error,
+                    details=tool_result.details,
                 )
-            else:
+            )
+
+            # Update debug context - tool result emitted (TUI render complete)
+            try:
+                debug_ctx.set_phase("tool_result_emitted")
+            except (NameError, UnboundLocalError):
+                pass
+
+            # Wide event: emit tool execution end with timing (only if tool actually executed)
+            if tool_duration_ms is not None:
                 await rcfg.on_chunk(
-                    StreamChunk(
-                        "tool_call_dispatch",
-                        {
-                            "turn": current_state.turn_idx,
-                            "tool_call_id": tool_call.id,
-                            "tool_name": tool_call.name,
-                            "action": "rejected",
-                            "error": (
-                                confirm_result.tool_result.error
-                                if confirm_result.tool_result is not None
-                                else None
-                            ),
-                        },
+                    ToolExecutionEnd(
+                        tool_call_id=tool_call.id,
+                        tool_name=tool_call.name,
+                        duration_ms=tool_duration_ms,
+                        status="error" if tool_result.is_error else "success",
+                        is_error=tool_result.is_error,
+                        result_summary=tool_result.to_summary(tool_call),
                     )
                 )
-                # Use the provided tool result
-                tool_result = confirm_result.tool_result
-                # TODO: handle None on tool results
 
-        # Emit tool result
-        assert tool_result
-        await rcfg.on_chunk(
-            ToolResultReceived(
-                tool_call_id=tool_call.id,
+            # Add tool result message
+            # Always include content - it has structured stdout/stderr even on error
+            # Session refactor move 2: is_error / error are now first-class fields on
+            # Message, not just on ToolResult. Scorers and renderers read them directly
+            # instead of fishing into details. See runtime_refactor.md (G2 closed).
+            result_message = Message(
+                role="tool",
                 content=tool_result.content,
+                tool_call_id=tool_call.id,
                 is_error=tool_result.is_error,
                 error=tool_result.error,
-                details=tool_result.details,
+                details=tool_result.details,  # Include UI-only structured data
             )
-        )
 
-        # Update debug context - tool result emitted (TUI render complete)
-        try:
-            debug_ctx.set_phase("tool_result_emitted")
-        except (NameError, UnboundLocalError):
-            pass
+            messages_to_add = [result_message]
 
-        # Wide event: emit tool execution end with timing (only if tool actually executed)
-        if tool_duration_ms is not None:
-            await rcfg.on_chunk(
-                ToolExecutionEnd(
-                    tool_call_id=tool_call.id,
-                    tool_name=tool_call.name,
-                    duration_ms=tool_duration_ms,
-                    status="error" if tool_result.is_error else "success",
-                    is_error=tool_result.is_error,
-                    result_summary=tool_result.to_summary(tool_call),
+            # Add user feedback if provided (only if we have confirm_result)
+            if confirm_result and confirm_result.user_message:
+                user_msg = Message(
+                    role="user",
+                    content=confirm_result.user_message,
                 )
+                messages_to_add.append(user_msg)
+
+            # Update trajectory with all messages
+            updated_trajectory = replace(
+                current_state.actor.trajectory,
+                messages=current_state.actor.trajectory.messages + messages_to_add,
+            )
+            current_state = replace(
+                current_state, actor=replace(current_state.actor, trajectory=updated_trajectory)
             )
 
-        # Add tool result message
-        # Always include content - it has structured stdout/stderr even on error
-        # Session refactor move 2: is_error / error are now first-class fields on
-        # Message, not just on ToolResult. Scorers and renderers read them directly
-        # instead of fishing into details. See runtime_refactor.md (G2 closed).
-        result_message = Message(
-            role="tool",
-            content=tool_result.content,
-            tool_call_id=tool_call.id,
-            is_error=tool_result.is_error,
-            error=tool_result.error,
-            details=tool_result.details,  # Include UI-only structured data
-        )
+            # Persist each message after tool execution
+            if rcfg.session_store and state.session_id:
+                # Session refactor (sub-step 1b): thread leaf cursor.
+                for msg in messages_to_add:
+                    msg_to_persist = (
+                        msg
+                        if msg.parent_id is not None
+                        else replace(msg, parent_id=current_state.leaf_id)
+                    )
+                    stored = await rcfg.session_store.append_message(
+                        state.session_id, msg_to_persist
+                    )
+                    current_state = replace(current_state, leaf_id=stored.id)
 
-        messages_to_add = [result_message]
+            # Handle tool errors
+            current_state = rcfg.handle_tool_error(tool_result, current_state)
 
-        # Add user feedback if provided (only if we have confirm_result)
-        if confirm_result and confirm_result.user_message:
-            user_msg = Message(
-                role="user",
-                content=confirm_result.user_message,
-            )
-            messages_to_add.append(user_msg)
+            # Set outcome attrs on tool_call span before iteration exits. One
+            # row per tool call, carrying the whole story: name, id, turn,
+            # status, duration, and error text if any.
+            _tool_span.set_attr("tool.status", "error" if tool_result.is_error else "success")
+            if tool_duration_ms is not None:
+                _tool_span.set_attr("duration_ms", round(tool_duration_ms, 1))
+            if tool_result.is_error and tool_result.error:
+                _tool_span.set_attr("error", tool_result.error)
 
-        # Update trajectory with all messages
-        updated_trajectory = replace(
-            current_state.actor.trajectory,
-            messages=current_state.actor.trajectory.messages + messages_to_add,
-        )
-        current_state = replace(
-            current_state, actor=replace(current_state.actor, trajectory=updated_trajectory)
-        )
-
-        # Persist each message after tool execution
-        if rcfg.session_store and state.session_id:
-            # Session refactor (sub-step 1b): thread leaf cursor.
-            for msg in messages_to_add:
-                msg_to_persist = (
-                    msg
-                    if msg.parent_id is not None
-                    else replace(msg, parent_id=current_state.leaf_id)
-                )
-                stored = await rcfg.session_store.append_message(state.session_id, msg_to_persist)
-                current_state = replace(current_state, leaf_id=stored.id)
-
-        # Handle tool errors
-        current_state = rcfg.handle_tool_error(tool_result, current_state)
-
-        # Check if tool requested agent to stop
-        if tool_result.stop_reason:
-            current_state = replace(current_state, stop=tool_result.stop_reason)
-            # Break out of tool processing loop - agent will stop after this turn
-            break
+            # Check if tool requested agent to stop
+            if tool_result.stop_reason:
+                current_state = replace(current_state, stop=tool_result.stop_reason)
+                # Break out of tool processing loop - agent will stop after this turn
+                break
 
     # All tools processed
     # print(f"[DEBUG] process_pending_tools done - incrementing turn from {current_state.turn_idx} to {current_state.turn_idx + 1}")
