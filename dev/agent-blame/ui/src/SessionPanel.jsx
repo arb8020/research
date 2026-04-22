@@ -108,11 +108,20 @@ function ToolCallBlock({ tc, highlight }) {
   return (
     <div style={{
       margin: 0, padding: 8,
-      background: 'var(--bg-diff)',
-      borderLeft: `2px solid ${highlight ? 'var(--text-green)' : 'var(--color-border)'}`,
+      background: highlight ? 'rgba(0, 236, 126, 0.06)' : 'var(--bg-diff)',
+      border: highlight
+        ? '1px solid rgba(0, 236, 126, 0.55)'
+        : '1px solid transparent',
+      borderLeft: highlight
+        ? '3px solid var(--text-green)'
+        : '2px solid var(--color-border)',
       borderRadius: 3,
+      boxShadow: highlight
+        ? '0 0 0 1px rgba(0, 236, 126, 0.25), 0 0 20px rgba(0, 236, 126, 0.15)'
+        : 'none',
       maxHeight: highlight ? 'none' : 400,
       overflow: highlight ? 'visible' : 'auto',
+      transition: 'background 200ms, border-color 200ms, box-shadow 200ms',
     }}>
       <div style={{
         fontSize: 10, color: 'var(--text-disabled)',
@@ -120,7 +129,13 @@ function ToolCallBlock({ tc, highlight }) {
         fontFamily: 'var(--font-mono)',
       }}>
         {tc.name || 'tool'}  ·  {tc.tool_call_id?.slice(0, 16) || ''}
-        {highlight && <span style={{ color: 'var(--text-green)', marginLeft: 8 }}>← this edit</span>}
+        {highlight && (
+          <span style={{
+            color: 'var(--text-green)', marginLeft: 8, fontWeight: 600,
+          }}>
+            ← this edit
+          </span>
+        )}
       </div>
       {renderable
         ? render.files.map((file, i) => (
@@ -175,7 +190,9 @@ function Message({ m, targetToolCallId, anchorRef }) {
       style={{
         padding: '8px 12px',
         borderBottom: '1px solid var(--color-border)',
-        background: roleBgs[m.role] || 'transparent',
+        background: hasTarget
+          ? 'rgba(0, 236, 126, 0.04)'
+          : (roleBgs[m.role] || 'transparent'),
         color: roleColors[m.role] || 'var(--text-primary)',
         fontFamily: 'var(--font-sans)', fontSize: 12.5, lineHeight: '18px',
       }}
