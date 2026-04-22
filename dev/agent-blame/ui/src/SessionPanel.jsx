@@ -248,7 +248,11 @@ export function SessionPanel({ session, onClose }) {
     const id = requestAnimationFrame(() => {
       requestAnimationFrame(() => {
         if (anchorRef.current) {
-          anchorRef.current.scrollIntoView({ block: 'start', behavior: 'auto' })
+          // `center` puts the responsible tool call in the middle of the
+          // viewport so the preceding reasoning/user-message is visible
+          // above it. Using `start` landed the tool_call at the top and
+          // the user had to scroll up to read what motivated it.
+          anchorRef.current.scrollIntoView({ block: 'center', behavior: 'auto' })
         } else if (endRef.current) {
           endRef.current.scrollIntoView({ block: 'end', behavior: 'auto' })
         }
