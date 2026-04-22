@@ -255,6 +255,24 @@ async def rollout(
         span_attrs["session_id"] = session_id
 
     async with start_span("llm_call", attributes=span_attrs) as span:
+        # Snapshot the request-side message stack *before* the provider call.
+        # After the call, actor.trajectory.messages includes the new
+        # assistant/tool messages, so pulling from the pre-call actor keeps
+        # the prompt/completion split honest. If a message has structured
+        # ContentBlock lists, ``.to_dict()`` (via JsonSerializable) lowers
+        # them; otherwise we fall back to a best-effort dict.
+        try:
+            prompt_messages = [
+                m.to_dict() if hasattr(m, "to_dict") else {"role": m.role, "content": m.content}
+                for m in actor.trajectory.messages
+            ]
+            span.set_attr("gen_ai.prompt.messages", prompt_messages)
+        except Exception:
+            # Instrumentation must never kill the call. If the trajectory
+            # can't be serialized cleanly, skip the prompt attr — token
+            # counts and timing still land.
+            pass
+
         new_actor = await provider_func(
             actor,
             on_chunk,
@@ -265,6 +283,23 @@ async def rollout(
             session_id=session_id,
             session_store=session_store,
         )
+
+        # Capture the completion side. The new actor's trajectory has one or
+        # more new messages (assistant + possibly tool-call stubs); serialize
+        # only the messages appended by this call so the attr is a clean
+        # "what this llm_call produced."
+        try:
+            prior_len = len(actor.trajectory.messages)
+            new_messages = new_actor.trajectory.messages[prior_len:]
+            if new_messages:
+                completion_messages = [
+                    m.to_dict() if hasattr(m, "to_dict") else {"role": m.role, "content": m.content}
+                    for m in new_messages
+                ]
+                span.set_attr("gen_ai.completion.messages", completion_messages)
+        except Exception:
+            pass
+
         # Extract token usage from the new completion (if the provider set it).
         # Mirror the key names the Anthropic/OpenAI variants use so we're
         # robust to either wire format.

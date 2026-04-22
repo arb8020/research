@@ -150,10 +150,11 @@
     align-items: center;
     justify-content: center;
     color: var(--fg-dim);
-    pointer-events: none;
     text-align: center;
     gap: 12px;
+    cursor: pointer;
   }
+  .drop-hint:hover .big { text-shadow: 0 0 12px rgba(240,184,76,0.4); }
   .drop-hint .big {
     font-size: 42px;
     color: var(--accent);
@@ -282,12 +283,22 @@
     border: 1px solid var(--rule);
     padding: 10px 12px;
     font-size: 11px;
-    line-height: 1.5;
+    line-height: 1.55;
     overflow: auto;
-    max-height: 520px;
+    max-height: 640px;
     color: var(--fg);
     margin: 0;
+    white-space: pre;
   }
+  /* Pretty-JSON token coloring. The palette stays inside our amber/teal
+     instrument theme — distinct enough to read, not a rainbow. */
+  .detail-pane pre .jkey    { color: var(--accent-2); }          /* object keys in teal */
+  .detail-pane pre .jstr    { color: var(--fg); }                /* strings in body color */
+  .detail-pane pre .jnum    { color: var(--accent); }            /* numbers in amber */
+  .detail-pane pre .jbool   { color: var(--accent); font-weight: 500; }
+  .detail-pane pre .jnull   { color: var(--fg-dim); font-style: italic; }
+  .detail-pane pre .jpunct  { color: var(--fg-muted); }
+  .detail-pane pre .jline   { display: block; padding-left: var(--indent, 0); }
 
   .detail-pane .empty {
     color: var(--fg-muted);
@@ -320,15 +331,15 @@
 
   <div class="tree" id="tree">
     <div class="tree-body" id="tree-body"></div>
-    <div class="drop-hint" id="drop-hint">
+    <label class="drop-hint" id="drop-hint" for="file-input">
       <div class="big">spans.jsonl</div>
       <div class="small">drop a file · or click to choose</div>
       <div class="tiny">
         expects the jsonl produced by rollouts._observability.<br>
         one row per span. parent_span_id + trace_id linkage.
       </div>
-      <input type="file" id="file-input" accept=".jsonl,.json,application/jsonl" style="position:absolute;inset:0;opacity:0;cursor:pointer">
-    </div>
+    </label>
+    <input type="file" id="file-input" accept=".jsonl,.json,application/jsonl" style="position:absolute;width:1px;height:1px;opacity:0;pointer-events:none">
   </div>
 
   <aside class="detail-pane" id="detail-pane">
@@ -492,25 +503,22 @@ function render() {
   document.getElementById('drop-hint').style.display = state.spans.length ? 'none' : 'flex';
   if (!state.spans.length) return;
 
-  // Pre-compute which spans match the filter, and auto-expand ancestors so
-  // hits remain visible.
+  // With a filter, auto-expand ancestors of hits so they stay visible.
+  // Without a filter, honor the user's expand/collapse state exactly —
+  // clicking a row should open/close that fold, nvim-style.
   const matches = new Set();
-  for (const s of state.spans) if (matchesQuery(s, state.query)) matches.add(s.span_id);
   const visible = new Set();
-  const markVisible = (span) => {
-    visible.add(span.span_id);
-    for (const c of span.children) markVisible(c);
-  };
-  for (const id of matches) {
-    let cur = state.tree.byId[id];
-    while (cur) {
-      visible.add(cur.span_id);
-      if (cur.parent_span_id) state.expanded.add(cur.parent_span_id);
-      cur = state.tree.byId[cur.parent_span_id];
+  if (state.query) {
+    for (const s of state.spans) if (matchesQuery(s, state.query)) matches.add(s.span_id);
+    for (const id of matches) {
+      let cur = state.tree.byId[id];
+      while (cur) {
+        visible.add(cur.span_id);
+        if (cur.parent_span_id) state.expanded.add(cur.parent_span_id);
+        cur = state.tree.byId[cur.parent_span_id];
+      }
     }
-  }
-  if (!state.query) {
-    // When no query, show everything (subject to expand/collapse state).
+  } else {
     for (const s of state.spans) visible.add(s.span_id);
   }
 
@@ -645,16 +653,42 @@ function renderDetail(span) {
     pane.appendChild(section);
   }
 
-  // Raw JSON block at the bottom for the power user.
+  // Raw JSON block at the bottom for the power user. Syntax-colored by a
+  // tiny regex tokenizer — no external highlighter library needed.
   const rawSection = document.createElement('div');
   rawSection.className = 'section';
   const rawH = document.createElement('h3');
   rawH.innerHTML = '<span>raw</span>';
   rawSection.appendChild(rawH);
   const pre = document.createElement('pre');
-  pre.textContent = JSON.stringify(span, (k, v) => k === 'children' ? undefined : v, 2);
+  const rawText = JSON.stringify(span, (k, v) => k === 'children' ? undefined : v, 2);
+  pre.innerHTML = prettyJson(rawText);
   rawSection.appendChild(pre);
   pane.appendChild(rawSection);
+}
+
+function prettyJson(text) {
+  // Minimal JSON syntax highlighter. Works on already-indented JSON text.
+  // We escape HTML first, then wrap token classes. Order matters:
+  // keys must match before strings so we can distinguish them.
+  const esc = text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+  return esc.replace(
+    /("(?:\\.|[^"\\])*")(\s*:)?|\b(-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)\b|\b(true|false)\b|\b(null)\b|([{}\[\],])/g,
+    (m, strOrKey, colon, num, bool, nul, punct) => {
+      if (strOrKey !== undefined) {
+        if (colon) return '<span class="jkey">' + strOrKey + '</span><span class="jpunct">' + colon + '</span>';
+        return '<span class="jstr">' + strOrKey + '</span>';
+      }
+      if (num  !== undefined) return '<span class="jnum">'   + num  + '</span>';
+      if (bool !== undefined) return '<span class="jbool">'  + bool + '</span>';
+      if (nul  !== undefined) return '<span class="jnull">'  + nul  + '</span>';
+      if (punct!== undefined) return '<span class="jpunct">' + punct+ '</span>';
+      return m;
+    }
+  );
 }
 
 function loadSpans(spans) {
@@ -723,11 +757,11 @@ document.getElementById('tree-body').addEventListener('click', (e) => {
   if (!row) return;
   const id = row.dataset.id;
   const span = state.tree.byId[id];
-  if (e.target.classList.contains('toggle') && span.children.length) {
+  // Click anywhere on a parent row toggles expansion; leaf rows just select.
+  // Selection always updates so the detail pane follows the last click.
+  if (span.children.length) {
     if (state.expanded.has(id)) state.expanded.delete(id);
     else state.expanded.add(id);
-    render();
-    return;
   }
   state.selected = id;
   render();
