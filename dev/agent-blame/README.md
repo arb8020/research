@@ -32,17 +32,23 @@ cd /Users/chiraagbalu/research/dev/agent-blame
 ### Web UI (divergent fork of pr-bot)
 
 ```bash
-# Terminal 1 — API server (picks up /api/repo, /api/files, /api/blame, /api/chat, /api/session)
 cd /Users/chiraagbalu/research/dev/agent-blame
-/Users/chiraagbalu/research/.venv/bin/python server.py /path/to/repo
-# optionally: --sha <ref>  --port <n>
-
-# Terminal 2 — Vite dev server
-cd /Users/chiraagbalu/research/dev/agent-blame/ui
-npm install   # first time
-npm run dev -- --host 127.0.0.1
-# open http://127.0.0.1:5173/
+./agent-blame /path/to/repo
+# ... optionally: --sha <ref>
 ```
+
+Launches a tmux session `agent-blame` with two panes:
+- top: attribution API on `:7979`
+- bottom: vite dev server on `:5173`
+
+Attaches automatically. `Ctrl-B D` detaches; `tmux kill-session -t
+agent-blame` (or re-running the launcher) tears down. Env overrides:
+`API_PORT`, `UI_PORT`, `SESSION_NAME`, `PY`, `AGENT_BLAME_NOATTACH`.
+
+Without tmux, the launcher falls back to a foreground tee-prefixed
+split pattern (same as `~/playcalling-game/dev.sh`).
+
+Open http://127.0.0.1:5173 after launch.
 
 The UI is forked from `~/research/dev/pr-bot/ui/`. Shared substrate: Shiki
 singleton + Devin-derived CSS tokens + three-column layout. Divergent bits
