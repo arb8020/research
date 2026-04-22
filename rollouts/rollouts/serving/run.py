@@ -1111,15 +1111,21 @@ async def _run_scenario(
             for workload in scenario.workloads:
                 nursery.start_soon(_run_named_workload, workload)
     except BaseExceptionGroup as eg:  # noqa: F821,UP041 — stdlib class, present 3.11+
-        # Pull out just the "user/supervisor asked us to stop" causes; any
-        # other exception type means something really went wrong and we
-        # should let it propagate so the caller sees a failure.
-        interrupts = eg.split(KeyboardInterrupt)[0]
-        cancels = eg.split(trio.Cancelled)[0]
-        non_stop = eg.split(lambda exc: not isinstance(exc, (KeyboardInterrupt, trio.Cancelled)))[0]
-        if non_stop is not None:
-            raise non_stop from eg
-        if interrupts is not None or cancels is not None:
+        # Walk the nested ExceptionGroup leaves. If every leaf is a
+        # KeyboardInterrupt or trio.Cancelled, this was a shutdown request
+        # (duration watchdog → supervisor → SIGINT → Python KeyboardInterrupt
+        # in child → trio Cancel). Otherwise it's a real failure.
+        def _leaves(exc: BaseException) -> list[BaseException]:
+            if isinstance(exc, BaseExceptionGroup):  # noqa: F821 — stdlib 3.11+
+                out: list[BaseException] = []
+                for sub in exc.exceptions:
+                    out.extend(_leaves(sub))
+                return out
+            return [exc]
+
+        stop_types = (KeyboardInterrupt, trio.Cancelled)
+        all_leaves = _leaves(eg)
+        if all_leaves and all(isinstance(leaf, stop_types) for leaf in all_leaves):
             scenario_drained = True
         else:
             raise
