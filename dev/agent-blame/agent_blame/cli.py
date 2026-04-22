@@ -218,9 +218,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"  unknown      {stats['unknown']:>8}  ({pct_unk:5.1f}%)")
     print()
     print("Match kind breakdown:")
-    for kind in ("block_same_path",
-                 "provenance_same_path",
-                 "provenance_cross_file"):
+    for kind in ("virtual_same_position", "virtual_same_path"):
         n = stats.get(f"kind_{kind}", 0)
         if n:
             print(f"  {kind:<24} {n:>8}")

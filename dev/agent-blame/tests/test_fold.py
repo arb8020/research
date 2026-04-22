@@ -36,6 +36,39 @@ def _edit(sid: str, ts: int, path: str, old: str, new: str) -> FileEdit:
     )
 
 
+def test_haiku_canonical_invariant():
+    """The canonical test from the user's spec.
+
+        EDIT_A writes three lines (middle has a typo).
+        EDIT_B edits all three with a new_string that keeps lines 1 and 3
+          verbatim and fixes line 2's typo.
+
+    After fold:
+        line 1 "haiku line 1"  -> A  (unchanged — A first introduced it)
+        line 2 "haiku line 2"  -> B  (changed from "hakiuline2")
+        line 3 "haiku line 3"  -> A  (unchanged — A first introduced it)
+
+    Even though B's new_string contains all three lines, only line 2 is
+    an actual change; lines 1 and 3 were merely quoted as context. They
+    retain A's attribution.
+    """
+    a = _write("A", 1, "/f.py", "haiku line 1\nhakiuline2\nhaiku line 3")
+    b = _edit(
+        "B", 2, "/f.py",
+        "haiku line 1\nhakiuline2\nhaiku line 3",
+        "haiku line 1\nhaiku line 2\nhaiku line 3",
+    )
+    states = fold_edits([a, b])
+    lines = states["/f.py"].lines
+    assert [l.text for l in lines] == ["haiku line 1", "haiku line 2", "haiku line 3"]
+    assert lines[0].edit.session_id == "A", \
+        f"unchanged line 1 should be A, got {lines[0].edit.session_id}"
+    assert lines[1].edit.session_id == "B", \
+        f"changed line 2 should be B, got {lines[1].edit.session_id}"
+    assert lines[2].edit.session_id == "A", \
+        f"unchanged line 3 should be A, got {lines[2].edit.session_id}"
+
+
 def test_write_attributes_all_lines_to_writer():
     e = _write("S1", 1, "/f.py", "a\nb\nc")
     states = fold_edits([e])

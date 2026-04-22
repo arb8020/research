@@ -58,58 +58,66 @@ def test_block_pass_attributes_blank_lines_inside_block():
     assert all(l.edit is not None for l in fa.lines), \
         f"unattributed lines: {[l for l in fa.lines if l.edit is None]}"
     assert all(l.edit.session_id == "S1" for l in fa.lines)
-    assert all(l.match_kind == "block_same_path" for l in fa.lines)
+    assert all(l.match_kind == "virtual_same_position" for l in fa.lines)
 
 
-def test_block_pass_claims_contiguous_despite_later_edit():
-    # Edit A writes a 10-line function. Edit B replaces a 6-line window
-    # of it (containing 4 of A's lines + 2 new lines). The block pass
-    # runs latest-first: B's 6-line run wins, then A fills the outer
-    # 4 lines via its own block match.
+def test_write_then_edit_credits_unchanged_lines_to_writer():
+    # A writes a 10-line function. B edits the middle 3 lines,
+    # quoting 1 line of context on each side. Outer lines (including
+    # the quoted context) stay credited to A; the 2 new middle lines
+    # go to B.
     a = _write("A", 1, "/f.py",
-        'def process(items):\n'
-        '    results = []\n'
-        '    for item in items:\n'
-        '        validated = validate(item)\n'
-        '        processed = transform(validated)\n'
-        '        enriched = enrich(processed)\n'
-        '        results.append(enriched)\n'
-        '    finalize(results)\n'
-        '    emit_telemetry(results)\n'
-        '    return results'
+        "def process(items):\n"
+        "    results = []\n"
+        "    for item in items:\n"
+        "        validated = validate(item)\n"
+        "        processed = transform(validated)\n"
+        "        enriched = enrich(processed)\n"
+        "        results.append(enriched)\n"
+        "    finalize(results)\n"
+        "    emit_telemetry(results)\n"
+        "    return results"
     )
-    # Current file: A's outer lines + B's middle 6
+    b = FileEdit(
+        source="claude_code", session_id="B", message_uuid="msg-B",
+        tool_call_id="tc-B",
+        timestamp=datetime.fromtimestamp(2, tz=timezone.utc),
+        path="/f.py", op="edit",
+        old_content=(
+            "        validated = validate(item)\n"
+            "        processed = transform(validated)\n"
+            "        enriched = enrich(processed)\n"
+            "        results.append(enriched)\n"
+            "    finalize(results)"
+        ),
+        new_content=(
+            "        validated = validate(item)\n"
+            "        NEW_LINE_FROM_B_ONE = True\n"
+            "        NEW_LINE_FROM_B_TWO = False\n"
+            "    finalize(results)"
+        ),
+    )
+
     current = (
-        'def process(items):\n'
-        '    results = []\n'
-        '    for item in items:\n'
-        '        validated = validate(item)\n'
-        '        NEW_LINE_FROM_B_ONE = True\n'
-        '        NEW_LINE_FROM_B_TWO = False\n'
-        '        results.append(enriched)\n'
-        '    finalize(results)\n'
-        '    emit_telemetry(results)\n'
-        '    return results'
+        "def process(items):\n"
+        "    results = []\n"
+        "    for item in items:\n"
+        "        validated = validate(item)\n"
+        "        NEW_LINE_FROM_B_ONE = True\n"
+        "        NEW_LINE_FROM_B_TWO = False\n"
+        "    finalize(results)\n"
+        "    emit_telemetry(results)\n"
+        "    return results"
     )
-    # Edit B's exact claimable content = the 6-line window from current.
-    b_middle = _write("B", 2, "/f.py",
-        '    for item in items:\n'
-        '        validated = validate(item)\n'
-        '        NEW_LINE_FROM_B_ONE = True\n'
-        '        NEW_LINE_FROM_B_TWO = False\n'
-        '        results.append(enriched)\n'
-        '    finalize(results)'
-    )
-    [fa] = _run_reconcile([a, b_middle], ["/f.py"], current)
+    [fa] = _run_reconcile([a, b], ["/f.py"], current)
     sessions = [l.edit.session_id if l.edit else None for l in fa.lines]
-    kinds = [l.match_kind for l in fa.lines]
-    # Middle 6 lines from B (block_same_path)
-    assert sessions[2:8] == ["B"] * 6, f"got {sessions[2:8]}"
-    assert all(k == "block_same_path" for k in kinds[2:8]), \
-        f"got {kinds[2:8]}"
-    # Outer 2 + 2 lines from A
-    assert sessions[0:2] == ["A", "A"], f"got {sessions[0:2]}"
-    assert sessions[8:10] == ["A", "A"], f"got {sessions[8:10]}"
+    # Outer lines from A, including the two context lines B quoted.
+    assert sessions[0:4] == ["A"] * 4, f"got {sessions[0:4]}"
+    # B's two new lines
+    assert sessions[4:6] == ["B", "B"], f"got {sessions[4:6]}"
+    # `finalize(results)` was context in B -> credit stays with A.
+    # Plus remaining A-only tail.
+    assert sessions[6:9] == ["A", "A", "A"], f"got {sessions[6:9]}"
 
 
 def test_block_pass_rejects_shingle_of_trivial_lines():
@@ -227,5 +235,4 @@ def test_block_pass_requires_min_shingle_length():
         "this is a single line of distinctive content long enough to pass")
     assert len(fa.lines) == 1
     assert fa.lines[0].edit is not None
-    # Per-line provenance_same_path (no block — one line shorter than K).
-    assert fa.lines[0].match_kind == "provenance_same_path"
+    assert fa.lines[0].match_kind == "virtual_same_position"

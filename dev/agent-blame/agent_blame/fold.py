@@ -1,46 +1,80 @@
 """Fold a stream of FileEdits into a virtual per-file state with line attribution.
 
-This is the core of the blame story. Given an ordered list of edits (from
-potentially many sessions), we replay them against an in-memory model of each
-file. Every line currently in the model carries a pointer back to the edit
-that introduced it. Later edits overwrite attribution as they overwrite
-content.
+The core invariant:
 
-The output is *not* reconciled with the repo yet — that is reconcile.py's job.
-The output is: "if you applied these edits in order to an empty filesystem,
-which edit is responsible for each line of each file?" Reconcile then joins
-that against what the repo actually looks like on disk today.
+    Every line in the virtual state is tagged with the edit that FIRST
+    INTRODUCED that line content at that position.
+
+Not "last touched," not "inside the patch window of," not "appeared in
+the new_content of." First introduced. A Write introduces every line of
+its content. An Edit introduces only the lines of its new_content that
+did not previously exist in the spliced region — unchanged lines keep
+their prior originating_edit.
+
+## Haiku example (the canonical test)
+
+    EDIT_A writes:
+        "haiku line 1\\nhakiuline2\\nhaiku line 3"
+
+    EDIT_B edits old="...all three..." new="haiku line 1\\nhaiku line 2\\nhaiku line 3"
+        (fixes the typo on line 2 only)
+
+    After fold:
+        line 0 "haiku line 1"  originating_edit = A  (unchanged)
+        line 1 "haiku line 2"  originating_edit = B  (changed)
+        line 2 "haiku line 3"  originating_edit = A  (unchanged)
+
+## How Edit handles unchanged lines
+
+An Edit replaces a span of lines [first..last] in the virtual state with
+a new list of lines from its new_content. To attribute correctly we run
+a line-level diff between the OLD-side lines (the span being replaced)
+and the NEW-side lines (the replacement):
+
+    for each opcode (tag, i1, i2, j1, j2):
+        if tag == 'equal':
+            new-side line inherits originating_edit from old-side line
+        if tag in ('insert', 'replace'):
+            new-side lines get this edit as originating_edit
+        if tag == 'delete':
+            nothing (those lines go away)
+
+Context lines inside an Edit's old/new (which differ from virtual
+state's lines if the Edit's context diverges from what we think it
+should be) are still "equal" as far as this fold is concerned — the
+Edit claims it's quoting them, and we take that on faith. The real
+check is whether a line is in `new_content` that was NOT in
+`old_content`.
+
+## Stale edits
+
+If `old_content` cannot be found in the virtual state, the edit is
+stale — our view of the filesystem has drifted from what the agent
+saw (human edits between sessions, uncaptured sessions, etc). We
+record it and skip. No silent re-seeding — that would retroactively
+credit non-agents for lines.
+
+## Boundary handling
+
+If `old_content` starts or ends mid-line (doesn't align to newline
+boundaries), the boundary line is partially changed. We treat it as
+changed overall — the whole boundary line is attributed to the
+editing edit. This is a simplification; if the non-match portion of
+a boundary line dominates, it's still "owned" by this edit. Rare in
+practice: agents nearly always submit line-aligned edits.
 
 ## Ordering
 
-Edits are sorted by `(timestamp, session_id, adapter-emit-order)`. Timestamp
-alone is insufficient because edits inside the same assistant message share
-a timestamp, and MultiEdit expansions all share one. The adapter emits in
-log order; we preserve that as a tiebreak via a stable sort on an explicit
-sequence number assigned at read time.
-
-## The virtual file state
-
-A file is a list of `LineAttr` records, one per line. Each `LineAttr` knows:
-  - the line text
-  - which FileEdit wrote it
-
-`write` replaces the whole list. `edit` finds `old_content` in the current
-text and splices in `new_content`.
-
-## Edit matching
-
-For `edit` ops, we locate `old_content` by exact string match in the joined
-file text. If it does not match, the edit is stale — the file state has
-drifted from what the agent saw (either a prior edit failed, or a human
-intervened between agent turns, or we missed a write). We record the miss
-and skip, rather than guess.
+Edits are sorted by (timestamp, session_id, adapter-emit-order). Timestamp
+alone is insufficient because edits inside the same assistant message
+share a timestamp. Adapter emit order breaks the tie.
 """
 
 from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
+from difflib import SequenceMatcher
 from typing import Iterable
 
 from .effects import FileEdit
@@ -102,51 +136,38 @@ def _apply_write(state: FileState, edit: FileEdit) -> None:
 
 
 def _apply_edit(state: FileState, edit: FileEdit) -> None:
-    """`edit` splices new_content in place of the first match of old_content.
+    """Splice `edit.new_content` in place of the first match of `edit.old_content`.
 
-    The invariant we preserve: unchanged lines keep their prior attribution;
-    only lines that actually change (or are introduced) point to `edit`.
-    This is what makes the later "top sessions by lines" breakdown honest.
+    Attribution rule: within the spliced region, a line in the new side
+    inherits the originating_edit of the matching old-side line if the
+    line-level diff says 'equal'. Otherwise (insert/replace), the line
+    is attributed to `edit`.
 
-    Implementation:
-
-        1. Serialize current lines to a single string `current` (with the
-           same line-by-line attribution as `state.lines`, by index).
-        2. Find `old_content` as a substring of `current`. If absent,
-           record stale and return — do not guess.
-        3. Compute the line span in `state.lines` that the match covers.
-           The span is `[first_line, last_line]` where `first_line` is the
-           index of the line containing character `idx`, and `last_line`
-           is the index of the line containing `idx + len(old_content) - 1`.
-        4. Build the replacement lines from
-               prefix_of_first_line + new_content + suffix_of_last_line
-           (prefix/suffix are the portions of the boundary lines that
-           were NOT part of the match).
-        5. Replace `state.lines[first_line:last_line+1]` with the
-           replacement, attributed to `edit`.
-
-    If the match boundaries fall exactly at line breaks, the prefix/suffix
-    are empty and we replace whole lines cleanly. If they fall mid-line,
-    we concatenate with the unchanged portions of the boundary lines
-    — those merged lines are attributed to `edit` since at least part
-    of them changed.
+    Stages:
+      1. Find `old_content` as a substring of the joined virtual state.
+      2. Map the character range to a line range [first_line..last_line]
+         in state.lines. If the match starts or ends mid-line, handle
+         the boundary by attributing the (partially-changed) line to
+         `edit`; the lines fully inside the match get diff-based
+         attribution.
+      3. Extract the "old-side lines" (the lines inside the match,
+         including their current originating_edit).
+      4. Split `new_content` into new-side lines.
+      5. Diff old-side vs new-side at line granularity. For each opcode,
+         emit LineAttr entries with the right originating_edit.
+      6. Splice into state.lines.
     """
     assert edit.old_content is not None  # guaranteed by FileEdit.__post_init__
-    # Build cumulative character offsets: `line_starts[i]` is the offset of
-    # the first character of `state.lines[i]` in the joined representation.
-    # Joined representation is `"\n".join(line.text for line in state.lines)`.
+
+    # Build cumulative character offsets
     line_starts: list[int] = []
     cursor = 0
     for i, attr in enumerate(state.lines):
         line_starts.append(cursor)
         cursor += len(attr.text)
         if i < len(state.lines) - 1:
-            cursor += 1  # the join-`\n`
-    total_len = cursor
+            cursor += 1  # the join-'\n'
     current = "\n".join(a.text for a in state.lines)
-    assert len(current) == total_len, (
-        f"offset accounting drift: computed {total_len}, actual {len(current)}"
-    )
 
     idx = current.find(edit.old_content)
     if idx == -1:
@@ -156,38 +177,62 @@ def _apply_edit(state: FileState, edit: FileEdit) -> None:
             edit.path, edit.session_id, edit.tool_call_id,
         )
         return
+
     end_idx = idx + len(edit.old_content)  # exclusive
 
-    # Locate the line containing `idx` (first_line) and `end_idx - 1` (last_line).
-    # Special case: empty files have state.lines == [] and line_starts == [];
-    # old_content must then be "" to match, which is meaningless — caller
-    # probably wanted a Write. We treat this as stale.
     if not state.lines:
+        # Empty virtual file; an edit with old="" is semantically weird.
+        # Treat as stale rather than fabricate.
         state.stale_edits.append(edit)
-        logger.debug(
-            "edit into empty virtual file %s (session=%s, tool=%s)",
-            edit.path, edit.session_id, edit.tool_call_id,
-        )
         return
 
     first_line = _locate_line(line_starts, idx, len(state.lines))
-    # For end_idx: we want the line containing the last matched character.
-    # If old_content is empty (zero-width match), treat it as an insertion
-    # at `idx`, spanning only `first_line`.
     if edit.old_content == "":
+        # Zero-width insertion at char idx. Treat as "insert between
+        # lines" — attribute inserted new-content lines to `edit` and
+        # leave the existing line alone (minus any prefix/suffix split).
         last_line = first_line
-        prefix = state.lines[first_line].text[: idx - line_starts[first_line]]
-        suffix = state.lines[first_line].text[idx - line_starts[first_line]:]
     else:
         last_line = _locate_line(line_starts, end_idx - 1, len(state.lines))
-        prefix = state.lines[first_line].text[: idx - line_starts[first_line]]
-        suffix = state.lines[last_line].text[end_idx - line_starts[last_line]:]
 
-    # Construct replacement text and split into lines, attributed to `edit`.
+    # Mid-line boundary prefix/suffix — the portions of first/last line
+    # that are OUTSIDE the match. If non-empty, those portions stay;
+    # the portion inside the match is what gets spliced out.
+    prefix = state.lines[first_line].text[: idx - line_starts[first_line]]
+    suffix = state.lines[last_line].text[end_idx - line_starts[last_line]:]
+
+    # The full replacement text (what goes in where old_content was).
     replacement_text = prefix + edit.new_content + suffix
-    replacement_lines = [
-        LineAttr(text=line, edit=edit) for line in _split_lines(replacement_text)
-    ]
+    new_side_line_texts = _split_lines(replacement_text)
+
+    # The old-side lines — with their current attribution — are exactly
+    # state.lines[first_line..last_line+1].
+    old_side_lines: list[LineAttr] = state.lines[first_line : last_line + 1]
+    old_side_texts: list[str] = [a.text for a in old_side_lines]
+
+    # Diff old-side texts against new-side texts. `equal` opcodes let
+    # us inherit originating_edit from the matched old-side line.
+    # SequenceMatcher is safe at this scale — spliced regions are
+    # typically dozens of lines, not thousands; duplicate-line ambiguity
+    # is not a concern because both sides come from the same edit.
+    sm = SequenceMatcher(a=old_side_texts, b=new_side_line_texts, autojunk=False)
+    replacement_lines: list[LineAttr] = []
+    for tag, i1, i2, j1, j2 in sm.get_opcodes():
+        if tag == "equal":
+            # Each equal-new-line inherits from corresponding old-line.
+            # equal ranges have i2-i1 == j2-j1.
+            for off in range(j2 - j1):
+                old_attr = old_side_lines[i1 + off]
+                new_text = new_side_line_texts[j1 + off]
+                # Sanity: texts must actually match in 'equal' opcodes.
+                replacement_lines.append(LineAttr(text=new_text, edit=old_attr.edit))
+        elif tag in ("insert", "replace"):
+            for off in range(j2 - j1):
+                replacement_lines.append(
+                    LineAttr(text=new_side_line_texts[j1 + off], edit=edit)
+                )
+        # 'delete' contributes nothing to the new side.
+
     state.lines[first_line : last_line + 1] = replacement_lines
 
 
