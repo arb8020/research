@@ -46,6 +46,7 @@ from .effects import FileEdit
 from .fold import FileState
 from .provenance import ProvenanceIndex
 from .sources import SourceReader
+from .tool_diff import added_lines
 
 CROSS_FILE_MIN_CHARS = 20
 """Minimum stripped length for a line to be eligible for cross-file match.
@@ -95,14 +96,17 @@ class LineAttribution:
     ambiguous: bool = False
     match_kind: str = "unknown"
     """Which attribution strategy hit:
-        'block_same_path'   — the line sits inside a multi-line run of the
-                              edit's new_content that appears contiguously
-                              in the current file at this path
-        'virtual_same_path' — per-line match via fold's virtual state
-        'provenance_same_path' — per-line match via flat provenance index
-        'virtual_cross_file'
-        'provenance_cross_file'
-        'unknown'"""
+        'block_same_path'   — the line is in a multi-line run of add-set
+                              lines from a single edit, found contiguously
+                              at this path. Highest confidence.
+        'provenance_same_path' — per-line match: the edit's add set contains
+                              this line text, scoped to this path.
+        'provenance_cross_file' — per-line match across files; only fires
+                              for distinctive lines (CROSS_FILE_MIN_CHARS).
+        'unknown' — no edit's add set contains this line. The line
+                   predates our session history, or was written by a
+                   source we didn't index (human, a tool call we can't
+                   parse, etc.)"""
 
 
 @dataclass
@@ -120,31 +124,15 @@ class FileAttribution:
 
 
 # --------------------------------------------------------------------------
-# Virtual-state indices
+# Note: virtual-state indices removed.
+#
+# The old pipeline used fold's per-file virtual state (post-apply line
+# attribution) as a primary attribution source. Under add-set semantics
+# it's redundant — the provenance index already captures what fold could
+# attribute, and without the context-lines-get-credited confusion that
+# fold's virtual state had. Fold is still used for staleness reporting
+# (the CLI prints "N stale edits"), but not for attribution.
 # --------------------------------------------------------------------------
-
-
-def _index_virtual_state(
-    states: dict[str, FileState],
-) -> tuple[dict[str, list[FileEdit]], dict[tuple[str, str], list[FileEdit]]]:
-    """Build (by_text, by_path_and_text) from the fold output.
-
-    Seeded (edit=None) lines are excluded — they represent content whose
-    origin we don't know, and we must not fabricate attribution for them.
-    """
-    by_text: dict[str, list[FileEdit]] = defaultdict(list)
-    by_path_and_text: dict[tuple[str, str], list[FileEdit]] = defaultdict(list)
-    for path, state in states.items():
-        for attr in state.lines:
-            if attr.edit is None:
-                continue
-            by_text[attr.text].append(attr.edit)
-            by_path_and_text[(path, attr.text)].append(attr.edit)
-    for bucket in by_text.values():
-        bucket.sort(key=lambda e: e.timestamp, reverse=True)
-    for bucket in by_path_and_text.values():
-        bucket.sort(key=lambda e: e.timestamp, reverse=True)
-    return by_text, by_path_and_text
 
 
 # --------------------------------------------------------------------------
@@ -207,23 +195,35 @@ def _shingle_admissible(window: tuple[str, ...]) -> bool:
 def _build_shingle_index(
     edits: list[FileEdit],
 ) -> dict[tuple[str, ...], list[tuple[FileEdit, int]]]:
-    """`shingle -> [(edit, offset_in_edit_lines), ...]`.
+    """`shingle -> [(edit, offset_in_add_lines), ...]`.
 
-    One shingle = K consecutive lines of an edit's new_content. We skip
-    shingles that fail _shingle_admissible so ambiguous windows never
-    seed a claim. Edits shorter than K lines contribute nothing here
-    (the per-line fallback passes will still see them).
+    One shingle = K consecutive lines of an edit's ADD SET — lines the
+    edit actually introduced, not context. This is the central shift:
+    we only claim a block of current-file lines if they form a
+    contiguous run of lines a single edit *added*, not merely quoted.
+
+    Edits whose add set is shorter than K contribute nothing here (they
+    fall back to per-line matching via the provenance index, which is
+    also add-set-only).
+
+    Note on discontinuities: an edit that adds two separate non-adjacent
+    regions (e.g. a fix in two places in one Edit) would split into two
+    runs in its add_lines list. Any K-window spanning that split would
+    be a false shingle. We don't model this yet — the adapter emits
+    each hunk of apply_patch as its own FileEdit, and Claude Code
+    Edit/Write are single-region, so the assumption "add_lines is one
+    contiguous sequence the edit introduced" holds in practice today.
+    If MultiEdit wasn't expanded at adapter time (or Codex grouped
+    hunks), we'd need to track hunk boundaries here.
     """
     idx: dict[tuple[str, ...], list[tuple[FileEdit, int]]] = defaultdict(list)
     for edit in edits:
-        lines = edit.new_content.split("\n")
-        if lines and lines[-1] == "":
-            lines = lines[:-1]
-        n = len(lines)
+        adds = added_lines(edit)
+        n = len(adds)
         if n < BLOCK_SHINGLE_K:
             continue
         for i in range(n - BLOCK_SHINGLE_K + 1):
-            window = tuple(lines[i : i + BLOCK_SHINGLE_K])
+            window = tuple(adds[i : i + BLOCK_SHINGLE_K])
             if not _shingle_admissible(window):
                 continue
             idx[window].append((edit, i))
@@ -243,29 +243,33 @@ class _Match:
 
 def _extend_match(
     current_lines: list[str],
-    edit_lines: list[str],
+    add_lines: list[str],
     file_pos: int,
-    edit_pos: int,
+    add_pos: int,
 ) -> tuple[int, int]:
-    """From an anchor (file_pos, edit_pos) where K consecutive lines are
-    known equal, extend up and down while lines continue to match.
+    """From an anchor (file_pos, add_pos) where K consecutive lines are
+    known equal, extend up and down while add-set lines continue to match
+    current-file lines.
+
+    `add_lines` is the edit's add set (tool_diff.added_lines), not its
+    full new_content. This restricts extension to lines the edit
+    actually introduced — we won't grow a run into context the edit
+    merely preserved.
 
     Returns `(file_start, file_end)` inclusive 0-based bounds of the
     maximal equal run covering the anchor.
     """
-    # Extend left
     start = file_pos
-    e = edit_pos
-    while start > 0 and e > 0 and current_lines[start - 1] == edit_lines[e - 1]:
+    a = add_pos
+    while start > 0 and a > 0 and current_lines[start - 1] == add_lines[a - 1]:
         start -= 1
-        e -= 1
-    # Extend right (starting from the end of the K-anchor)
+        a -= 1
     end = file_pos + BLOCK_SHINGLE_K - 1
-    e = edit_pos + BLOCK_SHINGLE_K - 1
-    while end + 1 < len(current_lines) and e + 1 < len(edit_lines) \
-            and current_lines[end + 1] == edit_lines[e + 1]:
+    a = add_pos + BLOCK_SHINGLE_K - 1
+    while end + 1 < len(current_lines) and a + 1 < len(add_lines) \
+            and current_lines[end + 1] == add_lines[a + 1]:
         end += 1
-        e += 1
+        a += 1
     return start, end
 
 
@@ -292,28 +296,25 @@ def _apply_block_pass(
         return claims
 
     # For each K-window in the current file, find all anchor matches,
-    # extend to maximal runs, and collect candidates.
+    # extend to maximal runs over the edit's ADD SET (not full
+    # new_content), and collect candidates.
     candidates: list[_Match] = []
     n = len(current_lines)
-    # Cache per-edit line splits so _extend_match doesn't re-split.
-    edit_lines_cache: dict[int, list[str]] = {}
-    def edit_lines_for(edit: FileEdit) -> list[str]:
+    add_lines_cache: dict[int, list[str]] = {}
+    def add_lines_for(edit: FileEdit) -> list[str]:
         key = id(edit)
-        if key not in edit_lines_cache:
-            ls = edit.new_content.split("\n")
-            if ls and ls[-1] == "":
-                ls = ls[:-1]
-            edit_lines_cache[key] = ls
-        return edit_lines_cache[key]
+        if key not in add_lines_cache:
+            add_lines_cache[key] = added_lines(edit)
+        return add_lines_cache[key]
 
     for i in range(n - BLOCK_SHINGLE_K + 1):
         window = tuple(current_lines[i : i + BLOCK_SHINGLE_K])
         hits = shingle_index.get(window)
         if not hits:
             continue
-        for edit, edit_pos in hits:
-            edit_lines = edit_lines_for(edit)
-            start, end = _extend_match(current_lines, edit_lines, i, edit_pos)
+        for edit, add_pos in hits:
+            adds = add_lines_for(edit)
+            start, end = _extend_match(current_lines, adds, i, add_pos)
             candidates.append(_Match(edit=edit, file_start=start, file_end=end))
 
     # Greedy claim: longest first; within equal length, latest edit first.
@@ -356,7 +357,6 @@ def reconcile(
 
     Returns: one FileAttribution per readable file, in input order.
     """
-    v_by_text, v_by_path_and_text = _index_virtual_state(virtual_states)
     edits_by_path = _edits_by_path(virtual_states, provenance)
 
     out: list[FileAttribution] = []
@@ -386,7 +386,7 @@ def reconcile(
 
         attributions: list[LineAttribution] = []
         for i, line_text in enumerate(lines, start=1):
-            # 0. Block match (most trustworthy — requires multi-line context)
+            # 1. Block match (most trustworthy — multi-line run of adds)
             be = block_claims.get(i - 1)
             if be is not None:
                 attributions.append(LineAttribution(
@@ -396,12 +396,11 @@ def reconcile(
                 continue
 
             stripped = line_text.strip()
-            # Per-line passes all require the line to be substantial.
+            # Per-line passes require the line to be substantial.
             # Without this, blank/bracket-only lines get claimed anywhere
-            # the agent happened to emit a blank in its new_content — the
-            # exact false-positive we hit on grpo.py line 2. If you want
-            # the blank attributed, let the block pass handle it; otherwise
-            # "unknown" is the honest answer.
+            # the agent happened to add one. If you want the blank
+            # attributed, let the block pass handle it; otherwise
+            # 'unknown' is the honest answer.
             per_line_allowed = len(stripped) >= SHINGLE_SUBSTANTIAL_CHARS
             cross_file_allowed = len(stripped) >= CROSS_FILE_MIN_CHARS
 
@@ -411,13 +410,7 @@ def reconcile(
                 ))
                 continue
 
-            # 1. Virtual same-path (per-line)
-            cands = v_by_path_and_text.get((abs_str, line_text), [])
-            if cands:
-                attributions.append(_make_attr(i, line_text, cands, "virtual_same_path"))
-                continue
-
-            # 2. Provenance same-path (per-line)
+            # 2. Provenance same-path (per-line, from add sets)
             cands = provenance.by_path_and_text.get((abs_str, line_text), [])
             if cands:
                 attributions.append(_make_attr(i, line_text, cands, "provenance_same_path"))
@@ -429,19 +422,13 @@ def reconcile(
                 ))
                 continue
 
-            # 3. Virtual cross-file
-            cands = v_by_text.get(line_text, [])
-            if cands:
-                attributions.append(_make_attr(i, line_text, cands, "virtual_cross_file"))
-                continue
-
-            # 4. Provenance cross-file
+            # 3. Provenance cross-file
             cands = provenance.by_text.get(line_text, [])
             if cands:
                 attributions.append(_make_attr(i, line_text, cands, "provenance_cross_file"))
                 continue
 
-            # 5. Unknown
+            # 4. Unknown
             attributions.append(LineAttribution(
                 line_number=i, text=line_text, edit=None,
             ))

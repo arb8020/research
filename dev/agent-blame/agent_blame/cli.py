@@ -219,8 +219,8 @@ def main(argv: list[str] | None = None) -> int:
     print()
     print("Match kind breakdown:")
     for kind in ("block_same_path",
-                 "virtual_same_path", "provenance_same_path",
-                 "virtual_cross_file", "provenance_cross_file"):
+                 "provenance_same_path",
+                 "provenance_cross_file"):
         n = stats.get(f"kind_{kind}", 0)
         if n:
             print(f"  {kind:<24} {n:>8}")

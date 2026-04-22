@@ -144,6 +144,79 @@ def test_block_pass_rejects_shingle_of_trivial_lines():
                     f"line {line.n} {line.text!r} claimed via block from trivial-shingle edit"
 
 
+def test_edit_does_not_credit_context_lines():
+    """Core attribution invariant under add-set semantics.
+
+    A writes a 10-line function. B subsequently edits a 3-line region
+    inside it — B's old_string and new_string both quote the 7 context
+    lines around the change. Those 7 context lines must be credited to
+    A, not B, because B didn't create them.
+    """
+    a_content = (
+        'def process(items):\n'
+        '    results = []\n'
+        '    for item in items:\n'
+        '        validated = validate(item)\n'
+        '        processed = transform(validated)\n'
+        '        enriched = enrich(processed)\n'
+        '        results.append(enriched)\n'
+        '    finalize(results)\n'
+        '    emit_telemetry(results)\n'
+        '    return results'
+    )
+    a = _write("A", 1, "/f.py", a_content)
+
+    # B changes the middle 3 lines (validated/processed/enriched) to
+    # something else, quoting 2 lines of context on each side.
+    b = FileEdit(
+        source="claude_code",
+        session_id="B",
+        message_uuid="msg-B",
+        tool_call_id="tc-B",
+        timestamp=datetime.fromtimestamp(2, tz=timezone.utc),
+        path="/f.py",
+        op="edit",
+        old_content=(
+            '    for item in items:\n'
+            '        validated = validate(item)\n'
+            '        processed = transform(validated)\n'
+            '        enriched = enrich(processed)\n'
+            '        results.append(enriched)'
+        ),
+        new_content=(
+            '    for item in items:\n'
+            '        CHANGED_LINE_FROM_B = True\n'
+            '        ANOTHER_CHANGED_LINE = False\n'
+            '        results.append(enriched)'
+        ),
+    )
+
+    current = (
+        'def process(items):\n'
+        '    results = []\n'
+        '    for item in items:\n'
+        '        CHANGED_LINE_FROM_B = True\n'
+        '        ANOTHER_CHANGED_LINE = False\n'
+        '        results.append(enriched)\n'
+        '    finalize(results)\n'
+        '    emit_telemetry(results)\n'
+        '    return results'
+    )
+
+    [fa] = _run_reconcile([a, b], ["/f.py"], current)
+    sessions = [l.edit.session_id if l.edit else None for l in fa.lines]
+
+    # Lines 0,1,2 are all A's (def process / results = [] / for item in items)
+    # — even though line 2 ("for item in items:") was quoted as context by B.
+    assert sessions[0:3] == ["A", "A", "A"], f"context credited to B! got {sessions[0:3]}"
+    # Lines 3,4 are B's (the two new lines)
+    assert sessions[3:5] == ["B", "B"], f"got {sessions[3:5]}"
+    # Line 5 "results.append(enriched)" is context in B — must credit A.
+    assert sessions[5] == "A", f"context credited to B! got {sessions[5]}"
+    # Lines 6,7,8 are outer A-context that B never saw.
+    assert sessions[6:9] == ["A", "A", "A"], f"got {sessions[6:9]}"
+
+
 def test_block_pass_requires_min_shingle_length():
     # Edit shorter than BLOCK_SHINGLE_K lines cannot seed a block match
     # (no K-line window exists). Per-line fallback must still attribute
@@ -154,5 +227,5 @@ def test_block_pass_requires_min_shingle_length():
         "this is a single line of distinctive content long enough to pass")
     assert len(fa.lines) == 1
     assert fa.lines[0].edit is not None
-    # Per-line virtual_same_path (no block, one line shorter than K).
-    assert fa.lines[0].match_kind == "virtual_same_path"
+    # Per-line provenance_same_path (no block — one line shorter than K).
+    assert fa.lines[0].match_kind == "provenance_same_path"

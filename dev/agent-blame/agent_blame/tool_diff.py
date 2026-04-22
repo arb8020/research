@@ -1,4 +1,18 @@
-"""Render tool-call inputs as structured diffs for the UI.
+"""Render tool-call inputs as structured diffs, and compute per-edit
+"add sets" used for attribution.
+
+The add set is the core attribution primitive: the list of lines that
+an edit actually introduced (as opposed to context lines it merely
+quoted). A Write's add set is every line of new_content. An Edit's /
+apply_patch hunk's add set is the lines present in the new side of the
+diff but NOT in the old side (computed via LCS opcodes).
+
+Attribution rule: a line in the current file is attributed to the most
+recent edit whose add set contains this line text. Context-only
+appearances don't count — even if an Edit snapshotted a line in its
+new_content, if that line was already in its old_content, this Edit
+didn't create it.
+
 
 For tool calls that represent file mutations, we produce a list of file-
 scoped hunks that the UI can render in a GitHub-style diff layout. This
@@ -49,6 +63,65 @@ from difflib import SequenceMatcher
 from typing import Any
 
 from .adapters.codex import ApplyPatchParseError, _parse_apply_patch
+from .effects import FileEdit
+
+
+# --------------------------------------------------------------------------
+# Add sets (used by attribution)
+# --------------------------------------------------------------------------
+
+
+def added_lines(edit: FileEdit) -> list[str]:
+    """Return the list of lines this edit actually introduced.
+
+    Contract:
+      - write  -> every line of new_content is an add (we just created the file)
+      - edit   -> lines appearing in new_content that are not in old_content,
+                  computed via LCS opcodes (insert + replace). Context lines
+                  (equal opcode) are NOT adds — the edit didn't create them,
+                  it merely preserved them.
+      - multi_edit -> would be similar, but we expand MultiEdit into multiple
+                  `edit` FileEdits at adapter time, so this branch should
+                  never fire.
+
+    Trailing-empty-line normalization: files ending in "\n" produce a
+    trailing "" after split. Drop it so that "line ending in newline" vs
+    "line without newline" isn't a spurious add/remove.
+    """
+    if edit.op == "write":
+        lines = edit.new_content.split("\n")
+        if lines and lines[-1] == "":
+            lines = lines[:-1]
+        return lines
+
+    if edit.op == "edit":
+        assert edit.old_content is not None  # enforced in FileEdit.__post_init__
+        old_lines = edit.old_content.split("\n")
+        new_lines = edit.new_content.split("\n")
+        if old_lines and old_lines[-1] == "":
+            old_lines = old_lines[:-1]
+        if new_lines and new_lines[-1] == "":
+            new_lines = new_lines[:-1]
+        sm = SequenceMatcher(a=old_lines, b=new_lines, autojunk=False)
+        adds: list[str] = []
+        for tag, _, _, j1, j2 in sm.get_opcodes():
+            # 'insert' and 'replace' on the b side are the adds.
+            # 'equal' is context (pre-existing). 'delete' has nothing on b.
+            if tag in ("insert", "replace"):
+                adds.extend(new_lines[j1:j2])
+        return adds
+
+    if edit.op == "multi_edit":
+        # Expansion happens at adapter-time into individual edits. If we
+        # ever see a raw multi_edit FileEdit, treat it as an edit.
+        return added_lines(FileEdit(
+            source=edit.source, session_id=edit.session_id,
+            message_uuid=edit.message_uuid, tool_call_id=edit.tool_call_id,
+            timestamp=edit.timestamp, path=edit.path, op="edit",
+            new_content=edit.new_content, old_content=edit.old_content or "",
+        ))
+
+    raise AssertionError(f"unknown op {edit.op!r}")
 
 
 def render_tool_call(name: str, input_: Any) -> dict:
