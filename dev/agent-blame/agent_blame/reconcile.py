@@ -40,7 +40,6 @@ from __future__ import annotations
 from collections import Counter, defaultdict
 from collections.abc import Iterable
 from dataclasses import dataclass
-from difflib import SequenceMatcher
 from pathlib import Path
 
 from .effects import FileEdit
@@ -56,13 +55,35 @@ Below this threshold, only same-path matches are allowed. This keeps
 to any agent that ever wrote such a line.
 """
 
-MIN_BLOCK_LINES = 2
-"""Minimum block length (in lines) to claim via block matching.
+BLOCK_SHINGLE_K = 4
+"""Length of line-shingles used to seed block matches.
 
-Single-line "blocks" are just per-line matching in disguise and carry no
-additional signal. Two-line blocks already imply continuity (the line
-above/below was also written by this edit), which is the whole point of
-the block pass — so this is the lowest useful threshold.
+Lifted from MOSS-style winnowing (Schleimer, Wilkerson, Aiken, 2003): an
+exact K-line match guarantees the two sources share a run of at least K
+consecutive identical lines. K=4 is the sweet spot for source code —
+short enough that small agent edits still match, long enough that
+coincidental matches (a 3-line `if x: /    y = z /    return`) stay
+below the threshold.
+"""
+
+SHINGLE_MIN_SUBSTANTIAL_LINES = 2
+"""How many of the K lines in a shingle must be "substantial" (stripped
+length >= 8) for the shingle to be admissible.
+
+Prevents the classic duplicate-line bug: a shingle of four blank lines
+matches anywhere four blanks happen to appear. Requiring two substantial
+anchor lines inside the shingle ties every shingle to real content. This
+is patience-diff's insight adapted for shingles — anchor on rare lines,
+tolerate blanks *between* anchors.
+"""
+
+SHINGLE_SUBSTANTIAL_CHARS = 8
+"""Stripped-length threshold for a line to be 'substantial' in a shingle.
+
+Less strict than CROSS_FILE_MIN_CHARS (20) because a substantial line
+inside a shingle only needs to be distinctive enough to rule out
+blank/bracket-only shingles — the full K-line match provides the other
+discriminating signal.
 """
 
 
@@ -127,21 +148,31 @@ def _index_virtual_state(
 
 
 # --------------------------------------------------------------------------
-# Block matching
+# Block matching via shingle hashing (patience-diff-inspired)
 # --------------------------------------------------------------------------
+#
+# The prior implementation used difflib.SequenceMatcher, which picks
+# globally-optimal LCS alignments. That's the wrong objective for
+# attribution: with duplicate lines (blanks, `}`, repeated patch context)
+# it happily claims a blank line in row 2 against a blank line in the
+# middle of a 600-line patch, because the 1-line "match" extends some
+# other run's total score. The fix is patience-diff's insight: anchor on
+# distinctive K-line windows, not on individual lines, and only extend
+# runs outward from those anchors where the line-by-line match is exact.
+#
+# The algorithm below is `git blame -M`-adjacent: every edit's
+# new_content is indexed as overlapping K-line shingles. For each
+# shingle the current file has that matches, extend up and down to find
+# the maximal contiguous-identical run. Greedy-claim longest-first, with
+# per-line "already-claimed" tracking so each file line is attributed at
+# most once. Ties broken by edit recency (latest wins).
 
 
 def _edits_by_path(
     virtual_states: dict[str, FileState],
     provenance: ProvenanceIndex,
 ) -> dict[str, list[FileEdit]]:
-    """Return `abs_path -> [edits that touched this path]`, latest-first.
-
-    We source from both fold's history (complete — every edit we parsed
-    went through fold) and, as a safety net, provenance's same-path index.
-    In practice fold.history is the authoritative list; provenance only
-    adds edits that somehow slipped through without entering fold.
-    """
+    """Return `abs_path -> [edits that touched this path]`, latest-first."""
     by_path: dict[str, list[FileEdit]] = defaultdict(list)
     seen: dict[str, set[tuple[str, str, str]]] = defaultdict(set)
     for path, state in virtual_states.items():
@@ -155,66 +186,149 @@ def _edits_by_path(
     return by_path
 
 
+def _is_substantial(line: str) -> bool:
+    """A line is 'substantial' if stripped it's at least
+    SHINGLE_SUBSTANTIAL_CHARS long. Used as a discriminator to reject
+    shingles that are mostly whitespace/brackets."""
+    return len(line.strip()) >= SHINGLE_SUBSTANTIAL_CHARS
+
+
+def _shingle_admissible(window: tuple[str, ...]) -> bool:
+    """True if this K-line window is distinctive enough to be an anchor.
+
+    The hard-won invariant: at least SHINGLE_MIN_SUBSTANTIAL_LINES of
+    the K lines must be substantial. A window of `{}` / blanks / bare
+    `return` lines matches too many places to be useful as an anchor.
+    """
+    n_substantial = sum(1 for line in window if _is_substantial(line))
+    return n_substantial >= SHINGLE_MIN_SUBSTANTIAL_LINES
+
+
+def _build_shingle_index(
+    edits: list[FileEdit],
+) -> dict[tuple[str, ...], list[tuple[FileEdit, int]]]:
+    """`shingle -> [(edit, offset_in_edit_lines), ...]`.
+
+    One shingle = K consecutive lines of an edit's new_content. We skip
+    shingles that fail _shingle_admissible so ambiguous windows never
+    seed a claim. Edits shorter than K lines contribute nothing here
+    (the per-line fallback passes will still see them).
+    """
+    idx: dict[tuple[str, ...], list[tuple[FileEdit, int]]] = defaultdict(list)
+    for edit in edits:
+        lines = edit.new_content.split("\n")
+        if lines and lines[-1] == "":
+            lines = lines[:-1]
+        n = len(lines)
+        if n < BLOCK_SHINGLE_K:
+            continue
+        for i in range(n - BLOCK_SHINGLE_K + 1):
+            window = tuple(lines[i : i + BLOCK_SHINGLE_K])
+            if not _shingle_admissible(window):
+                continue
+            idx[window].append((edit, i))
+    return idx
+
+
+@dataclass
+class _Match:
+    """A candidate block match: edit wrote lines[file_start..file_end] of the file."""
+    edit: FileEdit
+    file_start: int  # inclusive, 0-based
+    file_end: int    # inclusive, 0-based
+    @property
+    def length(self) -> int:
+        return self.file_end - self.file_start + 1
+
+
+def _extend_match(
+    current_lines: list[str],
+    edit_lines: list[str],
+    file_pos: int,
+    edit_pos: int,
+) -> tuple[int, int]:
+    """From an anchor (file_pos, edit_pos) where K consecutive lines are
+    known equal, extend up and down while lines continue to match.
+
+    Returns `(file_start, file_end)` inclusive 0-based bounds of the
+    maximal equal run covering the anchor.
+    """
+    # Extend left
+    start = file_pos
+    e = edit_pos
+    while start > 0 and e > 0 and current_lines[start - 1] == edit_lines[e - 1]:
+        start -= 1
+        e -= 1
+    # Extend right (starting from the end of the K-anchor)
+    end = file_pos + BLOCK_SHINGLE_K - 1
+    e = edit_pos + BLOCK_SHINGLE_K - 1
+    while end + 1 < len(current_lines) and e + 1 < len(edit_lines) \
+            and current_lines[end + 1] == edit_lines[e + 1]:
+        end += 1
+        e += 1
+    return start, end
+
+
 def _apply_block_pass(
     *,
-    abs_path: str,
     current_lines: list[str],
     edits: list[FileEdit],
 ) -> list[tuple[int, FileEdit]]:
-    """Claim line ranges by matching multi-line runs of edit.new_content
-    against the current file, greedily, latest-edit-first.
+    """Claim line ranges via shingle anchors + exact-run extension.
 
-    Returns a list of `(line_index_0based, edit)` tuples for every line
-    attributed via the block pass. Lines not covered here fall through
+    Returns `[(line_index_0based, edit)]`. Each file line appears at most
+    once in the output (greedy claim). Lines not covered here fall through
     to the per-line pass downstream.
 
-    Algorithm:
-        claimed = bitmap of line indices already attributed
-        for each edit in `edits` (latest first):
-            a = current_lines (as seen today)
-            b = split(edit.new_content)
-            for each matching block (ai, bj, k) from SequenceMatcher:
-                if k < MIN_BLOCK_LINES: skip
-                claim every line ai..ai+k-1 that is still unclaimed,
-                    attributing to this edit
+    Determinism: edits are iterated latest-first; for a given file line,
+    the first (most recent) edit whose extended run covers it wins.
+    """
+    claimed: list[bool] = [False] * len(current_lines)
+    claims: list[tuple[int, FileEdit]] = []
+
+    # Build the shingle index once.
+    shingle_index = _build_shingle_index(edits)
+    if not shingle_index:
         return claims
 
-    `SequenceMatcher.get_matching_blocks` returns non-overlapping
-    monotonically-increasing matches (the LCS decomposition). We walk
-    them in order and claim each whole run. A later edit's match cannot
-    steal lines an earlier (more recent) edit already claimed.
+    # For each K-window in the current file, find all anchor matches,
+    # extend to maximal runs, and collect candidates.
+    candidates: list[_Match] = []
+    n = len(current_lines)
+    # Cache per-edit line splits so _extend_match doesn't re-split.
+    edit_lines_cache: dict[int, list[str]] = {}
+    def edit_lines_for(edit: FileEdit) -> list[str]:
+        key = id(edit)
+        if key not in edit_lines_cache:
+            ls = edit.new_content.split("\n")
+            if ls and ls[-1] == "":
+                ls = ls[:-1]
+            edit_lines_cache[key] = ls
+        return edit_lines_cache[key]
 
-    We deliberately do NOT check "is this block long enough to be
-    distinctive" — a 2-line block already implies intra-session
-    continuity, which is exactly the signal we care about. Short-line
-    noise is filtered at the per-line fallback (CROSS_FILE_MIN_CHARS),
-    not here.
-    """
-    claims: list[tuple[int, FileEdit]] = []
-    claimed: list[bool] = [False] * len(current_lines)
-
-    for edit in edits:
-        edit_lines = edit.new_content.split("\n")
-        # Trailing-newline convention: if edit.new_content ends with "\n"
-        # the split yields a trailing "" we should drop.
-        if edit_lines and edit_lines[-1] == "":
-            edit_lines = edit_lines[:-1]
-        if len(edit_lines) < MIN_BLOCK_LINES:
+    for i in range(n - BLOCK_SHINGLE_K + 1):
+        window = tuple(current_lines[i : i + BLOCK_SHINGLE_K])
+        hits = shingle_index.get(window)
+        if not hits:
             continue
+        for edit, edit_pos in hits:
+            edit_lines = edit_lines_for(edit)
+            start, end = _extend_match(current_lines, edit_lines, i, edit_pos)
+            candidates.append(_Match(edit=edit, file_start=start, file_end=end))
 
-        # SequenceMatcher builds a hash index over `b` (the second arg).
-        # Putting edit_lines as `b` keeps the per-edit hashed side small
-        # while the larger `current_lines` is walked. This is the fast
-        # direction.
-        matcher = SequenceMatcher(a=current_lines, b=edit_lines, autojunk=False)
-        for ai, bj, k in matcher.get_matching_blocks():
-            if k < MIN_BLOCK_LINES:
-                continue
-            for off in range(k):
-                idx = ai + off
-                if 0 <= idx < len(claimed) and not claimed[idx]:
-                    claimed[idx] = True
-                    claims.append((idx, edit))
+    # Greedy claim: longest first; within equal length, latest edit first.
+    # `edits` is already latest-first; convert to recency rank for ties.
+    recency_rank = {id(e): rank for rank, e in enumerate(edits)}
+    candidates.sort(key=lambda m: (-m.length, recency_rank.get(id(m.edit), 10**9)))
+
+    for m in candidates:
+        if all(claimed[i] for i in range(m.file_start, m.file_end + 1)):
+            # Fully covered by earlier claims; skip.
+            continue
+        for i in range(m.file_start, m.file_end + 1):
+            if not claimed[i]:
+                claimed[i] = True
+                claims.append((i, m.edit))
     return claims
 
 
@@ -264,9 +378,7 @@ def reconcile(
         # a dict mapping line-index-0based -> FileEdit.
         block_claims: dict[int, FileEdit] = {
             idx: edit
-            for idx, edit
-            in _apply_block_pass(
-                abs_path=abs_str,
+            for idx, edit in _apply_block_pass(
                 current_lines=lines,
                 edits=edits_by_path.get(abs_str, []),
             )
@@ -284,7 +396,20 @@ def reconcile(
                 continue
 
             stripped = line_text.strip()
+            # Per-line passes all require the line to be substantial.
+            # Without this, blank/bracket-only lines get claimed anywhere
+            # the agent happened to emit a blank in its new_content — the
+            # exact false-positive we hit on grpo.py line 2. If you want
+            # the blank attributed, let the block pass handle it; otherwise
+            # "unknown" is the honest answer.
+            per_line_allowed = len(stripped) >= SHINGLE_SUBSTANTIAL_CHARS
             cross_file_allowed = len(stripped) >= CROSS_FILE_MIN_CHARS
+
+            if not per_line_allowed:
+                attributions.append(LineAttribution(
+                    line_number=i, text=line_text, edit=None,
+                ))
+                continue
 
             # 1. Virtual same-path (per-line)
             cands = v_by_path_and_text.get((abs_str, line_text), [])
