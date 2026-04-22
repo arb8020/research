@@ -197,9 +197,16 @@
   .row.workload .name,
   .row.serving_run .name { color: var(--accent); font-weight: 700; letter-spacing: 0.02em; }
   .row .detail       { color: var(--fg-dim); font-size: 12px; overflow: hidden; text-overflow: ellipsis; }
-  .row .dur          { color: var(--accent-2); font-variant-numeric: tabular-nums; font-size: 12px; }
-  .row .dur.tail     { color: var(--accent); }             /* slower than p95 for its class */
-  .row .dur.long     { color: var(--err); }                /* very long outlier */
+  /* Duration heatmap. Color bands track per-span-name percentiles so a
+     long llm_call stands out against other llm_calls, not against agent_steps
+     (which are inherently longer because they wrap llm_calls). Five bands:
+     cool (<p50), normal (<p75, body color), warm (<p90), hot (<p99), crit (>=p99).
+     Small-n span classes stay in body color — see MIN_N_FOR_HEATMAP. */
+  .row .dur          { color: var(--fg); font-variant-numeric: tabular-nums; font-size: 12px; }
+  .row .dur.cool     { color: var(--fg-dim); }
+  .row .dur.warm     { color: var(--accent-2); }
+  .row .dur.hot      { color: var(--accent); }
+  .row .dur.crit     { color: var(--err); }
   .row .ts           { color: var(--fg-muted); font-size: 11px; font-variant-numeric: tabular-nums; }
   .row .status-err   { color: var(--err); font-weight: 700; }
 
@@ -453,23 +460,51 @@ function inlineDetail(span) {
   }
 }
 
-function computeTailThresholds(spans) {
-  // p95 by span name — used to color outliers without arbitrary cutoffs.
+function computeDurationPercentiles(spans) {
+  // Per-span-name duration percentiles. Each span name gets its own ramp
+  // because a 2-minute agent_step is normal while a 2-minute llm_call is a
+  // big deal. Rendering picks a color band from this tuple; see durationBand.
+  //
+  // We also return n so the renderer can back off to a neutral color when a
+  // class only has a handful of samples — percentiles on n=1 or n=2 are
+  // noise, and painting the lone harbor sample red just because it's also
+  // its own max is misleading.
   const durs = {};
   for (const s of spans) {
     const d = durationMs(s);
     if (d == null) continue;
     (durs[s.name] = durs[s.name] || []).push(d);
   }
+  const pct = (arr, q) => arr[Math.min(arr.length - 1, Math.floor(arr.length * q))];
   const p = {};
   for (const [name, arr] of Object.entries(durs)) {
     arr.sort((a, b) => a - b);
     p[name] = {
-      p95: arr[Math.floor(arr.length * 0.95)] || 0,
-      max: arr[arr.length - 1] || 0,
+      n: arr.length,
+      p50: pct(arr, 0.50),
+      p75: pct(arr, 0.75),
+      p90: pct(arr, 0.90),
+      p99: pct(arr, 0.99),
+      max: arr[arr.length - 1],
     };
   }
   return p;
+}
+
+// Heatmap band names match the CSS classes .dur.{cool|normal|warm|hot|crit}.
+// We require n >= MIN_N before honoring bands above "normal"; below that the
+// percentiles aren't meaningful and we stay in body color. See the
+// tail-sampling TODO at the head of render() for the broader story.
+const MIN_N_FOR_HEATMAP = 10;
+
+function durationBand(ms, p) {
+  if (ms == null || !p) return '';
+  if (p.n < MIN_N_FOR_HEATMAP) return '';
+  if (ms < p.p50) return 'cool';
+  if (ms < p.p75) return '';           // body color
+  if (ms < p.p90) return 'warm';
+  if (ms < p.p99) return 'hot';
+  return 'crit';
 }
 
 function matchesQuery(span, q) {
@@ -490,13 +525,22 @@ function matchesQuery(span, q) {
 const state = {
   spans: [],
   tree: { roots: [], byId: {} },
-  tailThresholds: {},
+  percentiles: {},
   expanded: new Set(),    // span_ids that are expanded
   selected: null,
   query: '',
   originNs: 0,
 };
 
+// TODO(tail-sampling): this viewer assumes we keep 100% of spans. That's
+// fine while the writer is a local jsonl and volumes are small, but once
+// we pipe into a real backend (Tempo, Honeycomb, etc.) we'll want the
+// emitter side to do tail sampling — always keep errors, always keep
+// >= p99 slow spans, keep all spans of flagged trace_ids, sample the happy
+// path at 1-5% — per Boris Tane's logging_sucks.md. The *viewer* probably
+// doesn't change when that happens (it just sees fewer rows), but we may
+// want to surface "this trace was sampled in because of <reason>" when
+// present so we can tell intentional keeps from random sampling.
 function render() {
   const body = document.getElementById('tree-body');
   body.innerHTML = '';
@@ -555,11 +599,8 @@ function render() {
     const dur = document.createElement('span');
     dur.className = 'dur';
     const d = durationMs(span);
-    const t = state.tailThresholds[span.name];
-    if (t && d != null) {
-      if (d >= t.max * 0.98) dur.classList.add('long');
-      else if (d >= t.p95) dur.classList.add('tail');
-    }
+    const band = durationBand(d, state.percentiles[span.name]);
+    if (band) dur.classList.add(band);
     dur.textContent = fmtDuration(d);
     row.appendChild(dur);
 
@@ -661,7 +702,13 @@ function renderDetail(span) {
   rawH.innerHTML = '<span>raw</span>';
   rawSection.appendChild(rawH);
   const pre = document.createElement('pre');
-  const rawText = JSON.stringify(span, (k, v) => k === 'children' ? undefined : v, 2);
+  // Drop transient view-only fields (we mutate spans at parse time to
+  // build the tree — children[] and depth are not on the source jsonl).
+  const rawText = JSON.stringify(
+    span,
+    (k, v) => (k === 'children' || k === 'depth') ? undefined : v,
+    2,
+  );
   pre.innerHTML = prettyJson(rawText);
   rawSection.appendChild(pre);
   pane.appendChild(rawSection);
@@ -694,7 +741,7 @@ function prettyJson(text) {
 function loadSpans(spans) {
   state.spans = spans;
   state.tree = buildTree(spans);
-  state.tailThresholds = computeTailThresholds(spans);
+  state.percentiles = computeDurationPercentiles(spans);
   state.originNs = spans.length ? Math.min(...spans.map(s => s.start_time_unix_nano)) : 0;
   // Default: expand first two levels so the user lands on structure, not a
   // single root row.

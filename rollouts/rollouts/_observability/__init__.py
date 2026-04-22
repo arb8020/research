@@ -4,6 +4,12 @@ This package implements the OTel-shaped span tree that rollouts emits at run
 time. It is deliberately thin and hand-rolled (no ``opentelemetry-*`` SDK) so
 the trio story stays first-class and the on-disk format is ours to control.
 
+TODO(cross-pollinate): look at https://github.com/kitlangton/motel.git —
+Scala-first tracing/observability work; if they have tricks for span
+lifetime under effectful control flow that map cleanly onto trio's
+structured concurrency, steal them. (Noted here so we remember to cross-
+reference when revisiting span shape / sampling.)
+
 Two invariants hold across all emitters:
 
 * One span = one JSONL row. Emitted once, at close (``__aexit__``).
@@ -162,7 +168,26 @@ class SpanSink:
         self._f.close()
 
     def emit(self, span: Span) -> None:
-        """Serialize + write one span. Called once, at span close."""
+        """Serialize + write one span. Called once, at span close.
+
+        TODO(tail-sampling): today we keep 100% of spans. Fine for a local
+        jsonl at our volumes, but once we pipe into a durable backend we
+        want the tail-sampling discipline from Boris Tane's
+        ``docs/code_style/logging_sucks.md``:
+
+          * Always keep status != OK (errors).
+          * Always keep spans above an in-class p99 duration.
+          * Always keep trace_ids flagged for debugging (env var list /
+            sampling hint attribute).
+          * Random-sample the happy path at 1-5%.
+
+        The decision is at-close because all three signals above are only
+        known then. Expected shape: an injectable ``should_keep(span) ->
+        bool`` on the sink, defaulting to always-True. When it returns
+        False we drop the row but still run parent linkage / context
+        cleanup in ``start_span`` — telemetry stays consistent even when
+        we don't write it.
+        """
         assert not self._closed, "SpanSink.emit called after close"
         payload = _span_to_row(span)
         line = self._encode_with_cap(payload)
