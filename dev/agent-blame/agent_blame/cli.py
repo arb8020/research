@@ -55,7 +55,7 @@ from .reconcile import (
     summary_stats,
     top_sessions_by_lines,
 )
-from .sources import git_sha_reader, working_tree_reader
+from .sources import git_sha_reader, git_timestamp_seeder, working_tree_reader
 
 
 def _tracked_text_files(git_root: Path, scope: Path) -> list[Path]:
@@ -206,11 +206,18 @@ def main(argv: list[str] | None = None) -> int:
         source = working_tree_reader()
         print("Source: working tree")
 
-    # 4. Fold, seeded from the same source. Fold's seed_reader has the
-    # same signature as SourceReader; passing it through keeps the story
-    # simple: seed and reconcile always agree on "what does the file
-    # currently look like."
-    virtual_states = fold_edits(all_edits, seed_reader=source)
+    # 4. Fold. Two seeders, composable:
+    #   - seed_reader: fill initial virtual state from current working
+    #     tree (first-touch seeding).
+    #   - timestamped_seeder: when an edit goes stale mid-chain (cross-
+    #     session drift), reset the virtual state to the file as git
+    #     had it at that edit's timestamp, then retry the edit.
+    ts_seeder = git_timestamp_seeder(git_root)
+    virtual_states = fold_edits(
+        all_edits,
+        seed_reader=source,
+        timestamped_seeder=ts_seeder,
+    )
     stale_total = sum(len(s.stale_edits) for s in virtual_states.values())
     print(f"Touched {len(virtual_states)} distinct file paths "
           f"({stale_total} stale edits — old_content missing from virtual state)")

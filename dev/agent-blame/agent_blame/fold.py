@@ -257,21 +257,34 @@ def fold_edits(
     edits: Iterable[FileEdit],
     *,
     seed_reader: "SeedReader | None" = None,
+    timestamped_seeder=None,  # TimestampedSeeder; avoids a hard import here
 ) -> dict[str, FileState]:
     """Replay `edits` in order; return per-path FileState.
 
-    If `seed_reader` is provided, it is called when a path's first edit is
-    an `edit` (not a `write`) — the returned text is used as the initial
-    virtual state, attributed to `None` (unknown). This lets us handle
-    agent edits against files whose original `write` is not in our session
-    history (e.g. human-authored code, or sessions deleted before indexing).
+    Seeding strategy (two mechanisms, composable):
 
-    Without a seed_reader, such paths start empty and every `edit` against
-    them is stale.
+    1. `seed_reader(path) -> str | None` is called on first touch of a
+       path when the first edit is an `edit` op (Writes overwrite anyway,
+       so seeding would be wasted). Populates virtual state with
+       file-as-of-now, all lines attributed to None.
 
-    We sort edits as a safety net in case the caller merged streams
-    naively; the stable sort preserves adapter emit order within equal
-    timestamps.
+    2. `timestamped_seeder(path, ts) -> str | None` is called when an
+       edit goes stale (its `old_content` isn't in our virtual state —
+       we've drifted from what the agent saw). It returns the file as
+       it was in git at the edit's timestamp. We reset the virtual
+       state to that content (attributed None) and retry the edit.
+
+       The tradeoff for re-seeding: we discard previously-applied edits'
+       attribution on this file. Accepted because a stale edit means
+       everything chained after it would also go stale; by re-seeding
+       we recover this edit's chain at the cost of earlier edits that
+       failed to survive forward anyway.
+
+    Without either seeder, paths start empty, first edits on
+    pre-existing files go stale, and cross-session drift is silently
+    lost.
+
+    Ordering: stable sort by (timestamp, session_id, adapter-emit-order).
     """
     indexed = list(enumerate(edits))
     indexed.sort(key=lambda pair: (pair[1].timestamp, pair[1].session_id, pair[0]))
@@ -282,9 +295,6 @@ def fold_edits(
         if state is None:
             state = FileState(path=edit.path)
             states[edit.path] = state
-            # First-touch seeding: only if we don't have a Write kicking
-            # off this file's history. Writes overwrite anyway; seeding
-            # would be wasted work.
             if edit.op == "edit" and seed_reader is not None:
                 seed_text = seed_reader(edit.path)
                 if seed_text is not None:
@@ -295,19 +305,44 @@ def fold_edits(
         state.history.append(edit)
         if edit.op == "write":
             _apply_write(state, edit)
-        elif edit.op == "edit":
-            _apply_edit(state, edit)
-            # A stale edit means our virtual state has drifted from what
-            # the agent saw (usually: cross-session drift where humans or
-            # uncaptured sessions modified the file in between). We do not
-            # attempt to recover by re-seeding — that would wipe prior
-            # attribution for *all* lines of the file. Instead, we accept
-            # the loss of this one edit's attribution and keep going.
-            # Reconcile via content-match often still recovers most of
-            # what this edit produced, since it matches by text not
-            # position.
-        else:
+            continue
+
+        if edit.op != "edit":
             raise AssertionError(f"unknown op {edit.op!r} in fold")
+
+        # Apply the edit. Staleness goes into state.stale_edits.
+        stale_before = len(state.stale_edits)
+        _apply_edit(state, edit)
+        stale_after = len(state.stale_edits)
+
+        if stale_after > stale_before and timestamped_seeder is not None:
+            # The edit couldn't locate its old_content in our virtual
+            # state. Only re-seed if we have NO attributed lines yet on
+            # this file — re-seeding mid-chain would discard all prior
+            # attribution we'd already built up for the file (e.g. a
+            # previous Write or successful Edit), which is usually a
+            # net loss of credited lines.
+            #
+            # Mid-chain stale edits are left as stale. Reconcile's
+            # same-path content match still gives the edit a chance to
+            # be credited at reconcile time if its new-content lines
+            # survive to the current file, but we don't gamble the
+            # virtual state to chase it.
+            has_attributed = any(a.edit is not None for a in state.lines)
+            if not has_attributed:
+                seed_text = timestamped_seeder(edit.path, edit.timestamp)
+                if seed_text is not None:
+                    logger.debug(
+                        "re-seeding empty state for %s from git at %s",
+                        edit.path, edit.timestamp.isoformat(),
+                    )
+                    state.lines = [
+                        LineAttr(text=line, edit=None)
+                        for line in _split_lines(seed_text)
+                    ]
+                    state.stale_edits.pop()
+                    _apply_edit(state, edit)
+
     return states
 
 

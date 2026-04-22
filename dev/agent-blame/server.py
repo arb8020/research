@@ -41,7 +41,7 @@ from agent_blame.reconcile import (
     FileAttribution,
     reconcile,
 )
-from agent_blame.sources import SourceReader, git_sha_reader, working_tree_reader
+from agent_blame.sources import SourceReader, git_sha_reader, git_timestamp_seeder, working_tree_reader
 from agent_blame.transcript import TranscriptNotFound, load_transcript
 
 logger = logging.getLogger(__name__)
@@ -71,7 +71,11 @@ def _build_attributions(
             if _in_scope(e.path):
                 edits.append(e)
     logger.info("parsed %d edits in scope of %s", len(edits), repo_root)
-    virtual_states = fold_edits(edits, seed_reader=source)
+    virtual_states = fold_edits(
+        edits,
+        seed_reader=source,
+        timestamped_seeder=git_timestamp_seeder(git_root),
+    )
     tracked = _tracked_text_files(git_root, scope_rel)
     return reconcile(
         repo_root=git_root,
