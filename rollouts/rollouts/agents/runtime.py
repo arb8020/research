@@ -307,6 +307,36 @@ async def run_agent_step(
         state: Current agent state
         rcfg: Run configuration (contains cancel_scope for cancellation)
     """
+    from .._observability import start_span
+
+    async with start_span(
+        "agent_step",
+        attributes={
+            "turn_idx": state.turn_idx,
+            "session_id": state.session_id,
+        },
+    ) as step_span:
+        next_state = await _run_agent_step_body(state, rcfg)
+        # One span row per agent step, annotated with the outcome. Set
+        # attributes at close so the single emitted row tells the whole
+        # turn's story (stop_reason, any error propagated, pending tool
+        # count surfaced into the next turn).
+        step_span.set_attr("stop_reason", next_state.stop.value if next_state.stop else None)
+        if getattr(next_state, "error", None):
+            step_span.set_attr("error", next_state.error)
+        step_span.set_attr("pending_tool_count", len(next_state.pending_tool_calls))
+        return next_state
+
+
+async def _run_agent_step_body(
+    state: AgentState,
+    rcfg: RunConfig,
+) -> AgentState:
+    """Original run_agent_step logic, split out so agent_step span wraps it.
+
+    Returns the new AgentState. Parent span sets outcome attributes after
+    this returns so one agent_step row captures the whole turn.
+    """
     # TODO(session-refactor move 3, deferred): mid-tool kill distinguishability.
     #
     # Today, if the process is killed between the assistant message being
