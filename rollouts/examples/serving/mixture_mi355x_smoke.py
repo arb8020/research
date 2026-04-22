@@ -124,12 +124,16 @@ _docker_run = (
     f" --trust-remote-code"
     f" --tool-call-parser deepseekv32"
     f" --reasoning-parser deepseek-v3"
-    f" --disable-cuda-graph"
+    # Keep the same tilelang attention path but re-enable CUDA graphs
+    # explicitly. Upstream merged stable graph capture for DeepSeek-V3.2 NSA
+    # on AMD; cap capture at bs=64 to make this a single, bounded experiment.
+    f" --cuda-graph-max-bs 64"
     f" --mem-fraction-static 0.85"
     f" --page-size 64"
     f" --nsa-prefill-backend tilelang"
     f" --nsa-decode-backend tilelang"
     f" --enable-cache-report"
+    f" --enable-metrics"
     f" --watchdog-timeout 1800"
 )
 
