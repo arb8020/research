@@ -37,6 +37,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from agent_blame.adapters import claude_code, codex
 from agent_blame.fold import fold_edits
+from agent_blame.git_blame import CommitInfo, blame_file
 from agent_blame.reconcile import (
     FileAttribution,
     reconcile,
@@ -93,26 +94,50 @@ def _tracked_text_files(git_root: Path, scope: Path) -> list[Path]:
     return [git_root / line for line in result.stdout.splitlines() if line]
 
 
-def _attribution_to_json(fa: FileAttribution) -> dict:
-    """Shape the UI consumes. Keep fields flat and stable.
+def _commit_info_to_json(c: CommitInfo | None) -> dict | None:
+    if c is None:
+        return None
+    return {
+        "sha": c.sha,
+        "short_sha": c.short_sha,
+        "author_name": c.author_name,
+        "author_email": c.author_email,
+        "timestamp": c.author_time_iso,
+        "summary": c.summary,
+        "agent_marker": c.agent_marker,
+    }
 
-    One record per line. `edit` is either None (unknown) or a small nested
-    object with the fields the UI actually needs (session id, source, a
-    short display label). Full tool-call content is not shipped with the
-    attribution — UI fetches it on demand via /api/session.
+
+def _attribution_to_json(
+    fa: FileAttribution,
+    commits: list[CommitInfo | None] | None = None,
+) -> dict:
+    """Shape the UI consumes. One record per line.
+
+    Each line has:
+      - `edit`: session-level attribution (None for unknown), from fold
+      - `commit`: git-blame fallback (None if git blame failed), always
+        provided so the UI can show *something* even for unknown edits
+
+    `commits` is the parallel list from git blame, indexed 0-based by
+    line. If None, the commit fields are omitted entirely (back-compat
+    with callers not passing it).
     """
     lines = []
-    for line in fa.lines:
+    for i, line in enumerate(fa.lines):
+        commit = None
+        if commits is not None and i < len(commits):
+            commit = _commit_info_to_json(commits[i])
         if line.edit is None:
-            lines.append({
+            entry = {
                 "n": line.line_number,
                 "text": line.text,
                 "edit": None,
                 "ambiguous": False,
                 "match_kind": line.match_kind,  # 'unknown'
-            })
+            }
         else:
-            lines.append({
+            entry = {
                 "n": line.line_number,
                 "text": line.text,
                 "edit": {
@@ -123,7 +148,10 @@ def _attribution_to_json(fa: FileAttribution) -> dict:
                 },
                 "ambiguous": line.ambiguous,
                 "match_kind": line.match_kind,
-            })
+            }
+        if commit is not None:
+            entry["commit"] = commit
+        lines.append(entry)
     return {
         "path": str(fa.repo_path),
         "lines": lines,
@@ -210,6 +238,18 @@ def make_handler(
         "sha": sha,
         "file_count": len(attributions),
     }
+    # Per-path cache of git-blame output. Populated lazily on /api/blame.
+    # `git blame --line-porcelain` takes a few hundred ms on a 2000-line
+    # file; caching keeps repeat hits instant.
+    blame_cache: dict[str, list[CommitInfo | None]] = {}
+
+    def _git_blame_for(rel_path: str) -> list[CommitInfo | None]:
+        cached = blame_cache.get(rel_path)
+        if cached is not None:
+            return cached
+        commits = blame_file(git_root, rel_path, ref=sha)
+        blame_cache[rel_path] = commits
+        return commits
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, fmt, *args):
@@ -254,7 +294,8 @@ def make_handler(
                 if fa is None:
                     self._send_404(f"no attribution for {path!r}")
                     return
-                self._send_json(_attribution_to_json(fa))
+                commits = _git_blame_for(path)
+                self._send_json(_attribution_to_json(fa, commits))
                 return
             if route == "/api/session":
                 source = (params.get("source") or [""])[0]

@@ -47,33 +47,49 @@ function relativeTime(iso) {
   } catch { return '' }
 }
 
-function editKey(edit) {
-  return edit ? `${edit.source}:${edit.session_id}` : null
+function _runTitle(edit, commit) {
+  if (edit) {
+    return `${edit.source} ${edit.session_id}\n${new Date(edit.timestamp).toLocaleString()}`
+  }
+  if (commit) {
+    const parts = [
+      `commit ${commit.short_sha}`,
+      commit.summary || '',
+      `${commit.author_name} <${commit.author_email}>`,
+      new Date(commit.timestamp).toLocaleString(),
+    ]
+    if (commit.agent_marker) parts.push(`(${commit.agent_marker} co-authored)`)
+    return parts.filter(Boolean).join('\n')
+  }
+  return 'unknown'
 }
 
-// Per-line effective edit = the server's edit, no bridging.
-//
-// We previously bridged single-line unknowns between same-session
-// neighbors for visual continuity. That was a mistake: clicking the
-// run's annotation block then opened the bridged edit even for lines
-// that were genuinely unknown (e.g. a human-inserted line sandwiched
-// between two agent-written lines). Honest gaps beat smooth lies.
-function computeEffectiveEdits(lines) {
-  return lines.map(l => l.edit)
+
+function runKey(line) {
+  // Group lines by edit (session attribution) when we have one, else
+  // by git-commit sha (the fallback). Lines with neither group under
+  // a single 'unknown' key.
+  if (line.edit) return `edit:${line.edit.source}:${line.edit.session_id}`
+  if (line.commit) return `commit:${line.commit.sha}`
+  return 'unknown'
 }
 
-// Group consecutive same-session lines into runs. A run is
-// { key, edit, start, end } — start and end are inclusive 0-based indexes
-// into `lines`. `edit` is the effective edit (null for unknown runs).
-function computeRuns(lines, effectiveEdits) {
+// Group consecutive same-key lines into runs. A run spans one agent
+// session, one git commit, or one stretch of truly-unknown lines.
+function computeRuns(lines) {
   const runs = []
   let cur = null
   for (let i = 0; i < lines.length; i++) {
-    const edit = effectiveEdits[i]
-    const key = editKey(edit)
+    const key = runKey(lines[i])
     if (!cur || cur.key !== key) {
       if (cur) runs.push(cur)
-      cur = { key, edit, start: i, end: i }
+      cur = {
+        key,
+        edit: lines[i].edit,
+        commit: lines[i].commit,
+        start: i,
+        end: i,
+      }
     } else {
       cur.end = i
     }
@@ -167,23 +183,39 @@ function CodeLine({ line, edit, highlightedHtml, onGutterHover, onGutterLeave, o
 const ANNOTATION_WIDTH = 200
 
 function BlameRun({ run, lines, highlighted, onSelectEdit }) {
-  const { edit, start, end } = run
-  const color = edit ? colorFor(edit.source, edit.session_id) : 'transparent'
+  const { edit, commit, start, end } = run
   const runLen = end - start + 1
-  const clickable = !!edit
+
+  // Three display modes:
+  //   agent-run:   edit present -> colored stripe, session_id, click opens transcript
+  //   commit-run:  edit null, commit present -> gray stripe, short_sha, author
+  //   unknown:     neither -> no stripe, "unknown"
+  let stripeColor
+  let clickable = false
+  if (edit) {
+    stripeColor = colorFor(edit.source, edit.session_id)
+    clickable = true
+  } else if (commit) {
+    // Slightly distinctive neutral gray with a hint of warmth if the
+    // commit carries an agent marker (i.e. the commit was co-authored
+    // with an agent but we don't have that specific session).
+    stripeColor = commit.agent_marker ? '#8a7a5a' : '#5a5a5a'
+  } else {
+    stripeColor = 'transparent'
+  }
+
   return (
     <div style={{
       display: 'flex',
       borderTop: '1px solid var(--color-border)',
     }}>
-      {/* Annotation column (run-level). Blank for unknown runs. */}
       <div
         onClick={clickable ? () => onSelectEdit(edit) : undefined}
         style={{
           width: ANNOTATION_WIDTH, flexShrink: 0,
           display: 'flex', alignItems: 'flex-start',
           background: 'var(--bg-wash)',
-          borderLeft: `3px solid ${color}`,
+          borderLeft: `3px solid ${stripeColor}`,
           padding: '2px 10px 2px 8px',
           fontFamily: 'var(--font-mono)', fontSize: 11,
           color: edit ? 'var(--text-secondary)' : 'var(--text-disabled)',
@@ -192,7 +224,7 @@ function BlameRun({ run, lines, highlighted, onSelectEdit }) {
         }}
         onMouseEnter={clickable ? e => e.currentTarget.style.background = 'var(--bg-elevated)' : undefined}
         onMouseLeave={clickable ? e => e.currentTarget.style.background = 'var(--bg-wash)' : undefined}
-        title={edit ? `${edit.source} ${edit.session_id}\n${new Date(edit.timestamp).toLocaleString()}` : 'unknown'}
+        title={_runTitle(edit, commit)}
       >
         {edit ? (
           <div style={{ lineHeight: '20px', overflow: 'hidden', width: '100%' }}>
@@ -207,6 +239,35 @@ function BlameRun({ run, lines, highlighted, onSelectEdit }) {
               overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
             }}>
               {relativeTime(edit.timestamp)}
+              {runLen > 1 && <span style={{ marginLeft: 6 }}>· {runLen} lines</span>}
+            </div>
+          </div>
+        ) : commit ? (
+          <div style={{ lineHeight: '20px', overflow: 'hidden', width: '100%' }}>
+            <div style={{
+              color: 'var(--text-secondary)',
+              overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+              display: 'flex', alignItems: 'center', gap: 6,
+            }}>
+              <span style={{ color: 'var(--text-disabled)' }}>git</span>
+              <span>{commit.short_sha}</span>
+              {commit.agent_marker && (
+                <span style={{
+                  fontSize: 9, padding: '0 4px',
+                  background: '#3a3420', color: '#ffcf7a',
+                  borderRadius: 2,
+                }} title={`commit co-authored with ${commit.agent_marker}`}>
+                  {commit.agent_marker === 'claude_code' ? 'cc' :
+                   commit.agent_marker === 'codex' ? 'cx' :
+                   commit.agent_marker === 'copilot' ? 'co' : 'ag'}
+                </span>
+              )}
+            </div>
+            <div style={{
+              color: 'var(--text-disabled)', fontSize: 10,
+              overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+            }}>
+              {commit.author_name} · {relativeTime(commit.timestamp)}
               {runLen > 1 && <span style={{ marginLeft: 6 }}>· {runLen} lines</span>}
             </div>
           </div>
@@ -267,13 +328,9 @@ export function BlameView({ path, blame, onSelectEdit }) {
     localStorage.setItem('ab-view-mode', m)
   }
 
-  const effectiveEdits = useMemo(
-    () => blame ? computeEffectiveEdits(blame.lines) : [],
-    [blame]
-  )
   const runs = useMemo(
-    () => blame ? computeRuns(blame.lines, effectiveEdits) : [],
-    [blame, effectiveEdits]
+    () => blame ? computeRuns(blame.lines) : [],
+    [blame]
   )
 
   if (!blame) return (
@@ -345,7 +402,7 @@ export function BlameView({ path, blame, onSelectEdit }) {
           <CodeLine
             key={line.n}
             line={line}
-            edit={effectiveEdits[i]}
+            edit={line.edit}
             highlightedHtml={highlighted[i]}
             hovered={hover?.lineN === line.n}
             onGutterHover={(line, edit, rect) => setHover({ lineN: line.n, edit, rect })}
