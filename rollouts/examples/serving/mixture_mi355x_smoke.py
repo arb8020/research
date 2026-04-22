@@ -292,12 +292,17 @@ serving_scenario = ServingScenario(
             concurrency=_SHAREGPT_WORKLOAD.max_concurrent,
             max_samples=_SHAREGPT_WORKLOAD.num_prompts,
         ),
-        EvalServingWorkload(
-            name="harbor_tb2",
-            eval_task=_harbor_eval,
-            concurrency=1,
-            max_samples=1,
-        ),
+        # TEMP: harbor dropped for kimi_verifier instrumentation verification
+        # rerun. Harbor's single TB2 task runs ~20 min and its spans were
+        # already verified on run_20260422-013057 (61 descendants, all
+        # levels populated). Restore before running as the canonical
+        # 4-workload mixture smoke.
+        # EvalServingWorkload(
+        #     name="harbor_tb2",
+        #     eval_task=_harbor_eval,
+        #     concurrency=1,
+        #     max_samples=1,
+        # ),
     ],
     output=ServingOutputConfig(
         experiment_name="mixture_mi355x_smoke",

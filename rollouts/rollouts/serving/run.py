@@ -1092,6 +1092,19 @@ async def _run_scenario(
             }
 
     async def _run_named_workload(workload: ServingWorkload) -> None:
+        # TODO(workload-shape): ToolCallVerifierWorkload dispatches into its
+        # own runner (serving/tool_call_verifier/runner.py) that bypasses
+        # the agent loop entirely to get raw-response access for K2VV
+        # fidelity. That's why its span tree under the workload row looks
+        # different from EvalServingWorkload's (no sample_attempt /
+        # agent_step layers — spans go straight from workload -> llm_call).
+        # This is a smell: the "workload" concept forks into two code paths
+        # that agree only at the outer boundary. Before adding a third
+        # conformance-style workload (schema probes, structured-output
+        # probes, etc), factor out the shared "iterate rows, send, classify,
+        # emit" shape so all workloads land in the same span hierarchy and
+        # reports have the same structure. See the matching TODO in
+        # serving/tool_call_verifier/runner.py docstring.
         from .._observability import start_span
 
         async with start_span(

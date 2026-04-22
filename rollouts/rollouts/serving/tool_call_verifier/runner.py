@@ -85,36 +85,85 @@ async def _process_one_row(
     extra_body: dict[str, Any] | None,
     limiter: trio.CapacityLimiter,
 ) -> dict[str, Any]:
+    from ..._observability import new_trace_id, start_span
+
     async with limiter:
         data_index = row.pop("_data_index", None)
-        start = time.time()
-        status, response = await send_row(
-            client=client,
-            base_url=base_url,
-            api_key=api_key,
-            row=row,
-            model=model,
-            extra_body=extra_body,
-        )
-        duration_ms = int((time.time() - start) * 1000)
-
-        finish_reason: str | None = None
-        tool_calls_valid: bool | None = None
-        if status == "success":
-            tools = row.get("tools") or []
-            finish_reason, tool_calls_valid = _classify_response(response, tools)
-
-        return {
-            "data_index": data_index,
-            "request": row,
-            "extra_body": extra_body or {},
-            "response": response,
-            "status": status,
-            "finish_reason": finish_reason,
-            "tool_calls_valid": tool_calls_valid,
-            "last_run_at": _now_iso(),
-            "duration_ms": duration_ms,
+        # Each KVV row is an independent unit of work, analogous to a
+        # sample_attempt in the eval path. Mint a fresh trace so queries
+        # like "show me this row's request" cleanly filter by trace_id.
+        span_attrs: dict[str, Any] = {
+            "gen_ai.operation.name": "chat",
+            "gen_ai.request.model": f"sglang/{model}",
+            "gen_ai.system": "sglang",
+            "kvv.data_index": data_index,
         }
+        tools = row.get("tools") or []
+        if tools:
+            span_attrs["kvv.declared_tool_count"] = len(tools)
+        if extra_body:
+            span_attrs["gen_ai.request.extra_body"] = extra_body
+
+        async with start_span(
+            "llm_call",
+            trace_id=new_trace_id(),
+            attributes=span_attrs,
+        ) as span:
+            start = time.time()
+            status, response = await send_row(
+                client=client,
+                base_url=base_url,
+                api_key=api_key,
+                row=row,
+                model=model,
+                extra_body=extra_body,
+            )
+            duration_ms = int((time.time() - start) * 1000)
+
+            finish_reason: str | None = None
+            tool_calls_valid: bool | None = None
+            if status == "success":
+                finish_reason, tool_calls_valid = _classify_response(response, tools)
+
+            # Decorate the span with outcome + KVV classification + usage.
+            # Wrapped in try/except so a bad shape in the response never
+            # breaks the workload — telemetry is secondary.
+            try:
+                span.set_attr("status", status)
+                if finish_reason is not None:
+                    span.set_attr("gen_ai.response.finish_reasons", [finish_reason])
+                if tool_calls_valid is not None:
+                    span.set_attr("kvv.tool_calls_valid", tool_calls_valid)
+                usage = (response or {}).get("usage") or {}
+                if "prompt_tokens" in usage:
+                    span.set_attr("gen_ai.usage.input_tokens", usage["prompt_tokens"])
+                if "completion_tokens" in usage:
+                    span.set_attr("gen_ai.usage.output_tokens", usage["completion_tokens"])
+                # Capture request messages + response so the viewer has
+                # the same prompt/completion surface as the agent-loop
+                # llm_call spans. SpanSink's per-attr cap will truncate
+                # if these are huge.
+                req_messages = row.get("messages")
+                if req_messages is not None:
+                    span.set_attr("gen_ai.prompt.messages", req_messages)
+                choices = (response or {}).get("choices") or []
+                if choices:
+                    msg = choices[0].get("message") or {}
+                    span.set_attr("gen_ai.completion.messages", [msg])
+            except Exception:
+                pass
+
+            return {
+                "data_index": data_index,
+                "request": row,
+                "extra_body": extra_body or {},
+                "response": response,
+                "status": status,
+                "finish_reason": finish_reason,
+                "tool_calls_valid": tool_calls_valid,
+                "last_run_at": _now_iso(),
+                "duration_ms": duration_ms,
+            }
 
 
 async def run_tool_call_verifier_workload(
