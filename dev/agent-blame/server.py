@@ -96,6 +96,8 @@ def _attribution_to_json(fa: FileAttribution) -> dict:
                 "n": line.line_number,
                 "text": line.text,
                 "edit": None,
+                "ambiguous": False,
+                "match_kind": line.match_kind,  # 'unknown'
             })
         else:
             lines.append({
