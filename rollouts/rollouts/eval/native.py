@@ -235,30 +235,59 @@ async def _evaluate_batch(
     results_lock = trio.Lock()
 
     async def run_one(sample_id: str, sample_data: dict[str, Any]) -> RowAttempt:
-        """Evaluate a single sample."""
+        """Evaluate a single sample inside a sample_attempt span.
+
+        One span row per sample, parented to whatever scope the caller owns
+        (for serving runs this is the workload span; for solo evals it's the
+        root). Span name is the sample's task name for human readability; the
+        sample_id attribute is the stable id for correlation.
+        """
+        from .._observability import new_trace_id, start_span
+
         task_name = sample_data.get("name", sample_id)
         if progress:
             progress.add_task(sample_id, name=task_name)
 
-        # Get environment: prefer direct environment, fall back to factory
-        if config.environment is not None:
-            env = config.environment
-        elif config.environment_factory is not None:
-            env = await _resolve_environment(config.environment_factory, sample_data)
-        else:
-            env = None
+        # Each sample attempt gets its own trace_id: a sample is the natural
+        # unit of work for LLM-agent observation, parallel samples are
+        # independent, and joining "all spans in one trace" = "all spans from
+        # one sample attempt" gives us the right analysis default.
+        async with start_span(
+            "sample_attempt",
+            trace_id=new_trace_id(),
+            attributes={
+                "sample_id": sample_id,
+                "sample_name": task_name,
+            },
+        ) as sample_span:
+            # Get environment: prefer direct environment, fall back to factory
+            if config.environment is not None:
+                env = config.environment
+            elif config.environment_factory is not None:
+                env = await _resolve_environment(config.environment_factory, sample_data)
+            else:
+                env = None
 
-        result = await evaluate_sample(
-            sample_data=sample_data,
-            sample_id=sample_id,
-            runtime=runtime,
-            environment=env,
-        )
+            result = await evaluate_sample(
+                sample_data=sample_data,
+                sample_id=sample_id,
+                runtime=runtime,
+                environment=env,
+            )
+
+            # Attributes set at close so the one emitted row carries the
+            # sample's full outcome.
+            sample_span.set_attr("reward", result.reward)
+            status = result.metadata.get("status")
+            sample_span.set_attr("status", status)
+            if status not in ("success",):
+                err = result.metadata.get("error")
+                if err is not None:
+                    sample_span.set_attr("error", err)
 
         # Mark task complete
         if progress:
             reward = result.reward
-            status = result.metadata.get("status")
             success = status == "success"
             if success:
                 message = f"reward={reward:.2f}"
