@@ -16,6 +16,12 @@ import { useMemo, useState } from 'react'
 
 const MIN_FILE_LINES_DEFAULT = 3
 
+const SORTS = {
+  lines:  { label: 'lines',  keyFn: s => -(s.total_lines || 0) },
+  recent: { label: 'recent', keyFn: s => s.latest_edit ? -new Date(s.latest_edit).getTime() : 0 },
+  files:  { label: 'files',  keyFn: s => -(s.files?.length || 0) },
+}
+
 function colorFor(source, sessionId) {
   let h = 0
   const s = `${source}:${sessionId}`
@@ -130,16 +136,33 @@ function SessionRow({ s, expanded, onToggle, onOpenSession, onOpenFile, selected
 export function SessionList({ sessions, selectedPath, onOpenSession, onOpenFile }) {
   const [expanded, setExpanded] = useState(new Set())
   const [showAll, setShowAll] = useState(false)
+  const [sortKey, setSortKey] = useState(
+    () => localStorage.getItem('ab-session-sort') || 'lines'
+  )
+
+  const sorted = useMemo(() => {
+    if (!sessions) return null
+    const sort = SORTS[sortKey] || SORTS.lines
+    // Slice so we don't mutate the caller's array, then stable sort.
+    return [...sessions].sort((a, b) => {
+      const ka = sort.keyFn(a)
+      const kb = sort.keyFn(b)
+      if (ka < kb) return -1
+      if (ka > kb) return 1
+      // Tiebreak: session_id for determinism.
+      return (a.session_id || '').localeCompare(b.session_id || '')
+    })
+  }, [sessions, sortKey])
 
   // Auto-expand the top session on first load for discoverability.
   useMemo(() => {
-    if (sessions && sessions.length && expanded.size === 0) {
-      setExpanded(new Set([`${sessions[0].source}:${sessions[0].session_id}`]))
+    if (sorted && sorted.length && expanded.size === 0) {
+      setExpanded(new Set([`${sorted[0].source}:${sorted[0].session_id}`]))
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sessions])
+  }, [sorted])
 
-  if (!sessions) return (
+  if (!sorted) return (
     <div style={{
       padding: 12, fontFamily: 'var(--font-mono)',
       fontSize: 12, color: 'var(--text-secondary)',
@@ -147,6 +170,11 @@ export function SessionList({ sessions, selectedPath, onOpenSession, onOpenFile 
       Loading sessions…
     </div>
   )
+
+  const setSort = k => {
+    setSortKey(k)
+    localStorage.setItem('ab-session-sort', k)
+  }
 
   const toggle = key => {
     const next = new Set(expanded)
@@ -159,8 +187,39 @@ export function SessionList({ sessions, selectedPath, onOpenSession, onOpenFile 
     <div style={{
       display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0,
     }}>
+      {/* Sort toggle */}
+      <div style={{
+        display: 'flex', alignItems: 'center', gap: 6,
+        padding: '6px 10px',
+        borderBottom: '1px solid var(--color-border)',
+        fontFamily: 'var(--font-mono)', fontSize: 10,
+        color: 'var(--text-disabled)',
+      }}>
+        <span>sort</span>
+        {Object.keys(SORTS).map(k => {
+          const active = sortKey === k
+          return (
+            <button
+              key={k}
+              onClick={() => setSort(k)}
+              style={{
+                padding: '2px 6px',
+                background: active ? 'var(--bg-elevated)' : 'transparent',
+                border: `1px solid ${active ? 'var(--color-border-hover)' : 'var(--color-border)'}`,
+                color: active ? 'var(--text-primary)' : 'var(--text-secondary)',
+                borderRadius: 3,
+                cursor: 'pointer',
+                fontSize: 10,
+                fontFamily: 'inherit',
+              }}
+            >
+              {SORTS[k].label}
+            </button>
+          )
+        })}
+      </div>
       <div style={{ overflowY: 'auto', flex: 1, minHeight: 0, fontFamily: 'var(--font-mono)' }}>
-        {sessions.map(s => {
+        {sorted.map(s => {
           const key = `${s.source}:${s.session_id}`
           return (
             <SessionRow
