@@ -410,6 +410,66 @@
   }
   #flame-view.visible { display: block; }
 
+  /* ---------- trace swimlane pane ---------- */
+
+  #trace-view {
+    display: none;
+    overflow: auto;
+    position: relative;
+    user-select: none;
+    grid-column: 1;
+    grid-row: 2;
+  }
+  #trace-view.visible { display: block; }
+
+  .trace-container {
+    display: flex;
+    flex-direction: column;
+    min-height: 100%;
+  }
+
+  .trace-axis {
+    position: sticky;
+    top: 0;
+    z-index: 10;
+    background: rgba(10,14,10,0.96);
+    border-bottom: 1px solid var(--rule);
+    height: 24px;
+    overflow: hidden;
+  }
+
+  /* Each workload gets a lane: a label row + an SVG area below it */
+  .trace-lane {
+    display: flex;
+    flex-direction: column;
+    border-bottom: 1px solid var(--rule);
+  }
+
+  .trace-lane-header {
+    display: flex;
+    align-items: center;
+    background: var(--bg-alt);
+    border-bottom: 1px solid var(--rule);
+    padding: 4px 10px;
+    font-size: 11px;
+    font-weight: 700;
+    color: var(--accent);
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    position: sticky;
+    left: 0;
+    height: 26px;
+    flex-shrink: 0;
+  }
+
+  .trace-lane-svg-wrap {
+    position: relative;
+    /* height set by JS */
+  }
+
   .flame-container {
     display: flex;
     flex-direction: column;
@@ -577,7 +637,9 @@
       <button id="btn-tree" class="active" onclick="setView('tree')">tree</button>
       <button id="btn-gantt" onclick="setView('gantt')">gantt</button>
       <button id="btn-flame" onclick="setView('flame')">flame</button>
+      <button id="btn-trace" onclick="setView('trace')">trace</button>
     </div>
+    <button id="btn-perfetto" onclick="openPerfetto()" style="background:transparent;border:1px solid var(--rule);color:var(--fg-dim);font-family:inherit;font-size:11px;padding:5px 12px;cursor:pointer;text-transform:uppercase;letter-spacing:0.1em;line-height:1;" onmouseover="this.style.color='var(--accent)';this.style.borderColor='var(--accent)'" onmouseout="this.style.color='var(--fg-dim)';this.style.borderColor='var(--rule)'">↗ Perfetto</button>
     <div class="group-toggle" id="group-toggle">
       <button id="btn-grp-workload" class="active" onclick="setGroupBy('workload')">workload</button>
       <button id="btn-grp-trace" onclick="setGroupBy('trace_id')">trace</button>
@@ -599,6 +661,7 @@
 
   <div id="gantt-view"></div>
   <div id="flame-view"></div>
+  <div id="trace-view"></div>
 
   <aside class="detail-pane" id="detail-pane">
     <div class="empty">click a span to see its full record</div>
@@ -783,7 +846,7 @@ const state = {
   selected: null,
   query: '',
   originNs: 0,
-  currentView: 'tree',   // 'tree' | 'gantt' | 'flame'
+  currentView: 'tree',   // 'tree' | 'gantt' | 'flame' | 'trace'
   groupBy: 'workload',   // 'workload' | 'trace_id'
   // Gantt viewport: start/end in ms relative to originNs. null = fit-to-data.
   ganttViewStart: null,
@@ -791,6 +854,9 @@ const state = {
   // Flame viewport: same semantics as gantt.
   flameViewStart: null,
   flameViewEnd: null,
+  // Trace viewport: same semantics.
+  traceViewStart: null,
+  traceViewEnd: null,
 };
 
 // TODO(tail-sampling): this viewer assumes we keep 100% of spans. That's
@@ -945,12 +1011,15 @@ function setView(v) {
   document.getElementById('btn-tree').classList.toggle('active', v === 'tree');
   document.getElementById('btn-gantt').classList.toggle('active', v === 'gantt');
   document.getElementById('btn-flame').classList.toggle('active', v === 'flame');
+  document.getElementById('btn-trace').classList.toggle('active', v === 'trace');
   document.getElementById('tree').style.display = v === 'tree' ? '' : 'none';
   document.getElementById('gantt-view').classList.toggle('visible', v === 'gantt');
   document.getElementById('flame-view').classList.toggle('visible', v === 'flame');
+  document.getElementById('trace-view').classList.toggle('visible', v === 'trace');
   document.getElementById('group-toggle').classList.toggle('visible', v === 'gantt');
   if (v === 'gantt') renderGantt();
   else if (v === 'flame') renderFlame();
+  else if (v === 'trace') renderTrace();
 }
 
 function setGroupBy(g) {
@@ -966,6 +1035,7 @@ function renderCurrentView() {
   if (state.currentView === 'tree') render();
   else if (state.currentView === 'gantt') renderGantt();
   else if (state.currentView === 'flame') renderFlame();
+  else if (state.currentView === 'trace') renderTrace();
 }
 
 /* ------------------- gantt helpers ------------------- */
@@ -1276,15 +1346,20 @@ document.addEventListener('mouseup', () => {
     flameDrag.active = false;
     document.body.style.cursor = '';
   }
+  if (traceDrag.active) {
+    traceDrag.active = false;
+    document.body.style.cursor = '';
+  }
 });
 
 /* ------------------- flame renderer ------------------- */
 
-// Flame pan state — declared before the merged mouseup handler references it
+// Drag pan states — declared before the merged mouseup handler references them
 // (the handler is only called at runtime so declaration order in the script
-// would be fine for var, but const is block-scoped; hoist declaration up here
+// would be fine for var, but const is block-scoped; hoist declarations up here
 // to be explicit).
 const flameDrag = { active: false, startX: 0, startViewStart: 0, startViewEnd: 0 };
+const traceDrag = { active: false, startX: 0, startViewStart: 0, startViewEnd: 0 };
 
 // Band → fill color (must match CSS palette since SVG doesn't inherit CSS classes easily).
 const FLAME_COLORS = {
@@ -1319,16 +1394,45 @@ function renderFlame() {
   const viewEnd   = state.flameViewEnd;
   const viewSpan  = viewEnd - viewStart;
 
-  // Determine max depth for SVG height.
-  let maxDepth = 0;
-  for (const s of timedSpans) {
-    if ((s.depth || 0) > maxDepth) maxDepth = s.depth;
+  // Assign per-span global row index so multiple workload subtrees stack
+  // vertically rather than sharing depth rows and overlapping.
+  // Each root spans its own subtree; we walk roots in time order and
+  // accumulate a depth offset so subtree N starts below subtree N-1.
+  const roots = state.tree.roots;
+  // depthOffset[span_id of root] = first row this subtree occupies.
+  const rootDepthOffset = new Map();
+  let runningOffset = 0;
+  for (const root of roots) {
+    rootDepthOffset.set(root.span_id, runningOffset);
+    // Max depth within this subtree.
+    let subtreeMaxDepth = 0;
+    const walkDepth = (node) => {
+      if ((node.depth || 0) > subtreeMaxDepth) subtreeMaxDepth = node.depth;
+      for (const c of node.children) walkDepth(c);
+    };
+    walkDepth(root);
+    runningOffset += subtreeMaxDepth + 1;  // +1 to leave a gap between workloads
+  }
+  const totalRows = runningOffset || 1;
+
+  // Find root ancestor for each span to look up its offset.
+  function rootAncestorId(span) {
+    let cur = span;
+    while (cur.parent_span_id && state.tree.byId[cur.parent_span_id]) {
+      cur = state.tree.byId[cur.parent_span_id];
+    }
+    return cur.span_id;
+  }
+
+  function flameRow(span) {
+    const rid = rootAncestorId(span);
+    const offset = rootDepthOffset.get(rid) ?? 0;
+    return offset + (span.depth || 0);
   }
 
   const ROW_H  = 22;
   const ROW_GAP = 1;
   const AXIS_H = 24;
-  const totalRows = maxDepth + 1;
   const svgH = totalRows * (ROW_H + ROW_GAP);
 
   container.innerHTML = '';
@@ -1388,8 +1492,7 @@ function renderFlame() {
       // Skip bars fully outside viewport.
       if (x + bw < 0 || x > w) continue;
 
-      const depth = span.depth || 0;
-      const y = depth * (ROW_H + ROW_GAP);
+      const y = flameRow(span) * (ROW_H + ROW_GAP);
 
       const band = durationBand(durMs, state.percentiles[span.name]);
       const fill = FLAME_COLORS[band] ?? FLAME_COLORS[''];
@@ -1489,6 +1592,320 @@ document.addEventListener('mousemove', (e) => {
 });
 
 
+/* ------------------- Perfetto export ------------------- */
+
+function openPerfetto() {
+  if (!state.spans.length) {
+    alert('No spans loaded. Drop a spans.jsonl file first.');
+    return;
+  }
+
+  // Convert spans → Chrome Trace Format (complete events, ph:"X").
+  const traceEvents = state.spans
+    .filter(s => s.start_time_unix_nano && s.end_time_unix_nano)
+    .map(s => {
+      const workload = resolveWorkloadName(s) || s.trace_id || 'unknown';
+      return {
+        name: s.name,
+        cat:  workload,
+        ph:   'X',
+        ts:   s.start_time_unix_nano / 1000,   // ns → µs
+        dur:  (s.end_time_unix_nano - s.start_time_unix_nano) / 1000,
+        pid:  workload,
+        tid:  s.span_id,
+        args: s.attributes || {},
+      };
+    });
+
+  const payload = JSON.stringify(traceEvents);
+  const win = window.open('https://ui.perfetto.dev');
+  if (!win) {
+    alert('Pop-up blocked. Allow pop-ups from this page and try again.');
+    return;
+  }
+
+  const ORIGIN = 'https://ui.perfetto.dev';
+  const poll = setInterval(() => {
+    win.postMessage('PING', ORIGIN);
+  }, 500);
+
+  window.addEventListener('message', function handler(e) {
+    if (e.source !== win || e.origin !== ORIGIN) return;
+    if (e.data === 'PONG') {
+      clearInterval(poll);
+      window.removeEventListener('message', handler);
+      win.postMessage({
+        perfetto: {
+          buffer: new TextEncoder().encode(payload),
+          title:  'spans.jsonl',
+          url:    'spans.jsonl',
+        },
+      }, ORIGIN);
+    }
+  });
+}
+
+/* ------------------- trace swimlane renderer ------------------- */
+
+function renderTrace() {
+  const container = document.getElementById('trace-view');
+  if (!state.spans.length) {
+    container.innerHTML = '<div style="padding:40px;color:var(--fg-dim);text-align:center;font-style:italic;">drop a spans.jsonl file to begin</div>';
+    return;
+  }
+
+  const timedSpans = state.spans.filter(s => s.start_time_unix_nano && s.end_time_unix_nano);
+  if (!timedSpans.length) {
+    container.innerHTML = '<div style="padding:40px;color:var(--fg-dim);text-align:center;font-style:italic;">no renderable spans (all lack timing data)</div>';
+    return;
+  }
+
+  const totalStartMs = 0;
+  const totalEndMs = (Math.max(...timedSpans.map(s => s.end_time_unix_nano)) - state.originNs) / 1e6;
+
+  if (state.traceViewStart == null) state.traceViewStart = totalStartMs;
+  if (state.traceViewEnd   == null) state.traceViewEnd   = totalEndMs || 1;
+
+  const viewStart = state.traceViewStart;
+  const viewEnd   = state.traceViewEnd;
+  const viewSpan  = viewEnd - viewStart;
+
+  const ROW_H  = 22;
+  const ROW_GAP = 1;
+  const AXIS_H = 24;
+
+  // Group spans by workload/trace_id lane. Each lane is an independent
+  // depth stack — depth is relative to the lane's own root spans.
+  // We reuse the same grouping logic as gantt but operate on all timed spans.
+  const laneMap = new Map();
+  for (const s of timedSpans) {
+    const key = resolveWorkloadName(s) || s.trace_id || '(unknown)';
+    if (!laneMap.has(key)) laneMap.set(key, []);
+    laneMap.get(key).push(s);
+  }
+  // Sort lanes by earliest span.
+  const lanes = [...laneMap.entries()].map(([key, spans]) => {
+    spans.sort((a, b) => a.start_time_unix_nano - b.start_time_unix_nano);
+    return { key, spans, earliest: spans[0].start_time_unix_nano };
+  }).sort((a, b) => a.earliest - b.earliest);
+
+  container.innerHTML = '';
+  const wrap = document.createElement('div');
+  wrap.className = 'trace-container';
+  container.appendChild(wrap);
+
+  // Sticky axis
+  const axisDiv = document.createElement('div');
+  axisDiv.className = 'trace-axis';
+  wrap.appendChild(axisDiv);
+
+  function drawTraceAxis(w) {
+    const tickCount = Math.min(10, Math.max(4, Math.floor(w / 80)));
+    let svg = `<svg width="${w}" height="${AXIS_H}" xmlns="http://www.w3.org/2000/svg" style="display:block">`;
+    const zeroX = ((0 - viewStart) / viewSpan) * w;
+    if (zeroX >= 0 && zeroX <= w) {
+      svg += `<line x1="${zeroX.toFixed(1)}" y1="0" x2="${zeroX.toFixed(1)}" y2="${AXIS_H}" stroke="var(--accent)" stroke-width="1" opacity="0.4"/>`;
+    }
+    for (let i = 0; i <= tickCount; i++) {
+      const ms = viewStart + (viewSpan * i / tickCount);
+      const x  = (i / tickCount) * w;
+      svg += `<line x1="${x.toFixed(1)}" y1="18" x2="${x.toFixed(1)}" y2="${AXIS_H}" stroke="var(--rule)" stroke-width="1"/>`;
+      const label  = fmtDuration(ms);
+      const anchor = x < 20 ? 'start' : x > w - 20 ? 'end' : 'middle';
+      svg += `<text x="${x.toFixed(1)}" y="14" text-anchor="${anchor}" font-family="JetBrains Mono,monospace" font-size="10" fill="var(--fg-muted)">${label}</text>`;
+    }
+    svg += '</svg>';
+    axisDiv.innerHTML = svg;
+  }
+
+  // Build each lane.
+  const allLaneSvgWraps = [];
+
+  for (const lane of lanes) {
+    const laneEl = document.createElement('div');
+    laneEl.className = 'trace-lane';
+    wrap.appendChild(laneEl);
+
+    // Lane header (sticky label)
+    const header = document.createElement('div');
+    header.className = 'trace-lane-header';
+    const shortKey = lane.key.length > 60 ? lane.key.slice(0, 58) + '…' : lane.key;
+    header.textContent = shortKey;
+    header.title = lane.key;
+    laneEl.appendChild(header);
+
+    // Compute max depth within this lane. Depth is relative to each span's
+    // own subtree root within the lane — we use the existing .depth field
+    // but offset it so each root in the lane starts at 0.
+    // Within a lane, spans belong to one workload so they typically share
+    // a single root. We walk to find roots and their depth offsets.
+    const laneRootIds = new Set();
+    const laneSpanSet = new Set(lane.spans.map(s => s.span_id));
+    for (const s of lane.spans) {
+      const parentInLane = s.parent_span_id && laneSpanSet.has(s.parent_span_id);
+      if (!parentInLane) laneRootIds.add(s.span_id);
+    }
+
+    // Assign lane-local row to each span: find root ancestor within lane,
+    // use accumulated offset from roots sorted by time.
+    const laneRoots = lane.spans.filter(s => laneRootIds.has(s.span_id));
+    laneRoots.sort((a, b) => a.start_time_unix_nano - b.start_time_unix_nano);
+
+    const laneRootOffset = new Map();
+    let laneRunning = 0;
+    for (const root of laneRoots) {
+      laneRootOffset.set(root.span_id, laneRunning);
+      let subtreeMax = 0;
+      const wk = (node) => {
+        if ((node.depth || 0) > subtreeMax) subtreeMax = node.depth || 0;
+        for (const c of node.children) if (laneSpanSet.has(c.span_id)) wk(c);
+      };
+      wk(root);
+      // root.depth is absolute; we want relative depth within the subtree.
+      // For the first level root.depth may be non-zero (e.g., the root has
+      // depth=0 from buildTree). Use subtreeMax - root.depth for the subtree height.
+      const subtreeHeight = (subtreeMax - (root.depth || 0)) + 1;
+      laneRunning += subtreeHeight;
+    }
+    const laneMaxRows = laneRunning || 1;
+
+    function laneRow(span) {
+      // Walk up within lane to find lane-root ancestor.
+      let cur = span;
+      while (cur.parent_span_id && laneSpanSet.has(cur.parent_span_id)) {
+        cur = state.tree.byId[cur.parent_span_id] || cur;
+        if (!laneSpanSet.has(cur.span_id)) break;
+      }
+      const rootSpan = cur;
+      const offset = laneRootOffset.get(rootSpan.span_id) ?? 0;
+      const rootDepth = rootSpan.depth || 0;
+      return offset + ((span.depth || 0) - rootDepth);
+    }
+
+    const laneH = laneMaxRows * (ROW_H + ROW_GAP);
+    const svgWrap = document.createElement('div');
+    svgWrap.className = 'trace-lane-svg-wrap';
+    svgWrap.style.height = laneH + 'px';
+    laneEl.appendChild(svgWrap);
+    allLaneSvgWraps.push({ svgWrap, lane, laneRow, laneH });
+
+    // Tooltip + click events — delegate from svgWrap
+    svgWrap.addEventListener('mousemove', (e) => {
+      const bar = e.target.closest && e.target.closest('rect[data-id]');
+      if (bar) {
+        const span = state.tree.byId[bar.dataset.id];
+        if (span) showTooltip(span, e.clientX, e.clientY);
+      } else {
+        hideTooltip();
+      }
+    });
+    svgWrap.addEventListener('mouseleave', hideTooltip);
+    svgWrap.addEventListener('click', (e) => {
+      const bar = e.target.closest && e.target.closest('rect[data-id]');
+      if (!bar) return;
+      const span = state.tree.byId[bar.dataset.id];
+      if (!span) return;
+      state.selected = span.span_id;
+      renderTrace();
+      renderDetail(span);
+    });
+  }
+
+  function buildAllLanes(w) {
+    const MIN_LABEL_W = 40;
+    for (const { svgWrap, lane, laneRow: lr, laneH } of allLaneSvgWraps) {
+      let defs = '<defs>';
+      let rects = '';
+      let texts = '';
+
+      for (const span of lane.spans) {
+        const startMs = (span.start_time_unix_nano - state.originNs) / 1e6;
+        const endMs   = (span.end_time_unix_nano   - state.originNs) / 1e6;
+        const durMs   = endMs - startMs;
+
+        const leftFrac  = (startMs - viewStart) / viewSpan;
+        const widthFrac = durMs / viewSpan;
+        const x  = leftFrac * w;
+        const bw = Math.max(2, widthFrac * w);
+
+        if (x + bw < 0 || x > w) continue;
+
+        const row = lr(span);
+        const y   = row * (ROW_H + ROW_GAP);
+
+        const band = durationBand(durMs, state.percentiles[span.name]);
+        const fill = FLAME_COLORS[band] ?? FLAME_COLORS[''];
+
+        const isSelected = state.selected === span.span_id;
+        const strokeAttrs = isSelected
+          ? ` stroke="var(--accent)" stroke-width="1.5"`
+          : ` stroke="rgba(255,255,255,0.07)" stroke-width="0.5"`;
+
+        const clipId = 'tc-' + span.span_id;
+        defs += `<clipPath id="${clipId}"><rect x="${x.toFixed(1)}" y="${y}" width="${bw.toFixed(1)}" height="${ROW_H}"/></clipPath>`;
+        rects += `<rect class="flame-bar${isSelected ? ' selected' : ''}" x="${x.toFixed(1)}" y="${y}" width="${bw.toFixed(1)}" height="${ROW_H}" fill="${fill}" opacity="${isSelected ? 1 : 0.88}"${strokeAttrs} data-id="${span.span_id}"/>`;
+
+        if (bw >= MIN_LABEL_W) {
+          const tx = Math.max(x, 0) + 4;
+          texts += `<text clip-path="url(#${clipId})" x="${tx.toFixed(1)}" y="${(y + 14).toFixed(1)}" font-family="JetBrains Mono,monospace" font-size="10" fill="rgba(211,197,168,0.92)" pointer-events="none">${span.name.replace(/&/g,'&amp;').replace(/</g,'&lt;')}</text>`;
+        }
+      }
+
+      defs += '</defs>';
+      svgWrap.innerHTML = `<svg width="${w}" height="${laneH}" xmlns="http://www.w3.org/2000/svg" style="display:block;cursor:default">${defs}${rects}${texts}</svg>`;
+    }
+  }
+
+  function draw() {
+    const w = wrap.clientWidth || container.clientWidth || 800;
+    if (w === 0) { requestAnimationFrame(draw); return; }
+    drawTraceAxis(w);
+    buildAllLanes(w);
+  }
+  draw();
+  requestAnimationFrame(draw);
+}
+
+// Trace wheel zoom.
+document.getElementById('trace-view').addEventListener('wheel', (e) => {
+  if (!state.spans.length) return;
+  e.preventDefault();
+  const container = document.getElementById('trace-view');
+  const rect = container.getBoundingClientRect();
+  const w = rect.width;
+  if (w <= 0) return;
+  const frac = Math.max(0, Math.min(1, (e.clientX - rect.left) / w));
+  const viewSpan = state.traceViewEnd - state.traceViewStart;
+  const pivot = state.traceViewStart + frac * viewSpan;
+  const zoomFactor = e.ctrlKey ? 1 + e.deltaY * 0.01 : 1 + e.deltaY * 0.003;
+  const newSpan = Math.max(1, viewSpan * zoomFactor);
+  state.traceViewStart = pivot - frac * newSpan;
+  state.traceViewEnd   = pivot + (1 - frac) * newSpan;
+  renderTrace();
+}, { passive: false });
+
+// Trace left-drag pan.
+document.getElementById('trace-view').addEventListener('mousedown', (e) => {
+  if (e.button !== 0) return;
+  traceDrag.active = true;
+  traceDrag.startX = e.clientX;
+  traceDrag.startViewStart = state.traceViewStart;
+  traceDrag.startViewEnd   = state.traceViewEnd;
+  document.body.style.cursor = 'grabbing';
+});
+
+document.addEventListener('mousemove', (e) => {
+  if (!traceDrag.active) return;
+  const container = document.getElementById('trace-view');
+  const w = container.clientWidth || 800;
+  if (w <= 0) return;
+  const viewSpan = traceDrag.startViewEnd - traceDrag.startViewStart;
+  const dxMs = -((e.clientX - traceDrag.startX) / w) * viewSpan;
+  state.traceViewStart = traceDrag.startViewStart + dxMs;
+  state.traceViewEnd   = traceDrag.startViewEnd   + dxMs;
+  renderTrace();
+});
+
 function loadSpans(spans) {
   state.spans = spans;
   state.tree = buildTree(spans);
@@ -1510,11 +1927,13 @@ function loadSpans(spans) {
   document.getElementById('stat-errors').textContent = errors;
   if (errors) document.getElementById('stat-errors').style.color = 'var(--err)';
 
-  // Reset gantt/flame viewports to fit-to-data on new file load.
+  // Reset gantt/flame/trace viewports to fit-to-data on new file load.
   state.ganttViewStart = null;
   state.ganttViewEnd = null;
   state.flameViewStart = null;
   state.flameViewEnd = null;
+  state.traceViewStart = null;
+  state.traceViewEnd = null;
 
   renderCurrentView();
 }
