@@ -398,6 +398,46 @@
   }
   #gantt-view.visible { display: block; }
 
+  /* ---------- flame pane ---------- */
+
+  #flame-view {
+    display: none;
+    overflow: auto;
+    position: relative;
+    user-select: none;
+    grid-column: 1;
+    grid-row: 2;
+  }
+  #flame-view.visible { display: block; }
+
+  .flame-container {
+    display: flex;
+    flex-direction: column;
+    min-height: 100%;
+  }
+
+  /* Sticky time axis for flame — mirrors gantt axis */
+  .flame-axis {
+    position: sticky;
+    top: 0;
+    z-index: 10;
+    background: rgba(10,14,10,0.96);
+    border-bottom: 1px solid var(--rule);
+    height: 24px;
+    overflow: hidden;
+  }
+
+  .flame-svg-wrap {
+    position: relative;
+    flex: 1;
+    /* height set by JS to fit all rows */
+  }
+
+  /* SVG rects get class via JS; mirror gantt bar bands */
+  .flame-svg-wrap svg .flame-bar { cursor: pointer; opacity: 0.88; }
+  .flame-svg-wrap svg .flame-bar:hover { opacity: 1; }
+  .flame-svg-wrap svg .flame-bar.selected { stroke: var(--accent); stroke-width: 1.5; opacity: 1; }
+
   /* Gantt layout: fixed label column + scrollable SVG area */
   .gantt-container {
     display: flex;
@@ -536,6 +576,7 @@
     <div class="view-toggle">
       <button id="btn-tree" class="active" onclick="setView('tree')">tree</button>
       <button id="btn-gantt" onclick="setView('gantt')">gantt</button>
+      <button id="btn-flame" onclick="setView('flame')">flame</button>
     </div>
     <div class="group-toggle" id="group-toggle">
       <button id="btn-grp-workload" class="active" onclick="setGroupBy('workload')">workload</button>
@@ -557,6 +598,7 @@
   </div>
 
   <div id="gantt-view"></div>
+  <div id="flame-view"></div>
 
   <aside class="detail-pane" id="detail-pane">
     <div class="empty">click a span to see its full record</div>
@@ -741,11 +783,14 @@ const state = {
   selected: null,
   query: '',
   originNs: 0,
-  currentView: 'tree',   // 'tree' | 'gantt'
+  currentView: 'tree',   // 'tree' | 'gantt' | 'flame'
   groupBy: 'workload',   // 'workload' | 'trace_id'
   // Gantt viewport: start/end in ms relative to originNs. null = fit-to-data.
   ganttViewStart: null,
   ganttViewEnd: null,
+  // Flame viewport: same semantics as gantt.
+  flameViewStart: null,
+  flameViewEnd: null,
 };
 
 // TODO(tail-sampling): this viewer assumes we keep 100% of spans. That's
@@ -899,11 +944,13 @@ function setView(v) {
   state.currentView = v;
   document.getElementById('btn-tree').classList.toggle('active', v === 'tree');
   document.getElementById('btn-gantt').classList.toggle('active', v === 'gantt');
+  document.getElementById('btn-flame').classList.toggle('active', v === 'flame');
   document.getElementById('tree').style.display = v === 'tree' ? '' : 'none';
-  const gv = document.getElementById('gantt-view');
-  gv.classList.toggle('visible', v === 'gantt');
+  document.getElementById('gantt-view').classList.toggle('visible', v === 'gantt');
+  document.getElementById('flame-view').classList.toggle('visible', v === 'flame');
   document.getElementById('group-toggle').classList.toggle('visible', v === 'gantt');
   if (v === 'gantt') renderGantt();
+  else if (v === 'flame') renderFlame();
 }
 
 function setGroupBy(g) {
@@ -917,7 +964,8 @@ function setGroupBy(g) {
 
 function renderCurrentView() {
   if (state.currentView === 'tree') render();
-  else renderGantt();
+  else if (state.currentView === 'gantt') renderGantt();
+  else if (state.currentView === 'flame') renderFlame();
 }
 
 /* ------------------- gantt helpers ------------------- */
@@ -1224,7 +1272,222 @@ document.addEventListener('mouseup', () => {
     ganttDrag.active = false;
     document.body.style.cursor = '';
   }
+  if (flameDrag.active) {
+    flameDrag.active = false;
+    document.body.style.cursor = '';
+  }
 });
+
+/* ------------------- flame renderer ------------------- */
+
+// Flame pan state — declared before the merged mouseup handler references it
+// (the handler is only called at runtime so declaration order in the script
+// would be fine for var, but const is block-scoped; hoist declaration up here
+// to be explicit).
+const flameDrag = { active: false, startX: 0, startViewStart: 0, startViewEnd: 0 };
+
+// Band → fill color (must match CSS palette since SVG doesn't inherit CSS classes easily).
+const FLAME_COLORS = {
+  cool:   '#6b6657',   // --fg-dim
+  '':     '#3f3d37',   // --fg-muted / "normal" band — slightly lighter than bg
+  warm:   '#4fb3a8',   // --accent-2
+  hot:    '#f0b84c',   // --accent
+  crit:   '#e06050',   // --err
+};
+
+function renderFlame() {
+  const container = document.getElementById('flame-view');
+  if (!state.spans.length) {
+    container.innerHTML = '<div style="padding:40px;color:var(--fg-dim);text-align:center;font-style:italic;">drop a spans.jsonl file to begin</div>';
+    return;
+  }
+
+  // Only spans with timing data.
+  const timedSpans = state.spans.filter(s => s.start_time_unix_nano && s.end_time_unix_nano);
+  if (!timedSpans.length) {
+    container.innerHTML = '<div style="padding:40px;color:var(--fg-dim);text-align:center;font-style:italic;">no renderable spans (all lack timing data)</div>';
+    return;
+  }
+
+  const totalStartMs = 0;
+  const totalEndMs = (Math.max(...timedSpans.map(s => s.end_time_unix_nano)) - state.originNs) / 1e6;
+
+  if (state.flameViewStart == null) state.flameViewStart = totalStartMs;
+  if (state.flameViewEnd   == null) state.flameViewEnd   = totalEndMs || 1;
+
+  const viewStart = state.flameViewStart;
+  const viewEnd   = state.flameViewEnd;
+  const viewSpan  = viewEnd - viewStart;
+
+  // Determine max depth for SVG height.
+  let maxDepth = 0;
+  for (const s of timedSpans) {
+    if ((s.depth || 0) > maxDepth) maxDepth = s.depth;
+  }
+
+  const ROW_H  = 22;
+  const ROW_GAP = 1;
+  const AXIS_H = 24;
+  const totalRows = maxDepth + 1;
+  const svgH = totalRows * (ROW_H + ROW_GAP);
+
+  container.innerHTML = '';
+
+  const wrap = document.createElement('div');
+  wrap.className = 'flame-container';
+  container.appendChild(wrap);
+
+  // -- Axis (sticky) --
+  const axisDiv = document.createElement('div');
+  axisDiv.className = 'flame-axis';
+  wrap.appendChild(axisDiv);
+
+  // -- SVG area --
+  const svgWrap = document.createElement('div');
+  svgWrap.className = 'flame-svg-wrap';
+  svgWrap.style.height = svgH + 'px';
+  wrap.appendChild(svgWrap);
+
+  function drawFlameAxis(w) {
+    const tickCount = Math.min(10, Math.max(4, Math.floor(w / 80)));
+    let svg = `<svg width="${w}" height="${AXIS_H}" xmlns="http://www.w3.org/2000/svg" style="display:block">`;
+    const zeroX = ((0 - viewStart) / viewSpan) * w;
+    if (zeroX >= 0 && zeroX <= w) {
+      svg += `<line x1="${zeroX.toFixed(1)}" y1="0" x2="${zeroX.toFixed(1)}" y2="${AXIS_H}" stroke="var(--accent)" stroke-width="1" opacity="0.4"/>`;
+    }
+    for (let i = 0; i <= tickCount; i++) {
+      const ms = viewStart + (viewSpan * i / tickCount);
+      const x  = (i / tickCount) * w;
+      svg += `<line x1="${x.toFixed(1)}" y1="18" x2="${x.toFixed(1)}" y2="${AXIS_H}" stroke="var(--rule)" stroke-width="1"/>`;
+      const label  = fmtDuration(ms);
+      const anchor = x < 20 ? 'start' : x > w - 20 ? 'end' : 'middle';
+      svg += `<text x="${x.toFixed(1)}" y="14" text-anchor="${anchor}" font-family="JetBrains Mono,monospace" font-size="10" fill="var(--fg-muted)">${label}</text>`;
+    }
+    svg += '</svg>';
+    axisDiv.innerHTML = svg;
+  }
+
+  function buildFlameSvg(w) {
+    // One clipPath per rect so text is clipped to the bar.
+    // We batch into a single SVG for performance.
+    const MIN_LABEL_W = 40;
+    let defs = '<defs>';
+    let rects = '';
+    let texts = '';
+
+    for (const span of timedSpans) {
+      const startMs = (span.start_time_unix_nano - state.originNs) / 1e6;
+      const endMs   = (span.end_time_unix_nano   - state.originNs) / 1e6;
+      const durMs   = endMs - startMs;
+
+      const leftFrac  = (startMs - viewStart) / viewSpan;
+      const widthFrac = durMs / viewSpan;
+      const x  = leftFrac * w;
+      const bw = Math.max(2, widthFrac * w);
+
+      // Skip bars fully outside viewport.
+      if (x + bw < 0 || x > w) continue;
+
+      const depth = span.depth || 0;
+      const y = depth * (ROW_H + ROW_GAP);
+
+      const band = durationBand(durMs, state.percentiles[span.name]);
+      const fill = FLAME_COLORS[band] ?? FLAME_COLORS[''];
+
+      const isSelected = state.selected === span.span_id;
+      const strokeAttrs = isSelected
+        ? ` stroke="var(--accent)" stroke-width="1.5"`
+        : ` stroke="rgba(255,255,255,0.07)" stroke-width="0.5"`;
+
+      const clipId = 'fc-' + span.span_id;
+      defs += `<clipPath id="${clipId}"><rect x="${x.toFixed(1)}" y="${y}" width="${bw.toFixed(1)}" height="${ROW_H}"/></clipPath>`;
+
+      rects += `<rect class="flame-bar${isSelected ? ' selected' : ''}" x="${x.toFixed(1)}" y="${y}" width="${bw.toFixed(1)}" height="${ROW_H}" fill="${fill}" opacity="${isSelected ? 1 : 0.88}"${strokeAttrs} data-id="${span.span_id}"/>`;
+
+      if (bw >= MIN_LABEL_W) {
+        const tx = Math.max(x, 0) + 4;
+        texts += `<text clip-path="url(#${clipId})" x="${tx.toFixed(1)}" y="${(y + 14).toFixed(1)}" font-family="JetBrains Mono,monospace" font-size="10" fill="rgba(211,197,168,0.92)" pointer-events="none">${span.name.replace(/&/g,'&amp;').replace(/</g,'&lt;')}</text>`;
+      }
+    }
+
+    defs += '</defs>';
+    const svg = `<svg width="${w}" height="${svgH}" xmlns="http://www.w3.org/2000/svg" style="display:block;cursor:default">${defs}${rects}${texts}</svg>`;
+    svgWrap.innerHTML = svg;
+
+    // Attach tooltip + click events to the SVG element (not individual rects —
+    // those are recreated on every render).
+    const svgEl = svgWrap.querySelector('svg');
+    svgEl.addEventListener('mousemove', (e) => {
+      const bar = e.target.closest('rect[data-id]');
+      if (bar) {
+        const span = state.tree.byId[bar.dataset.id];
+        if (span) showTooltip(span, e.clientX, e.clientY);
+      } else {
+        hideTooltip();
+      }
+    });
+    svgEl.addEventListener('mouseleave', hideTooltip);
+    svgEl.addEventListener('click', (e) => {
+      const bar = e.target.closest('rect[data-id]');
+      if (!bar) return;
+      const span = state.tree.byId[bar.dataset.id];
+      if (!span) return;
+      state.selected = span.span_id;
+      renderFlame();
+      renderDetail(span);
+    });
+  }
+
+  function draw() {
+    const w = svgWrap.clientWidth || container.clientWidth || 800;
+    if (w === 0) { requestAnimationFrame(draw); return; }
+    drawFlameAxis(w);
+    buildFlameSvg(w);
+  }
+  draw();
+  requestAnimationFrame(draw);
+}
+
+// Flame wheel zoom.
+document.getElementById('flame-view').addEventListener('wheel', (e) => {
+  if (!state.spans.length) return;
+  e.preventDefault();
+  const container = document.getElementById('flame-view');
+  const rect = container.getBoundingClientRect();
+  const w = rect.width;
+  if (w <= 0) return;
+  const frac = Math.max(0, Math.min(1, (e.clientX - rect.left) / w));
+  const viewSpan = state.flameViewEnd - state.flameViewStart;
+  const pivot = state.flameViewStart + frac * viewSpan;
+  const zoomFactor = e.ctrlKey ? 1 + e.deltaY * 0.01 : 1 + e.deltaY * 0.003;
+  const newSpan = Math.max(1, viewSpan * zoomFactor);
+  state.flameViewStart = pivot - frac * newSpan;
+  state.flameViewEnd   = pivot + (1 - frac) * newSpan;
+  renderFlame();
+}, { passive: false });
+
+// Flame left-drag pan.
+document.getElementById('flame-view').addEventListener('mousedown', (e) => {
+  if (e.button !== 0) return;
+  flameDrag.active = true;
+  flameDrag.startX = e.clientX;
+  flameDrag.startViewStart = state.flameViewStart;
+  flameDrag.startViewEnd   = state.flameViewEnd;
+  document.body.style.cursor = 'grabbing';
+});
+
+document.addEventListener('mousemove', (e) => {
+  if (!flameDrag.active) return;
+  const container = document.getElementById('flame-view');
+  const w = container.clientWidth || 800;
+  if (w <= 0) return;
+  const viewSpan = flameDrag.startViewEnd - flameDrag.startViewStart;
+  const dxMs = -((e.clientX - flameDrag.startX) / w) * viewSpan;
+  state.flameViewStart = flameDrag.startViewStart + dxMs;
+  state.flameViewEnd   = flameDrag.startViewEnd   + dxMs;
+  renderFlame();
+});
+
 
 function loadSpans(spans) {
   state.spans = spans;
@@ -1247,9 +1510,11 @@ function loadSpans(spans) {
   document.getElementById('stat-errors').textContent = errors;
   if (errors) document.getElementById('stat-errors').style.color = 'var(--err)';
 
-  // Reset gantt viewport to fit-to-data on new file load.
+  // Reset gantt/flame viewports to fit-to-data on new file load.
   state.ganttViewStart = null;
   state.ganttViewEnd = null;
+  state.flameViewStart = null;
+  state.flameViewEnd = null;
 
   renderCurrentView();
 }
