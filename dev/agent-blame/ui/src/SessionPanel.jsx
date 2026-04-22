@@ -265,11 +265,23 @@ export function SessionPanel({ session, onClose }) {
     const id = requestAnimationFrame(() => {
       requestAnimationFrame(() => {
         if (anchorRef.current) {
-          // `center` puts the responsible tool call in the middle of the
-          // viewport so the preceding reasoning/user-message is visible
-          // above it. Using `start` landed the tool_call at the top and
-          // the user had to scroll up to read what motivated it.
-          anchorRef.current.scrollIntoView({ block: 'center', behavior: 'auto' })
+          // Scroll the anchor's TOP to near the top of the viewport,
+          // leaving a small offset so the preceding reasoning message
+          // is visible above it. Earlier attempts:
+          //  - block: 'start' -> anchor at top, prior context invisible
+          //  - block: 'center' -> for tall messages (big apply_patch diff),
+          //    the center of the element is deep inside the diff, so
+          //    the user lands mid-diff with no context above.
+          // Manual offset on the scrollable parent avoids both failure modes.
+          const el = anchorRef.current
+          const scroller = el.closest('[data-session-scroll]') || el.parentElement
+          if (scroller) {
+            const elTop = el.offsetTop
+            const OFFSET = 80 // px of preceding-context headroom
+            scroller.scrollTop = Math.max(0, elTop - OFFSET)
+          } else {
+            el.scrollIntoView({ block: 'start', behavior: 'auto' })
+          }
         } else if (endRef.current) {
           endRef.current.scrollIntoView({ block: 'end', behavior: 'auto' })
         }
@@ -320,7 +332,7 @@ export function SessionPanel({ session, onClose }) {
         </button>
       </div>
 
-      <div style={{ overflowY: 'auto', flex: 1, minHeight: 0 }}>
+      <div data-session-scroll style={{ overflowY: 'auto', flex: 1, minHeight: 0, position: 'relative' }}>
         {error && (
           <div style={{
             padding: 16, fontFamily: 'var(--font-mono)', fontSize: 12,
