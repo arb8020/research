@@ -1,0 +1,746 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>spans_view — rollouts span tree</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+  /* ------------------------------------------------------------
+     spans_view — self-contained renderer for rollouts spans.jsonl
+
+     Aesthetic: scientific instrument. Dark oscilloscope background,
+     amber phosphor for data, dim rule for structure. Monospace only.
+     Nothing moves unless it has to.
+
+     Layer 1: drop a spans.jsonl → tree renders, collapsed to the
+              first two levels. Durations visible on every row.
+     Layer 2: search box filters the tree by name / workload / model
+              / trace_id. ESC clears.
+     Layer 3: click any row to reveal its full attributes in the
+              right pane. Copy-as-JSON button.
+     ------------------------------------------------------------ */
+
+  @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&display=swap');
+
+  :root {
+    --bg:        #0a0e0a;
+    --bg-alt:    #11161a;
+    --grid:      #1a2025;
+    --fg:        #d3c5a8;    /* warm amber-cream for body text */
+    --fg-dim:    #6b6657;
+    --fg-muted:  #3f3d37;
+    --accent:    #f0b84c;    /* signal amber */
+    --accent-2:  #4fb3a8;    /* secondary teal — used for durations only */
+    --err:       #e06050;
+    --ok:        var(--fg-dim);
+    --rule:      #252a2e;
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body {
+    margin: 0; padding: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font-family: 'JetBrains Mono', ui-monospace, Menlo, monospace;
+    font-size: 13px;
+    line-height: 1.55;
+    height: 100%;
+    overflow: hidden;
+  }
+
+  /* Subtle horizontal grid lines to evoke oscilloscope graticule.
+     Scrolls with the body so it doesn't feel like a static wallpaper. */
+  body::before {
+    content: '';
+    position: fixed; inset: 0;
+    background-image: linear-gradient(to bottom, transparent 0, transparent 31px, var(--grid) 32px);
+    background-size: 100% 32px;
+    opacity: 0.35;
+    pointer-events: none;
+    z-index: 0;
+  }
+
+  .app {
+    position: relative;
+    z-index: 1;
+    display: grid;
+    grid-template-columns: 1fr 380px;
+    grid-template-rows: auto 1fr;
+    height: 100vh;
+  }
+
+  header {
+    grid-column: 1 / -1;
+    padding: 14px 22px;
+    border-bottom: 1px solid var(--rule);
+    display: flex;
+    align-items: center;
+    gap: 22px;
+    background: rgba(10,14,10,0.92);
+  }
+
+  .brand {
+    font-weight: 700;
+    font-size: 12px;
+    letter-spacing: 0.18em;
+    color: var(--accent);
+    text-transform: uppercase;
+  }
+  .brand::before {
+    content: '○';
+    margin-right: 8px;
+    color: var(--accent);
+    animation: pulse 2.8s ease-in-out infinite;
+  }
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50%      { opacity: 0.35; }
+  }
+
+  .search {
+    flex: 1;
+    max-width: 520px;
+    position: relative;
+  }
+  .search input {
+    width: 100%;
+    background: var(--bg-alt);
+    border: 1px solid var(--rule);
+    color: var(--fg);
+    font-family: inherit;
+    font-size: 12px;
+    padding: 7px 11px 7px 28px;
+    outline: none;
+  }
+  .search input:focus {
+    border-color: var(--accent);
+  }
+  .search::before {
+    content: '/';
+    position: absolute;
+    left: 11px; top: 50%;
+    transform: translateY(-50%);
+    color: var(--fg-dim);
+    font-weight: 700;
+  }
+
+  .stats {
+    font-size: 11px;
+    color: var(--fg-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+  }
+  .stats span.v { color: var(--fg); font-weight: 500; }
+  .stats span.sep { color: var(--fg-muted); margin: 0 8px; }
+
+  /* ---------- main tree pane ---------- */
+
+  .tree {
+    overflow: auto;
+    padding: 18px 22px 100px;
+    position: relative;
+  }
+
+  .drop-hint {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    color: var(--fg-dim);
+    pointer-events: none;
+    text-align: center;
+    gap: 12px;
+  }
+  .drop-hint .big {
+    font-size: 42px;
+    color: var(--accent);
+    letter-spacing: 0.06em;
+    font-weight: 700;
+  }
+  .drop-hint .small {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.22em;
+  }
+  .drop-hint .tiny {
+    font-size: 10px;
+    color: var(--fg-muted);
+    max-width: 34ch;
+    letter-spacing: 0.04em;
+    line-height: 1.7;
+  }
+
+  body.dragover .tree { background: rgba(240,184,76,0.04); }
+  body.dragover .drop-hint .big { color: var(--accent); text-shadow: 0 0 12px rgba(240,184,76,0.5); }
+
+  .row {
+    display: grid;
+    grid-template-columns: auto 1fr auto auto auto;
+    gap: 10px;
+    align-items: baseline;
+    padding: 1px 4px;
+    cursor: pointer;
+    white-space: nowrap;
+    border-left: 2px solid transparent;
+  }
+  .row:hover         { background: rgba(240,184,76,0.05); }
+  .row.selected      { background: rgba(240,184,76,0.10); border-left-color: var(--accent); }
+  .row.filtered      { opacity: 0.25; }
+
+  .row .toggle       { color: var(--fg-muted); width: 12px; display: inline-block; text-align: center; user-select: none; }
+  .row .name         { color: var(--fg); font-weight: 500; }
+  .row .name.err     { color: var(--err); }
+  .row.workload .name,
+  .row.serving_run .name { color: var(--accent); font-weight: 700; letter-spacing: 0.02em; }
+  .row .detail       { color: var(--fg-dim); font-size: 12px; overflow: hidden; text-overflow: ellipsis; }
+  .row .dur          { color: var(--accent-2); font-variant-numeric: tabular-nums; font-size: 12px; }
+  .row .dur.tail     { color: var(--accent); }             /* slower than p95 for its class */
+  .row .dur.long     { color: var(--err); }                /* very long outlier */
+  .row .ts           { color: var(--fg-muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+  .row .status-err   { color: var(--err); font-weight: 700; }
+
+  /* indentation via inline style.paddingLeft; the rule below draws
+     a faint left margin ruler so depth is visible at a glance */
+  .tree-body {
+    position: relative;
+  }
+
+  /* ---------- detail pane ---------- */
+
+  .detail-pane {
+    border-left: 1px solid var(--rule);
+    background: var(--bg-alt);
+    overflow: auto;
+    padding: 18px 20px 40px;
+    font-size: 12px;
+  }
+  .detail-pane h2 {
+    margin: 0 0 4px;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.22em;
+    color: var(--fg-dim);
+    font-weight: 500;
+  }
+  .detail-pane .span-name {
+    font-size: 16px;
+    color: var(--accent);
+    font-weight: 700;
+    margin: 0 0 16px;
+    letter-spacing: 0.01em;
+  }
+  .detail-pane .meta-row {
+    display: grid;
+    grid-template-columns: 120px 1fr;
+    gap: 8px;
+    padding: 3px 0;
+    border-bottom: 1px dotted var(--rule);
+  }
+  .detail-pane .k {
+    color: var(--fg-dim);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+  }
+  .detail-pane .v {
+    color: var(--fg);
+    word-break: break-all;
+    font-variant-numeric: tabular-nums;
+  }
+  .detail-pane .v.err { color: var(--err); }
+  .detail-pane .section {
+    margin-top: 22px;
+  }
+  .detail-pane .section h3 {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.22em;
+    color: var(--fg-dim);
+    margin: 0 0 8px;
+    font-weight: 500;
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+  }
+  .detail-pane .copy-btn {
+    background: transparent;
+    border: 1px solid var(--rule);
+    color: var(--fg-dim);
+    font-family: inherit;
+    font-size: 10px;
+    padding: 3px 8px;
+    cursor: pointer;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+  }
+  .detail-pane .copy-btn:hover { border-color: var(--accent); color: var(--accent); }
+  .detail-pane pre {
+    background: var(--bg);
+    border: 1px solid var(--rule);
+    padding: 10px 12px;
+    font-size: 11px;
+    line-height: 1.5;
+    overflow: auto;
+    max-height: 520px;
+    color: var(--fg);
+    margin: 0;
+  }
+
+  .detail-pane .empty {
+    color: var(--fg-muted);
+    font-style: italic;
+    padding: 40px 0;
+    text-align: center;
+  }
+
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--rule); }
+  ::-webkit-scrollbar-thumb:hover { background: var(--fg-muted); }
+</style>
+</head>
+<body>
+<div class="app">
+  <header>
+    <div class="brand">spans_view</div>
+    <div class="search">
+      <input id="q" placeholder="filter: name, workload, model, trace_id…" autocomplete="off" />
+    </div>
+    <div class="stats" id="stats">
+      <span class="v" id="stat-count">0</span> spans
+      <span class="sep">·</span>
+      <span class="v" id="stat-traces">0</span> traces
+      <span class="sep">·</span>
+      <span class="v" id="stat-errors">0</span> errors
+    </div>
+  </header>
+
+  <div class="tree" id="tree">
+    <div class="tree-body" id="tree-body"></div>
+    <div class="drop-hint" id="drop-hint">
+      <div class="big">spans.jsonl</div>
+      <div class="small">drop a file · or click to choose</div>
+      <div class="tiny">
+        expects the jsonl produced by rollouts._observability.<br>
+        one row per span. parent_span_id + trace_id linkage.
+      </div>
+      <input type="file" id="file-input" accept=".jsonl,.json,application/jsonl" style="position:absolute;inset:0;opacity:0;cursor:pointer">
+    </div>
+  </div>
+
+  <aside class="detail-pane" id="detail-pane">
+    <div class="empty">click a span to see its full record</div>
+  </aside>
+</div>
+
+<script>
+/* ------------------------------------------------------------------
+   Pure functions first (parse, tree build, filter). UI plumbing at end.
+   No framework, no build, no external runtime deps.
+   ------------------------------------------------------------------ */
+
+function parseJsonl(text) {
+  const out = [];
+  const lines = text.split(/\r?\n/);
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trim();
+    if (!line) continue;
+    try { out.push(JSON.parse(line)); }
+    catch (e) { console.warn('skip malformed line', i + 1, e); }
+  }
+  return out;
+}
+
+function buildTree(spans) {
+  // Returns { roots, byId }. Each span gets .children[] and .depth filled in.
+  const byId = {};
+  for (const s of spans) {
+    s.children = [];
+    byId[s.span_id] = s;
+  }
+  const roots = [];
+  for (const s of spans) {
+    if (s.parent_span_id && byId[s.parent_span_id]) {
+      byId[s.parent_span_id].children.push(s);
+    } else {
+      roots.push(s);
+    }
+  }
+  // Sort children by start time so the tree reads left-to-right in time.
+  const sortRec = (node, depth) => {
+    node.depth = depth;
+    node.children.sort((a, b) => a.start_time_unix_nano - b.start_time_unix_nano);
+    for (const c of node.children) sortRec(c, depth + 1);
+  };
+  roots.sort((a, b) => a.start_time_unix_nano - b.start_time_unix_nano);
+  for (const r of roots) sortRec(r, 0);
+  return { roots, byId };
+}
+
+function durationMs(span) {
+  if (!span.end_time_unix_nano || !span.start_time_unix_nano) return null;
+  return (span.end_time_unix_nano - span.start_time_unix_nano) / 1e6;
+}
+
+function fmtDuration(ms) {
+  if (ms == null) return '—';
+  if (ms < 1) return ms.toFixed(2) + 'ms';
+  if (ms < 1000) return ms.toFixed(0) + 'ms';
+  if (ms < 60000) return (ms / 1000).toFixed(1) + 's';
+  const m = Math.floor(ms / 60000);
+  const s = ((ms % 60000) / 1000).toFixed(0);
+  return m + 'm' + s.padStart(2, '0') + 's';
+}
+
+function fmtStart(nanos, originNanos) {
+  // Show time since the earliest span, as a relative offset.
+  // Absolute wall time is usually noise for debugging; relative is what humans
+  // use to correlate events inside one run.
+  const ms = (nanos - originNanos) / 1e6;
+  if (ms < 1000) return '+' + ms.toFixed(0) + 'ms';
+  return '+' + (ms / 1000).toFixed(2) + 's';
+}
+
+function inlineDetail(span) {
+  // One-line "what was this span about" summary shown on the tree row.
+  const a = span.attributes || {};
+  switch (span.name) {
+    case 'llm_call': {
+      const model = a['gen_ai.request.model'] || '?';
+      const inTok = a['gen_ai.usage.input_tokens'];
+      const outTok = a['gen_ai.usage.output_tokens'];
+      const toks = (inTok != null || outTok != null)
+        ? `  in=${inTok ?? '?'} out=${outTok ?? '?'}` : '';
+      return `${model}${toks}`;
+    }
+    case 'tool_call': {
+      const name = a['tool.name'] || '?';
+      const status = a['tool.status'];
+      return status ? `${name}  status=${status}` : name;
+    }
+    case 'agent_step': {
+      const turn = a['turn_idx'];
+      return turn != null ? `turn ${turn}` : '';
+    }
+    case 'sample_attempt': {
+      return a['sample.id'] || a['sample_id'] || '';
+    }
+    case 'workload': {
+      const kind = a['workload.kind'] || '';
+      const conc = a['workload.concurrency'];
+      return `${a['workload.name'] || '?'}${kind ? ' · ' + kind : ''}${conc ? ' · c=' + conc : ''}`;
+    }
+    case 'serving_run': {
+      const n = a['serving_run.workload_count'];
+      return `${a['serving_run.experiment_name'] || ''}${n ? ' · ' + n + ' workloads' : ''}`;
+    }
+    default:
+      return '';
+  }
+}
+
+function computeTailThresholds(spans) {
+  // p95 by span name — used to color outliers without arbitrary cutoffs.
+  const durs = {};
+  for (const s of spans) {
+    const d = durationMs(s);
+    if (d == null) continue;
+    (durs[s.name] = durs[s.name] || []).push(d);
+  }
+  const p = {};
+  for (const [name, arr] of Object.entries(durs)) {
+    arr.sort((a, b) => a - b);
+    p[name] = {
+      p95: arr[Math.floor(arr.length * 0.95)] || 0,
+      max: arr[arr.length - 1] || 0,
+    };
+  }
+  return p;
+}
+
+function matchesQuery(span, q) {
+  if (!q) return true;
+  const needle = q.toLowerCase();
+  if (span.name.toLowerCase().includes(needle)) return true;
+  if ((span.trace_id || '').toLowerCase().includes(needle)) return true;
+  const a = span.attributes || {};
+  for (const v of Object.values(a)) {
+    if (typeof v === 'string' && v.toLowerCase().includes(needle)) return true;
+    if (typeof v === 'number' && String(v).includes(needle)) return true;
+  }
+  return false;
+}
+
+/* ------------------- rendering ------------------- */
+
+const state = {
+  spans: [],
+  tree: { roots: [], byId: {} },
+  tailThresholds: {},
+  expanded: new Set(),    // span_ids that are expanded
+  selected: null,
+  query: '',
+  originNs: 0,
+};
+
+function render() {
+  const body = document.getElementById('tree-body');
+  body.innerHTML = '';
+  document.getElementById('drop-hint').style.display = state.spans.length ? 'none' : 'flex';
+  if (!state.spans.length) return;
+
+  // Pre-compute which spans match the filter, and auto-expand ancestors so
+  // hits remain visible.
+  const matches = new Set();
+  for (const s of state.spans) if (matchesQuery(s, state.query)) matches.add(s.span_id);
+  const visible = new Set();
+  const markVisible = (span) => {
+    visible.add(span.span_id);
+    for (const c of span.children) markVisible(c);
+  };
+  for (const id of matches) {
+    let cur = state.tree.byId[id];
+    while (cur) {
+      visible.add(cur.span_id);
+      if (cur.parent_span_id) state.expanded.add(cur.parent_span_id);
+      cur = state.tree.byId[cur.parent_span_id];
+    }
+  }
+  if (!state.query) {
+    // When no query, show everything (subject to expand/collapse state).
+    for (const s of state.spans) visible.add(s.span_id);
+  }
+
+  const renderRow = (span) => {
+    if (!visible.has(span.span_id)) return;
+
+    const row = document.createElement('div');
+    row.className = 'row ' + span.name;
+    if (state.selected === span.span_id) row.classList.add('selected');
+    if (state.query && !matches.has(span.span_id)) row.classList.add('filtered');
+    row.style.paddingLeft = (span.depth * 18 + 4) + 'px';
+    row.dataset.id = span.span_id;
+
+    const toggle = document.createElement('span');
+    toggle.className = 'toggle';
+    if (span.children.length) {
+      toggle.textContent = state.expanded.has(span.span_id) ? '▾' : '▸';
+    } else {
+      toggle.textContent = '·';
+    }
+    row.appendChild(toggle);
+
+    const name = document.createElement('span');
+    name.className = 'name';
+    if (span.status && span.status.code === 'ERROR') name.classList.add('err');
+    name.textContent = span.name;
+    row.appendChild(name);
+
+    const detail = document.createElement('span');
+    detail.className = 'detail';
+    detail.textContent = inlineDetail(span);
+    row.appendChild(detail);
+
+    const dur = document.createElement('span');
+    dur.className = 'dur';
+    const d = durationMs(span);
+    const t = state.tailThresholds[span.name];
+    if (t && d != null) {
+      if (d >= t.max * 0.98) dur.classList.add('long');
+      else if (d >= t.p95) dur.classList.add('tail');
+    }
+    dur.textContent = fmtDuration(d);
+    row.appendChild(dur);
+
+    const ts = document.createElement('span');
+    ts.className = 'ts';
+    ts.textContent = fmtStart(span.start_time_unix_nano, state.originNs);
+    row.appendChild(ts);
+
+    body.appendChild(row);
+
+    if (state.expanded.has(span.span_id)) {
+      for (const c of span.children) renderRow(c);
+    }
+  };
+
+  for (const r of state.tree.roots) renderRow(r);
+}
+
+function renderDetail(span) {
+  const pane = document.getElementById('detail-pane');
+  if (!span) {
+    pane.innerHTML = '<div class="empty">click a span to see its full record</div>';
+    return;
+  }
+  pane.innerHTML = '';
+
+  const h2 = document.createElement('h2');
+  h2.textContent = 'span';
+  pane.appendChild(h2);
+
+  const title = document.createElement('div');
+  title.className = 'span-name';
+  title.textContent = span.name;
+  pane.appendChild(title);
+
+  const status = (span.status && span.status.code) || '?';
+  const d = durationMs(span);
+
+  const meta = [
+    ['status', status, status === 'ERROR' ? 'err' : ''],
+    ['duration', fmtDuration(d), ''],
+    ['start', fmtStart(span.start_time_unix_nano, state.originNs), ''],
+    ['trace_id', span.trace_id || '', ''],
+    ['span_id', span.span_id || '', ''],
+    ['parent_span_id', span.parent_span_id || '(root)', ''],
+  ];
+  if (status === 'ERROR' && span.status && span.status.message) {
+    meta.push(['error', span.status.message, 'err']);
+  }
+  for (const [k, v, cls] of meta) {
+    const row = document.createElement('div');
+    row.className = 'meta-row';
+    const kEl = document.createElement('div'); kEl.className = 'k'; kEl.textContent = k;
+    const vEl = document.createElement('div'); vEl.className = 'v' + (cls ? ' ' + cls : ''); vEl.textContent = v;
+    row.append(kEl, vEl);
+    pane.appendChild(row);
+  }
+
+  const attrs = span.attributes || {};
+  const attrKeys = Object.keys(attrs).sort();
+  if (attrKeys.length) {
+    const section = document.createElement('div');
+    section.className = 'section';
+
+    const h3 = document.createElement('h3');
+    h3.innerHTML = '<span>attributes</span>';
+    const copyBtn = document.createElement('button');
+    copyBtn.className = 'copy-btn';
+    copyBtn.textContent = 'copy json';
+    copyBtn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      try {
+        await navigator.clipboard.writeText(JSON.stringify(span, null, 2));
+        copyBtn.textContent = 'copied';
+        setTimeout(() => { copyBtn.textContent = 'copy json'; }, 1500);
+      } catch { copyBtn.textContent = 'blocked'; }
+    });
+    h3.appendChild(copyBtn);
+    section.appendChild(h3);
+
+    for (const k of attrKeys) {
+      const row = document.createElement('div');
+      row.className = 'meta-row';
+      const kEl = document.createElement('div'); kEl.className = 'k'; kEl.textContent = k;
+      const vEl = document.createElement('div'); vEl.className = 'v';
+      const v = attrs[k];
+      vEl.textContent = (typeof v === 'object') ? JSON.stringify(v) : String(v);
+      row.append(kEl, vEl);
+      section.appendChild(row);
+    }
+    pane.appendChild(section);
+  }
+
+  // Raw JSON block at the bottom for the power user.
+  const rawSection = document.createElement('div');
+  rawSection.className = 'section';
+  const rawH = document.createElement('h3');
+  rawH.innerHTML = '<span>raw</span>';
+  rawSection.appendChild(rawH);
+  const pre = document.createElement('pre');
+  pre.textContent = JSON.stringify(span, (k, v) => k === 'children' ? undefined : v, 2);
+  rawSection.appendChild(pre);
+  pane.appendChild(rawSection);
+}
+
+function loadSpans(spans) {
+  state.spans = spans;
+  state.tree = buildTree(spans);
+  state.tailThresholds = computeTailThresholds(spans);
+  state.originNs = spans.length ? Math.min(...spans.map(s => s.start_time_unix_nano)) : 0;
+  // Default: expand first two levels so the user lands on structure, not a
+  // single root row.
+  state.expanded = new Set();
+  const expand = (node, untilDepth) => {
+    if (node.depth < untilDepth) state.expanded.add(node.span_id);
+    for (const c of node.children) expand(c, untilDepth);
+  };
+  for (const r of state.tree.roots) expand(r, 2);
+
+  const errors = spans.filter(s => (s.status && s.status.code) === 'ERROR').length;
+  const traces = new Set(spans.map(s => s.trace_id)).size;
+  document.getElementById('stat-count').textContent = spans.length;
+  document.getElementById('stat-traces').textContent = traces;
+  document.getElementById('stat-errors').textContent = errors;
+  if (errors) document.getElementById('stat-errors').style.color = 'var(--err)';
+
+  render();
+}
+
+/* ------------------- file loading ------------------- */
+
+function handleFile(file) {
+  const reader = new FileReader();
+  reader.onload = () => loadSpans(parseJsonl(reader.result));
+  reader.readAsText(file);
+}
+
+document.getElementById('file-input').addEventListener('change', (e) => {
+  if (e.target.files[0]) handleFile(e.target.files[0]);
+});
+
+// Whole-body drop target so the user doesn't have to aim precisely.
+document.body.addEventListener('dragover', (e) => {
+  e.preventDefault();
+  document.body.classList.add('dragover');
+});
+document.body.addEventListener('dragleave', (e) => {
+  if (e.target === document.body) document.body.classList.remove('dragover');
+});
+document.body.addEventListener('drop', (e) => {
+  e.preventDefault();
+  document.body.classList.remove('dragover');
+  const f = e.dataTransfer.files[0];
+  if (f) handleFile(f);
+});
+
+/* ------------------- interaction ------------------- */
+
+document.getElementById('q').addEventListener('input', (e) => {
+  state.query = e.target.value.trim();
+  render();
+});
+document.getElementById('q').addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') { e.target.value = ''; state.query = ''; render(); }
+});
+
+document.getElementById('tree-body').addEventListener('click', (e) => {
+  const row = e.target.closest('.row');
+  if (!row) return;
+  const id = row.dataset.id;
+  const span = state.tree.byId[id];
+  if (e.target.classList.contains('toggle') && span.children.length) {
+    if (state.expanded.has(id)) state.expanded.delete(id);
+    else state.expanded.add(id);
+    render();
+    return;
+  }
+  state.selected = id;
+  render();
+  renderDetail(span);
+});
+
+// Slash key focuses the filter, classic instrument-panel habit.
+document.addEventListener('keydown', (e) => {
+  if (e.key === '/' && document.activeElement.tagName !== 'INPUT') {
+    e.preventDefault();
+    document.getElementById('q').focus();
+  }
+});
+</script>
+</body>
+</html>
