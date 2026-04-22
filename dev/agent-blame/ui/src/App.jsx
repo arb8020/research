@@ -7,8 +7,8 @@
 import { useEffect, useState } from 'react'
 import { BlameView } from './BlameView'
 import { ChatPanel } from './ChatPanel'
-import { FileList } from './FileList'
 import { SessionPanel } from './SessionPanel'
+import { Sidebar } from './Sidebar'
 import { useBlame, useFileList, useRepoInfo } from './useBlame'
 
 export default function App() {
@@ -72,7 +72,16 @@ export default function App() {
 
       {/* Three-column layout */}
       <div style={{ display: 'flex', flex: 1, minHeight: 0 }}>
-        <FileList files={files} selected={selected} onSelect={setSelected} />
+        <Sidebar
+          files={files}
+          selected={selected}
+          onSelectFile={setSelected}
+          onOpenSession={s => setSelectedEdit({
+            source: s.source,
+            session_id: s.session_id,
+            // no tool_call_id -> SessionPanel scrolls to end
+          })}
+        />
 
         <div style={{
           flex: 1, minWidth: 0, overflowY: 'auto',

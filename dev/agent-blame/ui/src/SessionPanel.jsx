@@ -122,6 +122,7 @@ export function SessionPanel({ session, onClose }) {
   const [data, setData] = useState(null)
   const [error, setError] = useState(null)
   const anchorRef = useRef(null)
+  const endRef = useRef(null)
 
   useEffect(() => {
     if (!source || !session_id) return
@@ -141,11 +142,25 @@ export function SessionPanel({ session, onClose }) {
     return tool_call_id.split('#')[0]
   }, [tool_call_id])
 
-  // Scroll the anchor into view when data + anchor are both ready.
+  // Scroll the anchor into view once layout has completed. The naive
+  // useEffect-on-[data] approach fired before React finished painting
+  // ~2000 messages, so the ref was sometimes null and the scroll was
+  // a no-op. Double rAF waits for one full paint cycle. If the target
+  // id isn't present at all (stale blame data, or transcript missing
+  // the call for some reason), we fall through to scrolling to the
+  // end — matches the "click session header -> go to end" behavior.
   useEffect(() => {
-    if (data && anchorRef.current) {
-      anchorRef.current.scrollIntoView({ block: 'start' })
-    }
+    if (!data) return
+    const id = requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        if (anchorRef.current) {
+          anchorRef.current.scrollIntoView({ block: 'start', behavior: 'auto' })
+        } else if (endRef.current) {
+          endRef.current.scrollIntoView({ block: 'end', behavior: 'auto' })
+        }
+      })
+    })
+    return () => cancelAnimationFrame(id)
   }, [data, strippedTargetId])
 
   return (
@@ -211,6 +226,7 @@ export function SessionPanel({ session, onClose }) {
             anchorRef={anchorRef}
           />
         ))}
+        <div ref={endRef} />
       </div>
     </div>
   )

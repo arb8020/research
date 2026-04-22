@@ -141,6 +141,44 @@ def _files_summary(attributions: list[FileAttribution]) -> list[dict]:
     return out
 
 
+def _sessions_summary(attributions: list[FileAttribution]) -> list[dict]:
+    """Sessions view: one row per (source, session_id) with the files it touched.
+
+    Each row: {source, session_id, total_lines, files: [{path, lines}...]}.
+    Sorted by total attributed lines, desc. Files within a session sorted
+    same way.
+    """
+    # (source, session_id) -> {path -> line count}
+    agg: dict[tuple[str, str], dict[str, int]] = defaultdict(lambda: defaultdict(int))
+    latest: dict[tuple[str, str], str] = {}
+    for fa in attributions:
+        for line in fa.lines:
+            if line.edit is None:
+                continue
+            key = (line.edit.source, line.edit.session_id)
+            agg[key][str(fa.repo_path)] += 1
+            # Track latest edit timestamp per session for display/sort tiebreak
+            ts = line.edit.timestamp.isoformat()
+            if key not in latest or ts > latest[key]:
+                latest[key] = ts
+    out = []
+    for (source, sid), files_map in agg.items():
+        files = sorted(
+            ({"path": p, "lines": n} for p, n in files_map.items()),
+            key=lambda f: -f["lines"],
+        )
+        total = sum(f["lines"] for f in files)
+        out.append({
+            "source": source,
+            "session_id": sid,
+            "total_lines": total,
+            "latest_edit": latest.get((source, sid)),
+            "files": files,
+        })
+    out.sort(key=lambda s: -s["total_lines"])
+    return out
+
+
 def make_handler(
     *,
     repo_root: Path,
@@ -192,6 +230,9 @@ def make_handler(
                 return
             if route == "/api/files":
                 self._send_json({"files": _files_summary(attributions)})
+                return
+            if route == "/api/sessions":
+                self._send_json({"sessions": _sessions_summary(attributions)})
                 return
             if route == "/api/blame":
                 path = (params.get("path") or [""])[0]
