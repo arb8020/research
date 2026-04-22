@@ -140,6 +140,8 @@
     overflow: auto;
     padding: 18px 22px 100px;
     position: relative;
+    grid-column: 1;
+    grid-row: 2;
   }
 
   .drop-hint {
@@ -224,6 +226,8 @@
     overflow: auto;
     padding: 18px 20px 40px;
     font-size: 12px;
+    grid-column: 2;
+    grid-row: 2;
   }
   .detail-pane h2 {
     margin: 0 0 4px;
@@ -318,6 +322,201 @@
   ::-webkit-scrollbar-track { background: transparent; }
   ::-webkit-scrollbar-thumb { background: var(--rule); }
   ::-webkit-scrollbar-thumb:hover { background: var(--fg-muted); }
+
+  /* ---------- view toggle ---------- */
+
+  .view-toggle {
+    display: flex;
+    align-items: center;
+    gap: 0;
+    border: 1px solid var(--rule);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+  }
+  .view-toggle button {
+    background: transparent;
+    border: none;
+    color: var(--fg-dim);
+    font-family: inherit;
+    font-size: 11px;
+    padding: 5px 12px;
+    cursor: pointer;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    line-height: 1;
+  }
+  .view-toggle button:not(:last-child) {
+    border-right: 1px solid var(--rule);
+  }
+  .view-toggle button.active {
+    color: var(--accent);
+    background: rgba(240,184,76,0.08);
+  }
+  .view-toggle button:hover:not(.active) {
+    color: var(--fg);
+  }
+
+  .group-toggle {
+    display: none;
+    align-items: center;
+    gap: 0;
+    border: 1px solid var(--rule);
+  }
+  .group-toggle.visible { display: flex; }
+  .group-toggle button {
+    background: transparent;
+    border: none;
+    color: var(--fg-dim);
+    font-family: inherit;
+    font-size: 11px;
+    padding: 5px 12px;
+    cursor: pointer;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    line-height: 1;
+  }
+  .group-toggle button:not(:last-child) {
+    border-right: 1px solid var(--rule);
+  }
+  .group-toggle button.active {
+    color: var(--accent-2);
+    background: rgba(79,179,168,0.08);
+  }
+  .group-toggle button:hover:not(.active) { color: var(--fg); }
+
+  /* ---------- gantt pane ---------- */
+
+  #gantt-view {
+    display: none;
+    overflow: auto;
+    position: relative;
+    user-select: none;
+    /* Occupy same grid cell as .tree (row 2, col 1). */
+    grid-column: 1;
+    grid-row: 2;
+  }
+  #gantt-view.visible { display: block; }
+
+  /* Gantt layout: fixed label column + scrollable SVG area */
+  .gantt-container {
+    display: flex;
+    flex-direction: column;
+    min-height: 100%;
+  }
+
+  /* Time axis at the top, sticky */
+  .gantt-axis {
+    position: sticky;
+    top: 0;
+    z-index: 10;
+    background: rgba(10,14,10,0.96);
+    border-bottom: 1px solid var(--rule);
+    display: flex;
+  }
+  .gantt-axis .label-col {
+    flex: 0 0 180px;
+    border-right: 1px solid var(--rule);
+  }
+  .gantt-axis .axis-svg-wrap {
+    flex: 1;
+    overflow: hidden;
+    position: relative;
+  }
+
+  /* Group header rows */
+  .gantt-group-header {
+    display: flex;
+    align-items: center;
+    background: var(--bg-alt);
+    border-bottom: 1px solid var(--rule);
+    border-top: 1px solid var(--rule);
+    margin-top: 8px;
+    padding: 4px 10px;
+    font-size: 11px;
+    font-weight: 700;
+    color: var(--accent);
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    position: sticky;
+    left: 0;
+  }
+  .gantt-group-header .gh-label {
+    flex: 0 0 180px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .gantt-group-header .gh-spacer {
+    flex: 1;
+  }
+
+  /* Span rows in gantt */
+  .gantt-row {
+    display: flex;
+    align-items: center;
+    border-bottom: 1px solid rgba(37,42,46,0.6);
+    height: 22px;
+    cursor: pointer;
+  }
+  .gantt-row:hover { background: rgba(240,184,76,0.04); }
+  .gantt-row.selected { background: rgba(240,184,76,0.10); }
+  .gantt-row .gr-label {
+    flex: 0 0 180px;
+    padding: 0 10px;
+    font-size: 11px;
+    color: var(--fg-dim);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    border-right: 1px solid var(--rule);
+  }
+  .gantt-row.selected .gr-label { color: var(--fg); }
+  .gantt-row .gr-bar-area {
+    flex: 1;
+    height: 100%;
+    position: relative;
+    overflow: hidden;
+  }
+
+  /* Individual bar inside the bar area. Position set via JS inline style. */
+  .gantt-bar {
+    position: absolute;
+    top: 3px;
+    height: 16px;
+    min-width: 2px;
+    background: var(--fg-dim);
+    opacity: 0.85;
+    border-left: 1px solid rgba(255,255,255,0.12);
+  }
+  .gantt-bar.cool { background: var(--fg-dim); }
+  .gantt-bar.warm { background: var(--accent-2); }
+  .gantt-bar.hot  { background: var(--accent); }
+  .gantt-bar.crit { background: var(--err); }
+  /* normal band = default var(--fg-dim) above */
+
+  /* "now" (t=0 left-edge) reference line is handled by the axis SVG */
+
+  /* Tooltip */
+  .gantt-tooltip {
+    position: fixed;
+    z-index: 1000;
+    background: var(--bg-alt);
+    border: 1px solid var(--rule);
+    padding: 8px 12px;
+    font-size: 11px;
+    color: var(--fg);
+    pointer-events: none;
+    display: none;
+    max-width: 320px;
+    line-height: 1.7;
+  }
+  .gantt-tooltip .tt-name { color: var(--accent); font-weight: 700; margin-bottom: 4px; }
+  .gantt-tooltip .tt-row { display: flex; gap: 8px; }
+  .gantt-tooltip .tt-k { color: var(--fg-dim); flex: 0 0 80px; }
+  .gantt-tooltip .tt-v { color: var(--fg); }
 </style>
 </head>
 <body>
@@ -334,6 +533,14 @@
       <span class="sep">·</span>
       <span class="v" id="stat-errors">0</span> errors
     </div>
+    <div class="view-toggle">
+      <button id="btn-tree" class="active" onclick="setView('tree')">tree</button>
+      <button id="btn-gantt" onclick="setView('gantt')">gantt</button>
+    </div>
+    <div class="group-toggle" id="group-toggle">
+      <button id="btn-grp-workload" class="active" onclick="setGroupBy('workload')">workload</button>
+      <button id="btn-grp-trace" onclick="setGroupBy('trace_id')">trace</button>
+    </div>
   </header>
 
   <div class="tree" id="tree">
@@ -349,10 +556,14 @@
     <input type="file" id="file-input" accept=".jsonl,.json,application/jsonl" style="position:absolute;width:1px;height:1px;opacity:0;pointer-events:none">
   </div>
 
+  <div id="gantt-view"></div>
+
   <aside class="detail-pane" id="detail-pane">
     <div class="empty">click a span to see its full record</div>
   </aside>
 </div>
+
+<div class="gantt-tooltip" id="gantt-tooltip"></div>
 
 <script>
 /* ------------------------------------------------------------------
@@ -530,6 +741,11 @@ const state = {
   selected: null,
   query: '',
   originNs: 0,
+  currentView: 'tree',   // 'tree' | 'gantt'
+  groupBy: 'workload',   // 'workload' | 'trace_id'
+  // Gantt viewport: start/end in ms relative to originNs. null = fit-to-data.
+  ganttViewStart: null,
+  ganttViewEnd: null,
 };
 
 // TODO(tail-sampling): this viewer assumes we keep 100% of spans. That's
@@ -677,6 +893,339 @@ function prettyJson(text) {
   );
 }
 
+/* ------------------- view switching ------------------- */
+
+function setView(v) {
+  state.currentView = v;
+  document.getElementById('btn-tree').classList.toggle('active', v === 'tree');
+  document.getElementById('btn-gantt').classList.toggle('active', v === 'gantt');
+  document.getElementById('tree').style.display = v === 'tree' ? '' : 'none';
+  const gv = document.getElementById('gantt-view');
+  gv.classList.toggle('visible', v === 'gantt');
+  document.getElementById('group-toggle').classList.toggle('visible', v === 'gantt');
+  if (v === 'gantt') renderGantt();
+}
+
+function setGroupBy(g) {
+  state.groupBy = g;
+  document.getElementById('btn-grp-workload').classList.toggle('active', g === 'workload');
+  document.getElementById('btn-grp-trace').classList.toggle('active', g === 'trace_id');
+  state.ganttViewStart = null;
+  state.ganttViewEnd = null;
+  renderGantt();
+}
+
+function renderCurrentView() {
+  if (state.currentView === 'tree') render();
+  else renderGantt();
+}
+
+/* ------------------- gantt helpers ------------------- */
+
+// Walk up the parent chain to find the nearest ancestor (or self) that has
+// workload.name set in its attributes. Returns the workload name string or null.
+function resolveWorkloadName(span) {
+  let cur = span;
+  while (cur) {
+    const wn = (cur.attributes || {})['workload.name'];
+    if (wn) return wn;
+    cur = state.tree.byId[cur.parent_span_id];
+  }
+  return null;
+}
+
+// Collect "leaf-ish" spans: spans with no children, or spans whose name is
+// a known leaf type regardless of children count.
+const LEAF_SPAN_NAMES = new Set(['llm_call', 'tool_call', 'sample_attempt', 'agent_step']);
+function collectGanttSpans(spans) {
+  return spans.filter(s => {
+    if (!s.start_time_unix_nano || !s.end_time_unix_nano) return false;
+    return s.children.length === 0 || LEAF_SPAN_NAMES.has(s.name);
+  });
+}
+
+// Group spans by the current groupBy key. Returns array of { key, spans[] } in
+// order of earliest span start within each group.
+function groupGanttSpans(spans) {
+  const groups = new Map();
+  for (const s of spans) {
+    let key;
+    if (state.groupBy === 'workload') {
+      key = resolveWorkloadName(s) || '(no workload)';
+    } else {
+      key = s.trace_id || '(no trace)';
+    }
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(s);
+  }
+  // Sort groups by earliest span start; sort spans within each group by start.
+  const sorted = [...groups.entries()].map(([key, spans]) => {
+    spans.sort((a, b) => a.start_time_unix_nano - b.start_time_unix_nano);
+    return { key, spans, earliest: spans[0].start_time_unix_nano };
+  });
+  sorted.sort((a, b) => a.earliest - b.earliest);
+  return sorted;
+}
+
+// Gantt pan/zoom state (separate from state.ganttViewStart/End for drag delta).
+const ganttDrag = { active: false, startX: 0, startViewStart: 0, startViewEnd: 0 };
+
+function renderGantt() {
+  const container = document.getElementById('gantt-view');
+  if (!state.spans.length) {
+    container.innerHTML = '<div style="padding:40px;color:var(--fg-dim);text-align:center;font-style:italic;">drop a spans.jsonl file to begin</div>';
+    return;
+  }
+
+  const ganttSpans = collectGanttSpans(state.spans);
+  if (!ganttSpans.length) {
+    container.innerHTML = '<div style="padding:40px;color:var(--fg-dim);text-align:center;font-style:italic;">no renderable spans (all lack timing data)</div>';
+    return;
+  }
+
+  // Total time domain in ms relative to originNs.
+  const totalStartMs = 0;
+  const totalEndMs = (Math.max(...state.spans.filter(s => s.end_time_unix_nano).map(s => s.end_time_unix_nano)) - state.originNs) / 1e6;
+
+  // Initialize viewport to full range if unset.
+  if (state.ganttViewStart == null) state.ganttViewStart = totalStartMs;
+  if (state.ganttViewEnd == null)   state.ganttViewEnd   = totalEndMs || 1;
+
+  const viewStart = state.ganttViewStart;
+  const viewEnd   = state.ganttViewEnd;
+  const viewSpan  = viewEnd - viewStart;
+
+  const groups = groupGanttSpans(ganttSpans);
+
+  // Build DOM. We clear and rebuild on every renderGantt() call — the data is
+  // the source of truth, not the DOM.
+  container.innerHTML = '';
+
+  // -- Axis row (sticky top) --
+  const axis = document.createElement('div');
+  axis.className = 'gantt-axis';
+  const axisLabelCol = document.createElement('div');
+  axisLabelCol.className = 'label-col';
+  axis.appendChild(axisLabelCol);
+  const axisSvgWrap = document.createElement('div');
+  axisSvgWrap.className = 'axis-svg-wrap';
+  axisSvgWrap.style.height = '24px';
+  axis.appendChild(axisSvgWrap);
+  container.appendChild(axis);
+
+  // We use a ResizeObserver so the axis ticks respond to column width changes.
+  // On first render we draw immediately after append.
+  function drawAxis(wrapEl) {
+    const w = wrapEl.clientWidth || 600;
+    const tickCount = Math.min(10, Math.max(4, Math.floor(w / 80)));
+    const ticks = [];
+    for (let i = 0; i <= tickCount; i++) {
+      const ms = viewStart + (viewSpan * i / tickCount);
+      const x = (i / tickCount) * w;
+      ticks.push({ ms, x });
+    }
+    let svg = `<svg width="${w}" height="24" xmlns="http://www.w3.org/2000/svg" style="display:block;overflow:visible">`;
+    // t=0 reference line (left edge = origin)
+    const zeroX = ((0 - viewStart) / viewSpan) * w;
+    if (zeroX >= 0 && zeroX <= w) {
+      svg += `<line x1="${zeroX.toFixed(1)}" y1="0" x2="${zeroX.toFixed(1)}" y2="24" stroke="var(--accent)" stroke-width="1" opacity="0.4"/>`;
+    }
+    for (const t of ticks) {
+      svg += `<line x1="${t.x.toFixed(1)}" y1="18" x2="${t.x.toFixed(1)}" y2="24" stroke="var(--rule)" stroke-width="1"/>`;
+      const label = fmtDuration(t.ms);
+      const anchor = t.x < 20 ? 'start' : t.x > w - 20 ? 'end' : 'middle';
+      svg += `<text x="${t.x.toFixed(1)}" y="14" text-anchor="${anchor}" font-family="JetBrains Mono,monospace" font-size="10" fill="var(--fg-muted)">${label}</text>`;
+    }
+    svg += '</svg>';
+    wrapEl.innerHTML = svg;
+  }
+  // Draw now (clientWidth may be 0 before layout — we'll also draw on next animation frame).
+  drawAxis(axisSvgWrap);
+  requestAnimationFrame(() => drawAxis(axisSvgWrap));
+
+  // -- Vertical grid lines in bar area: reuse tick positions from axis.
+  // These are drawn per-row via background linear-gradient (no extra DOM).
+
+  // -- Group sections --
+  const barAreaWidth = { value: 0 }; // filled in after layout
+  const allBarAreas = []; // collect for zoom/pan recomputation
+
+  for (const group of groups) {
+    // Group header
+    const header = document.createElement('div');
+    header.className = 'gantt-group-header';
+    const ghLabel = document.createElement('div');
+    ghLabel.className = 'gh-label';
+    const shortKey = group.key.length > 38 ? group.key.slice(0, 36) + '…' : group.key;
+    ghLabel.textContent = shortKey;
+    ghLabel.title = group.key;
+    header.appendChild(ghLabel);
+    const ghSpacer = document.createElement('div');
+    ghSpacer.className = 'gh-spacer';
+    header.appendChild(ghSpacer);
+    container.appendChild(header);
+
+    // Span rows
+    for (const span of group.spans) {
+      const row = document.createElement('div');
+      row.className = 'gantt-row';
+      if (state.selected === span.span_id) row.classList.add('selected');
+      row.dataset.id = span.span_id;
+
+      const label = document.createElement('div');
+      label.className = 'gr-label';
+      label.textContent = span.name;
+      label.title = span.name;
+      row.appendChild(label);
+
+      const barArea = document.createElement('div');
+      barArea.className = 'gr-bar-area';
+      barArea.dataset.id = span.span_id;
+      row.appendChild(barArea);
+      allBarAreas.push({ barArea, span });
+
+      container.appendChild(row);
+
+      // Row click → select + detail
+      row.addEventListener('click', () => {
+        state.selected = span.span_id;
+        renderGantt();
+        renderDetail(span);
+      });
+    }
+  }
+
+  // Position bars. We need the bar area width which requires layout to have run.
+  function positionBars() {
+    const sampleBarArea = allBarAreas[0] && allBarAreas[0].barArea;
+    if (!sampleBarArea) return;
+    const w = sampleBarArea.clientWidth;
+    if (w === 0) { requestAnimationFrame(positionBars); return; }
+
+    for (const { barArea, span } of allBarAreas) {
+      barArea.innerHTML = '';
+      const startMs = (span.start_time_unix_nano - state.originNs) / 1e6;
+      const endMs   = (span.end_time_unix_nano   - state.originNs) / 1e6;
+      const durMs   = endMs - startMs;
+
+      const leftFrac  = (startMs - viewStart) / viewSpan;
+      const widthFrac = durMs / viewSpan;
+      const leftPx    = leftFrac * w;
+      const widthPx   = Math.max(2, widthFrac * w);
+
+      // Skip bars fully outside the viewport.
+      if (leftPx + widthPx < 0 || leftPx > w) continue;
+
+      const bar = document.createElement('div');
+      bar.className = 'gantt-bar';
+      const band = durationBand(durMs, state.percentiles[span.name]);
+      if (band) bar.classList.add(band);
+      bar.style.left  = leftPx.toFixed(1) + 'px';
+      bar.style.width = widthPx.toFixed(1) + 'px';
+      bar.dataset.id = span.span_id;
+      barArea.appendChild(bar);
+    }
+
+    // Redraw axis now that we have real width.
+    drawAxis(axisSvgWrap);
+  }
+  requestAnimationFrame(positionBars);
+}
+
+/* ------------------- gantt tooltip ------------------- */
+
+const tooltip = document.getElementById('gantt-tooltip');
+
+function showTooltip(span, x, y) {
+  const a = span.attributes || {};
+  const wn = resolveWorkloadName(span) || '—';
+  const model = a['gen_ai.request.model'] || null;
+  const durMs = durationMs(span);
+  let html = `<div class="tt-name">${span.name}</div>`;
+  html += `<div class="tt-row"><span class="tt-k">duration</span><span class="tt-v">${fmtDuration(durMs)}</span></div>`;
+  html += `<div class="tt-row"><span class="tt-k">workload</span><span class="tt-v">${wn}</span></div>`;
+  if (model) {
+    html += `<div class="tt-row"><span class="tt-k">model</span><span class="tt-v">${model}</span></div>`;
+  }
+  tooltip.innerHTML = html;
+  tooltip.style.display = 'block';
+  tooltip.style.left = (x + 14) + 'px';
+  tooltip.style.top  = (y + 14) + 'px';
+}
+
+function hideTooltip() {
+  tooltip.style.display = 'none';
+}
+
+// Delegate tooltip events to the gantt-view container (bars are recreated on
+// each render so direct listeners would need cleanup).
+document.getElementById('gantt-view').addEventListener('mousemove', (e) => {
+  const bar = e.target.closest('.gantt-bar');
+  if (bar) {
+    const span = state.tree.byId[bar.dataset.id];
+    if (span) showTooltip(span, e.clientX, e.clientY);
+  } else {
+    hideTooltip();
+  }
+});
+document.getElementById('gantt-view').addEventListener('mouseleave', hideTooltip);
+
+/* ------------------- gantt zoom / pan ------------------- */
+
+document.getElementById('gantt-view').addEventListener('wheel', (e) => {
+  if (!state.spans.length) return;
+  e.preventDefault();
+  const container = document.getElementById('gantt-view');
+  const rect = container.getBoundingClientRect();
+  const LABEL_W = 180; // matches .gr-label flex-basis
+  const barW = rect.width - LABEL_W;
+  if (barW <= 0) return;
+
+  // Mouse position as fraction of bar area [0,1].
+  const frac = Math.max(0, Math.min(1, (e.clientX - rect.left - LABEL_W) / barW));
+  const viewSpan = state.ganttViewEnd - state.ganttViewStart;
+  const pivot = state.ganttViewStart + frac * viewSpan;
+
+  // Zoom factor: wheel deltaY. Pinch-zoom on trackpads sends ctrlKey=true.
+  const zoomFactor = e.ctrlKey ? 1 + e.deltaY * 0.01 : 1 + e.deltaY * 0.003;
+  const newSpan = Math.max(1, viewSpan * zoomFactor);
+  state.ganttViewStart = pivot - frac * newSpan;
+  state.ganttViewEnd   = pivot + (1 - frac) * newSpan;
+  renderGantt();
+}, { passive: false });
+
+document.getElementById('gantt-view').addEventListener('mousedown', (e) => {
+  // Only drag on the bar area (not labels or group headers).
+  if (e.target.closest('.gr-label') || e.target.closest('.gantt-group-header')) return;
+  if (e.button !== 0) return;
+  ganttDrag.active = true;
+  ganttDrag.startX = e.clientX;
+  ganttDrag.startViewStart = state.ganttViewStart;
+  ganttDrag.startViewEnd   = state.ganttViewEnd;
+  document.body.style.cursor = 'grabbing';
+});
+
+document.addEventListener('mousemove', (e) => {
+  if (!ganttDrag.active) return;
+  const container = document.getElementById('gantt-view');
+  const rect = container.getBoundingClientRect();
+  const LABEL_W = 180;
+  const barW = rect.width - LABEL_W;
+  if (barW <= 0) return;
+  const viewSpan = ganttDrag.startViewEnd - ganttDrag.startViewStart;
+  const dxMs = -((e.clientX - ganttDrag.startX) / barW) * viewSpan;
+  state.ganttViewStart = ganttDrag.startViewStart + dxMs;
+  state.ganttViewEnd   = ganttDrag.startViewEnd   + dxMs;
+  renderGantt();
+});
+
+document.addEventListener('mouseup', () => {
+  if (ganttDrag.active) {
+    ganttDrag.active = false;
+    document.body.style.cursor = '';
+  }
+});
+
 function loadSpans(spans) {
   state.spans = spans;
   state.tree = buildTree(spans);
@@ -698,7 +1247,11 @@ function loadSpans(spans) {
   document.getElementById('stat-errors').textContent = errors;
   if (errors) document.getElementById('stat-errors').style.color = 'var(--err)';
 
-  render();
+  // Reset gantt viewport to fit-to-data on new file load.
+  state.ganttViewStart = null;
+  state.ganttViewEnd = null;
+
+  renderCurrentView();
 }
 
 /* ------------------- file loading ------------------- */
@@ -732,10 +1285,10 @@ document.body.addEventListener('drop', (e) => {
 
 document.getElementById('q').addEventListener('input', (e) => {
   state.query = e.target.value.trim();
-  render();
+  renderCurrentView();
 });
 document.getElementById('q').addEventListener('keydown', (e) => {
-  if (e.key === 'Escape') { e.target.value = ''; state.query = ''; render(); }
+  if (e.key === 'Escape') { e.target.value = ''; state.query = ''; renderCurrentView(); }
 });
 
 document.getElementById('tree-body').addEventListener('click', (e) => {
