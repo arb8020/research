@@ -58,25 +58,26 @@ def decode_project_cwd(encoded: str) -> Path:
     return Path(encoded.replace("-", "/"))
 
 
-def list_sessions_for_cwd(repo_path: Path) -> list[Path]:
-    """Return JSONL paths whose encoded cwd is a prefix-match for `repo_path`.
+def list_sessions_for_cwd(repo_path: Path | None) -> list[Path]:
+    """Return all CC session JSONL paths we can find.
 
-    We match against both the exact cwd and any cwd that sits inside
-    `repo_path`, so sessions run from a subdirectory of the repo are included.
+    The `repo_path` arg is ignored — kept only for API compatibility with
+    earlier versions that tried to prefilter by session cwd. That
+    prefiltering was wrong: an agent run from anywhere can edit files
+    anywhere via absolute paths. The honest filter is at the edit level
+    (iter_file_edits' output filtered by absolute path), not at the
+    session level. Callers should continue to filter edits by path.
+
+    Cost of enumerating all sessions: one glob over
+    ~/.claude/projects/*/*.jsonl. At typical scale (a few hundred
+    sessions) this is well under a second.
     """
+    del repo_path  # intentionally unused
     if not CLAUDE_PROJECTS_DIR.exists():
         return []
-
-    target = repo_path.resolve()
     results: list[Path] = []
     for project_dir in CLAUDE_PROJECTS_DIR.iterdir():
         if not project_dir.is_dir():
-            continue
-        cwd = decode_project_cwd(project_dir.name)
-        try:
-            cwd.resolve().relative_to(target)
-        except ValueError:
-            # cwd is not inside target
             continue
         for session_file in project_dir.glob("*.jsonl"):
             if len(session_file.stem) == 36:  # UUID

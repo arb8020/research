@@ -68,29 +68,21 @@ logger = logging.getLogger(__name__)
 CODEX_SESSIONS_DIR = Path.home() / ".codex" / "sessions"
 
 
-def list_sessions_for_cwd(repo_path: Path) -> list[Path]:
-    """Return Codex JSONL paths whose session_meta.cwd is inside repo_path.
+def list_sessions_for_cwd(repo_path: Path | None) -> list[Path]:
+    """Return all Codex session JSONL paths we can find.
 
-    Codex does not encode cwd in the filename (unlike Claude Code), so we
-    must open each session's first line. Sessions are laid out by date under
-    YYYY/MM/DD/, so we walk the whole tree. For very large session counts
-    this is O(n) file opens — acceptable for v0 (sessions are tiny JSONL
-    first lines).
+    `repo_path` is ignored — same rationale as the Claude Code adapter:
+    session cwd doesn't constrain which files the session can edit (agents
+    can use absolute paths), so filtering by cwd drops real data. The
+    honest filter is on edit paths, not session cwds, and that filtering
+    happens at the caller.
+
+    Cost: one rglob over ~/.codex/sessions/. Fast.
     """
+    del repo_path
     if not CODEX_SESSIONS_DIR.exists():
         return []
-    target = repo_path.resolve()
-    results: list[Path] = []
-    for jsonl in CODEX_SESSIONS_DIR.rglob("*.jsonl"):
-        cwd = _read_session_cwd(jsonl)
-        if cwd is None:
-            continue
-        try:
-            Path(cwd).resolve().relative_to(target)
-        except (ValueError, OSError):
-            continue
-        results.append(jsonl)
-    return results
+    return list(CODEX_SESSIONS_DIR.rglob("*.jsonl"))
 
 
 def _read_session_cwd(session_path: Path) -> str | None:

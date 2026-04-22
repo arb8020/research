@@ -49,7 +49,6 @@ from pathlib import Path
 
 from .adapters import claude_code, codex
 from .fold import fold_edits
-from .provenance import build_provenance
 from .reconcile import (
     FileAttribution,
     reconcile,
@@ -156,15 +155,39 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     # 2. Parse -> FileEdits from each adapter.
+    # Filter edits by absolute path: even ancestor-scoped sessions
+    # (session cwd = ~/research but repo_root = ~/research/rollouts)
+    # return all their edits; we keep only those that touch files
+    # inside `repo_root`. Without this filter we'd attribute unrelated
+    # edits from sibling directories to files in the target scope.
+    def _in_scope(p: str) -> bool:
+        try:
+            Path(p).resolve().relative_to(repo_root)
+            return True
+        except ValueError:
+            return False
+
     all_edits = []
+    parsed_cc = 0
+    parsed_cx = 0
+    kept_cc = 0
+    kept_cx = 0
     for session_path in cc_sessions:
-        all_edits.extend(claude_code.iter_file_edits(session_path))
-    cc_edit_count = len(all_edits)
+        for e in claude_code.iter_file_edits(session_path):
+            parsed_cc += 1
+            if _in_scope(e.path):
+                all_edits.append(e)
+                kept_cc += 1
     for session_path in cx_sessions:
-        all_edits.extend(codex.iter_file_edits(session_path))
-    cx_edit_count = len(all_edits) - cc_edit_count
-    print(f"Parsed {cc_edit_count} Claude Code edits + {cx_edit_count} Codex edits "
-          f"= {len(all_edits)} total")
+        for e in codex.iter_file_edits(session_path):
+            parsed_cx += 1
+            if _in_scope(e.path):
+                all_edits.append(e)
+                kept_cx += 1
+    print(
+        f"Parsed {parsed_cc} CC + {parsed_cx} Codex edits; "
+        f"kept {kept_cc} CC + {kept_cx} Codex = {len(all_edits)} in scope of {repo_root}"
+    )
 
     if not all_edits:
         return 0
@@ -192,17 +215,12 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Touched {len(virtual_states)} distinct file paths "
           f"({stale_total} stale edits — old_content missing from virtual state)")
 
-    # 5. Provenance index (flat line -> edits). Independent of fold;
-    # used as a fallback when virtual-state attribution misses.
-    provenance = build_provenance(all_edits)
-
-    # 6. Reconcile against tracked files in scope.
+    # 5. Reconcile against tracked files in scope.
     tracked = _tracked_text_files(git_root, scope_rel)
     print(f"Reconciling against {len(tracked)} git-tracked files under {scope_rel}...")
     attributions = reconcile(
         repo_root=git_root,
         virtual_states=virtual_states,
-        provenance=provenance,
         source=source,
         files=tracked,
     )

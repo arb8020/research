@@ -37,7 +37,6 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from agent_blame.adapters import claude_code, codex
 from agent_blame.fold import fold_edits
-from agent_blame.provenance import build_provenance
 from agent_blame.reconcile import (
     FileAttribution,
     reconcile,
@@ -55,19 +54,28 @@ def _build_attributions(
     source: SourceReader,
 ) -> list[FileAttribution]:
     """Same pipeline as cli.main, producing FileAttributions for the UI."""
+    def _in_scope(p: str) -> bool:
+        try:
+            Path(p).resolve().relative_to(repo_root)
+            return True
+        except ValueError:
+            return False
+
     edits = []
     for s in claude_code.list_sessions_for_cwd(repo_root):
-        edits.extend(claude_code.iter_file_edits(s))
+        for e in claude_code.iter_file_edits(s):
+            if _in_scope(e.path):
+                edits.append(e)
     for s in codex.list_sessions_for_cwd(repo_root):
-        edits.extend(codex.iter_file_edits(s))
-    logger.info("parsed %d edits", len(edits))
+        for e in codex.iter_file_edits(s):
+            if _in_scope(e.path):
+                edits.append(e)
+    logger.info("parsed %d edits in scope of %s", len(edits), repo_root)
     virtual_states = fold_edits(edits, seed_reader=source)
-    provenance = build_provenance(edits)
     tracked = _tracked_text_files(git_root, scope_rel)
     return reconcile(
         repo_root=git_root,
         virtual_states=virtual_states,
-        provenance=provenance,
         source=source,
         files=tracked,
     )
